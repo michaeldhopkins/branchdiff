@@ -1,6 +1,7 @@
 mod app;
 mod diff;
 mod git;
+mod input;
 mod ui;
 
 use std::io;
@@ -11,7 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -19,6 +20,7 @@ use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use ratatui::prelude::*;
 
 use app::App;
+use input::{handle_event, AppAction};
 
 #[derive(Parser)]
 #[command(name = "branchdiff")]
@@ -99,39 +101,25 @@ fn run_app<B: Backend>(
             }
         }
 
-        // Poll for keyboard events with timeout
+        // Poll for input events with timeout
         if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                match (key.code, key.modifiers) {
-                    (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
-                        return Ok(());
-                    }
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                        return Ok(());
-                    }
-                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                        app.scroll_up(1);
-                    }
-                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                        app.scroll_down(1);
-                    }
-                    (KeyCode::PageUp, _) | (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                        app.page_up();
-                    }
-                    (KeyCode::PageDown, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                        app.page_down();
-                    }
-                    (KeyCode::Char('g'), _) => {
-                        app.go_to_top();
-                    }
-                    (KeyCode::Char('G'), _) => {
-                        app.go_to_bottom();
-                    }
-                    (KeyCode::Char('r'), _) => {
-                        app.refresh()?;
-                    }
-                    _ => {}
-                }
+            let event = event::read()?;
+            match handle_event(event) {
+                AppAction::Quit => return Ok(()),
+                AppAction::ScrollUp(n) => app.scroll_up(n),
+                AppAction::ScrollDown(n) => app.scroll_down(n),
+                AppAction::PageUp => app.page_up(),
+                AppAction::PageDown => app.page_down(),
+                AppAction::GoToTop => app.go_to_top(),
+                AppAction::GoToBottom => app.go_to_bottom(),
+                AppAction::Refresh => app.refresh()?,
+                AppAction::ToggleHelp => app.toggle_help(),
+                AppAction::ToggleContextOnly => app.toggle_context_only(),
+                AppAction::StartSelection(x, y) => app.start_selection(x, y),
+                AppAction::UpdateSelection(x, y) => app.update_selection(x, y),
+                AppAction::EndSelection => app.end_selection(),
+                AppAction::Copy => { let _ = app.copy_selection(); }
+                AppAction::None => {}
             }
         }
     }

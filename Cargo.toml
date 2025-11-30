@@ -12,11 +12,12 @@ notify = "7"
 notify-debouncer-mini = "0.5"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-similar = "2"
+similar = { version = "2", features = ["inline"] }
+arboard = "2"
 
 [dev-dependencies]
 tempfile = "3"
 insta = "1"
-proptest = "1"
+proptest = "1.5"
 assert_cmd = "2"
 predicates = "3"
