@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ pub struct RefreshResult {
 }
 
 pub fn compute_refresh(
-    repo_path: &PathBuf,
+    repo_path: &Path,
     base_branch: &str,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<RefreshResult> {
@@ -75,10 +75,7 @@ pub fn compute_refresh(
             working_content.as_deref(),
         );
 
-        for line in &file_diff.lines {
-            lines.push(line.clone());
-        }
-
+        lines.extend(file_diff.lines.iter().cloned());
         lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
 
         files.push(file_diff);
@@ -174,79 +171,10 @@ impl App {
         Ok(app)
     }
 
-    /// Refresh all diffs from git
     pub fn refresh(&mut self) -> Result<()> {
-        self.error = None;
-
-        // Update merge-base (might have changed if branch was rebased)
-        self.merge_base = git::get_merge_base(&self.repo_path, &self.base_branch)
-            .unwrap_or_default();
-
-        // Get all changed files
-        let changed_files = git::get_all_changed_files(&self.repo_path, &self.merge_base)
-            .context("Failed to get changed files")?;
-
-        self.files.clear();
-        self.lines.clear();
-
-        for file in changed_files {
-            // Skip binary files
-            if git::is_binary_file(&self.repo_path, &file.path) {
-                self.lines.push(DiffLine::file_header(&file.path));
-                self.lines.push(DiffLine::new(
-                    LineSource::Base,
-                    "[binary file]".to_string(),
-                    ' ',
-                    None,
-                ));
-                continue;
-            }
-
-            // Get content at each state
-            let base_content = if self.merge_base.is_empty() {
-                None
-            } else {
-                git::get_file_at_ref(&self.repo_path, &file.path, &self.merge_base)
-                    .ok()
-                    .flatten()
-            };
-
-            let head_content = git::get_file_at_ref(&self.repo_path, &file.path, "HEAD")
-                .ok()
-                .flatten();
-
-            // Index content: use empty string as ref for staged content
-            let index_content = git::get_file_at_ref(&self.repo_path, &file.path, "")
-                .ok()
-                .flatten();
-
-            let working_content = git::get_working_tree_file(&self.repo_path, &file.path)
-                .ok()
-                .flatten();
-
-            // Compute the diff
-            let file_diff = compute_file_diff_v2(
-                &file.path,
-                base_content.as_deref(),
-                head_content.as_deref(),
-                index_content.as_deref(),
-                working_content.as_deref(),
-            );
-
-            // Add to flattened lines
-            for line in &file_diff.lines {
-                self.lines.push(line.clone());
-            }
-
-            // Add empty line between files
-            self.lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
-
-            self.files.push(file_diff);
-        }
-
-        // Ensure scroll offset is valid
-        self.clamp_scroll();
-
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(&self.repo_path, &self.base_branch, &cancel_flag)?;
+        self.apply_refresh_result(result);
         Ok(())
     }
 
