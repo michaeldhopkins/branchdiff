@@ -9,6 +9,9 @@ use ratatui::{
 use crate::app::{App, Selection};
 use crate::diff::{InlineSpan, LineSource};
 
+const SELECTION_BG_COLOR: Color = Color::Rgb(60, 60, 100);
+const PREFIX_CHAR_WIDTH: usize = 2; // prefix char + trailing space
+
 /// Get the selection range for a specific line (start_col, end_col)
 /// Returns None if the line is not selected
 fn get_line_selection_range(selection: &Option<Selection>, line_idx: usize) -> Option<(usize, usize)> {
@@ -55,7 +58,7 @@ fn apply_selection_to_span(
 
     let mut result = Vec::new();
     let base_style = span.style;
-    let selected_style = base_style.bg(Color::Rgb(60, 60, 100)); // Dark blue background
+    let selected_style = base_style.bg(SELECTION_BG_COLOR);
 
     // Before selection
     if text_start < sel_start {
@@ -329,8 +332,7 @@ fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Calculate available width for content (minus borders)
     let available_width = area.width.saturating_sub(2) as usize; // -2 for left and right borders
-    // Prefix width = line_num_width + 1 (space) + 2 (prefix char + space)
-    let prefix_width = if line_num_width > 0 { line_num_width + 1 } else { 0 } + 2;
+    let prefix_width = if line_num_width > 0 { line_num_width + 1 } else { 0 } + PREFIX_CHAR_WIDTH;
     let content_width = available_width.saturating_sub(prefix_width);
 
     // Set content layout info for selection coordinate mapping and wrapping calculation
