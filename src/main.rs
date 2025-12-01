@@ -169,7 +169,11 @@ fn run_app<B: Backend>(
         if event::poll(Duration::from_millis(10))? {
             let event = event::read()?;
             match handle_event(event) {
-                AppAction::Quit => return Ok(()),
+                AppAction::Quit => {
+                    if app.should_quit() {
+                        return Ok(());
+                    }
+                }
                 AppAction::ScrollUp(n) => app.scroll_up(n),
                 AppAction::ScrollDown(n) => app.scroll_down(n),
                 AppAction::PageUp => app.page_up(),
