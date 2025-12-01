@@ -35,7 +35,7 @@ branchdiff [path]
 | `Ctrl+u` / `PgUp` | Page up |
 | `g` / `Home` | Go to top |
 | `G` / `End` | Go to bottom |
-| `c` | Toggle context-only view |
+| `c` | Cycle view mode (context → changes → full) |
 | `r` | Refresh |
 | `y` | Copy selection |
 | `?` | Toggle help |
