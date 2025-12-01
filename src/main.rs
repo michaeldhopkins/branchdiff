@@ -191,7 +191,7 @@ fn run_app<B: Backend>(
                     }
                 }
                 AppAction::ToggleHelp => app.toggle_help(),
-                AppAction::ToggleContextOnly => app.toggle_context_only(),
+                AppAction::CycleViewMode => app.cycle_view_mode(),
                 AppAction::StartSelection(x, y) => app.start_selection(x, y),
                 AppAction::UpdateSelection(x, y) => app.update_selection(x, y),
                 AppAction::EndSelection => app.end_selection(),

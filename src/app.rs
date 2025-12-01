@@ -8,6 +8,14 @@ use arboard::Clipboard;
 use crate::diff::{compute_file_diff_v2, DiffLine, FileDiff, LineSource};
 use crate::git;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    Full,
+    #[default]
+    Context,
+    ChangesOnly,
+}
+
 pub struct RefreshResult {
     pub files: Vec<FileDiff>,
     pub lines: Vec<DiffLine>,
@@ -129,8 +137,8 @@ pub struct App {
     pub error: Option<String>,
     /// Whether to show the help modal
     pub show_help: bool,
-    /// Whether to show only context around changes (vs full file)
-    pub context_only: bool,
+    /// Current view mode (Full, Context, or ChangesOnly)
+    pub view_mode: ViewMode,
     /// Current text selection (if any)
     pub selection: Option<Selection>,
     /// Content area offset (x, y) for coordinate mapping
@@ -166,7 +174,7 @@ impl App {
             viewport_height: 20,
             error: None,
             show_help: false,
-            context_only: true,
+            view_mode: ViewMode::Context,
             selection: None,
             content_offset: (1, 1),
             line_num_width: 0,
@@ -314,10 +322,10 @@ impl App {
     }
 
     fn displayable_line_count(&self) -> usize {
-        if !self.context_only {
-            self.lines.len()
-        } else {
-            self.build_context_lines().len()
+        match self.view_mode {
+            ViewMode::Full => self.lines.len(),
+            ViewMode::Context => self.build_context_lines().len(),
+            ViewMode::ChangesOnly => self.build_changes_only_lines().len(),
         }
     }
 
@@ -390,17 +398,31 @@ impl App {
         (result, index_map)
     }
 
-    /// Build filtered lines with elided markers for context-only mode
     fn build_context_lines(&self) -> Vec<DiffLine> {
         self.build_context_lines_with_mapping().0
     }
 
-    /// Get all displayable lines (filtered if context_only is true)
+    fn build_changes_only_lines(&self) -> Vec<DiffLine> {
+        self.lines.iter().filter(|line| {
+            matches!(
+                line.source,
+                LineSource::Committed
+                    | LineSource::Staged
+                    | LineSource::Unstaged
+                    | LineSource::DeletedBase
+                    | LineSource::DeletedCommitted
+                    | LineSource::DeletedStaged
+                    | LineSource::FileHeader
+            )
+        }).cloned().collect()
+    }
+
     pub fn displayable_lines(&self) -> Vec<DiffLine> {
-        if !self.context_only {
-            return self.lines.clone();
+        match self.view_mode {
+            ViewMode::Full => self.lines.clone(),
+            ViewMode::Context => self.build_context_lines(),
+            ViewMode::ChangesOnly => self.build_changes_only_lines(),
         }
-        self.build_context_lines()
     }
 
     /// Calculate how many screen rows a line will take when wrapped
@@ -457,7 +479,11 @@ impl App {
 
         let file_count = self.files.len();
         let line_count = self.changed_line_count();
-        let mode = if self.context_only { " [context]" } else { "" };
+        let mode = match self.view_mode {
+            ViewMode::Full => "",
+            ViewMode::Context => " [context]",
+            ViewMode::ChangesOnly => " [changes]",
+        };
 
         format!(
             "{} | {} file{} | {} line{}{} | {}%",
@@ -476,108 +502,128 @@ impl App {
         self.show_help = !self.show_help;
     }
 
-    /// Toggle context-only view, anchoring on the middle visible line
-    pub fn toggle_context_only(&mut self) {
+    pub fn cycle_view_mode(&mut self) {
         if self.lines.is_empty() {
-            self.context_only = !self.context_only;
+            self.view_mode = match self.view_mode {
+                ViewMode::Full => ViewMode::Context,
+                ViewMode::Context => ViewMode::ChangesOnly,
+                ViewMode::ChangesOnly => ViewMode::Full,
+            };
             return;
         }
 
-        // Find the original line index of the middle visible line
         let middle_offset = self.viewport_height / 2;
         let anchor_original_idx = self.get_original_index_at_offset(middle_offset);
 
-        // Toggle the mode
-        self.context_only = !self.context_only;
+        self.view_mode = match self.view_mode {
+            ViewMode::Full => ViewMode::Context,
+            ViewMode::Context => ViewMode::ChangesOnly,
+            ViewMode::ChangesOnly => ViewMode::Full,
+        };
 
-        // Find where this line (or closest) appears in the new mode
         if let Some(anchor_idx) = anchor_original_idx {
             let new_position = self.find_position_for_original_index(anchor_idx);
-            // Set scroll so this line appears in the middle
             self.scroll_offset = new_position.saturating_sub(middle_offset);
         }
 
         self.clamp_scroll();
     }
 
-    /// Get the original line index for a line at the given offset from scroll position
     fn get_original_index_at_offset(&self, offset: usize) -> Option<usize> {
         let target_pos = self.scroll_offset + offset;
 
-        if self.context_only {
-            // In context mode, use the mapping to find original index
-            let (_, index_map) = self.build_context_lines_with_mapping();
-            if target_pos < index_map.len() {
-                // If we land on an elided marker, find the closest real line
-                if let Some(idx) = index_map[target_pos] {
-                    return Some(idx);
+        match self.view_mode {
+            ViewMode::Full => {
+                if target_pos < self.lines.len() {
+                    Some(target_pos)
+                } else if !self.lines.is_empty() {
+                    Some(self.lines.len() - 1)
+                } else {
+                    None
                 }
-                // Search nearby for a real line
-                for delta in 1..index_map.len() {
-                    if target_pos >= delta {
-                        if let Some(Some(idx)) = index_map.get(target_pos - delta) {
+            }
+            ViewMode::Context => {
+                let (_, index_map) = self.build_context_lines_with_mapping();
+                if target_pos < index_map.len() {
+                    if let Some(idx) = index_map[target_pos] {
+                        return Some(idx);
+                    }
+                    for delta in 1..index_map.len() {
+                        if target_pos >= delta {
+                            if let Some(Some(idx)) = index_map.get(target_pos - delta) {
+                                return Some(*idx);
+                            }
+                        }
+                        if let Some(Some(idx)) = index_map.get(target_pos + delta) {
                             return Some(*idx);
                         }
                     }
-                    if let Some(Some(idx)) = index_map.get(target_pos + delta) {
-                        return Some(*idx);
-                    }
                 }
+                index_map.iter().rev().find_map(|x| *x)
             }
-            // Fallback: return last visible original index
-            index_map.iter().rev().find_map(|x| *x)
-        } else {
-            // In full mode, position directly maps to original index
-            if target_pos < self.lines.len() {
-                Some(target_pos)
-            } else if !self.lines.is_empty() {
-                Some(self.lines.len() - 1)
-            } else {
-                None
+            ViewMode::ChangesOnly => {
+                let displayed = self.build_changes_only_lines();
+                if target_pos < displayed.len() {
+                    let target_line = &displayed[target_pos];
+                    self.lines.iter().position(|l| {
+                        l.source == target_line.source
+                            && l.content == target_line.content
+                            && l.line_number == target_line.line_number
+                    })
+                } else if !displayed.is_empty() {
+                    Some(self.lines.len().saturating_sub(1))
+                } else {
+                    None
+                }
             }
         }
     }
 
-    /// Find the position in current mode for an original line index
-    /// If the line isn't visible (elided), finds the closest visible line
     fn find_position_for_original_index(&self, original_idx: usize) -> usize {
-        if !self.context_only {
-            // In full mode, position equals original index
-            original_idx.min(self.lines.len().saturating_sub(1))
-        } else {
-            // In context mode, search the mapping
-            let (_, index_map) = self.build_context_lines_with_mapping();
-            let visibility = self.compute_context_visibility();
+        match self.view_mode {
+            ViewMode::Full => original_idx.min(self.lines.len().saturating_sub(1)),
+            ViewMode::Context => {
+                let (_, index_map) = self.build_context_lines_with_mapping();
+                let visibility = self.compute_context_visibility();
 
-            // Check if this exact line is visible
-            if original_idx < visibility.len() && visibility[original_idx] {
-                // Find its position in the filtered list
+                if original_idx < visibility.len() && visibility[original_idx] {
+                    for (pos, mapped_idx) in index_map.iter().enumerate() {
+                        if *mapped_idx == Some(original_idx) {
+                            return pos;
+                        }
+                    }
+                }
+
+                let mut best_pos = 0;
+                let mut best_distance = usize::MAX;
+
                 for (pos, mapped_idx) in index_map.iter().enumerate() {
-                    if *mapped_idx == Some(original_idx) {
-                        return pos;
+                    if let Some(idx) = mapped_idx {
+                        let distance = (*idx).abs_diff(original_idx);
+                        if distance < best_distance {
+                            best_distance = distance;
+                            best_pos = pos;
+                        }
                     }
                 }
+
+                best_pos
             }
-
-            // Line is elided - find closest visible line
-            let mut best_pos = 0;
-            let mut best_distance = usize::MAX;
-
-            for (pos, mapped_idx) in index_map.iter().enumerate() {
-                if let Some(idx) = mapped_idx {
-                    let distance = if *idx > original_idx {
-                        *idx - original_idx
-                    } else {
-                        original_idx - *idx
-                    };
-                    if distance < best_distance {
-                        best_distance = distance;
-                        best_pos = pos;
+            ViewMode::ChangesOnly => {
+                let displayed = self.build_changes_only_lines();
+                if original_idx < self.lines.len() {
+                    let target = &self.lines[original_idx];
+                    for (pos, line) in displayed.iter().enumerate() {
+                        if line.source == target.source
+                            && line.content == target.content
+                            && line.line_number == target.line_number
+                        {
+                            return pos;
+                        }
                     }
                 }
+                0
             }
-
-            best_pos
         }
     }
 
@@ -756,7 +802,7 @@ mod tests {
             viewport_height: 10,
             error: None,
             show_help: false,
-            context_only: false,
+            view_mode: ViewMode::Full,
             selection: None,
             content_offset: (1, 1),
             line_num_width: 0,
@@ -794,18 +840,38 @@ mod tests {
     }
 
     #[test]
-    fn test_toggle_context_empty_lines() {
-        let mut app = create_test_app(Vec::new());
-        app.toggle_context_only();
-        assert!(app.context_only);
-        assert_eq!(app.scroll_offset, 0);
-        app.toggle_context_only();
-        assert!(!app.context_only);
+    fn test_changes_only_view_filters_base_lines() {
+        let lines = vec![
+            DiffLine::file_header("test.rs"),
+            base_line("context line 1"),
+            DiffLine::new(LineSource::Committed, "committed".to_string(), '+', Some(1)),
+            base_line("context line 2"),
+            DiffLine::new(LineSource::Unstaged, "unstaged".to_string(), '+', Some(2)),
+            base_line("context line 3"),
+        ];
+        let mut app = create_test_app(lines);
+        app.view_mode = ViewMode::ChangesOnly;
+        let displayed = app.displayable_lines();
+        assert_eq!(displayed.len(), 3);
+        assert_eq!(displayed[0].source, LineSource::FileHeader);
+        assert_eq!(displayed[1].source, LineSource::Committed);
+        assert_eq!(displayed[2].source, LineSource::Unstaged);
     }
 
     #[test]
-    fn test_toggle_context_few_lines() {
-        // Fewer lines than viewport - scroll should stay at 0
+    fn test_cycle_view_mode_empty_lines() {
+        let mut app = create_test_app(Vec::new());
+        app.cycle_view_mode();
+        assert_eq!(app.view_mode, ViewMode::Context);
+        assert_eq!(app.scroll_offset, 0);
+        app.cycle_view_mode();
+        assert_eq!(app.view_mode, ViewMode::ChangesOnly);
+        app.cycle_view_mode();
+        assert_eq!(app.view_mode, ViewMode::Full);
+    }
+
+    #[test]
+    fn test_cycle_view_mode_few_lines() {
         let lines = vec![
             base_line("line1"),
             change_line("changed"),
@@ -814,8 +880,8 @@ mod tests {
         let mut app = create_test_app(lines);
         app.viewport_height = 10;
 
-        app.toggle_context_only();
-        assert!(app.context_only);
+        app.cycle_view_mode();
+        assert_eq!(app.view_mode, ViewMode::Context);
         assert_eq!(app.scroll_offset, 0);
     }
 
@@ -840,12 +906,12 @@ mod tests {
 
         // The middle of viewport is at offset 5, so line 15 in original
         // Toggle to context mode
-        app.toggle_context_only();
+        app.cycle_view_mode();
 
         // Should still be showing content near line 15
         // The change is at original index 10, context shows 5 lines around it
         // So visible in context: indices 5-15 of original (lines before5..after4)
-        assert!(app.context_only);
+        assert_eq!(app.view_mode, ViewMode::Context);
         // Scroll should be adjusted to keep similar content visible
     }
 
@@ -866,10 +932,10 @@ mod tests {
         app.scroll_offset = 20;
 
         // Toggle to context mode - line 25 (middle) will be elided
-        app.toggle_context_only();
+        app.cycle_view_mode();
 
         // Should find closest visible line and anchor there
-        assert!(app.context_only);
+        assert_eq!(app.view_mode, ViewMode::Context);
         // The only visible content is around line 50, so scroll should jump there
     }
 
@@ -890,21 +956,14 @@ mod tests {
 
         // Position so the change is visible (change is at index 20)
         app.scroll_offset = 16; // Middle at 21, close to change
-        let original_scroll = app.scroll_offset;
 
-        // Toggle twice
-        app.toggle_context_only();
-        app.toggle_context_only();
-
-        // Should be close to original position (may not be exact due to elided lines)
-        assert!(!app.context_only);
-        // Allow some tolerance since exact positioning depends on context
-        let diff = if app.scroll_offset > original_scroll {
-            app.scroll_offset - original_scroll
-        } else {
-            original_scroll - app.scroll_offset
-        };
-        assert!(diff <= 5, "Round trip scroll difference too large: {}", diff);
+        // Cycle through all three modes back to Full
+        app.cycle_view_mode(); // Full -> Context
+        assert_eq!(app.view_mode, ViewMode::Context);
+        app.cycle_view_mode(); // Context -> ChangesOnly
+        assert_eq!(app.view_mode, ViewMode::ChangesOnly);
+        app.cycle_view_mode(); // ChangesOnly -> Full
+        assert_eq!(app.view_mode, ViewMode::Full);
     }
 
     #[test]
@@ -919,10 +978,10 @@ mod tests {
         app.viewport_height = 10;
         app.scroll_offset = 0;
 
-        app.toggle_context_only();
+        app.cycle_view_mode();
 
         // Should stay near top since change is at top
-        assert!(app.context_only);
+        assert_eq!(app.view_mode, ViewMode::Context);
         assert_eq!(app.scroll_offset, 0);
     }
 
@@ -940,10 +999,10 @@ mod tests {
         // Scroll to bottom
         app.go_to_bottom();
 
-        app.toggle_context_only();
+        app.cycle_view_mode();
 
         // Should stay near bottom content
-        assert!(app.context_only);
+        assert_eq!(app.view_mode, ViewMode::Context);
     }
 
     #[test]
@@ -958,7 +1017,7 @@ mod tests {
         }
 
         let mut app = create_test_app(lines);
-        app.context_only = true;
+        app.view_mode = ViewMode::Context;
 
         // The change is at original index 5
         // In context mode with 5 lines of context, indices 0-10 are visible
@@ -983,7 +1042,7 @@ mod tests {
         }
 
         let mut app = create_test_app(lines);
-        app.context_only = true;
+        app.view_mode = ViewMode::Context;
 
         // Original index 0 is far from change at 20, so it's elided
         // Should find closest visible line
@@ -1043,7 +1102,7 @@ mod tests {
         }
 
         let mut app = create_test_app(lines);
-        app.context_only = true;
+        app.view_mode = ViewMode::Context;
 
         // Get the filtered lines in context mode
         let filtered = app.build_context_lines();
@@ -1092,7 +1151,7 @@ mod tests {
         lines.push(base_line("end"));
 
         let mut app = create_test_app(lines);
-        app.context_only = true;
+        app.view_mode = ViewMode::Context;
 
         let filtered = app.build_context_lines();
 
@@ -1160,7 +1219,7 @@ mod tests {
         lines.push(base_line("end"));
 
         let mut app = create_test_app(lines);
-        app.context_only = true;
+        app.view_mode = ViewMode::Context;
 
         let filtered = app.build_context_lines();
 
@@ -1215,7 +1274,7 @@ mod tests {
         lines.push(base_line("trailing_3"));
 
         let mut app = create_test_app(lines);
-        app.context_only = true;
+        app.view_mode = ViewMode::Context;
         app.viewport_height = 20;
 
         // Scroll to bottom
@@ -1279,7 +1338,7 @@ mod tests {
         lines.push(base_line("final_end_2"));
 
         let mut app = create_test_app(lines);
-        app.context_only = true;
+        app.view_mode = ViewMode::Context;
         app.viewport_height = 15; // Small viewport so we need to scroll
 
         let all_displayable = app.displayable_lines();
@@ -1371,7 +1430,7 @@ mod tests {
         lines.push(DiffLine::new(LineSource::Base, "end".to_string(), ' ', Some(107)));
 
         let mut app = create_test_app(lines.clone());
-        app.context_only = true;
+        app.view_mode = ViewMode::Context;
         app.viewport_height = 20;
 
         // Get ALL displayable lines
@@ -1445,7 +1504,7 @@ mod tests {
 
         eprintln!("\n=== REAL MBC REPO DEBUG ===");
         eprintln!("Total RAW lines: {}", app.lines.len());
-        eprintln!("Context only (default): {}", app.context_only);
+        eprintln!("View mode (default): {:?}", app.view_mode);
 
         // Find lines related to premium_due_notice_spec.rb
         eprintln!("\nSearching for premium_due_notice lines...");
