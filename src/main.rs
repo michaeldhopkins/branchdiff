@@ -78,7 +78,7 @@ fn main() -> Result<()> {
         .watch(&repo_root, notify::RecursiveMode::Recursive)?;
 
     // Setup refresh channel for background git operations
-    let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshResult>();
+    let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshOutcome>();
 
     // Main loop
     let result = run_app(
@@ -103,15 +103,25 @@ fn main() -> Result<()> {
     result
 }
 
+enum RefreshOutcome {
+    Success(RefreshResult),
+    Cancelled,
+}
+
 fn spawn_refresh(
     repo_path: PathBuf,
     base_branch: String,
-    refresh_tx: mpsc::Sender<RefreshResult>,
+    refresh_tx: mpsc::Sender<RefreshOutcome>,
     cancel_flag: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
-        if let Ok(result) = compute_refresh(&repo_path, &base_branch, &cancel_flag) {
-            let _ = refresh_tx.send(result);
+        match compute_refresh(&repo_path, &base_branch, &cancel_flag) {
+            Ok(result) => {
+                let _ = refresh_tx.send(RefreshOutcome::Success(result));
+            }
+            Err(_) => {
+                let _ = refresh_tx.send(RefreshOutcome::Cancelled);
+            }
         }
     });
 }
@@ -141,8 +151,8 @@ fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     file_events: mpsc::Receiver<Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>>,
-    refresh_tx: mpsc::Sender<RefreshResult>,
-    refresh_rx: mpsc::Receiver<RefreshResult>,
+    refresh_tx: mpsc::Sender<RefreshOutcome>,
+    refresh_rx: mpsc::Receiver<RefreshOutcome>,
     repo_root: PathBuf,
     auto_fetch: bool,
 ) -> Result<()> {
@@ -193,9 +203,12 @@ fn run_app<B: Backend>(
         }
 
         // 2. Check for completed refresh (non-blocking)
-        if let Ok(result) = refresh_rx.try_recv() {
-            app.apply_refresh_result(result);
+        if let Ok(outcome) = refresh_rx.try_recv() {
             refresh_in_progress = false;
+
+            if let RefreshOutcome::Success(result) = outcome {
+                app.apply_refresh_result(result);
+            }
 
             if refresh_pending {
                 refresh_pending = false;
@@ -218,7 +231,9 @@ fn run_app<B: Backend>(
                 }
                 let path_str = e.path.to_string_lossy();
                 if path_str.contains(".git/") {
-                    path_str.ends_with(".git/index") || path_str.ends_with(".git/HEAD")
+                    path_str.ends_with(".git/index")
+                        || path_str.ends_with(".git/HEAD")
+                        || path_str.contains(".git/refs/")
                 } else {
                     true
                 }
