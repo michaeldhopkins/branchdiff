@@ -299,7 +299,20 @@ impl App {
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
-    /// Get the count of displayable lines (respects context_only mode)
+    fn changed_line_count(&self) -> usize {
+        self.lines.iter().filter(|line| {
+            matches!(
+                line.source,
+                LineSource::Committed
+                    | LineSource::Staged
+                    | LineSource::Unstaged
+                    | LineSource::DeletedBase
+                    | LineSource::DeletedCommitted
+                    | LineSource::DeletedStaged
+            )
+        }).count()
+    }
+
     fn displayable_line_count(&self) -> usize {
         if !self.context_only {
             self.lines.len()
@@ -436,7 +449,6 @@ impl App {
         }
     }
 
-    /// Get status text
     pub fn status_text(&self) -> String {
         let branch_info = match &self.current_branch {
             Some(b) => format!("{} vs {}", b, self.base_branch),
@@ -444,7 +456,7 @@ impl App {
         };
 
         let file_count = self.files.len();
-        let line_count = self.displayable_line_count();
+        let line_count = self.changed_line_count();
         let mode = if self.context_only { " [context]" } else { "" };
 
         format!(
@@ -761,6 +773,24 @@ mod tests {
     /// Helper to create an unstaged (change) line
     fn change_line(content: &str) -> DiffLine {
         DiffLine::new(LineSource::Unstaged, content.to_string(), '+', None)
+    }
+
+    #[test]
+    fn test_changed_line_count() {
+        let lines = vec![
+            DiffLine::file_header("test.rs"),
+            base_line("context line 1"),
+            DiffLine::new(LineSource::Committed, "committed".to_string(), '+', Some(1)),
+            DiffLine::new(LineSource::Staged, "staged".to_string(), '+', Some(2)),
+            DiffLine::new(LineSource::Unstaged, "unstaged".to_string(), '+', Some(3)),
+            base_line("context line 2"),
+            DiffLine::new(LineSource::DeletedBase, "deleted from base".to_string(), '-', None),
+            DiffLine::new(LineSource::DeletedCommitted, "deleted committed".to_string(), '-', None),
+            DiffLine::new(LineSource::DeletedStaged, "deleted staged".to_string(), '-', None),
+            base_line("context line 3"),
+        ];
+        let app = create_test_app(lines);
+        assert_eq!(app.changed_line_count(), 6);
     }
 
     #[test]
