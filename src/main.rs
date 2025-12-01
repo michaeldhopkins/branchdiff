@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -25,6 +25,8 @@ use ratatui::prelude::*;
 use app::{compute_refresh, App, RefreshResult};
 use input::{handle_event, AppAction};
 
+const FETCH_INTERVAL: Duration = Duration::from_secs(30);
+
 #[derive(Parser)]
 #[command(name = "branchdiff")]
 #[command(about = "Terminal UI showing unified diff of current branch vs main/master")]
@@ -33,6 +35,15 @@ struct Cli {
     /// Path to git repository (default: current directory)
     #[arg(default_value = ".")]
     path: PathBuf,
+
+    /// Disable automatic fetching of base branch
+    #[arg(long)]
+    no_auto_fetch: bool,
+}
+
+pub struct FetchResult {
+    pub has_conflicts: bool,
+    pub new_merge_base: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -77,6 +88,7 @@ fn main() -> Result<()> {
         refresh_tx,
         refresh_rx,
         repo_root,
+        !cli.no_auto_fetch,
     );
 
     // Restore terminal
@@ -104,6 +116,27 @@ fn spawn_refresh(
     });
 }
 
+fn spawn_fetch(
+    repo_path: PathBuf,
+    base_branch: String,
+    fetch_tx: mpsc::Sender<FetchResult>,
+) {
+    thread::spawn(move || {
+        if git::fetch_base_branch(&repo_path, &base_branch).is_ok() {
+            let has_conflicts = git::has_merge_conflicts(&repo_path, &base_branch)
+                .unwrap_or(false);
+
+            let remote_ref = format!("origin/{}", base_branch);
+            let new_merge_base = git::get_merge_base(&repo_path, &remote_ref).ok();
+
+            let _ = fetch_tx.send(FetchResult {
+                has_conflicts,
+                new_merge_base,
+            });
+        }
+    });
+}
+
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -111,10 +144,15 @@ fn run_app<B: Backend>(
     refresh_tx: mpsc::Sender<RefreshResult>,
     refresh_rx: mpsc::Receiver<RefreshResult>,
     repo_root: PathBuf,
+    auto_fetch: bool,
 ) -> Result<()> {
     let mut refresh_in_progress = false;
     let mut refresh_pending = false;
     let cancel_flag = Arc::new(AtomicBool::new(false));
+
+    let (fetch_tx, fetch_rx) = mpsc::channel::<FetchResult>();
+    let mut last_fetch = Instant::now();
+    let mut fetch_in_progress = false;
 
     loop {
         // 1. ALWAYS check for input FIRST with short timeout for responsiveness
@@ -180,10 +218,8 @@ fn run_app<B: Backend>(
                 }
                 let path_str = e.path.to_string_lossy();
                 if path_str.contains(".git/") {
-                    // Only refresh for index/HEAD changes, ignore other git internals
                     path_str.ends_with(".git/index") || path_str.ends_with(".git/HEAD")
                 } else {
-                    // Refresh for any working tree changes
                     true
                 }
             });
@@ -203,7 +239,45 @@ fn run_app<B: Backend>(
             }
         }
 
-        // 4. Render
+        // 4. Check for completed fetch results
+        if let Ok(result) = fetch_rx.try_recv() {
+            fetch_in_progress = false;
+            if result.has_conflicts {
+                app.conflict_warning = Some("Merge conflicts detected with remote".to_string());
+            } else {
+                app.conflict_warning = None;
+            }
+
+            if let Some(new_base) = result.new_merge_base {
+                if new_base != app.merge_base {
+                    app.merge_base = new_base;
+                    if !refresh_in_progress {
+                        refresh_in_progress = true;
+                        spawn_refresh(
+                            repo_root.clone(),
+                            app.base_branch.clone(),
+                            refresh_tx.clone(),
+                            cancel_flag.clone(),
+                        );
+                    } else {
+                        refresh_pending = true;
+                    }
+                }
+            }
+        }
+
+        // 5. Trigger periodic fetch if enabled
+        if auto_fetch && !fetch_in_progress && last_fetch.elapsed() >= FETCH_INTERVAL {
+            fetch_in_progress = true;
+            last_fetch = Instant::now();
+            spawn_fetch(
+                repo_root.clone(),
+                app.base_branch.clone(),
+                fetch_tx.clone(),
+            );
+        }
+
+        // 6. Render
         terminal.draw(|f| ui::draw(f, app))?;
     }
 }
