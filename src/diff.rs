@@ -2682,4 +2682,44 @@ end"##;
         // CRITICAL: All 10 lines should be present
         assert_eq!(lines.len(), 10, "All 10 lines should be in the diff output");
     }
+
+    #[test]
+    fn test_staging_changes_line_source_from_unstaged_to_staged() {
+        let base = "line1\nline2";
+        let modified = "line1\nline2\nline3";
+
+        // Before staging: change is only in working tree
+        let diff_before = compute_file_diff_v2(
+            "test.txt",
+            Some(base),
+            Some(base),
+            Some(base),      // index same as base
+            Some(modified),  // working has the change
+        );
+
+        let unstaged_lines: Vec<_> = diff_before.lines.iter()
+            .filter(|l| l.source == LineSource::Unstaged && l.content == "line3")
+            .collect();
+        assert_eq!(unstaged_lines.len(), 1, "line3 should be Unstaged before staging");
+
+        // After staging: change is in index and working tree
+        let diff_after = compute_file_diff_v2(
+            "test.txt",
+            Some(base),
+            Some(base),
+            Some(modified),  // index now has the change
+            Some(modified),  // working same as index
+        );
+
+        let staged_lines: Vec<_> = diff_after.lines.iter()
+            .filter(|l| l.source == LineSource::Staged && l.content == "line3")
+            .collect();
+        assert_eq!(staged_lines.len(), 1, "line3 should be Staged after staging");
+
+        // Verify line3 is NOT unstaged after staging
+        let still_unstaged: Vec<_> = diff_after.lines.iter()
+            .filter(|l| l.source == LineSource::Unstaged && l.content == "line3")
+            .collect();
+        assert_eq!(still_unstaged.len(), 0, "line3 should NOT be Unstaged after staging");
+    }
 }

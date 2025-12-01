@@ -175,8 +175,17 @@ fn run_app<B: Backend>(
         // 3. Check for file change events (trigger new refresh if idle)
         if let Ok(Ok(events)) = file_events.try_recv() {
             let should_refresh = events.iter().any(|e| {
-                e.kind == DebouncedEventKind::Any
-                    && !e.path.to_string_lossy().contains(".git/index.lock")
+                if e.kind != DebouncedEventKind::Any {
+                    return false;
+                }
+                let path_str = e.path.to_string_lossy();
+                if path_str.contains(".git/") {
+                    // Only refresh for index/HEAD changes, ignore other git internals
+                    path_str.ends_with(".git/index") || path_str.ends_with(".git/HEAD")
+                } else {
+                    // Refresh for any working tree changes
+                    true
+                }
             });
             if should_refresh {
                 if refresh_in_progress {
