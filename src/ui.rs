@@ -542,7 +542,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let status = app.status_text();
 
     // Build help text
-    let help = " q:quit  j/k:scroll  g/G:top/bottom  r:refresh ";
+    let help = " q:quit  j/k:scroll  g/G:top/bottom  ?:help ";
 
     // Calculate available width
     let width = area.width as usize;
