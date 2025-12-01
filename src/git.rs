@@ -111,44 +111,20 @@ pub fn get_working_tree_file(repo_path: &Path, file_path: &str) -> Result<Option
     }
 }
 
-/// File status from git
-#[derive(Debug, Clone, PartialEq)]
-pub enum FileStatus {
-    Added,
-    Modified,
-    Deleted,
-    Renamed(String), // Contains the old path
-    Copied(String),  // Contains the source path
-    Untracked,
-}
-
 /// A file that has changes
 #[derive(Debug, Clone)]
 pub struct ChangedFile {
     pub path: String,
-    pub status: FileStatus,
-    /// Whether changes are staged
-    pub staged: bool,
-    /// Whether there are unstaged changes
-    pub unstaged: bool,
 }
 
 /// Get all files that have changes compared to merge-base, HEAD, index, or working tree
 pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<ChangedFile>> {
-    let mut files: std::collections::HashMap<String, ChangedFile> = std::collections::HashMap::new();
+    let mut files: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // 1. Get committed changes (merge-base to HEAD)
     let committed = get_diff_files(repo_path, merge_base, "HEAD")?;
-    for (path, status) in committed {
-        files.insert(
-            path.clone(),
-            ChangedFile {
-                path,
-                status,
-                staged: false,
-                unstaged: false,
-            },
-        );
+    for path in committed {
+        files.insert(path);
     }
 
     // 2. Get staged changes (HEAD to index) and unstaged changes (index to working tree)
@@ -165,50 +141,30 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
                 continue;
             }
 
-            let index_status = line.chars().next().unwrap_or(' ');
-            let worktree_status = line.chars().nth(1).unwrap_or(' ');
             let path = line[3..].to_string();
 
             // Handle renames which have "old -> new" format
-            let (path, _old_path) = if path.contains(" -> ") {
+            let path = if path.contains(" -> ") {
                 let parts: Vec<&str> = path.split(" -> ").collect();
-                (parts[1].to_string(), Some(parts[0].to_string()))
+                parts[1].to_string()
             } else {
-                (path, None)
+                path
             };
 
-            let staged = index_status != ' ' && index_status != '?';
-            let unstaged = worktree_status != ' ' && worktree_status != '?';
-
-            let status = match (index_status, worktree_status) {
-                ('?', '?') => FileStatus::Untracked,
-                ('A', _) | (_, 'A') => FileStatus::Added,
-                ('D', _) | (_, 'D') => FileStatus::Deleted,
-                _ => FileStatus::Modified,
-            };
-
-            files
-                .entry(path.clone())
-                .and_modify(|f| {
-                    f.staged = f.staged || staged;
-                    f.unstaged = f.unstaged || unstaged;
-                })
-                .or_insert(ChangedFile {
-                    path,
-                    status,
-                    staged,
-                    unstaged,
-                });
+            files.insert(path);
         }
     }
 
-    let mut result: Vec<ChangedFile> = files.into_values().collect();
+    let mut result: Vec<ChangedFile> = files
+        .into_iter()
+        .map(|path| ChangedFile { path })
+        .collect();
     result.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(result)
 }
 
 /// Get files changed between two refs
-fn get_diff_files(repo_path: &Path, from: &str, to: &str) -> Result<Vec<(String, FileStatus)>> {
+fn get_diff_files(repo_path: &Path, from: &str, to: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
         .args(["diff", "--name-status", from, to])
         .current_dir(repo_path)
@@ -231,19 +187,8 @@ fn get_diff_files(repo_path: &Path, from: &str, to: &str) -> Result<Vec<(String,
             continue;
         }
 
-        let status_char = parts[0].chars().next().unwrap_or('M');
         let path = parts.last().unwrap().to_string();
-
-        let status = match status_char {
-            'A' => FileStatus::Added,
-            'D' => FileStatus::Deleted,
-            'M' => FileStatus::Modified,
-            'R' => FileStatus::Renamed(parts.get(1).unwrap_or(&"").to_string()),
-            'C' => FileStatus::Copied(parts.get(1).unwrap_or(&"").to_string()),
-            _ => FileStatus::Modified,
-        };
-
-        files.push((path, status));
+        files.push(path);
     }
 
     Ok(files)
