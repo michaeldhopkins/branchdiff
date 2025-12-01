@@ -497,9 +497,17 @@ impl App {
         )
     }
 
-    /// Toggle help modal visibility
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+    }
+
+    pub fn should_quit(&mut self) -> bool {
+        if self.show_help {
+            self.show_help = false;
+            false
+        } else {
+            true
+        }
     }
 
     pub fn cycle_view_mode(&mut self) {
@@ -856,6 +864,19 @@ mod tests {
         assert_eq!(displayed[0].source, LineSource::FileHeader);
         assert_eq!(displayed[1].source, LineSource::Committed);
         assert_eq!(displayed[2].source, LineSource::Unstaged);
+    }
+
+    #[test]
+    fn test_should_quit_dismisses_help_first() {
+        let mut app = create_test_app(Vec::new());
+        assert!(!app.show_help);
+        assert!(app.should_quit());
+
+        app.show_help = true;
+        assert!(!app.should_quit());
+        assert!(!app.show_help);
+
+        assert!(app.should_quit());
     }
 
     #[test]
