@@ -39,7 +39,7 @@ branchdiff [path]
 | `r` | Refresh |
 | `y` | Copy selection |
 | `?` | Toggle help |
-| `q` / `Esc` | Quit |
+| `q` / `Esc` / `Ctrl+c` | Quit |
 
 ## License
 
