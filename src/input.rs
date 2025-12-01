@@ -21,8 +21,8 @@ pub enum AppAction {
     Refresh,
     /// Toggle help modal
     ToggleHelp,
-    /// Toggle context-only view
-    ToggleContextOnly,
+    /// Cycle view mode (Full -> Context -> ChangesOnly)
+    CycleViewMode,
     /// Start text selection at coordinates
     StartSelection(u16, u16),
     /// Update selection during drag
@@ -78,8 +78,8 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         // Help
         (KeyCode::Char('?'), _) => AppAction::ToggleHelp,
 
-        // Toggle context-only view
-        (KeyCode::Char('c'), KeyModifiers::NONE) => AppAction::ToggleContextOnly,
+        // Cycle view mode
+        (KeyCode::Char('c'), KeyModifiers::NONE) => AppAction::CycleViewMode,
 
         // Copy selection (Ctrl+C when not quitting, or 'y' like vim yank)
         (KeyCode::Char('y'), KeyModifiers::NONE) => AppAction::Copy,
@@ -283,11 +283,10 @@ mod tests {
         assert_eq!(handle_event(event), AppAction::Copy);
     }
 
-    // Context-only toggle test
     #[test]
-    fn test_toggle_context_only_with_c() {
+    fn test_cycle_view_mode_with_c() {
         let event = key_event(KeyCode::Char('c'), KeyModifiers::NONE);
-        assert_eq!(handle_event(event), AppAction::ToggleContextOnly);
+        assert_eq!(handle_event(event), AppAction::CycleViewMode);
     }
 
     // Unknown input test
