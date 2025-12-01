@@ -135,6 +135,8 @@ pub struct App {
     pub line_num_width: usize,
     /// Available width for content (used for wrapping calculation)
     pub content_width: usize,
+    /// Warning message about merge conflicts (if any)
+    pub conflict_warning: Option<String>,
 }
 
 impl App {
@@ -157,14 +159,15 @@ impl App {
             files: Vec::new(),
             lines: Vec::new(),
             scroll_offset: 0,
-            viewport_height: 20, // Default, will be updated during render
+            viewport_height: 20,
             error: None,
             show_help: false,
-            context_only: true, // Default to context-only view
+            context_only: true,
             selection: None,
-            content_offset: (1, 1), // Default border offset
+            content_offset: (1, 1),
             line_num_width: 0,
-            content_width: 80, // Default, will be updated during render
+            content_width: 80,
+            conflict_warning: None,
         };
 
         app.refresh()?;
@@ -740,7 +743,8 @@ mod tests {
             selection: None,
             content_offset: (1, 1),
             line_num_width: 0,
-            content_width: 80,  // Default test width
+            content_width: 80,
+            conflict_warning: None,
         }
     }
 
@@ -1561,6 +1565,42 @@ mod tests {
         assert_eq!(app.lines[0].content, "new_file.txt");
         assert_eq!(app.lines[1].content, "new line 1");
         assert_eq!(app.lines[2].content, "new line 2");
+    }
+
+    #[test]
+    fn test_lines_appended_to_end_of_file_show_as_unstaged() {
+        use crate::diff::compute_file_diff_v2;
+
+        let base = "line1\nline2\nline3\n";
+        let working = "line1\nline2\nline3\nline4\nline5\n";
+
+        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+
+        let unstaged: Vec<_> = diff.lines.iter()
+            .filter(|l| matches!(l.source, LineSource::Unstaged))
+            .collect();
+
+        assert_eq!(unstaged.len(), 2);
+        assert_eq!(unstaged[0].content, "line4");
+        assert_eq!(unstaged[1].content, "line5");
+    }
+
+    #[test]
+    fn test_middle_insertion_plus_appends_at_end() {
+        use crate::diff::compute_file_diff_v2;
+
+        let base = "line1\nline2\nline3\nline4\nline5\n";
+        let working = "line1\nINSERTED\nline2\nline3\nline4\nline5\nAPPEND1\nAPPEND2\n";
+
+        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+
+        let unstaged: Vec<_> = diff.lines.iter()
+            .filter(|l| matches!(l.source, LineSource::Unstaged))
+            .collect();
+
+        assert!(unstaged.iter().any(|l| l.content == "INSERTED"));
+        assert!(unstaged.iter().any(|l| l.content == "APPEND1"));
+        assert!(unstaged.iter().any(|l| l.content == "APPEND2"));
     }
 
     #[test]

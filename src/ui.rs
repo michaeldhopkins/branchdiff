@@ -288,29 +288,48 @@ pub fn coalesce_spans(spans: &[InlineSpan]) -> Vec<InlineSpan> {
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
-    // Layout: main content area + status bar
+    let has_warning = app.conflict_warning.is_some();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),    // Main diff view
-            Constraint::Length(1), // Status bar
-        ])
+        .constraints(if has_warning {
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ]
+        } else {
+            vec![
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ]
+        })
         .split(size);
 
-    // Update viewport height in app
-    let content_height = chunks[0].height.saturating_sub(2) as usize; // -2 for borders
+    let (warning_area, diff_area, status_area) = if has_warning {
+        (Some(chunks[0]), chunks[1], chunks[2])
+    } else {
+        (None, chunks[0], chunks[1])
+    };
+
+    if let (Some(area), Some(warning)) = (warning_area, &app.conflict_warning) {
+        draw_warning_banner(frame, warning, area);
+    }
+
+    let content_height = diff_area.height.saturating_sub(2) as usize;
     app.set_viewport_height(content_height);
 
-    // Draw main diff view
-    draw_diff_view(frame, app, chunks[0]);
+    draw_diff_view(frame, app, diff_area);
+    draw_status_bar(frame, app, status_area);
 
-    // Draw status bar
-    draw_status_bar(frame, app, chunks[1]);
-
-    // Draw help modal if active
     if app.show_help {
         draw_help_modal(frame, size);
     }
+}
+
+fn draw_warning_banner(frame: &mut Frame, message: &str, area: Rect) {
+    let warning = Paragraph::new(format!(" ⚠ {} ", message))
+        .style(Style::default().fg(Color::Black).bg(Color::Yellow));
+    frame.render_widget(warning, area);
 }
 
 /// Draw the diff content

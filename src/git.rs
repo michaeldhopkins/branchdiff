@@ -211,6 +211,46 @@ pub fn is_binary_file(repo_path: &Path, file_path: &str) -> bool {
     }
 }
 
+pub fn fetch_base_branch(repo_path: &Path, base_branch: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["fetch", "origin", base_branch])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to run git fetch")?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git fetch failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(())
+}
+
+pub fn has_merge_conflicts(repo_path: &Path, base_branch: &str) -> Result<bool> {
+    let remote_ref = format!("origin/{}", base_branch);
+
+    let remote_exists = Command::new("git")
+        .args(["rev-parse", "--verify", &remote_ref])
+        .current_dir(repo_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !remote_exists {
+        return Ok(false);
+    }
+
+    let output = Command::new("git")
+        .args(["merge-tree", "--write-tree", &remote_ref, "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to run git merge-tree")?;
+
+    Ok(!output.status.success())
+}
+
 /// Get the current branch name
 pub fn get_current_branch(repo_path: &Path) -> Result<Option<String>> {
     let output = Command::new("git")
@@ -225,9 +265,113 @@ pub fn get_current_branch(repo_path: &Path) -> Result<Option<String>> {
 
     let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if branch == "HEAD" {
-        // Detached HEAD state
         Ok(None)
     } else {
         Ok(Some(branch))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::process::Command;
+
+    fn git_cmd(dir: &Path, args: &[&str]) {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git command failed");
+    }
+
+    fn create_test_repo() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path();
+
+        git_cmd(path, &["init"]);
+        git_cmd(path, &["config", "user.email", "test@test.com"]);
+        git_cmd(path, &["config", "user.name", "Test"]);
+
+        fs::write(path.join("file.txt"), "initial\n").unwrap();
+        git_cmd(path, &["add", "."]);
+        git_cmd(path, &["commit", "-m", "initial"]);
+        git_cmd(path, &["branch", "-M", "main"]);
+
+        temp
+    }
+
+    fn create_repo_with_origin() -> (tempfile::TempDir, tempfile::TempDir) {
+        let origin = create_test_repo();
+        let clone_dir = tempfile::tempdir().unwrap();
+
+        Command::new("git")
+            .args(["clone", origin.path().to_str().unwrap(), "."])
+            .current_dir(clone_dir.path())
+            .output()
+            .expect("clone failed");
+
+        (origin, clone_dir)
+    }
+
+    #[test]
+    fn test_fetch_base_branch_no_remote() {
+        let temp = create_test_repo();
+        let result = fetch_base_branch(temp.path(), "main");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fetch_base_branch_with_remote() {
+        let (origin, clone) = create_repo_with_origin();
+
+        fs::write(origin.path().join("file.txt"), "updated\n").unwrap();
+        git_cmd(origin.path(), &["add", "."]);
+        git_cmd(origin.path(), &["commit", "-m", "update"]);
+
+        let result = fetch_base_branch(clone.path(), "main");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_has_merge_conflicts_no_remote() {
+        let temp = create_test_repo();
+        let result = has_merge_conflicts(temp.path(), "main");
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_has_merge_conflicts_clean() {
+        let (origin, clone) = create_repo_with_origin();
+
+        fs::write(origin.path().join("other.txt"), "new file\n").unwrap();
+        git_cmd(origin.path(), &["add", "."]);
+        git_cmd(origin.path(), &["commit", "-m", "add other"]);
+
+        fetch_base_branch(clone.path(), "main").unwrap();
+
+        let result = has_merge_conflicts(clone.path(), "main");
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_has_merge_conflicts_with_conflict() {
+        let (origin, clone) = create_repo_with_origin();
+
+        fs::write(origin.path().join("file.txt"), "origin change\n").unwrap();
+        git_cmd(origin.path(), &["add", "."]);
+        git_cmd(origin.path(), &["commit", "-m", "origin update"]);
+
+        fs::write(clone.path().join("file.txt"), "local change\n").unwrap();
+        git_cmd(clone.path(), &["add", "."]);
+        git_cmd(clone.path(), &["commit", "-m", "local update"]);
+
+        fetch_base_branch(clone.path(), "main").unwrap();
+
+        let result = has_merge_conflicts(clone.path(), "main");
+        assert!(result.is_ok());
+        assert!(result.unwrap());
     }
 }
