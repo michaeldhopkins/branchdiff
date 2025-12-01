@@ -1,10 +1,95 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use arboard::Clipboard;
 
 use crate::diff::{compute_file_diff_v2, DiffLine, FileDiff, LineSource};
 use crate::git;
+
+pub struct RefreshResult {
+    pub files: Vec<FileDiff>,
+    pub lines: Vec<DiffLine>,
+    pub merge_base: String,
+}
+
+pub fn compute_refresh(
+    repo_path: &PathBuf,
+    base_branch: &str,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Result<RefreshResult> {
+    let merge_base = git::get_merge_base(repo_path, base_branch).unwrap_or_default();
+
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Err(anyhow::anyhow!("refresh cancelled"));
+    }
+
+    let changed_files = git::get_all_changed_files(repo_path, &merge_base)
+        .context("Failed to get changed files")?;
+
+    let mut files = Vec::new();
+    let mut lines = Vec::new();
+
+    for file in changed_files {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Err(anyhow::anyhow!("refresh cancelled"));
+        }
+
+        if git::is_binary_file(repo_path, &file.path) {
+            lines.push(DiffLine::file_header(&file.path));
+            lines.push(DiffLine::new(
+                LineSource::Base,
+                "[binary file]".to_string(),
+                ' ',
+                None,
+            ));
+            continue;
+        }
+
+        let base_content = if merge_base.is_empty() {
+            None
+        } else {
+            git::get_file_at_ref(repo_path, &file.path, &merge_base)
+                .ok()
+                .flatten()
+        };
+
+        let head_content = git::get_file_at_ref(repo_path, &file.path, "HEAD")
+            .ok()
+            .flatten();
+
+        let index_content = git::get_file_at_ref(repo_path, &file.path, "")
+            .ok()
+            .flatten();
+
+        let working_content = git::get_working_tree_file(repo_path, &file.path)
+            .ok()
+            .flatten();
+
+        let file_diff = compute_file_diff_v2(
+            &file.path,
+            base_content.as_deref(),
+            head_content.as_deref(),
+            index_content.as_deref(),
+            working_content.as_deref(),
+        );
+
+        for line in &file_diff.lines {
+            lines.push(line.clone());
+        }
+
+        lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
+
+        files.push(file_diff);
+    }
+
+    Ok(RefreshResult {
+        files,
+        lines,
+        merge_base,
+    })
+}
 
 /// Represents a position in the diff view (row, column)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +248,14 @@ impl App {
         self.clamp_scroll();
 
         Ok(())
+    }
+
+    pub fn apply_refresh_result(&mut self, result: RefreshResult) {
+        self.error = None;
+        self.merge_base = result.merge_base;
+        self.files = result.files;
+        self.lines = result.lines;
+        self.clamp_scroll();
     }
 
     /// Scroll up by n lines
@@ -696,46 +789,6 @@ impl App {
         }
     }
 
-    /// Check if a line is within the current selection
-    pub fn is_line_selected(&self, line_idx: usize) -> bool {
-        if let Some(ref sel) = self.selection {
-            let (start_row, end_row) = if sel.start.row <= sel.end.row {
-                (sel.start.row, sel.end.row)
-            } else {
-                (sel.end.row, sel.start.row)
-            };
-            line_idx >= start_row && line_idx <= end_row
-        } else {
-            false
-        }
-    }
-
-    /// Get selection range for a specific line (returns column range if selected)
-    pub fn get_line_selection_range(&self, line_idx: usize) -> Option<(usize, usize)> {
-        let sel = self.selection.as_ref()?;
-
-        let (start, end) = if sel.start.row < sel.end.row
-            || (sel.start.row == sel.end.row && sel.start.col <= sel.end.col)
-        {
-            (sel.start, sel.end)
-        } else {
-            (sel.end, sel.start)
-        };
-
-        if line_idx < start.row || line_idx > end.row {
-            return None;
-        }
-
-        if start.row == end.row {
-            Some((start.col, end.col))
-        } else if line_idx == start.row {
-            Some((start.col, usize::MAX))
-        } else if line_idx == end.row {
-            Some((0, end.col))
-        } else {
-            Some((0, usize::MAX))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1494,5 +1547,158 @@ mod tests {
         }
 
         eprintln!("\n=== END REAL MBC REPO DEBUG ===");
+    }
+
+    #[test]
+    fn test_compute_refresh_returns_valid_result() {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().to_path_buf();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to init git repo");
+
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to set git email");
+
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to set git name");
+
+        std::fs::write(repo_path.join("test.txt"), "initial content\n").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to add files");
+
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to commit");
+
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to rename branch");
+
+        std::fs::write(repo_path.join("test.txt"), "modified content\n").unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(&repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok(), "compute_refresh should succeed");
+        let refresh_result = result.unwrap();
+
+        assert!(!refresh_result.lines.is_empty(), "should have some diff lines");
+        assert!(
+            refresh_result.lines.iter().any(|l| l.content.contains("modified")),
+            "should contain the modified content"
+        );
+    }
+
+    #[test]
+    fn test_refresh_result_can_be_applied_to_app() {
+        let mut app = create_test_app(vec![base_line("old content")]);
+
+        let new_lines = vec![
+            DiffLine::file_header("new_file.txt"),
+            base_line("new line 1"),
+            change_line("new line 2"),
+        ];
+
+        let result = RefreshResult {
+            files: vec![],
+            lines: new_lines.clone(),
+            merge_base: "newbase123".to_string(),
+        };
+
+        app.apply_refresh_result(result);
+
+        assert_eq!(app.merge_base, "newbase123");
+        assert_eq!(app.lines.len(), 3);
+        assert_eq!(app.lines[0].content, "new_file.txt");
+        assert_eq!(app.lines[1].content, "new line 1");
+        assert_eq!(app.lines[2].content, "new line 2");
+    }
+
+    #[test]
+    fn test_refresh_channel_communication() {
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+        use tempfile::TempDir;
+        use std::process::Command;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path().to_path_buf();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to init git repo");
+
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to set git email");
+
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to set git name");
+
+        std::fs::write(repo_path.join("file.txt"), "content\n").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to add files");
+
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to commit");
+
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("failed to rename branch");
+
+        let (tx, rx) = mpsc::channel::<RefreshResult>();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let repo_clone = repo_path.clone();
+        let cancel_clone = cancel_flag.clone();
+
+        thread::spawn(move || {
+            if let Ok(result) = compute_refresh(&repo_clone, "main", &cancel_clone) {
+                let _ = tx.send(result);
+            }
+        });
+
+        let result = rx.recv_timeout(Duration::from_secs(5));
+        assert!(result.is_ok(), "should receive result within timeout");
+
+        let refresh_result = result.unwrap();
+        assert!(refresh_result.lines.is_empty() || !refresh_result.merge_base.is_empty());
     }
 }

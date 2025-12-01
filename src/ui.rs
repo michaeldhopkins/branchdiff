@@ -481,7 +481,6 @@ fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                         // Need to split
                         let (chunk, rest) = remaining.split_at(space_available);
                         current_line_spans.push(Span::styled(chunk.to_string(), span_style));
-                        current_width += chunk.len();
                         remaining = rest;
 
                         // Emit current line
