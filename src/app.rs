@@ -12,6 +12,7 @@ pub struct RefreshResult {
     pub files: Vec<FileDiff>,
     pub lines: Vec<DiffLine>,
     pub merge_base: String,
+    pub current_branch: Option<String>,
 }
 
 pub fn compute_refresh(
@@ -81,10 +82,13 @@ pub fn compute_refresh(
         files.push(file_diff);
     }
 
+    let current_branch = git::get_current_branch(repo_path).unwrap_or(None);
+
     Ok(RefreshResult {
         files,
         lines,
         merge_base,
+        current_branch,
     })
 }
 
@@ -184,6 +188,7 @@ impl App {
     pub fn apply_refresh_result(&mut self, result: RefreshResult) {
         self.error = None;
         self.merge_base = result.merge_base;
+        self.current_branch = result.current_branch;
         self.files = result.files;
         self.lines = result.lines;
         self.clamp_scroll();
@@ -1556,6 +1561,7 @@ mod tests {
             files: vec![],
             lines: new_lines.clone(),
             merge_base: "newbase123".to_string(),
+            current_branch: Some("new-branch".to_string()),
         };
 
         app.apply_refresh_result(result);
