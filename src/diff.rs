@@ -31,7 +31,6 @@ pub fn compute_inline_diff_merged(
     new_line: &str,
     change_source: LineSource,
 ) -> InlineDiffResult {
-    // Determine the deletion source based on the change source
     let deletion_source = match change_source {
         LineSource::Committed => LineSource::DeletedBase,
         LineSource::Staged => LineSource::DeletedCommitted,
@@ -41,14 +40,8 @@ pub fn compute_inline_diff_merged(
 
     let diff = TextDiff::from_chars(old_line, new_line);
     let mut spans = Vec::new();
+    let mut max_unchanged_segment = 0usize;
 
-    // Track statistics for determining if inline diff is meaningful
-    let mut unchanged_chars = 0usize;
-    let mut max_unchanged_segment = 0usize;  // Longest contiguous unchanged segment
-    let mut total_chars = 0usize;
-
-    // Collect deletions and insertions that occur at the same position
-    // We need to output: unchanged, then (deleted + inserted) pairs, then unchanged, etc.
     let mut pending_unchanged = String::new();
     let mut pending_deleted = String::new();
     let mut pending_inserted = String::new();
@@ -57,9 +50,7 @@ pub fn compute_inline_diff_merged(
         let text = change.value();
         match change.tag() {
             ChangeTag::Equal => {
-                // Before adding unchanged text, flush any pending deleted/inserted
                 if !pending_deleted.is_empty() || !pending_inserted.is_empty() {
-                    // First flush any pending unchanged before the change
                     if !pending_unchanged.is_empty() {
                         let segment_len = pending_unchanged.chars().count();
                         max_unchanged_segment = max_unchanged_segment.max(segment_len);
@@ -70,7 +61,6 @@ pub fn compute_inline_diff_merged(
                         });
                         pending_unchanged.clear();
                     }
-                    // Then the deleted text (rendered before inserted)
                     if !pending_deleted.is_empty() {
                         spans.push(InlineSpan {
                             text: pending_deleted.clone(),
@@ -79,7 +69,6 @@ pub fn compute_inline_diff_merged(
                         });
                         pending_deleted.clear();
                     }
-                    // Then the inserted text
                     if !pending_inserted.is_empty() {
                         spans.push(InlineSpan {
                             text: pending_inserted.clone(),
@@ -90,18 +79,12 @@ pub fn compute_inline_diff_merged(
                     }
                 }
                 pending_unchanged.push_str(text);
-                unchanged_chars += text.chars().count();
-                total_chars += text.chars().count();
             }
             ChangeTag::Delete => {
-                // Accumulate deleted text
                 pending_deleted.push_str(text);
-                total_chars += text.chars().count();
             }
             ChangeTag::Insert => {
-                // Accumulate inserted text
                 pending_inserted.push_str(text);
-                total_chars += text.chars().count();
             }
         }
     }
@@ -245,168 +228,7 @@ impl DiffLine {
 /// Result of diffing a single file across all 4 states
 #[derive(Debug)]
 pub struct FileDiff {
-    pub path: String,
     pub lines: Vec<DiffLine>,
-    pub is_binary: bool,
-    pub is_new: bool,
-    pub is_deleted: bool,
-}
-
-/// Compute the 4-way diff for a single file
-/// States: base (merge-base) -> head (committed) -> index (staged) -> working
-pub fn compute_file_diff(
-    path: &str,
-    base_content: Option<&str>,
-    head_content: Option<&str>,
-    index_content: Option<&str>,
-    working_content: Option<&str>,
-) -> FileDiff {
-    let mut lines = Vec::new();
-
-    // Add file header
-    lines.push(DiffLine::file_header(path));
-
-    // Determine file state
-    let is_new = base_content.is_none() && (head_content.is_some() || index_content.is_some() || working_content.is_some());
-    let is_deleted = working_content.is_none() && index_content.is_none() && (base_content.is_some() || head_content.is_some());
-
-    // Get the "current" content (what we're showing as the main view)
-    // Priority: working > index > head > base
-    let current_content = working_content
-        .or(index_content)
-        .or(head_content)
-        .or(base_content);
-
-    if current_content.is_none() && base_content.is_none() {
-        // Nothing to show
-        return FileDiff {
-            path: path.to_string(),
-            lines,
-            is_binary: false,
-            is_new,
-            is_deleted,
-        };
-    }
-
-    // For deleted files, show deleted content
-    if is_deleted {
-        let deleted_content = head_content.or(base_content).unwrap_or("");
-        for (i, line) in deleted_content.lines().enumerate() {
-            let source = if head_content.is_some() && base_content.map(|b| b.contains(line)).unwrap_or(false) {
-                LineSource::DeletedBase
-            } else if head_content.is_some() {
-                LineSource::DeletedCommitted
-            } else {
-                LineSource::DeletedBase
-            };
-            lines.push(DiffLine::new(source, line.to_string(), '-', Some(i + 1)));
-        }
-        return FileDiff {
-            path: path.to_string(),
-            lines,
-            is_binary: false,
-            is_new,
-            is_deleted,
-        };
-    }
-
-    // Build unified view by tracking line provenance
-    // We diff sequentially: base→head, head→index, index→working
-    // and merge the results
-
-    let base = base_content.unwrap_or("");
-    let head = head_content.unwrap_or(base);
-    let index = index_content.unwrap_or(head);
-    let working = working_content.unwrap_or(index);
-
-    // Track line provenance for the final output
-    let diff_lines = compute_unified_diff(base, head, index, working);
-    lines.extend(diff_lines);
-
-    FileDiff {
-        path: path.to_string(),
-        lines,
-        is_binary: false,
-        is_new,
-        is_deleted,
-    }
-}
-
-/// Compute unified diff showing all 4 states
-fn compute_unified_diff(base: &str, head: &str, index: &str, working: &str) -> Vec<DiffLine> {
-    let mut result = Vec::new();
-    let mut line_num = 1usize;
-
-    // If everything is the same, no diff needed
-    if base == head && head == index && index == working {
-        return result;
-    }
-
-    // Strategy: Show the working tree content as the "current" state,
-    // and color lines based on where they came from
-
-    // Create sets of lines at each stage for quick lookup
-    let base_lines: std::collections::HashSet<&str> = base.lines().collect();
-    let head_lines: std::collections::HashSet<&str> = head.lines().collect();
-    let index_lines: std::collections::HashSet<&str> = index.lines().collect();
-
-    // First, show any deletions
-    // Lines in base but not in working
-    let working_lines: std::collections::HashSet<&str> = working.lines().collect();
-
-    for line in base.lines() {
-        if !working_lines.contains(line) && !head_lines.contains(line) {
-            // Deleted from base and never made it to head
-            result.push(DiffLine::new(LineSource::DeletedBase, line.to_string(), '-', None));
-        }
-    }
-
-    for line in head.lines() {
-        if !working_lines.contains(line) && !base_lines.contains(line) && !index_lines.contains(line) {
-            // Was added in head but then removed
-            result.push(DiffLine::new(LineSource::DeletedCommitted, line.to_string(), '-', None));
-        }
-    }
-
-    for line in index.lines() {
-        if !working_lines.contains(line) && !head_lines.contains(line) {
-            // Was staged but then removed from working
-            result.push(DiffLine::new(LineSource::DeletedStaged, line.to_string(), '-', None));
-        }
-    }
-
-    // Now show the working tree content with colors
-    for line in working.lines() {
-        let source = determine_line_source(line, &base_lines, &head_lines, &index_lines);
-        let prefix = if source == LineSource::Base { ' ' } else { '+' };
-        result.push(DiffLine::new(source, line.to_string(), prefix, Some(line_num)));
-        line_num += 1;
-    }
-
-    result
-}
-
-/// Determine where a line came from
-fn determine_line_source(
-    line: &str,
-    base_lines: &std::collections::HashSet<&str>,
-    head_lines: &std::collections::HashSet<&str>,
-    index_lines: &std::collections::HashSet<&str>,
-) -> LineSource {
-    let in_base = base_lines.contains(line);
-    let in_head = head_lines.contains(line);
-    let in_index = index_lines.contains(line);
-
-    match (in_base, in_head, in_index) {
-        // Line exists in base - it's context
-        (true, _, _) => LineSource::Base,
-        // Line was added in commits (in head but not base)
-        (false, true, _) => LineSource::Committed,
-        // Line was staged (in index but not head or base)
-        (false, false, true) => LineSource::Staged,
-        // Line is only in working tree
-        (false, false, false) => LineSource::Unstaged,
-    }
 }
 
 /// Compute file diff showing inline changes with proper source attribution
@@ -445,7 +267,6 @@ pub fn compute_file_diff_v2(
     let index = index_content.unwrap_or(head);
     let working = working_content.unwrap_or(index);
 
-    let is_new = base_content.is_none() && head_content.is_none();
     let is_deleted = working_content.is_none() && index_content.is_none();
 
     // Handle deleted files
@@ -459,24 +280,11 @@ pub fn compute_file_diff_v2(
                 Some(i + 1),
             ).with_file_path(path));
         }
-        return FileDiff {
-            path: path.to_string(),
-            lines,
-            is_binary: false,
-            is_new,
-            is_deleted,
-        };
+        return FileDiff { lines };
     }
 
-    // No changes
     if base == working {
-        return FileDiff {
-            path: path.to_string(),
-            lines,
-            is_binary: false,
-            is_new,
-            is_deleted,
-        };
+        return FileDiff { lines };
     }
 
     // Build line vectors
@@ -758,21 +566,15 @@ pub fn compute_file_diff_v2(
         next_base_deletion += 1;
     }
 
-    FileDiff {
-        path: path.to_string(),
-        lines,
-        is_binary: false,
-        is_new,
-        is_deleted,
-    }
+    FileDiff { lines }
 }
 
 /// Determine where a base line was deleted (in commit, staging, or working)
 fn determine_deletion_source(
     base_idx: usize,
-    base_lines: &[&str],
-    head_lines: &[&str],
-    index_lines: &[&str],
+    _base_lines: &[&str],
+    _head_lines: &[&str],
+    _index_lines: &[&str],
     head_from_base: &[Option<usize>],
     index_from_head: &[Option<usize>],
 ) -> LineSource {
@@ -807,12 +609,12 @@ fn build_working_line_output<F1, F2>(
     path: &str,
     working_from_index: &[Option<usize>],
     index_from_head: &[Option<usize>],
-    head_from_base: &[Option<usize>],
+    _head_from_base: &[Option<usize>],
     index_working_mods: &std::collections::HashMap<usize, (usize, &str)>,
     base_head_mods: &std::collections::HashMap<usize, (usize, &str)>,
     head_index_mods: &std::collections::HashMap<usize, (usize, &str)>,
-    index_lines: &[&str],
-    head_lines: &[&str],
+    _index_lines: &[&str],
+    _head_lines: &[&str],
     trace_index_source: &F1,
     trace_head_source: &F2,
 ) -> DiffLine
@@ -836,12 +638,6 @@ where
                 let inline_result = compute_inline_diff_merged(old_content, &content, LineSource::Unstaged);
 
                 if inline_result.is_meaningful {
-                    let unchanged_source = if original_source == LineSource::Base {
-                        None
-                    } else {
-                        Some(original_source)
-                    };
-
                     // Use spans directly - they already have correct source and is_deletion
                     return DiffLine::new(original_source, content, ' ', Some(line_num))
                         .with_file_path(path)
@@ -1106,9 +902,6 @@ mod tests {
 
         let diff = compute_file_diff_v2("test.txt", None, None, None, Some(working));
 
-        assert!(diff.is_new);
-
-        // All lines should be unstaged additions
         let unstaged_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::Unstaged)
             .collect();
@@ -1123,9 +916,6 @@ mod tests {
 
         let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), None, None);
 
-        assert!(diff.is_deleted);
-
-        // Should show deleted lines with '-' prefix
         let deleted_lines: Vec<_> = diff.lines.iter()
             .filter(|l| matches!(l.source, LineSource::DeletedBase | LineSource::DeletedCommitted))
             .collect();
