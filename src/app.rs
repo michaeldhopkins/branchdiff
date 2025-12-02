@@ -7,6 +7,7 @@ use arboard::Clipboard;
 
 use crate::diff::{compute_file_diff_v2, DiffLine, FileDiff, LineSource};
 use crate::git;
+use crate::ui::ScreenRowInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -149,6 +150,8 @@ pub struct App {
     pub content_width: usize,
     /// Warning message about merge conflicts (if any)
     pub conflict_warning: Option<String>,
+    /// Mapping from screen row index to logical line info (set during rendering)
+    pub row_map: Vec<ScreenRowInfo>,
 }
 
 impl App {
@@ -180,6 +183,7 @@ impl App {
             line_num_width: 0,
             content_width: 80,
             conflict_warning: None,
+            row_map: Vec::new(),
         };
 
         app.refresh()?;
@@ -649,6 +653,11 @@ impl App {
         self.content_width = content_width;
     }
 
+    /// Set the row map (called during rendering)
+    pub fn set_row_map(&mut self, row_map: Vec<ScreenRowInfo>) {
+        self.row_map = row_map;
+    }
+
     /// Start a selection at the given screen coordinates
     pub fn start_selection(&mut self, screen_x: u16, screen_y: u16) {
         if let Some(pos) = self.screen_to_content_position(screen_x, screen_y) {
@@ -686,6 +695,7 @@ impl App {
     }
 
     /// Convert screen coordinates to content position
+    /// Now uses row_map to correctly handle wrapped lines and split inline diffs
     fn screen_to_content_position(&self, screen_x: u16, screen_y: u16) -> Option<Position> {
         let (offset_x, offset_y) = self.content_offset;
 
@@ -697,16 +707,18 @@ impl App {
         let content_x = (screen_x - offset_x) as usize;
         let content_y = (screen_y - offset_y) as usize;
 
-        // Convert to absolute line position
-        let line_idx = self.scroll_offset + content_y;
-
+        // Use row_map to find the correct screen row
+        // row_map is indexed by screen row, so content_y is the index
+        // The row field in Position now refers to screen row, not logical line
+        // This allows selection to work correctly with wrapped/split lines
         Some(Position {
-            row: line_idx,
+            row: content_y,
             col: content_x,
         })
     }
 
     /// Get selected text (content only, without line numbers or prefixes)
+    /// Now uses row_map to correctly handle wrapped lines and split inline diffs
     pub fn get_selected_text(&self) -> Option<String> {
         let sel = self.selection.as_ref()?;
 
@@ -719,30 +731,26 @@ impl App {
             (sel.end, sel.start)
         };
 
-        let all_lines = self.displayable_lines();
+        // Selection row/col now refer to screen rows, not logical lines
+        // Use row_map to get the actual content for each screen row
         let mut result = String::new();
 
         // Calculate the prefix length to skip (line number + prefix char + spaces)
         // Format: "{line_num:>width} {prefix} {content}"
         let prefix_len = self.line_num_width + 3; // width + space + prefix + space
 
-        for row in start.row..=end.row {
-            if row >= all_lines.len() {
+        for screen_row in start.row..=end.row {
+            if screen_row >= self.row_map.len() {
                 break;
             }
 
-            let line = &all_lines[row];
+            let row_info = &self.row_map[screen_row];
 
-            // Skip file headers and elided markers for copying
-            if line.source == LineSource::FileHeader || line.source == LineSource::Elided {
-                continue;
-            }
-
-            // Get content only (skip line number and prefix)
-            let content = &line.content;
+            // Get content from the row_map (already has the correct content for this screen row)
+            let content = &row_info.content;
 
             if start.row == end.row {
-                // Single line selection
+                // Single row selection
                 let start_in_content = start.col.saturating_sub(prefix_len);
                 let end_in_content = end.col.saturating_sub(prefix_len);
                 if start_in_content < content.len() {
@@ -751,20 +759,20 @@ impl App {
                         result.push_str(&content[start_in_content..actual_end]);
                     }
                 }
-            } else if row == start.row {
-                // First line of multi-line selection
+            } else if screen_row == start.row {
+                // First row of multi-row selection
                 let start_in_content = start.col.saturating_sub(prefix_len);
                 if start_in_content < content.len() {
                     result.push_str(&content[start_in_content..]);
                 }
                 result.push('\n');
-            } else if row == end.row {
-                // Last line of multi-line selection
+            } else if screen_row == end.row {
+                // Last row of multi-row selection
                 let end_in_content = end.col.saturating_sub(prefix_len);
                 let actual_end = end_in_content.min(content.len());
                 result.push_str(&content[..actual_end]);
             } else {
-                // Middle lines - take entire content
+                // Middle rows - take entire content
                 result.push_str(content);
                 result.push('\n');
             }
@@ -816,6 +824,7 @@ mod tests {
             line_num_width: 0,
             content_width: 80,
             conflict_warning: None,
+            row_map: Vec::new(),
         }
     }
 

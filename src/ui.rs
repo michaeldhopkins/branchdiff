@@ -12,6 +12,30 @@ use crate::diff::{InlineSpan, LineSource};
 const SELECTION_BG_COLOR: Color = Color::Rgb(60, 60, 100);
 const PREFIX_CHAR_WIDTH: usize = 2; // prefix char + trailing space
 
+/// What kind of screen row this is
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenRowKind {
+    /// Normal single-row line or first row of wrapped content
+    Normal,
+    /// Continuation row of wrapped content (2nd, 3rd, etc.)
+    WrappedContinuation,
+    /// The "-" deletion line when inline diff splits into two lines
+    SplitDeletion,
+    /// The "+" insertion line when inline diff splits into two lines
+    SplitInsertion,
+}
+
+/// Represents how a logical DiffLine maps to a screen row
+#[derive(Debug, Clone)]
+pub struct ScreenRowInfo {
+    /// Index into the logical DiffLine array (absolute, accounting for scroll)
+    pub logical_idx: usize,
+    /// What kind of row this is
+    pub kind: ScreenRowKind,
+    /// The actual text content of this screen row (for copy operations)
+    pub content: String,
+}
+
 /// Get the selection range for a specific line (start_col, end_col)
 /// Returns None if the line is not selected
 fn get_line_selection_range(selection: &Option<Selection>, line_idx: usize) -> Option<(usize, usize)> {
@@ -284,6 +308,38 @@ pub fn coalesce_spans(spans: &[InlineSpan]) -> Vec<InlineSpan> {
     result
 }
 
+/// Calculate display width of inline diff (using coalesced spans)
+fn inline_display_width(spans: &[InlineSpan]) -> usize {
+    coalesce_spans(spans).iter().map(|s| s.text.len()).sum()
+}
+
+/// Reconstruct old content from inline spans (unchanged + deletions)
+fn reconstruct_old_content(spans: &[InlineSpan]) -> String {
+    spans
+        .iter()
+        .filter(|s| s.is_deletion || s.source.is_none())
+        .map(|s| s.text.as_str())
+        .collect()
+}
+
+/// Get deletion source for coloring the - line
+fn get_deletion_source(spans: &[InlineSpan]) -> LineSource {
+    spans
+        .iter()
+        .find(|s| s.is_deletion && s.source.is_some())
+        .and_then(|s| s.source)
+        .unwrap_or(LineSource::DeletedBase)
+}
+
+/// Get insertion source for coloring the + line
+fn get_insertion_source(spans: &[InlineSpan]) -> LineSource {
+    spans
+        .iter()
+        .find(|s| !s.is_deletion && s.source.is_some())
+        .and_then(|s| s.source)
+        .unwrap_or(LineSource::Committed)
+}
+
 /// Draw the main UI
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
@@ -332,6 +388,174 @@ fn draw_warning_banner(frame: &mut Frame, message: &str, area: Rect) {
     frame.render_widget(warning, area);
 }
 
+/// Wrap content spans into multiple lines if needed, returning Lines and ScreenRowInfo entries
+fn wrap_content(
+    content_spans: Vec<Span<'static>>,
+    content: &str,
+    prefix_str: String,
+    prefix_char: String,
+    style: Style,
+    content_width: usize,
+    prefix_width: usize,
+    logical_idx: usize,
+    kind: ScreenRowKind,
+) -> (Vec<Line<'static>>, Vec<ScreenRowInfo>) {
+    let content_len: usize = content_spans.iter().map(|s| s.content.len()).sum();
+
+    // If content fits, no wrapping needed
+    if content_len <= content_width {
+        let mut spans = Vec::new();
+        spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(prefix_char, style));
+        spans.extend(content_spans);
+
+        let row_info = ScreenRowInfo {
+            logical_idx,
+            kind,
+            content: content.to_string(),
+        };
+
+        return (vec![Line::from(spans)], vec![row_info]);
+    }
+
+    // Need to wrap - split content into chunks
+    let mut result_lines = Vec::new();
+    let mut row_infos = Vec::new();
+    let mut current_line_spans = Vec::new();
+    let mut current_width = 0;
+    let mut is_first_line = true;
+    let mut current_content = String::new();
+
+    // Continuation line indent (same width as "123 + ")
+    let continuation_indent = " ".repeat(prefix_width);
+
+    for span in content_spans {
+        let span_text = span.content.to_string();
+        let span_style = span.style;
+        let mut remaining = span_text.as_str();
+
+        while !remaining.is_empty() {
+            let space_available = content_width.saturating_sub(current_width);
+
+            if space_available == 0 {
+                // Emit current line and start new one
+                let mut line_spans = Vec::new();
+                let row_kind = if is_first_line { kind } else { ScreenRowKind::WrappedContinuation };
+
+                if is_first_line {
+                    line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
+                    line_spans.push(Span::styled(prefix_char.clone(), style));
+                    is_first_line = false;
+                } else {
+                    line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
+                }
+                line_spans.extend(current_line_spans.drain(..));
+                result_lines.push(Line::from(line_spans));
+
+                row_infos.push(ScreenRowInfo {
+                    logical_idx,
+                    kind: row_kind,
+                    content: std::mem::take(&mut current_content),
+                });
+
+                current_width = 0;
+                continue;
+            }
+
+            if remaining.len() <= space_available {
+                // Entire remaining text fits
+                current_line_spans.push(Span::styled(remaining.to_string(), span_style));
+                current_content.push_str(remaining);
+                current_width += remaining.len();
+                remaining = "";
+            } else {
+                // Need to split
+                let (chunk, rest) = remaining.split_at(space_available);
+                current_line_spans.push(Span::styled(chunk.to_string(), span_style));
+                current_content.push_str(chunk);
+                remaining = rest;
+
+                // Emit current line
+                let mut line_spans = Vec::new();
+                let row_kind = if is_first_line { kind } else { ScreenRowKind::WrappedContinuation };
+
+                if is_first_line {
+                    line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
+                    line_spans.push(Span::styled(prefix_char.clone(), style));
+                    is_first_line = false;
+                } else {
+                    line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
+                }
+                line_spans.extend(current_line_spans.drain(..));
+                result_lines.push(Line::from(line_spans));
+
+                row_infos.push(ScreenRowInfo {
+                    logical_idx,
+                    kind: row_kind,
+                    content: std::mem::take(&mut current_content),
+                });
+
+                current_width = 0;
+            }
+        }
+    }
+
+    // Emit any remaining content
+    if !current_line_spans.is_empty() || is_first_line {
+        let mut line_spans = Vec::new();
+        let row_kind = if is_first_line { kind } else { ScreenRowKind::WrappedContinuation };
+
+        if is_first_line {
+            line_spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
+            line_spans.push(Span::styled(prefix_char, style));
+        } else {
+            line_spans.push(Span::styled(continuation_indent, Style::default().fg(Color::DarkGray)));
+        }
+        line_spans.extend(current_line_spans);
+        result_lines.push(Line::from(line_spans));
+
+        row_infos.push(ScreenRowInfo {
+            logical_idx,
+            kind: row_kind,
+            content: current_content,
+        });
+    }
+
+    (result_lines, row_infos)
+}
+
+/// Apply selection highlighting to content spans
+fn apply_selection_to_content(
+    content_spans: Vec<Span<'static>>,
+    selection: &Option<Selection>,
+    screen_row_idx: usize,
+    prefix_width: usize,
+) -> Vec<Span<'static>> {
+    if let Some((sel_start, sel_end)) = get_line_selection_range(selection, screen_row_idx) {
+        // Selection columns are relative to the start of the line (including prefix)
+        // Content starts after prefix_width characters
+        let content_sel_start = sel_start.saturating_sub(prefix_width);
+        let content_sel_end = sel_end.saturating_sub(prefix_width);
+
+        let mut result = Vec::new();
+        let mut char_offset = 0;
+
+        for span in content_spans {
+            let span_with_selection = apply_selection_to_span(
+                span.clone(),
+                char_offset,
+                content_sel_start,
+                content_sel_end,
+            );
+            char_offset += span.content.len();
+            result.extend(span_with_selection);
+        }
+        result
+    } else {
+        content_spans
+    }
+}
+
 /// Draw the diff content
 fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible_lines = app.visible_lines();
@@ -363,179 +587,183 @@ fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     // Get selection info for highlighting
     let selection = app.selection.clone();
 
-    // Build display lines with manual wrapping
-    let lines: Vec<Line> = visible_lines
-        .iter()
-        .enumerate()
-        .flat_map(|(visible_idx, diff_line)| {
-            // Calculate the absolute line index for selection checking
-            let abs_line_idx = scroll_offset + visible_idx;
-            let style = line_style(diff_line.source);
+    // Build display lines with manual wrapping, tracking screen row mapping
+    let mut all_lines: Vec<Line> = Vec::new();
+    let mut all_row_infos: Vec<ScreenRowInfo> = Vec::new();
+    let mut screen_row_idx = 0;
 
-            // Build the prefix (line number + prefix char)
-            let prefix_str = if let Some(num) = diff_line.line_number {
-                format!("{:>width$} ", num, width = line_num_width)
-            } else if line_num_width > 0 {
-                " ".repeat(line_num_width + 1)
-            } else {
-                String::new()
-            };
+    for (visible_idx, diff_line) in visible_lines.iter().enumerate() {
+        // Calculate the absolute line index (logical line)
+        let abs_line_idx = scroll_offset + visible_idx;
+        let style = line_style(diff_line.source);
 
-            // Handle special line types (no wrapping needed)
-            if diff_line.source == LineSource::FileHeader {
-                let mut spans = Vec::new();
-                if !prefix_str.is_empty() {
-                    spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
+        // Build the prefix (line number + prefix char)
+        let prefix_str = if let Some(num) = diff_line.line_number {
+            format!("{:>width$} ", num, width = line_num_width)
+        } else if line_num_width > 0 {
+            " ".repeat(line_num_width + 1)
+        } else {
+            String::new()
+        };
+
+        // Handle special line types (no wrapping needed)
+        if diff_line.source == LineSource::FileHeader {
+            let mut spans = Vec::new();
+            if !prefix_str.is_empty() {
+                spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
+            }
+            spans.push(Span::styled("── ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(diff_line.content.clone(), style));
+            spans.push(Span::styled(" ──", Style::default().fg(Color::DarkGray)));
+
+            all_lines.push(Line::from(spans));
+            all_row_infos.push(ScreenRowInfo {
+                logical_idx: abs_line_idx,
+                kind: ScreenRowKind::Normal,
+                content: diff_line.content.clone(),
+            });
+            screen_row_idx += 1;
+            continue;
+        } else if diff_line.source == LineSource::Elided {
+            let mut spans = Vec::new();
+            if !prefix_str.is_empty() {
+                spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
+            }
+            spans.push(Span::styled(
+                format!("┈┈ ⋮ {} ⋮ ┈┈", diff_line.content),
+                style,
+            ));
+
+            all_lines.push(Line::from(spans));
+            all_row_infos.push(ScreenRowInfo {
+                logical_idx: abs_line_idx,
+                kind: ScreenRowKind::Normal,
+                content: diff_line.content.clone(),
+            });
+            screen_row_idx += 1;
+            continue;
+        }
+
+        // Check if we have inline spans and whether they would fit
+        if !diff_line.inline_spans.is_empty() {
+            let inline_width = inline_display_width(&diff_line.inline_spans);
+
+            if inline_width > content_width {
+                // Inline diff would wrap - fall back to separate -/+ lines
+                let old_content = reconstruct_old_content(&diff_line.inline_spans);
+                let new_content = &diff_line.content;
+                let del_source = get_deletion_source(&diff_line.inline_spans);
+                let ins_source = get_insertion_source(&diff_line.inline_spans);
+
+                // Only show deletion line if there's old content
+                if !old_content.is_empty() {
+                    let del_style = line_style(del_source);
+                    let del_prefix_str = if line_num_width > 0 {
+                        " ".repeat(line_num_width + 1)
+                    } else {
+                        String::new()
+                    };
+
+                    let del_spans = vec![Span::styled(old_content.clone(), del_style)];
+                    let del_spans = apply_selection_to_content(del_spans, &selection, screen_row_idx, prefix_width);
+
+                    let (del_lines, del_row_infos) = wrap_content(
+                        del_spans,
+                        &old_content,
+                        del_prefix_str,
+                        "- ".to_string(),
+                        del_style,
+                        content_width,
+                        prefix_width,
+                        abs_line_idx,
+                        ScreenRowKind::SplitDeletion,
+                    );
+
+                    screen_row_idx += del_lines.len();
+                    all_lines.extend(del_lines);
+                    all_row_infos.extend(del_row_infos);
                 }
-                spans.push(Span::styled("── ", Style::default().fg(Color::DarkGray)));
-                spans.push(Span::styled(&diff_line.content, style));
-                spans.push(Span::styled(" ──", Style::default().fg(Color::DarkGray)));
-                return vec![Line::from(spans)];
-            } else if diff_line.source == LineSource::Elided {
-                let mut spans = Vec::new();
-                if !prefix_str.is_empty() {
-                    spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
-                }
-                spans.push(Span::styled(
-                    format!("┈┈ ⋮ {} ⋮ ┈┈", diff_line.content),
-                    style,
-                ));
-                return vec![Line::from(spans)];
+
+                // Show insertion line
+                let ins_style = line_style(ins_source);
+                let ins_spans = vec![Span::styled(new_content.clone(), ins_style)];
+                let ins_spans = apply_selection_to_content(ins_spans, &selection, screen_row_idx, prefix_width);
+
+                let (ins_lines, ins_row_infos) = wrap_content(
+                    ins_spans,
+                    new_content,
+                    prefix_str,
+                    "+ ".to_string(),
+                    ins_style,
+                    content_width,
+                    prefix_width,
+                    abs_line_idx,
+                    ScreenRowKind::SplitInsertion,
+                );
+
+                screen_row_idx += ins_lines.len();
+                all_lines.extend(ins_lines);
+                all_row_infos.extend(ins_row_infos);
+                continue;
             }
 
-            // Regular content lines - may need wrapping
-            let prefix_char = format!("{} ", diff_line.prefix);
-
-            // Build content spans (either plain or with inline highlighting)
-            let content_spans: Vec<Span> = if diff_line.inline_spans.is_empty() {
-                vec![Span::styled(diff_line.content.clone(), style)]
-            } else {
-                // Coalesce fragmented spans for cleaner display
-                let display_spans = coalesce_spans(&diff_line.inline_spans);
-                display_spans.into_iter().map(|inline_span| {
+            // Inline diff fits - render normally with inline spans
+            let display_spans = coalesce_spans(&diff_line.inline_spans);
+            let content_spans: Vec<Span> = display_spans
+                .into_iter()
+                .map(|inline_span| {
                     let span_style = match inline_span.source {
                         Some(source) => line_style(source),
-                        // Unchanged portions inherit the line's base style
-                        // (gray for base lines, cyan for committed, etc.)
                         None => style,
                     };
                     Span::styled(inline_span.text, span_style)
-                }).collect()
-            };
+                })
+                .collect();
 
-            // Apply selection highlighting if this line is selected
-            let content_spans: Vec<Span> = if let Some((sel_start, sel_end)) = get_line_selection_range(&selection, abs_line_idx) {
-                // Selection columns are relative to the start of the line (including prefix)
-                // Content starts after prefix_width characters
-                let content_sel_start = sel_start.saturating_sub(prefix_width);
-                let content_sel_end = sel_end.saturating_sub(prefix_width);
+            let content_spans = apply_selection_to_content(content_spans, &selection, screen_row_idx, prefix_width);
 
-                let mut result = Vec::new();
-                let mut char_offset = 0;
+            let prefix_char = format!("{} ", diff_line.prefix);
+            let (lines, row_infos) = wrap_content(
+                content_spans,
+                &diff_line.content,
+                prefix_str,
+                prefix_char,
+                style,
+                content_width,
+                prefix_width,
+                abs_line_idx,
+                ScreenRowKind::Normal,
+            );
 
-                for span in content_spans {
-                    let span_with_selection = apply_selection_to_span(
-                        span.clone(),
-                        char_offset,
-                        content_sel_start,
-                        content_sel_end,
-                    );
-                    char_offset += span.content.len();
-                    result.extend(span_with_selection);
-                }
-                result
-            } else {
-                content_spans
-            };
+            screen_row_idx += lines.len();
+            all_lines.extend(lines);
+            all_row_infos.extend(row_infos);
+        } else {
+            // No inline spans - regular line
+            let prefix_char = format!("{} ", diff_line.prefix);
+            let content_spans = vec![Span::styled(diff_line.content.clone(), style)];
+            let content_spans = apply_selection_to_content(content_spans, &selection, screen_row_idx, prefix_width);
 
-            // Calculate total content length
-            let content_len: usize = content_spans.iter().map(|s| s.content.len()).sum();
+            let (lines, row_infos) = wrap_content(
+                content_spans,
+                &diff_line.content,
+                prefix_str,
+                prefix_char,
+                style,
+                content_width,
+                prefix_width,
+                abs_line_idx,
+                ScreenRowKind::Normal,
+            );
 
-            // If content fits, no wrapping needed
-            if content_len <= content_width {
-                let mut spans = Vec::new();
-                spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
-                spans.push(Span::styled(prefix_char, style));
-                spans.extend(content_spans);
-                return vec![Line::from(spans)];
-            }
+            screen_row_idx += lines.len();
+            all_lines.extend(lines);
+            all_row_infos.extend(row_infos);
+        }
+    }
 
-            // Need to wrap - split content into chunks
-            let mut result_lines = Vec::new();
-            let mut current_line_spans = Vec::new();
-            let mut current_width = 0;
-            let mut is_first_line = true;
-
-            // Continuation line indent (same width as "123 + ")
-            let continuation_indent = " ".repeat(prefix_width);
-
-            for span in content_spans {
-                let span_text = span.content.to_string();
-                let span_style = span.style;
-                let mut remaining = span_text.as_str();
-
-                while !remaining.is_empty() {
-                    let space_available = content_width.saturating_sub(current_width);
-
-                    if space_available == 0 {
-                        // Emit current line and start new one
-                        let mut line_spans = Vec::new();
-                        if is_first_line {
-                            line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
-                            line_spans.push(Span::styled(prefix_char.clone(), style));
-                            is_first_line = false;
-                        } else {
-                            line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
-                        }
-                        line_spans.extend(current_line_spans.drain(..));
-                        result_lines.push(Line::from(line_spans));
-                        current_width = 0;
-                        continue;
-                    }
-
-                    if remaining.len() <= space_available {
-                        // Entire remaining text fits
-                        current_line_spans.push(Span::styled(remaining.to_string(), span_style));
-                        current_width += remaining.len();
-                        remaining = "";
-                    } else {
-                        // Need to split
-                        let (chunk, rest) = remaining.split_at(space_available);
-                        current_line_spans.push(Span::styled(chunk.to_string(), span_style));
-                        remaining = rest;
-
-                        // Emit current line
-                        let mut line_spans = Vec::new();
-                        if is_first_line {
-                            line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
-                            line_spans.push(Span::styled(prefix_char.clone(), style));
-                            is_first_line = false;
-                        } else {
-                            line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
-                        }
-                        line_spans.extend(current_line_spans.drain(..));
-                        result_lines.push(Line::from(line_spans));
-                        current_width = 0;
-                    }
-                }
-            }
-
-            // Emit any remaining content
-            if !current_line_spans.is_empty() || is_first_line {
-                let mut line_spans = Vec::new();
-                if is_first_line {
-                    line_spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
-                    line_spans.push(Span::styled(prefix_char, style));
-                } else {
-                    line_spans.push(Span::styled(continuation_indent, Style::default().fg(Color::DarkGray)));
-                }
-                line_spans.extend(current_line_spans);
-                result_lines.push(Line::from(line_spans));
-            }
-
-            result_lines
-        })
-        .collect();
+    // Store the row map for selection coordinate mapping
+    app.set_row_map(all_row_infos);
 
     let title = match app.current_file() {
         Some(ref file) => Line::from(vec![
@@ -551,7 +779,7 @@ fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_style(Style::default().fg(Color::DarkGray));
 
     // No Wrap needed - we handle it manually
-    let paragraph = Paragraph::new(lines).block(block);
+    let paragraph = Paragraph::new(all_lines).block(block);
 
     frame.render_widget(paragraph, area);
 }
@@ -1042,5 +1270,102 @@ mod tests {
             deletion.text.contains("cancellation"),
             "Deletion should contain 'cancellation', got: {:?}", deletion.text
         );
+    }
+
+    // ============================================================
+    // Tests for width-aware inline diff display
+    // ============================================================
+
+    #[test]
+    fn test_inline_display_width_simple() {
+        let spans = vec![
+            make_span("hello ", None, false),
+            make_span("world", Some(LineSource::DeletedBase), true),
+            make_span("earth", Some(LineSource::Committed), false),
+        ];
+        // "hello " + "world" + "earth" = 6 + 5 + 5 = 16
+        assert_eq!(inline_display_width(&spans), 16);
+    }
+
+    #[test]
+    fn test_inline_display_width_with_coalesce() {
+        // When spans are coalesced, the width should be the coalesced width
+        let spans = vec![
+            make_span("c", None, false),
+            make_span("ancellation", Some(LineSource::DeletedBase), true),
+            make_span("l", None, false),
+            make_span("ause", Some(LineSource::Committed), false),
+        ];
+        // After coalesce: "cancellationl" + "clause" = 13 + 6 = 19
+        let width = inline_display_width(&spans);
+        assert_eq!(width, 19);
+    }
+
+    #[test]
+    fn test_reconstruct_old_content_simple() {
+        let spans = vec![
+            make_span("hello ", None, false),           // unchanged - included
+            make_span("world", Some(LineSource::DeletedBase), true),  // deletion - included
+            make_span("earth", Some(LineSource::Committed), false),   // insertion - NOT included
+        ];
+        assert_eq!(reconstruct_old_content(&spans), "hello world");
+    }
+
+    #[test]
+    fn test_reconstruct_old_content_with_multiple_deletions() {
+        let spans = vec![
+            make_span("prefix ", None, false),
+            make_span("old1", Some(LineSource::DeletedBase), true),
+            make_span(" middle ", None, false),
+            make_span("old2", Some(LineSource::DeletedBase), true),
+            make_span("new", Some(LineSource::Committed), false),
+        ];
+        assert_eq!(reconstruct_old_content(&spans), "prefix old1 middle old2");
+    }
+
+    #[test]
+    fn test_get_deletion_source_finds_correct_source() {
+        let spans = vec![
+            make_span("unchanged", None, false),
+            make_span("deleted", Some(LineSource::DeletedCommitted), true),
+            make_span("inserted", Some(LineSource::Staged), false),
+        ];
+        assert_eq!(get_deletion_source(&spans), LineSource::DeletedCommitted);
+    }
+
+    #[test]
+    fn test_get_deletion_source_defaults_to_deleted_base() {
+        let spans = vec![
+            make_span("unchanged", None, false),
+            make_span("inserted", Some(LineSource::Committed), false),
+        ];
+        assert_eq!(get_deletion_source(&spans), LineSource::DeletedBase);
+    }
+
+    #[test]
+    fn test_get_insertion_source_finds_correct_source() {
+        let spans = vec![
+            make_span("unchanged", None, false),
+            make_span("deleted", Some(LineSource::DeletedBase), true),
+            make_span("inserted", Some(LineSource::Staged), false),
+        ];
+        assert_eq!(get_insertion_source(&spans), LineSource::Staged);
+    }
+
+    #[test]
+    fn test_get_insertion_source_defaults_to_committed() {
+        let spans = vec![
+            make_span("unchanged", None, false),
+            make_span("deleted", Some(LineSource::DeletedBase), true),
+        ];
+        assert_eq!(get_insertion_source(&spans), LineSource::Committed);
+    }
+
+    #[test]
+    fn test_screen_row_kind_equality() {
+        assert_eq!(ScreenRowKind::Normal, ScreenRowKind::Normal);
+        assert_eq!(ScreenRowKind::SplitDeletion, ScreenRowKind::SplitDeletion);
+        assert_ne!(ScreenRowKind::Normal, ScreenRowKind::SplitDeletion);
+        assert_ne!(ScreenRowKind::SplitDeletion, ScreenRowKind::SplitInsertion);
     }
 }
