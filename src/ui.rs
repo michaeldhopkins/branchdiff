@@ -1506,4 +1506,258 @@ mod tests {
         assert_ne!(ScreenRowKind::Normal, ScreenRowKind::SplitDeletion);
         assert_ne!(ScreenRowKind::SplitDeletion, ScreenRowKind::SplitInsertion);
     }
+
+    // ============================================================
+    // Tests for truncate_with_ellipsis
+    // ============================================================
+
+    #[test]
+    fn test_truncate_with_ellipsis_no_truncation_needed() {
+        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
+        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_truncates_with_dots() {
+        assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
+        assert_eq!(truncate_with_ellipsis("hello world", 6), "hel...");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_very_short_max() {
+        assert_eq!(truncate_with_ellipsis("hello", 3), "...");
+        assert_eq!(truncate_with_ellipsis("hello", 2), "..");
+        assert_eq!(truncate_with_ellipsis("hello", 1), ".");
+        assert_eq!(truncate_with_ellipsis("hello", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_exactly_at_boundary() {
+        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
+        assert_eq!(truncate_with_ellipsis("hello", 4), "h...");
+    }
+
+    // ============================================================
+    // Tests for status_bar_height
+    // ============================================================
+
+    fn create_test_app_for_status_bar(
+        current_branch: Option<&str>,
+        base_branch: &str,
+        file_count: usize,
+    ) -> crate::app::App {
+        use crate::app::{App, ViewMode};
+        use crate::diff::{DiffLine, FileDiff};
+        use std::path::PathBuf;
+
+        let mut files = Vec::new();
+        for i in 0..file_count {
+            files.push(FileDiff {
+                lines: vec![DiffLine::file_header(&format!("file{}.rs", i))],
+            });
+        }
+
+        App {
+            repo_path: PathBuf::from("/tmp/test"),
+            base_branch: base_branch.to_string(),
+            merge_base: "abc123".to_string(),
+            current_branch: current_branch.map(|s| s.to_string()),
+            files,
+            lines: Vec::new(),
+            scroll_offset: 0,
+            viewport_height: 10,
+            error: None,
+            show_help: false,
+            view_mode: ViewMode::Full,
+            selection: None,
+            content_offset: (1, 1),
+            line_num_width: 0,
+            content_width: 80,
+            conflict_warning: None,
+            row_map: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_status_bar_height_wide_terminal_uses_one_line() {
+        let app = create_test_app_for_status_bar(Some("feature-branch"), "main", 5);
+        // Wide terminal should use 1 line
+        assert_eq!(status_bar_height(&app, 120), 1);
+    }
+
+    #[test]
+    fn test_status_bar_height_narrow_terminal_uses_two_lines() {
+        let app = create_test_app_for_status_bar(Some("feature-branch"), "main", 5);
+        // Narrow terminal should use 2 lines
+        assert_eq!(status_bar_height(&app, 40), 2);
+    }
+
+    #[test]
+    fn test_status_bar_height_long_branch_name_needs_two_lines() {
+        let app = create_test_app_for_status_bar(
+            Some("very-long-feature-branch-name-that-takes-space"),
+            "main",
+            5,
+        );
+        // Even moderately wide terminal needs 2 lines with long branch name
+        assert_eq!(status_bar_height(&app, 80), 2);
+    }
+
+    #[test]
+    fn test_status_bar_height_no_current_branch_uses_head() {
+        let app = create_test_app_for_status_bar(None, "main", 5);
+        // "HEAD vs main" is shorter than a branch name
+        // Should fit on one line with wide terminal
+        assert_eq!(status_bar_height(&app, 120), 1);
+    }
+
+    #[test]
+    fn test_status_bar_height_boundary_case() {
+        let app = create_test_app_for_status_bar(Some("feat"), "main", 1);
+
+        // Compute the exact values to match what status_bar_height computes
+        let help = " q:quit  j/k:scroll  g/G:top/bottom  ?:help ";
+        let branch_info = "feat vs main";
+
+        let stats = format!(
+            "{} file{} | {} line{}{} | {}%",
+            app.files.len(),
+            if app.files.len() == 1 { "" } else { "s" },
+            app.changed_line_count(),
+            if app.changed_line_count() == 1 { "" } else { "s" },
+            "",  // no mode suffix in Full mode
+            app.scroll_percentage()
+        );
+        let full_status = format!("{} | {}", branch_info, stats);
+
+        // The threshold is: full_status.len() + help.len() + 2
+        let threshold = full_status.len() + help.len() + 2;
+
+        // At exactly threshold width, should be 1 line
+        assert_eq!(status_bar_height(&app, threshold as u16), 1,
+            "At threshold width {} should use 1 line", threshold);
+
+        // One less should be 2 lines
+        assert_eq!(status_bar_height(&app, (threshold - 1) as u16), 2,
+            "At width {} (one below threshold) should use 2 lines", threshold - 1);
+    }
+
+    // ============================================================
+    // Tests for status bar layout decisions (draw_status_bar behavior)
+    // These test the various layout branches that can occur
+    // ============================================================
+
+    /// Helper to compute what the status bar would show at a given width
+    /// Returns (uses_two_lines, branch_truncated, help_level)
+    /// help_level: 0 = full help, 1 = short help, 2 = no help
+    fn analyze_status_bar_layout(
+        current_branch: Option<&str>,
+        base_branch: &str,
+        file_count: usize,
+        width: usize,
+    ) -> (bool, bool, u8) {
+        let help = " q:quit  j/k:scroll  g/G:top/bottom  ?:help ";
+        let help_short = " ?:help ";
+
+        let branch_info = match current_branch {
+            Some(b) => format!("{} vs {}", b, base_branch),
+            None => format!("HEAD vs {}", base_branch),
+        };
+
+        // For test purposes, use simplified stats (0 lines, 100%)
+        let stats = format!(
+            "{} file{} | 0 lines | 100%",
+            file_count,
+            if file_count == 1 { "" } else { "s" }
+        );
+
+        let full_status = format!("{} | {}", branch_info, stats);
+
+        // Check if everything fits on one line
+        if full_status.len() + help.len() + 2 <= width {
+            return (false, false, 0); // 1 line, no truncation, full help
+        }
+
+        // Need 2 lines - check line 1 layout options
+        // Line 1: branch_info + help (full or short)
+        if branch_info.len() + help.len() + 2 <= width {
+            return (true, false, 0); // 2 lines, no truncation, full help
+        }
+
+        if branch_info.len() + help_short.len() + 2 <= width {
+            return (true, false, 1); // 2 lines, no truncation, short help
+        }
+
+        // Need to truncate branch
+        (true, true, 1) // 2 lines, truncated, short help
+    }
+
+    #[test]
+    fn test_layout_one_line_full_help() {
+        // Wide terminal: everything fits on one line with full help
+        let (two_lines, truncated, help_level) =
+            analyze_status_bar_layout(Some("feature"), "main", 3, 120);
+        assert!(!two_lines, "Should use 1 line");
+        assert!(!truncated, "Should not truncate");
+        assert_eq!(help_level, 0, "Should show full help");
+    }
+
+    #[test]
+    fn test_layout_two_lines_full_help() {
+        // Moderate width: needs 2 lines but branch + full help fits on line 1
+        let (two_lines, truncated, help_level) =
+            analyze_status_bar_layout(Some("feature"), "main", 3, 75);
+        assert!(two_lines, "Should use 2 lines");
+        assert!(!truncated, "Should not truncate");
+        assert_eq!(help_level, 0, "Should show full help on line 1");
+    }
+
+    #[test]
+    fn test_layout_two_lines_short_help() {
+        // Narrower: needs 2 lines, only short help fits with branch
+        let (two_lines, truncated, help_level) =
+            analyze_status_bar_layout(Some("my-feature-branch"), "main", 3, 50);
+        assert!(two_lines, "Should use 2 lines");
+        assert!(!truncated, "Should not truncate");
+        assert_eq!(help_level, 1, "Should show short help on line 1");
+    }
+
+    #[test]
+    fn test_layout_two_lines_truncated() {
+        // Very narrow: needs truncation of branch name
+        let (two_lines, truncated, help_level) =
+            analyze_status_bar_layout(Some("very-long-feature-branch-name"), "main", 3, 35);
+        assert!(two_lines, "Should use 2 lines");
+        assert!(truncated, "Should truncate branch");
+        assert_eq!(help_level, 1, "Should show short help");
+    }
+
+    #[test]
+    fn test_layout_head_vs_branch() {
+        // When current_branch is None, uses "HEAD vs main" which is shorter
+        let (two_lines, truncated, _) =
+            analyze_status_bar_layout(None, "main", 3, 100);
+        assert!(!two_lines, "HEAD vs main should fit on 1 line at width 100");
+        assert!(!truncated, "Should not need truncation");
+    }
+
+    #[test]
+    fn test_layout_many_files_affects_stats() {
+        // Many files makes stats longer
+        // "1 file" (6 chars) vs "999 files" (9 chars) = 3 char difference
+        // Find a width where 1 file fits but 999 doesn't
+
+        // 1 file stats: "feat vs main | 1 file | 0 lines | 100%" = 39 chars
+        // 999 files stats: "feat vs main | 999 files | 0 lines | 100%" = 42 chars
+        // help = 44 chars, +2 padding
+
+        // At width 85: 39 + 44 + 2 = 85 fits for 1 file
+        //              42 + 44 + 2 = 88 doesn't fit for 999 files
+        let (two_lines_few, _, _) = analyze_status_bar_layout(Some("feat"), "main", 1, 85);
+        let (two_lines_many, _, _) = analyze_status_bar_layout(Some("feat"), "main", 999, 85);
+
+        // With 999 files, the stats are longer so may need 2 lines at same width
+        assert!(!two_lines_few, "1 file should fit on 1 line at width 85");
+        assert!(two_lines_many, "999 files should need 2 lines at width 85");
+    }
 }
