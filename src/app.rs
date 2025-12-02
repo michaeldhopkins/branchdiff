@@ -311,7 +311,7 @@ impl App {
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
-    fn changed_line_count(&self) -> usize {
+    pub fn changed_line_count(&self) -> usize {
         self.lines.iter().filter(|line| {
             matches!(
                 line.source,
@@ -473,32 +473,6 @@ impl App {
             let max_scroll = line_count - self.viewport_height;
             ((self.scroll_offset as f64 / max_scroll as f64) * 100.0) as u16
         }
-    }
-
-    pub fn status_text(&self) -> String {
-        let branch_info = match &self.current_branch {
-            Some(b) => format!("{} vs {}", b, self.base_branch),
-            None => format!("HEAD vs {}", self.base_branch),
-        };
-
-        let file_count = self.files.len();
-        let line_count = self.changed_line_count();
-        let mode = match self.view_mode {
-            ViewMode::Full => "",
-            ViewMode::Context => " [context]",
-            ViewMode::ChangesOnly => " [changes]",
-        };
-
-        format!(
-            "{} | {} file{} | {} line{}{} | {}%",
-            branch_info,
-            file_count,
-            if file_count == 1 { "" } else { "s" },
-            line_count,
-            if line_count == 1 { "" } else { "s" },
-            mode,
-            self.scroll_percentage()
-        )
     }
 
     pub fn toggle_help(&mut self) {
