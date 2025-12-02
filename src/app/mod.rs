@@ -6,7 +6,7 @@ mod selection;
 mod view_mode;
 
 pub use refresh::{compute_refresh, RefreshResult};
-pub use selection::{Position, Selection};
+pub use selection::Selection;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
