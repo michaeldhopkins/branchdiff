@@ -11,7 +11,11 @@ mod output;
 mod provenance;
 
 // Re-export public types
-pub use inline::{compute_inline_diff_merged, InlineDiffResult, InlineSpan};
+pub use inline::InlineSpan;
+
+// Re-export for tests (also used internally via use statements)
+#[allow(unused_imports)]
+pub(crate) use inline::compute_inline_diff_merged;
 
 // Internal imports for the algorithm
 use output::{build_working_line_output, determine_deletion_source};
