@@ -3,7 +3,7 @@ name = "branchdiff"
 version = "0.1.0"
 edition = "2021"
 description = "Terminal UI showing unified diff of current branch vs main/master"
-license = "MIT"
+license = "UNLICENSED"
 
 [dependencies]
 ratatui = "0.29"

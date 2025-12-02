@@ -43,4 +43,4 @@ branchdiff [path]
 
 ## License
 
-MIT
+All rights reserved. Copyright (c) 2025 Michael Hopkins.
