@@ -30,6 +30,8 @@ pub fn wrap_content(
             logical_idx,
             kind,
             content: content.to_string(),
+            is_file_header: false,
+            file_path: None,
         };
 
         return (vec![Line::from(spans)], vec![row_info]);
@@ -73,6 +75,8 @@ pub fn wrap_content(
                     logical_idx,
                     kind: row_kind,
                     content: std::mem::take(&mut current_content),
+                    is_file_header: false,
+                    file_path: None,
                 });
 
                 current_width = 0;
@@ -110,6 +114,8 @@ pub fn wrap_content(
                     logical_idx,
                     kind: row_kind,
                     content: std::mem::take(&mut current_content),
+                    is_file_header: false,
+                    file_path: None,
                 });
 
                 current_width = 0;
@@ -135,6 +141,8 @@ pub fn wrap_content(
             logical_idx,
             kind: row_kind,
             content: current_content,
+            is_file_header: false,
+            file_path: None,
         });
     }
 
