@@ -52,7 +52,7 @@ pub fn draw_no_changes(frame: &mut Frame, base_branch: &str, area: Rect) {
 pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
     // Center the modal
     let modal_width = 50u16;
-    let modal_height = 22u16;
+    let modal_height = 23u16;
 
     let x = area.width.saturating_sub(modal_width) / 2;
     let y = area.height.saturating_sub(modal_height) / 2;
@@ -100,6 +100,10 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("    Mouse drag  ", Style::default().fg(Color::Cyan)),
             Span::raw(" Select text"),
+        ]),
+        Line::from(vec![
+            Span::styled("    Click header", Style::default().fg(Color::Cyan)),
+            Span::raw(" Collapse/expand file"),
         ]),
         Line::from(""),
         Line::from(vec![

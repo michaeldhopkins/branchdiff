@@ -8,6 +8,7 @@ mod view_mode;
 pub use refresh::{compute_refresh, RefreshResult};
 pub use selection::Selection;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -62,6 +63,8 @@ pub struct App {
     pub conflict_warning: Option<String>,
     /// Mapping from screen row index to logical line info (set during rendering)
     pub row_map: Vec<ScreenRowInfo>,
+    /// Set of collapsed file paths (persists across refreshes)
+    pub collapsed_files: HashSet<String>,
 }
 
 impl App {
@@ -94,10 +97,25 @@ impl App {
             content_width: 80,
             conflict_warning: None,
             row_map: Vec::new(),
+            collapsed_files: HashSet::new(),
         };
 
         app.refresh()?;
         Ok(app)
+    }
+
+    /// Toggle the collapse state of a file
+    pub fn toggle_file_collapsed(&mut self, path: &str) {
+        if self.collapsed_files.contains(path) {
+            self.collapsed_files.remove(path);
+        } else {
+            self.collapsed_files.insert(path.to_string());
+        }
+    }
+
+    /// Check if a file is collapsed
+    pub fn is_file_collapsed(&self, path: &str) -> bool {
+        self.collapsed_files.contains(path)
     }
 
     pub fn refresh(&mut self) -> Result<()> {
@@ -169,6 +187,7 @@ mod tests {
             content_width: 80,
             conflict_warning: None,
             row_map: Vec::new(),
+            collapsed_files: HashSet::new(),
         }
     }
 
@@ -848,105 +867,6 @@ mod tests {
         let last_visible = visible.last().unwrap();
         assert_eq!(last_visible.content, "end", "Last visible should be 'end'");
         assert_eq!(last_visible.source, LineSource::Base, "Last visible should be Base");
-    }
-
-    #[test]
-    #[ignore]  // Run with: cargo test test_real_mbc_repo -- --ignored --nocapture
-    fn test_real_mbc_repo() {
-        // Integration test against real MBC repo
-        let repo_path = std::path::PathBuf::from("/Users/michaelhopkins/projects/merchantsbonding/mbc");
-        if !repo_path.exists() {
-            eprintln!("Skipping: MBC repo not found at {:?}", repo_path);
-            return;
-        }
-
-        let repo_root = match crate::git::get_repo_root(&repo_path) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Skipping: Not a git repo: {:?}", e);
-                return;
-            }
-        };
-
-        let app = match App::new(repo_root) {
-            Ok(a) => a,
-            Err(e) => {
-                eprintln!("Skipping: Failed to create app: {:?}", e);
-                return;
-            }
-        };
-
-        eprintln!("\n=== REAL MBC REPO DEBUG ===");
-        eprintln!("Total RAW lines: {}", app.lines.len());
-        eprintln!("View mode (default): {:?}", app.view_mode);
-
-        // Find lines related to premium_due_notice_spec.rb
-        eprintln!("\nSearching for premium_due_notice lines...");
-        let mut found_file = false;
-        let mut in_file = false;
-        let mut file_lines = Vec::new();
-
-        for (i, line) in app.lines.iter().enumerate() {
-            if line.source == LineSource::FileHeader && line.content.contains("premium_due_notice") {
-                found_file = true;
-                in_file = true;
-                eprintln!("Found file at line {}: {:?}", i, line.content);
-            }
-            if in_file {
-                file_lines.push((i, line.clone()));
-                if line.source == LineSource::FileHeader && !line.content.contains("premium_due_notice") {
-                    in_file = false;
-                }
-            }
-        }
-
-        if found_file {
-            eprintln!("\nLines in/around premium_due_notice_spec.rb ({} total):", file_lines.len());
-            let start = file_lines.len().saturating_sub(20);
-            for (orig_idx, line) in file_lines.iter().skip(start) {
-                eprintln!("  raw[{}] {} {:?} num={:?} '{}'",
-                    orig_idx, line.prefix, line.source, line.line_number,
-                    if line.content.len() > 60 { &line.content[..60] } else { &line.content });
-            }
-        } else {
-            eprintln!("premium_due_notice_spec.rb NOT found in diff!");
-        }
-
-        // Now check displayable lines
-        let displayable = app.displayable_lines();
-        eprintln!("\nTotal DISPLAYABLE lines: {}", displayable.len());
-
-        eprintln!("\nLast 20 DISPLAYABLE lines:");
-        let start = displayable.len().saturating_sub(20);
-        for (i, line) in displayable.iter().skip(start).enumerate() {
-            eprintln!("  disp[{}] {} {:?} num={:?} '{}'",
-                start + i, line.prefix, line.source, line.line_number,
-                if line.content.len() > 60 { &line.content[..60] } else { &line.content });
-        }
-
-        // The test: last line should be "end"
-        let last = displayable.last().expect("Should have displayable lines");
-        eprintln!("\nLast displayable line: {:?} '{}'", last.source, last.content);
-
-        // Simulate viewport and scrolling
-        let mut app_mut = app;
-        app_mut.viewport_height = 20; // Simulated viewport
-
-        eprintln!("\nScroll test with viewport_height=20:");
-        eprintln!("  displayable_line_count: {}", displayable.len());
-        app_mut.go_to_bottom();
-        eprintln!("  After go_to_bottom, scroll_offset: {}", app_mut.scroll_offset);
-
-        let visible = app_mut.visible_lines();
-        eprintln!("  visible_lines count: {}", visible.len());
-        eprintln!("  Visible lines:");
-        for (i, line) in visible.iter().enumerate() {
-            eprintln!("    [{}] {} {:?} num={:?} '{}'",
-                i, line.prefix, line.source, line.line_number,
-                if line.content.len() > 50 { &line.content[..50] } else { &line.content });
-        }
-
-        eprintln!("\n=== END REAL MBC REPO DEBUG ===");
     }
 
     #[test]
