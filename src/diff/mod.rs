@@ -38,6 +38,10 @@ pub enum LineSource {
     DeletedCommitted,
     /// Deleted from staged (was staged, deleted in working tree)
     DeletedStaged,
+    /// Added in commit but then removed in working tree (canceled change)
+    CanceledCommitted,
+    /// Added in staging but then removed in working tree (canceled change)
+    CanceledStaged,
     /// File header line
     FileHeader,
     /// Elided lines indicator (used in context-only view)
@@ -165,15 +169,76 @@ pub fn compute_file_diff_v2(
         return FileDiff { lines };
     }
 
-    if base == working {
-        return FileDiff { lines };
-    }
-
     // Build line vectors
     let base_lines: Vec<&str> = base.lines().collect();
     let head_lines: Vec<&str> = head.lines().collect();
     let index_lines: Vec<&str> = index.lines().collect();
     let working_lines: Vec<&str> = working.lines().collect();
+
+    // Special case: if base == working, only show "canceled" lines
+    // (lines added in commits/staging but removed in working tree)
+    if base == working {
+        // Build provenance maps to find canceled lines
+        let head_from_base = build_provenance_map(&base_lines, &head_lines);
+        let index_from_head = build_provenance_map(&head_lines, &index_lines);
+        let working_from_index = build_provenance_map(&index_lines, &working_lines);
+
+        // Find canceled committed lines (in HEAD but not base, and not in working)
+        for (head_idx, head_line) in head_lines.iter().enumerate() {
+            if head_from_base.get(head_idx).copied().flatten().is_some() {
+                continue; // Line came from base, not a committed addition
+            }
+
+            // Check if HEAD line is in working via index
+            let mut in_working = false;
+            for (index_idx, &prov) in index_from_head.iter().enumerate() {
+                if prov == Some(head_idx) {
+                    for &working_prov in working_from_index.iter() {
+                        if working_prov == Some(index_idx) {
+                            in_working = true;
+                            break;
+                        }
+                    }
+                    if in_working { break; }
+                }
+            }
+
+            if !in_working {
+                lines.push(DiffLine::new(
+                    LineSource::CanceledCommitted,
+                    head_line.trim_end().to_string(),
+                    '±',
+                    None,
+                ).with_file_path(path));
+            }
+        }
+
+        // Find canceled staged lines (in INDEX but not head, and not in working)
+        for (index_idx, index_line) in index_lines.iter().enumerate() {
+            if index_from_head.get(index_idx).copied().flatten().is_some() {
+                continue; // Line came from head, not a staged addition
+            }
+
+            let mut in_working = false;
+            for &working_prov in working_from_index.iter() {
+                if working_prov == Some(index_idx) {
+                    in_working = true;
+                    break;
+                }
+            }
+
+            if !in_working {
+                lines.push(DiffLine::new(
+                    LineSource::CanceledStaged,
+                    index_line.trim_end().to_string(),
+                    '±',
+                    None,
+                ).with_file_path(path));
+            }
+        }
+
+        return FileDiff { lines };
+    }
 
     // =========================================================================
     // STEP 1: Build provenance maps (forward direction)
@@ -448,6 +513,81 @@ pub fn compute_file_diff_v2(
         next_base_deletion += 1;
     }
 
+    // =========================================================================
+    // STEP 6: Output "canceled" lines
+    // =========================================================================
+    // These are lines that were added in commits (HEAD) or staging (index) but
+    // then removed in the working tree. They don't appear in base OR working,
+    // so they would otherwise be invisible.
+
+    // Find HEAD lines that are:
+    // 1. Not from base (committed additions)
+    // 2. Not present in working (deleted/canceled)
+    for (head_idx, head_line) in head_lines.iter().enumerate() {
+        // Skip if this HEAD line came from base (it's not a committed addition)
+        if head_from_base.get(head_idx).copied().flatten().is_some() {
+            continue;
+        }
+
+        // Check if this HEAD line is present in working (via index)
+        // A HEAD line is "present" if: head -> index -> working chain exists
+        let mut in_working = false;
+        for (index_idx, &prov) in index_from_head.iter().enumerate() {
+            if prov == Some(head_idx) {
+                // This HEAD line is in index at index_idx
+                // Check if index_idx is in working
+                for &working_prov in working_from_index.iter() {
+                    if working_prov == Some(index_idx) {
+                        in_working = true;
+                        break;
+                    }
+                }
+                if in_working {
+                    break;
+                }
+            }
+        }
+
+        // If HEAD line is not in working, it's a canceled committed line
+        if !in_working {
+            lines.push(DiffLine::new(
+                LineSource::CanceledCommitted,
+                head_line.trim_end().to_string(),
+                '±',
+                None,
+            ).with_file_path(path));
+        }
+    }
+
+    // Find INDEX lines that are:
+    // 1. Not from head (staged additions)
+    // 2. Not present in working (deleted/canceled)
+    for (index_idx, index_line) in index_lines.iter().enumerate() {
+        // Skip if this INDEX line came from head (it's not a staged addition)
+        if index_from_head.get(index_idx).copied().flatten().is_some() {
+            continue;
+        }
+
+        // Check if this INDEX line is present in working
+        let mut in_working = false;
+        for &working_prov in working_from_index.iter() {
+            if working_prov == Some(index_idx) {
+                in_working = true;
+                break;
+            }
+        }
+
+        // If INDEX line is not in working, it's a canceled staged line
+        if !in_working {
+            lines.push(DiffLine::new(
+                LineSource::CanceledStaged,
+                index_line.trim_end().to_string(),
+                '±',
+                None,
+            ).with_file_path(path));
+        }
+    }
+
     FileDiff { lines }
 }
 
@@ -484,6 +624,44 @@ mod tests {
 
         assert!(!committed_lines.is_empty());
         assert!(committed_lines.iter().any(|l| l.content == "line3" && l.prefix == '+'));
+    }
+
+    #[test]
+    fn test_canceled_committed_line() {
+        // Line added in commit but deleted in working tree
+        let base = "line1\nline2";
+        let head = "line1\nline2\ncommitted_line";  // Added in commit
+        let working = "line1\nline2";  // Deleted in working tree (same as base)
+
+        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(working));
+
+        // Find the canceled line
+        let canceled_lines: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::CanceledCommitted)
+            .collect();
+
+        assert_eq!(canceled_lines.len(), 1, "Should have exactly one canceled line");
+        assert_eq!(canceled_lines[0].content, "committed_line");
+        assert_eq!(canceled_lines[0].prefix, '±');
+    }
+
+    #[test]
+    fn test_canceled_staged_line() {
+        // Line added in staging but deleted in working tree
+        let base = "line1\nline2";
+        let index = "line1\nline2\nstaged_line";  // Added in staging
+        let working = "line1\nline2";  // Deleted in working tree (same as base)
+
+        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(index), Some(working));
+
+        // Find the canceled line
+        let canceled_lines: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::CanceledStaged)
+            .collect();
+
+        assert_eq!(canceled_lines.len(), 1, "Should have exactly one canceled staged line");
+        assert_eq!(canceled_lines[0].content, "staged_line");
+        assert_eq!(canceled_lines[0].prefix, '±');
     }
 
     #[test]
