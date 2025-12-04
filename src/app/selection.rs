@@ -165,4 +165,26 @@ impl App {
             Ok(false)
         }
     }
+
+    /// Check if a screen position is on a file header, and return the file path if so
+    pub fn get_file_header_at(&self, screen_x: u16, screen_y: u16) -> Option<String> {
+        let (offset_x, offset_y) = self.content_offset;
+
+        // Check if within content area
+        if screen_x < offset_x || screen_y < offset_y {
+            return None;
+        }
+
+        let content_y = (screen_y - offset_y) as usize;
+
+        // Look up in row_map
+        if content_y < self.row_map.len() {
+            let row_info = &self.row_map[content_y];
+            if row_info.is_file_header {
+                return row_info.file_path.clone();
+            }
+        }
+
+        None
+    }
 }

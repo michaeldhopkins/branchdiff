@@ -3,6 +3,42 @@ use crate::diff::{DiffLine, LineSource};
 use super::{App, ViewMode};
 
 impl App {
+    /// Filter out lines belonging to collapsed files (keep headers)
+    fn filter_collapsed(&self, lines: Vec<DiffLine>) -> Vec<DiffLine> {
+        if self.collapsed_files.is_empty() {
+            return lines;
+        }
+
+        // Track current file as we iterate, since some lines (like Elided) don't have file_path
+        let mut current_file: Option<String> = None;
+        let mut result = Vec::new();
+
+        for line in lines {
+            // Update current file when we see a file header
+            if line.source == LineSource::FileHeader {
+                current_file = line.file_path.clone();
+                result.push(line); // Always show file headers
+                continue;
+            }
+
+            // Use line's file_path if available, otherwise use tracked current_file
+            let file_path = line.file_path.as_ref().or(current_file.as_ref());
+
+            // Hide lines from collapsed files
+            let should_show = if let Some(path) = file_path {
+                !self.collapsed_files.contains(path)
+            } else {
+                true
+            };
+
+            if should_show {
+                result.push(line);
+            }
+        }
+
+        result
+    }
+
     pub fn changed_line_count(&self) -> usize {
         self.lines.iter().filter(|line| {
             matches!(
@@ -18,11 +54,7 @@ impl App {
     }
 
     pub(super) fn displayable_line_count(&self) -> usize {
-        match self.view_mode {
-            ViewMode::Full => self.lines.len(),
-            ViewMode::Context => self.build_context_lines().len(),
-            ViewMode::ChangesOnly => self.build_changes_only_lines().len(),
-        }
+        self.displayable_lines().len()
     }
 
     /// Compute which original line indices are visible in context mode
@@ -126,11 +158,12 @@ impl App {
     }
 
     pub fn displayable_lines(&self) -> Vec<DiffLine> {
-        match self.view_mode {
+        let lines = match self.view_mode {
             ViewMode::Full => self.lines.clone(),
             ViewMode::Context => self.build_context_lines(),
             ViewMode::ChangesOnly => self.build_changes_only_lines(),
-        }
+        };
+        self.filter_collapsed(lines)
     }
 
     pub fn cycle_view_mode(&mut self) {

@@ -103,6 +103,12 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
             if !prefix_str.is_empty() {
                 spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
             }
+            // Add chevron indicator based on collapse state
+            let is_collapsed = diff_line.file_path.as_ref()
+                .map(|p| app.is_file_collapsed(p))
+                .unwrap_or(false);
+            let chevron = if is_collapsed { "▶ " } else { "▼ " };
+            spans.push(Span::styled(chevron, Style::default().fg(Color::DarkGray)));
             spans.push(Span::styled("── ", Style::default().fg(Color::DarkGray)));
             spans.push(Span::styled(diff_line.content.clone(), style));
             spans.push(Span::styled(" ──", Style::default().fg(Color::DarkGray)));
@@ -112,6 +118,8 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                 logical_idx: abs_line_idx,
                 kind: ScreenRowKind::Normal,
                 content: diff_line.content.clone(),
+                is_file_header: true,
+                file_path: diff_line.file_path.clone(),
             });
             screen_row_idx += 1;
             continue;
@@ -130,6 +138,8 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                 logical_idx: abs_line_idx,
                 kind: ScreenRowKind::Normal,
                 content: diff_line.content.clone(),
+                is_file_header: false,
+                file_path: diff_line.file_path.clone(),
             });
             screen_row_idx += 1;
             continue;

@@ -41,6 +41,10 @@ pub struct ScreenRowInfo {
     pub kind: ScreenRowKind,
     /// The actual text content of this screen row (for copy operations)
     pub content: String,
+    /// Whether this row is a file header (for collapse detection)
+    pub is_file_header: bool,
+    /// The file path this row belongs to (for collapse toggle)
+    pub file_path: Option<String>,
 }
 
 /// Draw the main UI
@@ -592,6 +596,7 @@ mod tests {
             content_width: 80,
             conflict_warning: None,
             row_map: Vec::new(),
+            collapsed_files: std::collections::HashSet::new(),
         }
     }
 

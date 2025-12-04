@@ -196,7 +196,14 @@ fn run_app<B: Backend>(
                 }
                 AppAction::ToggleHelp => app.toggle_help(),
                 AppAction::CycleViewMode => app.cycle_view_mode(),
-                AppAction::StartSelection(x, y) => app.start_selection(x, y),
+                AppAction::StartSelection(x, y) => {
+                    // Check if clicking on a file header - toggle collapse
+                    if let Some(file_path) = app.get_file_header_at(x, y) {
+                        app.toggle_file_collapsed(&file_path);
+                    } else {
+                        app.start_selection(x, y);
+                    }
+                }
                 AppAction::UpdateSelection(x, y) => app.update_selection(x, y),
                 AppAction::EndSelection => app.end_selection(),
                 AppAction::Copy => {
