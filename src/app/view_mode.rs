@@ -49,6 +49,8 @@ impl App {
                     | LineSource::DeletedBase
                     | LineSource::DeletedCommitted
                     | LineSource::DeletedStaged
+                    | LineSource::CanceledCommitted
+                    | LineSource::CanceledStaged
             )
         }).count()
     }
@@ -78,6 +80,8 @@ impl App {
                     LineSource::DeletedBase |
                     LineSource::DeletedCommitted |
                     LineSource::DeletedStaged |
+                    LineSource::CanceledCommitted |
+                    LineSource::CanceledStaged |
                     LineSource::FileHeader
                 )
             })
@@ -152,6 +156,8 @@ impl App {
                     | LineSource::DeletedBase
                     | LineSource::DeletedCommitted
                     | LineSource::DeletedStaged
+                    | LineSource::CanceledCommitted
+                    | LineSource::CanceledStaged
                     | LineSource::FileHeader
             )
         }).cloned().collect()

@@ -16,6 +16,8 @@ pub fn line_style(source: LineSource) -> Style {
         LineSource::DeletedStaged => Style::default()
             .fg(Color::Red)
             .add_modifier(Modifier::DIM),
+        LineSource::CanceledCommitted => Style::default().fg(Color::Magenta),
+        LineSource::CanceledStaged => Style::default().fg(Color::Magenta),
         LineSource::FileHeader => Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
