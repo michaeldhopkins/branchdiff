@@ -13,6 +13,35 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+/// File patterns that should be collapsed by default (lock files, generated files)
+const AUTO_COLLAPSE_PATTERNS: &[&str] = &[
+    // Ruby
+    "Gemfile.lock",
+    // JavaScript/Node
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lockb",
+    // Rust
+    "Cargo.lock",
+    // Python
+    "poetry.lock",
+    "Pipfile.lock",
+    "pdm.lock",
+    // PHP
+    "composer.lock",
+    // .NET
+    "packages.lock.json",
+    // Go
+    "go.sum",
+    // Elixir
+    "mix.lock",
+    // Swift
+    "Package.resolved",
+    // Dart/Flutter
+    "pubspec.lock",
+];
+
 use anyhow::Result;
 
 use crate::diff::{DiffLine, FileDiff};
@@ -118,6 +147,24 @@ impl App {
         self.collapsed_files.contains(path)
     }
 
+    /// Check if a file path matches any auto-collapse pattern
+    fn should_auto_collapse(path: &str) -> bool {
+        AUTO_COLLAPSE_PATTERNS.iter().any(|pattern| path.ends_with(pattern))
+    }
+
+    /// Auto-collapse files matching lock/generated file patterns
+    fn auto_collapse_lock_files(&mut self) {
+        for file in &self.files {
+            if let Some(first_line) = file.lines.first() {
+                if let Some(ref path) = first_line.file_path {
+                    if Self::should_auto_collapse(path) {
+                        self.collapsed_files.insert(path.clone());
+                    }
+                }
+            }
+        }
+    }
+
     pub fn refresh(&mut self) -> Result<()> {
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let result = compute_refresh(&self.repo_path, &self.base_branch, &cancel_flag)?;
@@ -131,6 +178,7 @@ impl App {
         self.current_branch = result.current_branch;
         self.files = result.files;
         self.lines = result.lines;
+        self.auto_collapse_lock_files();
         self.clamp_scroll();
     }
 
@@ -199,6 +247,91 @@ mod tests {
     /// Helper to create an unstaged (change) line
     fn change_line(content: &str) -> DiffLine {
         DiffLine::new(LineSource::Unstaged, content.to_string(), '+', None)
+    }
+
+    /// Helper to create a test app with files (for testing auto-collapse)
+    fn create_test_app_with_files(files: Vec<FileDiff>) -> App {
+        let lines: Vec<DiffLine> = files.iter()
+            .flat_map(|f| f.lines.clone())
+            .collect();
+        App {
+            repo_path: std::path::PathBuf::from("/tmp/test"),
+            base_branch: "main".to_string(),
+            merge_base: "abc123".to_string(),
+            current_branch: Some("feature".to_string()),
+            files,
+            lines,
+            scroll_offset: 0,
+            viewport_height: 10,
+            error: None,
+            show_help: false,
+            view_mode: ViewMode::Full,
+            selection: None,
+            content_offset: (1, 1),
+            line_num_width: 0,
+            content_width: 80,
+            conflict_warning: None,
+            row_map: Vec::new(),
+            collapsed_files: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn test_auto_collapse_lock_files() {
+        // Create files including a lock file
+        let gemfile_lock = FileDiff {
+            lines: vec![
+                DiffLine::file_header("Gemfile.lock"),
+                change_line("some lock content"),
+            ],
+        };
+        let regular_file = FileDiff {
+            lines: vec![
+                DiffLine::file_header("src/main.rs"),
+                change_line("some code"),
+            ],
+        };
+        let cargo_lock = FileDiff {
+            lines: vec![
+                DiffLine::file_header("Cargo.lock"),
+                change_line("more lock content"),
+            ],
+        };
+
+        let mut app = create_test_app_with_files(vec![gemfile_lock, regular_file, cargo_lock]);
+
+        // Initially nothing is collapsed
+        assert!(!app.is_file_collapsed("Gemfile.lock"));
+        assert!(!app.is_file_collapsed("src/main.rs"));
+        assert!(!app.is_file_collapsed("Cargo.lock"));
+
+        // After auto-collapse, lock files should be collapsed
+        app.auto_collapse_lock_files();
+
+        assert!(app.is_file_collapsed("Gemfile.lock"), "Gemfile.lock should be auto-collapsed");
+        assert!(!app.is_file_collapsed("src/main.rs"), "Regular files should not be collapsed");
+        assert!(app.is_file_collapsed("Cargo.lock"), "Cargo.lock should be auto-collapsed");
+    }
+
+    #[test]
+    fn test_should_auto_collapse_patterns() {
+        // Lock files should match
+        assert!(App::should_auto_collapse("Gemfile.lock"));
+        assert!(App::should_auto_collapse("package-lock.json"));
+        assert!(App::should_auto_collapse("yarn.lock"));
+        assert!(App::should_auto_collapse("Cargo.lock"));
+        assert!(App::should_auto_collapse("poetry.lock"));
+        assert!(App::should_auto_collapse("go.sum"));
+
+        // Nested paths should also match
+        assert!(App::should_auto_collapse("some/path/to/Gemfile.lock"));
+        assert!(App::should_auto_collapse("frontend/package-lock.json"));
+
+        // Regular files should not match
+        assert!(!App::should_auto_collapse("src/main.rs"));
+        assert!(!App::should_auto_collapse("Gemfile"));
+        assert!(!App::should_auto_collapse("package.json"));
+        assert!(!App::should_auto_collapse("Cargo.toml"));
     }
 
     #[test]
