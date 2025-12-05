@@ -9,13 +9,11 @@ pub fn line_style(source: LineSource) -> Style {
         LineSource::Committed => Style::default().fg(Color::Cyan),
         LineSource::Staged => Style::default().fg(Color::Green),
         LineSource::Unstaged => Style::default().fg(Color::Yellow),
-        LineSource::DeletedBase => Style::default().fg(Color::Red),
-        LineSource::DeletedCommitted => Style::default()
+        LineSource::DeletedBase => Style::default()
             .fg(Color::Red)
             .add_modifier(Modifier::DIM),
-        LineSource::DeletedStaged => Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::DIM),
+        LineSource::DeletedCommitted => Style::default().fg(Color::Red),
+        LineSource::DeletedStaged => Style::default().fg(Color::Red),
         LineSource::CanceledCommitted => Style::default().fg(Color::Magenta),
         LineSource::CanceledStaged => Style::default().fg(Color::Magenta),
         LineSource::FileHeader => Style::default()
