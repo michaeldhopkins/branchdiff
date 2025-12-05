@@ -523,6 +523,7 @@ pub fn compute_file_diff_v2(
     // Find HEAD lines that are:
     // 1. Not from base (committed additions)
     // 2. Not present in working (deleted/canceled)
+    // 3. Not modified on the way to working (shown as inline diff)
     for (head_idx, head_line) in head_lines.iter().enumerate() {
         // Skip if this HEAD line came from base (it's not a committed addition)
         if head_from_base.get(head_idx).copied().flatten().is_some() {
@@ -535,15 +536,51 @@ pub fn compute_file_diff_v2(
         for (index_idx, &prov) in index_from_head.iter().enumerate() {
             if prov == Some(head_idx) {
                 // This HEAD line is in index at index_idx
-                // Check if index_idx is in working
+                // Check if index_idx is in working (via provenance or modification)
                 for &working_prov in working_from_index.iter() {
                     if working_prov == Some(index_idx) {
                         in_working = true;
                         break;
                     }
                 }
+                // Also check if index_idx was modified to become a working line
+                if !in_working {
+                    for (_, (src_idx, _)) in &index_working_mods {
+                        if *src_idx == index_idx {
+                            in_working = true;
+                            break;
+                        }
+                    }
+                }
                 if in_working {
                     break;
+                }
+            }
+        }
+
+        // Also check if this HEAD line was modified to become an INDEX line
+        // that is then present in working
+        if !in_working {
+            for (index_idx, (src_head_idx, _)) in &head_index_mods {
+                if *src_head_idx == head_idx {
+                    // HEAD was modified to this INDEX line - check if it's in working
+                    for &working_prov in working_from_index.iter() {
+                        if working_prov == Some(*index_idx) {
+                            in_working = true;
+                            break;
+                        }
+                    }
+                    if !in_working {
+                        for (_, (src_idx, _)) in &index_working_mods {
+                            if *src_idx == *index_idx {
+                                in_working = true;
+                                break;
+                            }
+                        }
+                    }
+                    if in_working {
+                        break;
+                    }
                 }
             }
         }
@@ -562,18 +599,28 @@ pub fn compute_file_diff_v2(
     // Find INDEX lines that are:
     // 1. Not from head (staged additions)
     // 2. Not present in working (deleted/canceled)
+    // 3. Not modified on the way to working (shown as inline diff)
     for (index_idx, index_line) in index_lines.iter().enumerate() {
         // Skip if this INDEX line came from head (it's not a staged addition)
         if index_from_head.get(index_idx).copied().flatten().is_some() {
             continue;
         }
 
-        // Check if this INDEX line is present in working
+        // Check if this INDEX line is present in working (via provenance or modification)
         let mut in_working = false;
         for &working_prov in working_from_index.iter() {
             if working_prov == Some(index_idx) {
                 in_working = true;
                 break;
+            }
+        }
+        // Also check if this INDEX line was modified to become a working line
+        if !in_working {
+            for (_, (src_idx, _)) in &index_working_mods {
+                if *src_idx == index_idx {
+                    in_working = true;
+                    break;
+                }
             }
         }
 
@@ -662,6 +709,42 @@ mod tests {
         assert_eq!(canceled_lines.len(), 1, "Should have exactly one canceled staged line");
         assert_eq!(canceled_lines[0].content, "staged_line");
         assert_eq!(canceled_lines[0].prefix, '±');
+    }
+
+    #[test]
+    fn test_committed_then_modified_not_canceled() {
+        // Line added in commit, then modified in working tree
+        // Should show as inline diff, NOT as canceled line
+        let base = "line1\nline2";
+        let head = "line1\nline2\nversion1";  // Added in commit
+        let working = "line1\nline2\nversion2";  // Modified in working tree
+
+        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(working));
+
+        // Should NOT have a canceled line - the committed line was modified, not canceled
+        let canceled_lines: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::CanceledCommitted)
+            .collect();
+
+        assert_eq!(canceled_lines.len(), 0, "Should not have canceled line when committed line is modified in working tree");
+    }
+
+    #[test]
+    fn test_staged_then_modified_not_canceled() {
+        // Line added in staging, then modified in working tree
+        // Should show as inline diff, NOT as canceled line
+        let base = "line1\nline2";
+        let index = "line1\nline2\nversion1";  // Added in staging
+        let working = "line1\nline2\nversion2";  // Modified in working tree
+
+        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(index), Some(working));
+
+        // Should NOT have a canceled line - the staged line was modified, not canceled
+        let canceled_lines: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::CanceledStaged)
+            .collect();
+
+        assert_eq!(canceled_lines.len(), 0, "Should not have canceled line when staged line is modified in working tree");
     }
 
     #[test]
