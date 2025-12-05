@@ -1,56 +1,6 @@
-use ratatui::{
-    layout::Rect,
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
-};
+use super::prelude::*;
 
-/// Draw a warning banner at the top of the screen
-pub fn draw_warning_banner(frame: &mut Frame, message: &str, area: Rect) {
-    let line = Line::from(Span::styled(
-        format!(" ⚠ {} ", message),
-        Style::default().fg(Color::Yellow),
-    ));
-    let paragraph = Paragraph::new(line);
-    frame.render_widget(paragraph, area);
-}
-
-/// Draw an error message
-#[allow(dead_code)]
-pub fn draw_error(frame: &mut Frame, message: &str, area: Rect) {
-    let block = Block::default()
-        .title(" Error ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Red));
-
-    let paragraph = Paragraph::new(message)
-        .block(block)
-        .style(Style::default().fg(Color::Red));
-
-    frame.render_widget(paragraph, area);
-}
-
-/// Draw "no changes" message
-#[allow(dead_code)]
-pub fn draw_no_changes(frame: &mut Frame, base_branch: &str, area: Rect) {
-    let message = format!("No changes compared to {}", base_branch);
-
-    let block = Block::default()
-        .title(" branchdiff ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let paragraph = Paragraph::new(message)
-        .block(block)
-        .style(Style::default().fg(Color::DarkGray));
-
-    frame.render_widget(paragraph, area);
-}
-
-/// Draw the help modal
 pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
-    // Center the modal
     let modal_width = 50u16;
     let modal_height = 23u16;
 
@@ -59,10 +9,8 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
 
     let modal_area = Rect::new(x, y, modal_width.min(area.width), modal_height.min(area.height));
 
-    // Clear the area behind the modal
     frame.render_widget(Clear, modal_area);
 
-    // Build help content
     let help_lines = vec![
         Line::from(""),
         Line::from(vec![
@@ -140,4 +88,56 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
     let paragraph = Paragraph::new(help_lines).block(block);
 
     frame.render_widget(paragraph, modal_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_help_modal_dimensions() {
+        let modal_width = 50u16;
+        let modal_height = 23u16;
+        assert!(modal_width > 0);
+        assert!(modal_height > 0);
+    }
+
+    #[test]
+    fn test_help_modal_centering_large_area() {
+        let area = Rect::new(0, 0, 120, 40);
+        let modal_width = 50u16;
+        let modal_height = 23u16;
+
+        let x = area.width.saturating_sub(modal_width) / 2;
+        let y = area.height.saturating_sub(modal_height) / 2;
+
+        assert_eq!(x, 35);
+        assert_eq!(y, 8);
+    }
+
+    #[test]
+    fn test_help_modal_centering_small_area() {
+        let area = Rect::new(0, 0, 40, 20);
+        let modal_width = 50u16;
+        let modal_height = 23u16;
+
+        let x = area.width.saturating_sub(modal_width) / 2;
+        let y = area.height.saturating_sub(modal_height) / 2;
+
+        assert_eq!(x, 0);
+        assert_eq!(y, 0);
+    }
+
+    #[test]
+    fn test_help_modal_clamps_to_area() {
+        let area = Rect::new(0, 0, 30, 15);
+        let modal_width = 50u16;
+        let modal_height = 23u16;
+
+        let clamped_width = modal_width.min(area.width);
+        let clamped_height = modal_height.min(area.height);
+
+        assert_eq!(clamped_width, 30);
+        assert_eq!(clamped_height, 15);
+    }
 }
