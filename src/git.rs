@@ -54,6 +54,13 @@ pub fn detect_base_branch(repo_path: &Path) -> Result<String> {
     Err(anyhow!("Could not find 'main' or 'master' branch"))
 }
 
+/// Get the merge-base between HEAD and the base branch, preferring origin
+pub fn get_merge_base_preferring_origin(repo_path: &Path, base_branch: &str) -> Result<String> {
+    let remote_ref = format!("origin/{}", base_branch);
+    get_merge_base(repo_path, &remote_ref)
+        .or_else(|_| get_merge_base(repo_path, base_branch))
+}
+
 /// Get the merge-base between the base branch and HEAD
 pub fn get_merge_base(repo_path: &Path, base_branch: &str) -> Result<String> {
     let output = Command::new("git")
@@ -213,20 +220,48 @@ pub fn is_binary_file(repo_path: &Path, file_path: &str) -> bool {
 }
 
 pub fn fetch_base_branch(repo_path: &Path, base_branch: &str) -> Result<()> {
-    let output = Command::new("git")
-        .args(["fetch", "origin", base_branch])
+    use std::time::Duration;
+    use std::io::Read;
+
+    let current = get_current_branch(repo_path).ok().flatten();
+    let on_base_branch = current.as_deref() == Some(base_branch);
+
+    let refspec = format!("{}:{}", base_branch, base_branch);
+    let fetch_arg = if on_base_branch { base_branch } else { &refspec };
+
+    let mut child = Command::new("git")
+        .args(["-c", "gc.auto=0", "fetch", "--no-tags", "origin", fetch_arg])
         .current_dir(repo_path)
-        .output()
-        .context("Failed to run git fetch")?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn git fetch")?;
 
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git fetch failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    let timeout = Duration::from_secs(30);
+    let start = std::time::Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    let mut stderr = String::new();
+                    if let Some(mut err) = child.stderr.take() {
+                        let _ = err.read_to_string(&mut stderr);
+                    }
+                    return Err(anyhow!("git fetch failed: {}", stderr));
+                }
+                return Ok(());
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    return Err(anyhow!("git fetch timed out"));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(anyhow!("Error waiting for git fetch: {}", e)),
+        }
     }
-
-    Ok(())
 }
 
 pub fn has_merge_conflicts(repo_path: &Path, base_branch: &str) -> Result<bool> {
@@ -390,5 +425,70 @@ mod tests {
 
         assert!(paths.contains(&"new_folder/file1.txt"));
         assert!(paths.contains(&"new_folder/file2.txt"));
+    }
+
+    #[test]
+    fn test_fetch_updates_local_branch_when_not_checked_out() {
+        let (origin, clone) = create_repo_with_origin();
+
+        git_cmd(clone.path(), &["checkout", "-b", "feature"]);
+
+        let local_before = Command::new("git")
+            .args(["rev-parse", "main"])
+            .current_dir(clone.path())
+            .output()
+            .unwrap();
+        let before_sha = String::from_utf8_lossy(&local_before.stdout).trim().to_string();
+
+        fs::write(origin.path().join("new.txt"), "origin update\n").unwrap();
+        git_cmd(origin.path(), &["add", "."]);
+        git_cmd(origin.path(), &["commit", "-m", "origin update"]);
+
+        fetch_base_branch(clone.path(), "main").unwrap();
+
+        let local_after = Command::new("git")
+            .args(["rev-parse", "main"])
+            .current_dir(clone.path())
+            .output()
+            .unwrap();
+        let after_sha = String::from_utf8_lossy(&local_after.stdout).trim().to_string();
+
+        assert_ne!(before_sha, after_sha, "local main should update after fetch when not checked out");
+
+        let origin_sha = Command::new("git")
+            .args(["rev-parse", "origin/main"])
+            .current_dir(clone.path())
+            .output()
+            .unwrap();
+        let origin_sha = String::from_utf8_lossy(&origin_sha.stdout).trim().to_string();
+
+        assert_eq!(after_sha, origin_sha, "local main should match origin/main after fetch");
+    }
+
+    #[test]
+    fn test_fetch_updates_origin_when_on_base_branch() {
+        let (origin, clone) = create_repo_with_origin();
+
+        let origin_before = Command::new("git")
+            .args(["rev-parse", "origin/main"])
+            .current_dir(clone.path())
+            .output()
+            .unwrap();
+        let before_sha = String::from_utf8_lossy(&origin_before.stdout).trim().to_string();
+
+        fs::write(origin.path().join("new.txt"), "origin update\n").unwrap();
+        git_cmd(origin.path(), &["add", "."]);
+        git_cmd(origin.path(), &["commit", "-m", "origin update"]);
+
+        fetch_base_branch(clone.path(), "main").unwrap();
+
+        let origin_after = Command::new("git")
+            .args(["rev-parse", "origin/main"])
+            .current_dir(clone.path())
+            .output()
+            .unwrap();
+        let after_sha = String::from_utf8_lossy(&origin_after.stdout).trim().to_string();
+
+        assert_ne!(before_sha, after_sha, "origin/main should update after fetch even when on main");
     }
 }
