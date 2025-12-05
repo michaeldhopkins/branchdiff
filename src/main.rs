@@ -2,6 +2,7 @@ mod app;
 mod diff;
 mod git;
 mod input;
+mod print;
 mod ui;
 
 use std::io;
@@ -39,6 +40,10 @@ struct Cli {
     /// Disable automatic fetching of base branch
     #[arg(long)]
     no_auto_fetch: bool,
+
+    /// Print diff to stdout and exit (non-interactive mode)
+    #[arg(short = 'p', long = "print")]
+    print: bool,
 }
 
 pub struct FetchResult {
@@ -57,6 +62,15 @@ fn main() -> Result<()> {
 
     // Verify it's a git repo
     let repo_root = git::get_repo_root(&repo_path).context("Not a git repository")?;
+
+    // Non-interactive mode: print and exit
+    if cli.print {
+        let mut app = app::App::new(repo_root)?;
+        app.collapsed_files.clear();
+        app.view_mode = app::ViewMode::Full;
+        print::print_diff(&app)?;
+        return Ok(());
+    }
 
     // Setup terminal
     enable_raw_mode()?;

@@ -25,6 +25,15 @@ cargo install --path .
 branchdiff [path]
 ```
 
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `-p`, `--print` | Print diff to stdout and exit (non-interactive mode) |
+| `--no-auto-fetch` | Disable automatic fetching of base branch |
+| `-h`, `--help` | Print help |
+| `-V`, `--version` | Print version |
+
 ## Keybindings
 
 | Key | Action |
