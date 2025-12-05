@@ -514,11 +514,17 @@ pub fn compute_file_diff_v2(
     }
 
     // =========================================================================
-    // STEP 6: Output "canceled" lines
+    // STEP 6: Collect "canceled" lines (will be inserted in position later)
     // =========================================================================
     // These are lines that were added in commits (HEAD) or staging (index) but
     // then removed in the working tree. They don't appear in base OR working,
     // so they would otherwise be invisible.
+    //
+    // We collect them here with their HEAD/INDEX position, then insert them
+    // at the appropriate position in the output.
+
+    // Canceled committed lines: (head_idx, line content)
+    let mut canceled_committed: Vec<(usize, String)> = Vec::new();
 
     // Find HEAD lines that are:
     // 1. Not from base (committed additions)
@@ -585,16 +591,14 @@ pub fn compute_file_diff_v2(
             }
         }
 
-        // If HEAD line is not in working, it's a canceled committed line
+        // If HEAD line is not in working, collect it as canceled
         if !in_working {
-            lines.push(DiffLine::new(
-                LineSource::CanceledCommitted,
-                head_line.trim_end().to_string(),
-                '±',
-                None,
-            ).with_file_path(path));
+            canceled_committed.push((head_idx, head_line.trim_end().to_string()));
         }
     }
+
+    // Canceled staged lines: (index_idx, line content)
+    let mut canceled_staged: Vec<(usize, String)> = Vec::new();
 
     // Find INDEX lines that are:
     // 1. Not from head (staged additions)
@@ -624,15 +628,78 @@ pub fn compute_file_diff_v2(
             }
         }
 
-        // If INDEX line is not in working, it's a canceled staged line
+        // If INDEX line is not in working, collect it as canceled
         if !in_working {
-            lines.push(DiffLine::new(
-                LineSource::CanceledStaged,
-                index_line.trim_end().to_string(),
-                '±',
-                None,
-            ).with_file_path(path));
+            canceled_staged.push((index_idx, index_line.trim_end().to_string()));
         }
+    }
+
+    // =========================================================================
+    // STEP 7: Insert canceled lines at their appropriate positions
+    // =========================================================================
+    // We need to find where each canceled line should appear in the output.
+    // A canceled line should appear near its original position in HEAD/INDEX.
+    //
+    // Strategy: For each canceled line, find the nearest preceding line in the
+    // output that came from a similar position, and insert after it.
+
+    // First, build a map of output line indices to their HEAD positions
+    // We'll use this to find insertion points for canceled lines
+    let mut output_head_positions: Vec<Option<usize>> = Vec::new();
+    for line in &lines {
+        // Try to determine the HEAD position for this output line
+        // This is approximate - we use the line content to match
+        let head_pos = head_lines.iter().position(|h| h.trim_end() == line.content);
+        output_head_positions.push(head_pos);
+    }
+
+    // Insert canceled committed lines
+    for (head_idx, content) in canceled_committed.into_iter().rev() {
+        // Find the best insertion point: after the last output line with head_pos < head_idx
+        let mut insert_pos = lines.len(); // default: end of file
+        for (i, &pos) in output_head_positions.iter().enumerate().rev() {
+            if let Some(p) = pos {
+                if p < head_idx {
+                    insert_pos = i + 1;
+                    break;
+                }
+            }
+        }
+        let canceled_line = DiffLine::new(
+            LineSource::CanceledCommitted,
+            content,
+            '±',
+            None,
+        ).with_file_path(path);
+        lines.insert(insert_pos, canceled_line);
+        output_head_positions.insert(insert_pos, Some(head_idx));
+    }
+
+    // Insert canceled staged lines (similar logic but using INDEX positions)
+    let mut output_index_positions: Vec<Option<usize>> = Vec::new();
+    for line in &lines {
+        let index_pos = index_lines.iter().position(|h| h.trim_end() == line.content);
+        output_index_positions.push(index_pos);
+    }
+
+    for (index_idx, content) in canceled_staged.into_iter().rev() {
+        let mut insert_pos = lines.len();
+        for (i, &pos) in output_index_positions.iter().enumerate().rev() {
+            if let Some(p) = pos {
+                if p < index_idx {
+                    insert_pos = i + 1;
+                    break;
+                }
+            }
+        }
+        let canceled_line = DiffLine::new(
+            LineSource::CanceledStaged,
+            content,
+            '±',
+            None,
+        ).with_file_path(path);
+        lines.insert(insert_pos, canceled_line);
+        output_index_positions.insert(insert_pos, Some(index_idx));
     }
 
     FileDiff { lines }
