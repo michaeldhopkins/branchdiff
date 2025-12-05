@@ -597,6 +597,7 @@ mod tests {
             conflict_warning: None,
             row_map: Vec::new(),
             collapsed_files: std::collections::HashSet::new(),
+            manually_toggled: std::collections::HashSet::new(),
         }
     }
 

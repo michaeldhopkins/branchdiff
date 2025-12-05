@@ -94,6 +94,8 @@ pub struct App {
     pub row_map: Vec<ScreenRowInfo>,
     /// Set of collapsed file paths (persists across refreshes)
     pub collapsed_files: HashSet<String>,
+    /// Set of files that have been manually toggled (won't be auto-collapsed)
+    pub manually_toggled: HashSet<String>,
 }
 
 impl App {
@@ -127,6 +129,7 @@ impl App {
             conflict_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
+            manually_toggled: HashSet::new(),
         };
 
         app.refresh()?;
@@ -135,6 +138,7 @@ impl App {
 
     /// Toggle the collapse state of a file
     pub fn toggle_file_collapsed(&mut self, path: &str) {
+        self.manually_toggled.insert(path.to_string());
         if self.collapsed_files.contains(path) {
             self.collapsed_files.remove(path);
         } else {
@@ -153,11 +157,12 @@ impl App {
     }
 
     /// Auto-collapse files matching lock/generated file patterns
+    /// Skips files that have been manually toggled by the user
     fn auto_collapse_lock_files(&mut self) {
         for file in &self.files {
             if let Some(first_line) = file.lines.first() {
                 if let Some(ref path) = first_line.file_path {
-                    if Self::should_auto_collapse(path) {
+                    if Self::should_auto_collapse(path) && !self.manually_toggled.contains(path) {
                         self.collapsed_files.insert(path.clone());
                     }
                 }
@@ -236,6 +241,7 @@ mod tests {
             conflict_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
+            manually_toggled: HashSet::new(),
         }
     }
 
@@ -273,6 +279,7 @@ mod tests {
             conflict_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
+            manually_toggled: HashSet::new(),
         }
     }
 
@@ -311,6 +318,27 @@ mod tests {
         assert!(app.is_file_collapsed("Gemfile.lock"), "Gemfile.lock should be auto-collapsed");
         assert!(!app.is_file_collapsed("src/main.rs"), "Regular files should not be collapsed");
         assert!(app.is_file_collapsed("Cargo.lock"), "Cargo.lock should be auto-collapsed");
+    }
+
+    #[test]
+    fn test_manually_toggled_files_not_auto_collapsed() {
+        let gemfile_lock = FileDiff {
+            lines: vec![
+                DiffLine::file_header("Gemfile.lock"),
+                change_line("some lock content"),
+            ],
+        };
+
+        let mut app = create_test_app_with_files(vec![gemfile_lock]);
+
+        app.auto_collapse_lock_files();
+        assert!(app.is_file_collapsed("Gemfile.lock"), "should be auto-collapsed initially");
+
+        app.toggle_file_collapsed("Gemfile.lock");
+        assert!(!app.is_file_collapsed("Gemfile.lock"), "should be expanded after toggle");
+
+        app.auto_collapse_lock_files();
+        assert!(!app.is_file_collapsed("Gemfile.lock"), "should stay expanded after re-running auto-collapse");
     }
 
     #[test]
