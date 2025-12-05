@@ -231,6 +231,7 @@ mod tests {
             conflict_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
+            manually_toggled: HashSet::new(),
         };
 
         let result = print_diff(&app);
