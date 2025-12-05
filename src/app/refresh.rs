@@ -19,7 +19,8 @@ pub fn compute_refresh(
     base_branch: &str,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<RefreshResult> {
-    let merge_base = git::get_merge_base(repo_path, base_branch).unwrap_or_default();
+    let merge_base = git::get_merge_base_preferring_origin(repo_path, base_branch)
+        .unwrap_or_default();
 
     if cancel_flag.load(Ordering::Relaxed) {
         return Err(anyhow::anyhow!("refresh cancelled"));

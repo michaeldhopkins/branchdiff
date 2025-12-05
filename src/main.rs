@@ -150,8 +150,8 @@ fn spawn_fetch(
             let has_conflicts = git::has_merge_conflicts(&repo_path, &base_branch)
                 .unwrap_or(false);
 
-            let remote_ref = format!("origin/{}", base_branch);
-            let new_merge_base = git::get_merge_base(&repo_path, &remote_ref).ok();
+            let new_merge_base = git::get_merge_base_preferring_origin(&repo_path, &base_branch)
+                .ok();
 
             let _ = fetch_tx.send(FetchResult {
                 has_conflicts,

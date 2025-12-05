@@ -102,7 +102,7 @@ impl App {
         let base_branch = git::detect_base_branch(&repo_path)
             .unwrap_or_else(|_| "main".to_string());
 
-        let merge_base = git::get_merge_base(&repo_path, &base_branch)
+        let merge_base = git::get_merge_base_preferring_origin(&repo_path, &base_branch)
             .unwrap_or_default();
 
         let current_branch = git::get_current_branch(&repo_path)
