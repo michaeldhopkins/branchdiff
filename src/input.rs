@@ -3,35 +3,22 @@ use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind};
 /// Actions that can be performed in the app
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppAction {
-    /// Quit the application
     Quit,
-    /// Scroll up by n lines
     ScrollUp(usize),
-    /// Scroll down by n lines
     ScrollDown(usize),
-    /// Page up
     PageUp,
-    /// Page down
     PageDown,
-    /// Go to top
     GoToTop,
-    /// Go to bottom
     GoToBottom,
-    /// Refresh diffs
+    NextFile,
+    PrevFile,
     Refresh,
-    /// Toggle help modal
     ToggleHelp,
-    /// Cycle view mode (Full -> Context -> ChangesOnly)
     CycleViewMode,
-    /// Start text selection at coordinates
     StartSelection(u16, u16),
-    /// Update selection during drag
     UpdateSelection(u16, u16),
-    /// End selection (mouse released)
     EndSelection,
-    /// Copy selected text to clipboard
     Copy,
-    /// No action
     None,
 }
 
@@ -51,11 +38,11 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => AppAction::Quit,
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => AppAction::Quit,
 
-        // Scroll up
-        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => AppAction::ScrollUp(1),
+        (KeyCode::Up, _) => AppAction::ScrollUp(1),
+        (KeyCode::Down, _) => AppAction::ScrollDown(1),
 
-        // Scroll down
-        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => AppAction::ScrollDown(1),
+        (KeyCode::Char('j'), _) => AppAction::NextFile,
+        (KeyCode::Char('k'), _) => AppAction::PrevFile,
 
         // Page up
         (KeyCode::PageUp, _) => AppAction::PageUp,
@@ -146,13 +133,6 @@ mod tests {
         assert_eq!(handle_event(event), AppAction::Quit);
     }
 
-    // Scroll tests
-    #[test]
-    fn test_scroll_up_with_k() {
-        let event = key_event(KeyCode::Char('k'), KeyModifiers::NONE);
-        assert_eq!(handle_event(event), AppAction::ScrollUp(1));
-    }
-
     #[test]
     fn test_scroll_up_with_arrow() {
         let event = key_event(KeyCode::Up, KeyModifiers::NONE);
@@ -160,15 +140,21 @@ mod tests {
     }
 
     #[test]
-    fn test_scroll_down_with_j() {
-        let event = key_event(KeyCode::Char('j'), KeyModifiers::NONE);
+    fn test_scroll_down_with_arrow() {
+        let event = key_event(KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(handle_event(event), AppAction::ScrollDown(1));
     }
 
     #[test]
-    fn test_scroll_down_with_arrow() {
-        let event = key_event(KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(handle_event(event), AppAction::ScrollDown(1));
+    fn test_next_file_with_j() {
+        let event = key_event(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(handle_event(event), AppAction::NextFile);
+    }
+
+    #[test]
+    fn test_prev_file_with_k() {
+        let event = key_event(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(handle_event(event), AppAction::PrevFile);
     }
 
     // Page tests

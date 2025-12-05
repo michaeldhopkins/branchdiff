@@ -194,6 +194,8 @@ fn run_app<B: Backend>(
                 AppAction::PageDown => app.page_down(),
                 AppAction::GoToTop => app.go_to_top(),
                 AppAction::GoToBottom => app.go_to_bottom(),
+                AppAction::NextFile => app.next_file(),
+                AppAction::PrevFile => app.prev_file(),
                 AppAction::Refresh => {
                     if refresh_in_progress {
                         cancel_flag.store(true, Ordering::Relaxed);

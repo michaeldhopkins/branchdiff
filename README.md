@@ -38,8 +38,9 @@ branchdiff [path]
 
 | Key | Action |
 |-----|--------|
-| `j` / `↓` | Scroll down |
-| `k` / `↑` | Scroll up |
+| `j` | Next file |
+| `k` | Previous file |
+| `↓` / `↑` | Scroll line |
 | `Ctrl+d` / `PgDn` | Page down |
 | `Ctrl+u` / `PgUp` | Page up |
 | `g` / `Home` | Go to top |
