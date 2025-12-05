@@ -128,8 +128,9 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
     }
 
     // 2. Get staged changes (HEAD to index) and unstaged changes (index to working tree)
+    // Use -uall to show individual files in untracked directories
     let status_output = Command::new("git")
-        .args(["status", "--porcelain=v1"])
+        .args(["status", "--porcelain=v1", "-uall"])
         .current_dir(repo_path)
         .output()
         .context("Failed to run git status")?;
@@ -373,5 +374,21 @@ mod tests {
         let result = has_merge_conflicts(clone.path(), "main");
         assert!(result.is_ok());
         assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_get_all_changed_files_includes_files_in_new_directories() {
+        let temp = create_test_repo();
+        let merge_base = get_merge_base(temp.path(), "main").unwrap();
+
+        fs::create_dir(temp.path().join("new_folder")).unwrap();
+        fs::write(temp.path().join("new_folder/file1.txt"), "content1\n").unwrap();
+        fs::write(temp.path().join("new_folder/file2.txt"), "content2\n").unwrap();
+
+        let changed = get_all_changed_files(temp.path(), &merge_base).unwrap();
+        let paths: Vec<&str> = changed.iter().map(|f| f.path.as_str()).collect();
+
+        assert!(paths.contains(&"new_folder/file1.txt"));
+        assert!(paths.contains(&"new_folder/file2.txt"));
     }
 }
