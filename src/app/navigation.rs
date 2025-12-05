@@ -1,17 +1,54 @@
-use crate::diff::DiffLine;
+use crate::diff::{DiffLine, LineSource};
 
 use super::App;
 
 impl App {
-    /// Scroll up by n lines
     pub fn scroll_up(&mut self, n: usize) {
         self.scroll_offset = self.scroll_offset.saturating_sub(n);
     }
 
-    /// Scroll down by n lines
     pub fn scroll_down(&mut self, n: usize) {
         self.scroll_offset = self.scroll_offset.saturating_add(n);
         self.clamp_scroll();
+    }
+
+    pub fn next_file(&mut self) {
+        let lines = self.displayable_lines();
+        if lines.is_empty() {
+            return;
+        }
+
+        for (i, line) in lines.iter().enumerate().skip(self.scroll_offset + 1) {
+            if line.source == LineSource::FileHeader {
+                self.scroll_offset = i;
+                return;
+            }
+        }
+    }
+
+    pub fn prev_file(&mut self) {
+        let lines = self.displayable_lines();
+        if lines.is_empty() || self.scroll_offset == 0 {
+            return;
+        }
+
+        let current_is_header = lines
+            .get(self.scroll_offset)
+            .map(|l| l.source == LineSource::FileHeader)
+            .unwrap_or(false);
+
+        let search_start = if current_is_header {
+            self.scroll_offset.saturating_sub(1)
+        } else {
+            self.scroll_offset
+        };
+
+        for i in (0..=search_start).rev() {
+            if lines[i].source == LineSource::FileHeader {
+                self.scroll_offset = i;
+                return;
+            }
+        }
     }
 
     /// Page up
@@ -143,7 +180,6 @@ impl App {
         all_lines[start..end].to_vec()
     }
 
-    /// Get scroll percentage for status bar
     pub fn scroll_percentage(&self) -> u16 {
         let line_count = self.displayable_line_count();
         if line_count == 0 || line_count <= self.viewport_height {
@@ -152,5 +188,151 @@ impl App {
             let max_scroll = line_count - self.viewport_height;
             ((self.scroll_offset as f64 / max_scroll as f64) * 100.0) as u16
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::ViewMode;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn create_test_app(lines: Vec<DiffLine>) -> App {
+        App {
+            repo_path: PathBuf::from("/tmp/test"),
+            base_branch: "main".to_string(),
+            merge_base: "abc123".to_string(),
+            current_branch: Some("feature".to_string()),
+            files: Vec::new(),
+            lines,
+            scroll_offset: 0,
+            viewport_height: 10,
+            error: None,
+            show_help: false,
+            view_mode: ViewMode::Full,
+            selection: None,
+            content_offset: (1, 1),
+            line_num_width: 0,
+            content_width: 80,
+            conflict_warning: None,
+            row_map: Vec::new(),
+            collapsed_files: HashSet::new(),
+            manually_toggled: HashSet::new(),
+        }
+    }
+
+    fn base_line(content: &str) -> DiffLine {
+        DiffLine::new(LineSource::Base, content.to_string(), ' ', None)
+    }
+
+    #[test]
+    fn test_next_file_jumps_to_header() {
+        let lines = vec![
+            DiffLine::file_header("file1.rs"),
+            base_line("line1"),
+            base_line("line2"),
+            DiffLine::file_header("file2.rs"),
+            base_line("line3"),
+        ];
+        let mut app = create_test_app(lines);
+        app.scroll_offset = 0;
+
+        app.next_file();
+
+        assert_eq!(app.scroll_offset, 3);
+    }
+
+    #[test]
+    fn test_next_file_from_middle_of_file() {
+        let lines = vec![
+            DiffLine::file_header("file1.rs"),
+            base_line("line1"),
+            base_line("line2"),
+            DiffLine::file_header("file2.rs"),
+            base_line("line3"),
+        ];
+        let mut app = create_test_app(lines);
+        app.scroll_offset = 1;
+
+        app.next_file();
+
+        assert_eq!(app.scroll_offset, 3);
+    }
+
+    #[test]
+    fn test_next_file_no_more_files() {
+        let lines = vec![
+            DiffLine::file_header("file1.rs"),
+            base_line("line1"),
+        ];
+        let mut app = create_test_app(lines);
+        app.scroll_offset = 0;
+
+        app.next_file();
+
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_prev_file_jumps_back() {
+        let lines = vec![
+            DiffLine::file_header("file1.rs"),
+            base_line("line1"),
+            base_line("line2"),
+            DiffLine::file_header("file2.rs"),
+            base_line("line3"),
+        ];
+        let mut app = create_test_app(lines);
+        app.scroll_offset = 4;
+
+        app.prev_file();
+
+        assert_eq!(app.scroll_offset, 3);
+    }
+
+    #[test]
+    fn test_prev_file_from_header_goes_to_previous() {
+        let lines = vec![
+            DiffLine::file_header("file1.rs"),
+            base_line("line1"),
+            base_line("line2"),
+            DiffLine::file_header("file2.rs"),
+            base_line("line3"),
+        ];
+        let mut app = create_test_app(lines);
+        app.scroll_offset = 3;
+
+        app.prev_file();
+
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_prev_file_at_first_file() {
+        let lines = vec![
+            DiffLine::file_header("file1.rs"),
+            base_line("line1"),
+        ];
+        let mut app = create_test_app(lines);
+        app.scroll_offset = 0;
+
+        app.prev_file();
+
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_next_file_empty_lines() {
+        let mut app = create_test_app(vec![]);
+        app.next_file();
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_prev_file_empty_lines() {
+        let mut app = create_test_app(vec![]);
+        app.prev_file();
+        assert_eq!(app.scroll_offset, 0);
     }
 }

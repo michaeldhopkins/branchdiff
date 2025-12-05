@@ -12,7 +12,7 @@ use crate::app::App;
 pub fn status_bar_height(app: &App, width: u16) -> u16 {
     let width = width as usize;
 
-    let help = " q:quit  j/k:scroll  g/G:top/bottom  ?:help ";
+    let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
 
     let branch_info = match &app.current_branch {
         Some(b) => format!("{} vs {}", b, app.base_branch),
@@ -63,7 +63,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let width = area.width as usize;
 
     // Build help text
-    let help = " q:quit  j/k:scroll  g/G:top/bottom  ?:help ";
+    let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
     let help_short = " ?:help ";
 
     // Get status components

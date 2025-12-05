@@ -638,8 +638,7 @@ mod tests {
     fn test_status_bar_height_boundary_case() {
         let app = create_test_app_for_status_bar(Some("feat"), "main", 1);
 
-        // Compute the exact values to match what status_bar_height computes
-        let help = " q:quit  j/k:scroll  g/G:top/bottom  ?:help ";
+        let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
         let branch_info = "feat vs main";
 
         let stats = format!(
