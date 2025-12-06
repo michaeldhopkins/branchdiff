@@ -3,6 +3,33 @@ use ratatui::text::Span;
 use crate::diff::{InlineSpan, LineSource};
 use super::colors::{line_style, line_style_with_highlight};
 
+/// Classification of inline change type for rendering decisions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineChangeType {
+    /// Both deletions and insertions present (e.g., "hello" → "goodbye")
+    Mixed,
+    /// Only deletions present (e.g., "foo bar baz" → "foo")
+    PureDeletion,
+    /// Only insertions present (e.g., "foo" → "foo bar baz")
+    PureAddition,
+    /// No changes (all spans are unchanged)
+    NoChange,
+}
+
+/// Classify the type of inline change based on the spans.
+/// Used to determine rendering strategy when inline diff is too wide.
+pub fn classify_inline_change(spans: &[InlineSpan]) -> InlineChangeType {
+    let has_deletions = spans.iter().any(|s| s.is_deletion);
+    let has_insertions = spans.iter().any(|s| !s.is_deletion && s.source.is_some());
+
+    match (has_deletions, has_insertions) {
+        (true, true) => InlineChangeType::Mixed,
+        (true, false) => InlineChangeType::PureDeletion,
+        (false, true) => InlineChangeType::PureAddition,
+        (false, false) => InlineChangeType::NoChange,
+    }
+}
+
 /// Check if the inline spans are fragmented (multiple scattered change regions)
 pub fn is_fragmented(spans: &[InlineSpan]) -> bool {
     if spans.len() < 4 {
