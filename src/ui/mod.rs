@@ -94,7 +94,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::spans::{coalesce_spans, is_fragmented, inline_display_width, reconstruct_old_content, get_deletion_source, get_insertion_source};
+    use super::spans::{coalesce_spans, is_fragmented, inline_display_width, get_deletion_source, get_insertion_source, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight};
+    use super::colors::{highlight_bg_color, line_style, line_style_with_highlight};
     use super::status_bar::truncate_with_ellipsis;
     use crate::diff::{InlineSpan, LineSource, compute_inline_diff_merged};
 
@@ -461,28 +462,6 @@ mod tests {
     }
 
     #[test]
-    fn test_reconstruct_old_content_simple() {
-        let spans = vec![
-            make_span("hello ", None, false),           // unchanged - included
-            make_span("world", Some(LineSource::DeletedBase), true),  // deletion - included
-            make_span("earth", Some(LineSource::Committed), false),   // insertion - NOT included
-        ];
-        assert_eq!(spans::reconstruct_old_content(&spans), "hello world");
-    }
-
-    #[test]
-    fn test_reconstruct_old_content_with_multiple_deletions() {
-        let spans = vec![
-            make_span("prefix ", None, false),
-            make_span("old1", Some(LineSource::DeletedBase), true),
-            make_span(" middle ", None, false),
-            make_span("old2", Some(LineSource::DeletedBase), true),
-            make_span("new", Some(LineSource::Committed), false),
-        ];
-        assert_eq!(spans::reconstruct_old_content(&spans), "prefix old1 middle old2");
-    }
-
-    #[test]
     fn test_get_deletion_source_finds_correct_source() {
         let spans = vec![
             make_span("unchanged", None, false),
@@ -781,5 +760,214 @@ mod tests {
         // With 999 files, the stats are longer so may need 2 lines at same width
         assert!(!two_lines_few, "1 file should fit on 1 line at width 85");
         assert!(two_lines_many, "999 files should need 2 lines at width 85");
+    }
+
+    // ============================================================
+    // Tests for character-level background highlighting
+    // ============================================================
+
+    #[test]
+    fn test_highlight_bg_color_deleted_base_is_lighter() {
+        use ratatui::style::Color;
+
+        let deleted_base_bg = highlight_bg_color(LineSource::DeletedBase);
+        let deleted_committed_bg = highlight_bg_color(LineSource::DeletedCommitted);
+
+        // DeletedBase should have a lighter (less intense) background than DeletedCommitted
+        match (deleted_base_bg, deleted_committed_bg) {
+            (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+                assert!(r1 < r2, "DeletedBase red should be lighter than DeletedCommitted");
+                assert!(g1 < g2, "DeletedBase green should be lighter than DeletedCommitted");
+                assert!(b1 < b2, "DeletedBase blue should be lighter than DeletedCommitted");
+            }
+            _ => panic!("Expected RGB colors for deletion backgrounds"),
+        }
+    }
+
+    #[test]
+    fn test_highlight_bg_color_by_source() {
+        use ratatui::style::Color;
+
+        // All deletion types should return red-ish backgrounds
+        let deleted_base = highlight_bg_color(LineSource::DeletedBase);
+        let deleted_committed = highlight_bg_color(LineSource::DeletedCommitted);
+        let deleted_staged = highlight_bg_color(LineSource::DeletedStaged);
+
+        // Verify they're RGB colors with red component dominant
+        for (source, color) in [
+            ("DeletedBase", deleted_base),
+            ("DeletedCommitted", deleted_committed),
+            ("DeletedStaged", deleted_staged),
+        ] {
+            match color {
+                Color::Rgb(r, g, b) => {
+                    assert!(r > g && r > b, "{} should have red-dominant background", source);
+                }
+                _ => panic!("{} should return RGB color", source),
+            }
+        }
+
+        // Committed should be cyan-ish (g and b higher than r)
+        match highlight_bg_color(LineSource::Committed) {
+            Color::Rgb(r, g, b) => {
+                assert!(g > r && b > r, "Committed should have cyan background (g,b > r)");
+            }
+            _ => panic!("Committed should return RGB color"),
+        }
+
+        // Staged should be green-ish
+        match highlight_bg_color(LineSource::Staged) {
+            Color::Rgb(r, g, b) => {
+                assert!(g > r && g > b, "Staged should have green background");
+            }
+            _ => panic!("Staged should return RGB color"),
+        }
+
+        // Unstaged should be yellow-ish (r and g higher than b)
+        match highlight_bg_color(LineSource::Unstaged) {
+            Color::Rgb(r, g, b) => {
+                assert!(r > b && g > b, "Unstaged should have yellow background (r,g > b)");
+            }
+            _ => panic!("Unstaged should return RGB color"),
+        }
+    }
+
+    #[test]
+    fn test_line_style_with_highlight_has_background() {
+        let style = line_style_with_highlight(LineSource::Committed);
+
+        // Should have both foreground and background set
+        assert!(style.fg.is_some(), "Should have foreground color");
+        assert!(style.bg.is_some(), "Should have background color");
+
+        // Background should match highlight_bg_color
+        assert_eq!(style.bg, Some(highlight_bg_color(LineSource::Committed)));
+    }
+
+    #[test]
+    fn test_build_deletion_spans_includes_deletions_and_unchanged() {
+        let spans = vec![
+            make_span("unchanged ", None, false),
+            make_span("deleted", Some(LineSource::DeletedBase), true),
+            make_span("inserted", Some(LineSource::Committed), false),
+        ];
+
+        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
+
+        // Should include unchanged and deletion, but NOT insertion
+        assert_eq!(result.len(), 2, "Should have 2 spans (unchanged + deletion)");
+        assert_eq!(result[0].content, "unchanged ");
+        assert_eq!(result[1].content, "deleted");
+    }
+
+    #[test]
+    fn test_build_deletion_spans_applies_highlight_to_deletions() {
+        let spans = vec![
+            make_span("unchanged ", None, false),
+            make_span("deleted", Some(LineSource::DeletedBase), true),
+        ];
+
+        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
+
+        // Unchanged should have base style (no background highlight)
+        let base_style = line_style(LineSource::DeletedBase);
+        assert_eq!(result[0].style, base_style, "Unchanged span should have base style");
+
+        // Deleted should have highlighted style (with background)
+        let highlight_style = line_style_with_highlight(LineSource::DeletedBase);
+        assert_eq!(result[1].style, highlight_style, "Deleted span should have highlight style");
+    }
+
+    #[test]
+    fn test_build_insertion_spans_includes_insertions_and_unchanged() {
+        let spans = vec![
+            make_span("unchanged ", None, false),
+            make_span("deleted", Some(LineSource::DeletedBase), true),
+            make_span("inserted", Some(LineSource::Committed), false),
+        ];
+
+        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+
+        // Should include unchanged and insertion, but NOT deletion
+        assert_eq!(result.len(), 2, "Should have 2 spans (unchanged + insertion)");
+        assert_eq!(result[0].content, "unchanged ");
+        assert_eq!(result[1].content, "inserted");
+    }
+
+    #[test]
+    fn test_build_insertion_spans_applies_highlight_to_insertions() {
+        let spans = vec![
+            make_span("unchanged ", None, false),
+            make_span("inserted", Some(LineSource::Committed), false),
+        ];
+
+        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+
+        // Unchanged should have base style (no background highlight)
+        let base_style = line_style(LineSource::Committed);
+        assert_eq!(result[0].style, base_style, "Unchanged span should have base style");
+
+        // Inserted should have highlighted style (with background)
+        let highlight_style = line_style_with_highlight(LineSource::Committed);
+        assert_eq!(result[1].style, highlight_style, "Inserted span should have highlight style");
+    }
+
+    #[test]
+    fn test_build_spans_with_highlight_empty_input() {
+        let spans: Vec<InlineSpan> = vec![];
+
+        let del_result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
+        let ins_result = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+
+        assert!(del_result.is_empty(), "Empty input should produce empty deletion spans");
+        assert!(ins_result.is_empty(), "Empty input should produce empty insertion spans");
+    }
+
+    #[test]
+    fn test_build_spans_preserves_text_content() {
+        // Verify the actual text content is preserved when building highlighted spans
+        let spans = vec![
+            make_span("hello ", None, false),
+            make_span("world", Some(LineSource::DeletedBase), true),
+            make_span("earth", Some(LineSource::Committed), false),
+        ];
+
+        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
+        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+
+        // Deletion line should be "hello world"
+        let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(del_text, "hello world");
+
+        // Insertion line should be "hello earth"
+        let ins_text: String = ins_spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(ins_text, "hello earth");
+    }
+
+    #[test]
+    fn test_build_spans_with_multiple_changes() {
+        // Multiple deletions and insertions interspersed
+        let spans = vec![
+            make_span("a", None, false),
+            make_span("old1", Some(LineSource::DeletedBase), true),
+            make_span("new1", Some(LineSource::Committed), false),
+            make_span("b", None, false),
+            make_span("old2", Some(LineSource::DeletedBase), true),
+            make_span("new2", Some(LineSource::Committed), false),
+            make_span("c", None, false),
+        ];
+
+        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
+        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+
+        // Deletion should have: a, old1, b, old2, c (5 spans)
+        assert_eq!(del_spans.len(), 5);
+        let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(del_text, "aold1bold2c");
+
+        // Insertion should have: a, new1, b, new2, c (5 spans)
+        assert_eq!(ins_spans.len(), 5);
+        let ins_text: String = ins_spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(ins_text, "anew1bnew2c");
     }
 }
