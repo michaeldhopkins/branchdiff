@@ -94,7 +94,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::spans::{coalesce_spans, is_fragmented, inline_display_width, get_deletion_source, get_insertion_source, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight};
+    use super::spans::{coalesce_spans, is_fragmented, inline_display_width, get_deletion_source, get_insertion_source, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight, classify_inline_change, InlineChangeType};
     use super::colors::{highlight_bg_color, line_style, line_style_with_highlight};
     use super::status_bar::truncate_with_ellipsis;
     use crate::diff::{InlineSpan, LineSource, compute_inline_diff_merged};
@@ -969,5 +969,77 @@ mod tests {
         assert_eq!(ins_spans.len(), 5);
         let ins_text: String = ins_spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(ins_text, "anew1bnew2c");
+    }
+
+    // ============================================================
+    // Tests for classify_inline_change
+    // ============================================================
+
+    #[test]
+    fn test_classify_inline_change_pure_deletion() {
+        // Only deletions (is_deletion: true) and unchanged (source: None)
+        let spans = vec![
+            make_span("unchanged ", None, false),
+            make_span("deleted text", Some(LineSource::DeletedBase), true),
+            make_span(" more unchanged", None, false),
+        ];
+        assert_eq!(classify_inline_change(&spans), InlineChangeType::PureDeletion);
+    }
+
+    #[test]
+    fn test_classify_inline_change_pure_addition() {
+        // Only insertions (source: Some(_), is_deletion: false) and unchanged
+        let spans = vec![
+            make_span("unchanged ", None, false),
+            make_span("inserted text", Some(LineSource::Committed), false),
+            make_span(" more unchanged", None, false),
+        ];
+        assert_eq!(classify_inline_change(&spans), InlineChangeType::PureAddition);
+    }
+
+    #[test]
+    fn test_classify_inline_change_mixed() {
+        // Both deletions and insertions present
+        let spans = vec![
+            make_span("unchanged ", None, false),
+            make_span("deleted", Some(LineSource::DeletedBase), true),
+            make_span("inserted", Some(LineSource::Committed), false),
+        ];
+        assert_eq!(classify_inline_change(&spans), InlineChangeType::Mixed);
+    }
+
+    #[test]
+    fn test_classify_inline_change_no_change() {
+        // Only unchanged content (source: None, is_deletion: false)
+        let spans = vec![
+            make_span("all ", None, false),
+            make_span("unchanged ", None, false),
+            make_span("content", None, false),
+        ];
+        assert_eq!(classify_inline_change(&spans), InlineChangeType::NoChange);
+    }
+
+    #[test]
+    fn test_classify_real_world_pure_deletion() {
+        // Real-world case: "foo bar baz" → "foo"
+        // This removes " bar baz" - pure deletion
+        let result = compute_inline_diff_merged("foo bar baz", "foo", LineSource::Committed);
+        assert_eq!(classify_inline_change(&result.spans), InlineChangeType::PureDeletion);
+    }
+
+    #[test]
+    fn test_classify_real_world_pure_addition() {
+        // Real-world case: "foo" → "foo bar baz"
+        // This adds " bar baz" - pure addition
+        let result = compute_inline_diff_merged("foo", "foo bar baz", LineSource::Committed);
+        assert_eq!(classify_inline_change(&result.spans), InlineChangeType::PureAddition);
+    }
+
+    #[test]
+    fn test_classify_real_world_mixed() {
+        // Real-world case: "hello world" → "goodbye world"
+        // This replaces "hello" with "goodbye" - mixed change
+        let result = compute_inline_diff_merged("hello world", "goodbye world", LineSource::Committed);
+        assert_eq!(classify_inline_change(&result.spans), InlineChangeType::Mixed);
     }
 }
