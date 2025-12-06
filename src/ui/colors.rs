@@ -5,7 +5,8 @@ use crate::diff::LineSource;
 /// Get background highlight color for changed portions in multiline diff display
 pub fn highlight_bg_color(source: LineSource) -> Color {
     match source {
-        LineSource::DeletedBase | LineSource::DeletedCommitted | LineSource::DeletedStaged => {
+        LineSource::DeletedBase => Color::Rgb(45, 22, 22), // Lighter red for committed deletions
+        LineSource::DeletedCommitted | LineSource::DeletedStaged => {
             Color::Rgb(100, 50, 50) // Bold red background
         }
         LineSource::Committed => Color::Rgb(50, 100, 100), // Bold cyan background
