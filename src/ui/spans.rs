@@ -1,4 +1,7 @@
+use ratatui::text::Span;
+
 use crate::diff::{InlineSpan, LineSource};
+use super::colors::{line_style, line_style_with_highlight};
 
 /// Check if the inline spans are fragmented (multiple scattered change regions)
 pub fn is_fragmented(spans: &[InlineSpan]) -> bool {
@@ -169,14 +172,6 @@ pub fn inline_display_width(spans: &[InlineSpan]) -> usize {
     coalesce_spans(spans).iter().map(|s| s.text.len()).sum()
 }
 
-/// Reconstruct old content from inline spans (unchanged + deletions)
-pub fn reconstruct_old_content(spans: &[InlineSpan]) -> String {
-    spans.iter()
-        .filter(|s| s.is_deletion || s.source.is_none())
-        .map(|s| s.text.as_str())
-        .collect()
-}
-
 /// Get deletion source for coloring the - line
 pub fn get_deletion_source(spans: &[InlineSpan]) -> LineSource {
     spans.iter()
@@ -191,4 +186,58 @@ pub fn get_insertion_source(spans: &[InlineSpan]) -> LineSource {
         .find(|s| !s.is_deletion && s.source.is_some())
         .and_then(|s| s.source)
         .unwrap_or(LineSource::Committed)
+}
+
+/// Build Ratatui spans for the deletion line with character-level highlighting.
+/// Unchanged portions get the base deletion style; deleted portions get background highlight.
+pub fn build_deletion_spans_with_highlight(
+    inline_spans: &[InlineSpan],
+    del_source: LineSource,
+) -> Vec<Span<'static>> {
+    let base_style = line_style(del_source);
+    let highlight_style = line_style_with_highlight(del_source);
+
+    let mut result = Vec::new();
+
+    for span in inline_spans {
+        // Only include unchanged spans and deletion spans (skip insertions)
+        if span.is_deletion {
+            // Deleted text gets background highlight
+            result.push(Span::styled(span.text.clone(), highlight_style));
+        } else if span.source.is_none() {
+            // Unchanged text gets base style (no highlight)
+            result.push(Span::styled(span.text.clone(), base_style));
+        }
+        // Skip insertion spans (source.is_some() && !is_deletion) - they're not part of old content
+    }
+
+    result
+}
+
+/// Build Ratatui spans for the insertion line with character-level highlighting.
+/// Unchanged portions get the base insertion style; inserted portions get background highlight.
+pub fn build_insertion_spans_with_highlight(
+    inline_spans: &[InlineSpan],
+    ins_source: LineSource,
+) -> Vec<Span<'static>> {
+    let base_style = line_style(ins_source);
+    let highlight_style = line_style_with_highlight(ins_source);
+
+    let mut result = Vec::new();
+
+    for span in inline_spans {
+        // Only include unchanged spans and insertion spans (skip deletions)
+        if span.is_deletion {
+            // Skip deletion spans - they're not part of new content
+            continue;
+        } else if span.source.is_some() {
+            // Inserted text gets background highlight
+            result.push(Span::styled(span.text.clone(), highlight_style));
+        } else {
+            // Unchanged text gets base style (no highlight)
+            result.push(Span::styled(span.text.clone(), base_style));
+        }
+    }
+
+    result
 }
