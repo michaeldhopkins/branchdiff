@@ -171,6 +171,49 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
     Ok(result)
 }
 
+/// Represents a file transition in a git diff.
+/// All git diff statuses (A/D/M/R) describe a transition from one state to another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileTransition {
+    /// Source path (None for added files)
+    from: Option<String>,
+    /// Destination path (None for deleted files)
+    to: Option<String>,
+}
+
+impl FileTransition {
+    /// Get the current/relevant path for this transition.
+    /// Prefers the destination path, falls back to source for deletions.
+    fn current_path(&self) -> Option<&str> {
+        self.to.as_deref().or(self.from.as_deref())
+    }
+}
+
+/// Parse a single line of `git diff --name-status` output into a FileTransition.
+/// Returns None for unrecognized formats.
+fn parse_diff_line(line: &str) -> Option<FileTransition> {
+    let parts: Vec<&str> = line.split('\t').collect();
+    match parts.as_slice() {
+        [status, path] if status.starts_with('A') => Some(FileTransition {
+            from: None,
+            to: Some(path.to_string()),
+        }),
+        [status, path] if status.starts_with('D') => Some(FileTransition {
+            from: Some(path.to_string()),
+            to: None,
+        }),
+        [status, path] if status.starts_with('M') => Some(FileTransition {
+            from: Some(path.to_string()),
+            to: Some(path.to_string()),
+        }),
+        [status, old_path, new_path] if status.starts_with('R') => Some(FileTransition {
+            from: Some(old_path.to_string()),
+            to: Some(new_path.to_string()),
+        }),
+        _ => None,
+    }
+}
+
 /// Get files changed between two refs
 fn get_diff_files(repo_path: &Path, from: &str, to: &str) -> Result<Vec<String>> {
     let output = Command::new("git")
@@ -186,18 +229,12 @@ fn get_diff_files(repo_path: &Path, from: &str, to: &str) -> Result<Vec<String>>
         ));
     }
 
-    let mut files = Vec::new();
     let output_str = String::from_utf8_lossy(&output.stdout);
-
-    for line in output_str.lines() {
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() < 2 {
-            continue;
-        }
-
-        let path = parts.last().unwrap().to_string();
-        files.push(path);
-    }
+    let files: Vec<String> = output_str
+        .lines()
+        .filter_map(parse_diff_line)
+        .filter_map(|t| t.current_path().map(|s| s.to_string()))
+        .collect();
 
     Ok(files)
 }
@@ -312,6 +349,117 @@ mod tests {
     use super::*;
     use std::fs;
     use std::process::Command;
+
+    // ============================================================
+    // Tests for FileTransition parsing
+    // ============================================================
+
+    #[test]
+    fn test_parse_diff_line_added() {
+        let line = "A\tpath/to/new_file.rs";
+        let result = parse_diff_line(line);
+        assert_eq!(result, Some(FileTransition {
+            from: None,
+            to: Some("path/to/new_file.rs".to_string()),
+        }));
+    }
+
+    #[test]
+    fn test_parse_diff_line_deleted() {
+        let line = "D\tpath/to/deleted_file.rs";
+        let result = parse_diff_line(line);
+        assert_eq!(result, Some(FileTransition {
+            from: Some("path/to/deleted_file.rs".to_string()),
+            to: None,
+        }));
+    }
+
+    #[test]
+    fn test_parse_diff_line_modified() {
+        let line = "M\tpath/to/modified_file.rs";
+        let result = parse_diff_line(line);
+        assert_eq!(result, Some(FileTransition {
+            from: Some("path/to/modified_file.rs".to_string()),
+            to: Some("path/to/modified_file.rs".to_string()),
+        }));
+    }
+
+    #[test]
+    fn test_parse_diff_line_renamed() {
+        let line = "R100\told/path.rs\tnew/path.rs";
+        let result = parse_diff_line(line);
+        assert_eq!(result, Some(FileTransition {
+            from: Some("old/path.rs".to_string()),
+            to: Some("new/path.rs".to_string()),
+        }));
+    }
+
+    #[test]
+    fn test_parse_diff_line_renamed_partial_similarity() {
+        let line = "R075\told/path.rs\tnew/path.rs";
+        let result = parse_diff_line(line);
+        assert_eq!(result, Some(FileTransition {
+            from: Some("old/path.rs".to_string()),
+            to: Some("new/path.rs".to_string()),
+        }));
+    }
+
+    #[test]
+    fn test_parse_diff_line_malformed_empty() {
+        assert_eq!(parse_diff_line(""), None);
+    }
+
+    #[test]
+    fn test_parse_diff_line_malformed_single_part() {
+        assert_eq!(parse_diff_line("M"), None);
+    }
+
+    #[test]
+    fn test_parse_diff_line_unrecognized_status() {
+        // Unknown status should return None
+        assert_eq!(parse_diff_line("X\tsome/file.rs"), None);
+    }
+
+    #[test]
+    fn test_file_transition_current_path_added() {
+        let t = FileTransition {
+            from: None,
+            to: Some("new_file.rs".to_string()),
+        };
+        assert_eq!(t.current_path(), Some("new_file.rs"));
+    }
+
+    #[test]
+    fn test_file_transition_current_path_deleted() {
+        let t = FileTransition {
+            from: Some("deleted_file.rs".to_string()),
+            to: None,
+        };
+        assert_eq!(t.current_path(), Some("deleted_file.rs"));
+    }
+
+    #[test]
+    fn test_file_transition_current_path_modified() {
+        let t = FileTransition {
+            from: Some("file.rs".to_string()),
+            to: Some("file.rs".to_string()),
+        };
+        assert_eq!(t.current_path(), Some("file.rs"));
+    }
+
+    #[test]
+    fn test_file_transition_current_path_renamed() {
+        let t = FileTransition {
+            from: Some("old.rs".to_string()),
+            to: Some("new.rs".to_string()),
+        };
+        // Should prefer destination (new path)
+        assert_eq!(t.current_path(), Some("new.rs"));
+    }
+
+    // ============================================================
+    // Integration tests for git operations
+    // ============================================================
 
     fn git_cmd(dir: &Path, args: &[&str]) {
         Command::new("git")

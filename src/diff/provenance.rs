@@ -34,6 +34,14 @@ pub fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Vec<Optio
     result
 }
 
+/// Represents a single change in a diff, with type-safe access to indices.
+/// Each variant contains exactly the fields that are valid for that change type.
+enum DiffChange<'a> {
+    Equal { content: &'a str },
+    Delete { content: &'a str, old_idx: usize },
+    Insert { content: &'a str, new_idx: usize },
+}
+
 /// Build a modification map from adjacent delete-insert pairs
 /// Returns: HashMap<new_idx, (old_idx, old_content)>
 pub fn build_modification_map<'a>(
@@ -45,28 +53,34 @@ pub fn build_modification_map<'a>(
     let diff = TextDiff::from_slices(old_lines, new_lines);
 
     // Collect all changes with indices
-    struct Change<'b> {
-        tag: ChangeTag,
-        content: &'b str,
-        old_idx: Option<usize>,
-        new_idx: Option<usize>,
-    }
-
     let mut old_idx = 0usize;
     let mut new_idx = 0usize;
-    let changes: Vec<Change> = diff.iter_all_changes()
+    let changes: Vec<DiffChange> = diff.iter_all_changes()
         .map(|c| {
-            let change = Change {
-                tag: c.tag(),
-                content: c.value().trim_end(),
-                old_idx: if c.tag() == ChangeTag::Delete { Some(old_idx) } else { None },
-                new_idx: if c.tag() == ChangeTag::Insert { Some(new_idx) } else { None },
+            let change = match c.tag() {
+                ChangeTag::Equal => {
+                    let ch = DiffChange::Equal { content: c.value().trim_end() };
+                    old_idx += 1;
+                    new_idx += 1;
+                    ch
+                }
+                ChangeTag::Delete => {
+                    let ch = DiffChange::Delete {
+                        content: c.value().trim_end(),
+                        old_idx,
+                    };
+                    old_idx += 1;
+                    ch
+                }
+                ChangeTag::Insert => {
+                    let ch = DiffChange::Insert {
+                        content: c.value().trim_end(),
+                        new_idx,
+                    };
+                    new_idx += 1;
+                    ch
+                }
             };
-            match c.tag() {
-                ChangeTag::Equal => { old_idx += 1; new_idx += 1; }
-                ChangeTag::Delete => { old_idx += 1; }
-                ChangeTag::Insert => { new_idx += 1; }
-            }
             change
         })
         .collect();
@@ -76,56 +90,67 @@ pub fn build_modification_map<'a>(
     // not just positional adjacency in the change stream.
     let mut i = 0;
     while i < changes.len() {
-        if changes[i].tag == ChangeTag::Delete {
+        if let DiffChange::Delete { .. } = changes[i] {
             // Collect consecutive deletions
-            let mut deletions: Vec<&Change> = vec![&changes[i]];
-            let mut j = i + 1;
-            while j < changes.len() && changes[j].tag == ChangeTag::Delete {
-                deletions.push(&changes[j]);
-                j += 1;
+            let mut deletions: Vec<(&str, usize)> = Vec::new();
+            let mut j = i;
+            while j < changes.len() {
+                if let DiffChange::Delete { content, old_idx } = &changes[j] {
+                    deletions.push((content, *old_idx));
+                    j += 1;
+                } else {
+                    break;
+                }
             }
 
             // Skip empty inserts
-            while j < changes.len() && changes[j].tag == ChangeTag::Insert && changes[j].content.trim().is_empty() {
-                j += 1;
+            while j < changes.len() {
+                if let DiffChange::Insert { content, .. } = &changes[j] {
+                    if content.trim().is_empty() {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             }
 
             // Collect consecutive insertions
-            let mut insertions: Vec<&Change> = Vec::new();
-            while j < changes.len() && changes[j].tag == ChangeTag::Insert {
-                insertions.push(&changes[j]);
-                j += 1;
+            let mut insertions: Vec<(&str, usize)> = Vec::new();
+            while j < changes.len() {
+                if let DiffChange::Insert { content, new_idx } = &changes[j] {
+                    insertions.push((content, *new_idx));
+                    j += 1;
+                } else {
+                    break;
+                }
             }
 
             // Match deletions with insertions based on content similarity
             // Track which insertions have been paired
             let mut paired_inserts: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-            for deletion in &deletions {
-                let old_i = deletion.old_idx.unwrap();
-                let old_content = deletion.content;
-
+            for (old_content, old_i) in &deletions {
                 // Find the best matching insert (highest similarity that qualifies as meaningful)
                 let mut best_match: Option<(usize, usize)> = None; // (insert_idx_in_vec, new_i)
 
-                for (ins_idx, insertion) in insertions.iter().enumerate() {
+                for (ins_idx, (new_content, new_i)) in insertions.iter().enumerate() {
                     if paired_inserts.contains(&ins_idx) {
                         continue;
                     }
-                    let new_i = insertion.new_idx.unwrap();
-                    let new_content = insertion.content;
 
                     let inline_result = compute_inline_diff_merged(old_content, new_content, LineSource::Unstaged);
                     if inline_result.is_meaningful {
                         // Use this match - first meaningful match wins for simplicity
-                        best_match = Some((ins_idx, new_i));
+                        best_match = Some((ins_idx, *new_i));
                         break;
                     }
                 }
 
                 if let Some((ins_idx, new_i)) = best_match {
                     paired_inserts.insert(ins_idx);
-                    result.insert(new_i, (old_i, old_lines[old_i]));
+                    result.insert(new_i, (*old_i, old_lines[*old_i]));
                 }
             }
 
