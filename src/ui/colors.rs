@@ -2,6 +2,24 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::diff::LineSource;
 
+/// Get background highlight color for changed portions in multiline diff display
+pub fn highlight_bg_color(source: LineSource) -> Color {
+    match source {
+        LineSource::DeletedBase | LineSource::DeletedCommitted | LineSource::DeletedStaged => {
+            Color::Rgb(100, 50, 50) // Bold red background
+        }
+        LineSource::Committed => Color::Rgb(50, 100, 100), // Bold cyan background
+        LineSource::Staged => Color::Rgb(50, 100, 50),     // Bold green background
+        LineSource::Unstaged => Color::Rgb(100, 100, 50),  // Bold yellow background
+        _ => Color::Reset,
+    }
+}
+
+/// Get style with background highlight for changed portions
+pub fn line_style_with_highlight(source: LineSource) -> Style {
+    line_style(source).bg(highlight_bg_color(source))
+}
+
 /// Get the style for a line based on its source
 pub fn line_style(source: LineSource) -> Style {
     match source {
