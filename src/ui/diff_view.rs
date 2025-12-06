@@ -11,7 +11,7 @@ use crate::diff::LineSource;
 
 use super::colors::line_style;
 use super::selection::{get_line_selection_range, apply_selection_to_span};
-use super::spans::{coalesce_spans, inline_display_width, reconstruct_old_content, get_deletion_source, get_insertion_source};
+use super::spans::{coalesce_spans, inline_display_width, get_deletion_source, get_insertion_source, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight};
 use super::wrapping::wrap_content;
 use super::{ScreenRowInfo, ScreenRowKind, PREFIX_CHAR_WIDTH};
 
@@ -150,14 +150,15 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
             let inline_width = inline_display_width(&diff_line.inline_spans);
 
             if inline_width > content_width {
-                // Inline diff would wrap - fall back to separate -/+ lines
-                let old_content = reconstruct_old_content(&diff_line.inline_spans);
-                let new_content = &diff_line.content;
+                // Inline diff would wrap - fall back to separate -/+ lines with character highlighting
                 let del_source = get_deletion_source(&diff_line.inline_spans);
                 let ins_source = get_insertion_source(&diff_line.inline_spans);
 
+                // Build deletion spans with character-level highlighting
+                let del_spans = build_deletion_spans_with_highlight(&diff_line.inline_spans, del_source);
+
                 // Only show deletion line if there's old content
-                if !old_content.is_empty() {
+                if !del_spans.is_empty() {
                     let del_style = line_style(del_source);
                     let del_prefix_str = if line_num_width > 0 {
                         " ".repeat(line_num_width + 1)
@@ -165,7 +166,8 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                         String::new()
                     };
 
-                    let del_spans = vec![Span::styled(old_content.clone(), del_style)];
+                    // Reconstruct old content string for wrap_content
+                    let old_content: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
                     let del_spans = apply_selection_to_content(del_spans, &selection, screen_row_idx, prefix_width);
 
                     let (del_lines, del_row_infos) = wrap_content(
@@ -185,9 +187,10 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                     all_row_infos.extend(del_row_infos);
                 }
 
-                // Show insertion line
+                // Build insertion spans with character-level highlighting
+                let new_content = &diff_line.content;
                 let ins_style = line_style(ins_source);
-                let ins_spans = vec![Span::styled(new_content.clone(), ins_style)];
+                let ins_spans = build_insertion_spans_with_highlight(&diff_line.inline_spans, ins_source);
                 let ins_spans = apply_selection_to_content(ins_spans, &selection, screen_row_idx, prefix_width);
 
                 let (ins_lines, ins_row_infos) = wrap_content(
