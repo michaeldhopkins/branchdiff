@@ -350,10 +350,6 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
-    // ============================================================
-    // Tests for FileTransition parsing
-    // ============================================================
-
     #[test]
     fn test_parse_diff_line_added() {
         let line = "A\tpath/to/new_file.rs";
@@ -456,10 +452,6 @@ mod tests {
         // Should prefer destination (new path)
         assert_eq!(t.current_path(), Some("new.rs"));
     }
-
-    // ============================================================
-    // Integration tests for git operations
-    // ============================================================
 
     fn git_cmd(dir: &Path, args: &[&str]) {
         Command::new("git")
