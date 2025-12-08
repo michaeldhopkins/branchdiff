@@ -15,7 +15,6 @@ use super::spans::{coalesce_spans, inline_display_width, get_deletion_source, ge
 use super::wrapping::wrap_content;
 use super::{ScreenRowInfo, ScreenRowKind, PREFIX_CHAR_WIDTH};
 
-/// Apply selection highlighting to content spans
 fn apply_selection_to_content(
     content_spans: Vec<Span<'static>>,
     selection: &Option<crate::app::Selection>,
@@ -23,8 +22,6 @@ fn apply_selection_to_content(
     prefix_width: usize,
 ) -> Vec<Span<'static>> {
     if let Some((sel_start, sel_end)) = get_line_selection_range(selection, screen_row_idx) {
-        // Selection columns are relative to the start of the line (including prefix)
-        // Content starts after prefix_width characters
         let content_sel_start = sel_start.saturating_sub(prefix_width);
         let content_sel_end = sel_end.saturating_sub(prefix_width);
 
@@ -47,12 +44,10 @@ fn apply_selection_to_content(
     }
 }
 
-/// Draw the diff content
 pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible_lines = app.visible_lines();
     let scroll_offset = app.scroll_offset;
 
-    // Calculate the width needed for line numbers
     let max_line_num = visible_lines
         .iter()
         .filter_map(|l| l.line_number)
@@ -64,31 +59,24 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
         0
     };
 
-    // Calculate available width for content (minus borders)
-    let available_width = area.width.saturating_sub(2) as usize; // -2 for left and right borders
+    let available_width = area.width.saturating_sub(2) as usize;
     let prefix_width = if line_num_width > 0 { line_num_width + 1 } else { 0 } + PREFIX_CHAR_WIDTH;
     let content_width = available_width.saturating_sub(prefix_width);
 
-    // Set content layout info for selection coordinate mapping and wrapping calculation
-    // Content area starts at (border + line_num_width + prefix), (border)
-    let content_offset_x = area.x + 1; // +1 for border
-    let content_offset_y = area.y + 1; // +1 for border
+    let content_offset_x = area.x + 1;
+    let content_offset_y = area.y + 1;
     app.set_content_layout(content_offset_x, content_offset_y, line_num_width, content_width);
 
-    // Get selection info for highlighting
     let selection = app.selection.clone();
 
-    // Build display lines with manual wrapping, tracking screen row mapping
     let mut all_lines: Vec<Line> = Vec::new();
     let mut all_row_infos: Vec<ScreenRowInfo> = Vec::new();
     let mut screen_row_idx = 0;
 
     for (visible_idx, diff_line) in visible_lines.iter().enumerate() {
-        // Calculate the absolute line index (logical line)
         let abs_line_idx = scroll_offset + visible_idx;
         let style = line_style(diff_line.source);
 
-        // Build the prefix (line number + prefix char)
         let prefix_str = if let Some(num) = diff_line.line_number {
             format!("{:>width$} ", num, width = line_num_width)
         } else if line_num_width > 0 {
@@ -97,13 +85,11 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
             String::new()
         };
 
-        // Handle special line types (no wrapping needed)
         if diff_line.source == LineSource::FileHeader {
             let mut spans = Vec::new();
             if !prefix_str.is_empty() {
                 spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
             }
-            // Add chevron indicator based on collapse state
             let is_collapsed = diff_line.file_path.as_ref()
                 .map(|p| app.is_file_collapsed(p))
                 .unwrap_or(false);
@@ -145,24 +131,18 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
             continue;
         }
 
-        // Check if we have inline spans and whether they would fit
         if !diff_line.inline_spans.is_empty() {
             let inline_width = inline_display_width(&diff_line.inline_spans);
 
             if inline_width > content_width {
-                // Inline diff would wrap - behavior depends on change type
                 let change_type = classify_inline_change(&diff_line.inline_spans);
 
                 match change_type {
                     InlineChangeType::Mixed => {
-                        // Mixed changes: fall back to separate -/+ lines with character highlighting
                         let del_source = get_deletion_source(&diff_line.inline_spans);
                         let ins_source = get_insertion_source(&diff_line.inline_spans);
-
-                        // Build deletion spans with character-level highlighting
                         let del_spans = build_deletion_spans_with_highlight(&diff_line.inline_spans, del_source);
 
-                        // Only show deletion line if there's old content
                         if !del_spans.is_empty() {
                             let del_style = line_style(del_source);
                             let del_prefix_str = if line_num_width > 0 {
@@ -171,7 +151,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                                 String::new()
                             };
 
-                            // Reconstruct old content string for wrap_content
                             let old_content: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
                             let del_spans = apply_selection_to_content(del_spans, &selection, screen_row_idx, prefix_width);
 
@@ -192,7 +171,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                             all_row_infos.extend(del_row_infos);
                         }
 
-                        // Build insertion spans with character-level highlighting
                         let new_content = &diff_line.content;
                         let ins_style = line_style(ins_source);
                         let ins_spans = build_insertion_spans_with_highlight(&diff_line.inline_spans, ins_source);
@@ -215,8 +193,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                         all_row_infos.extend(ins_row_infos);
                     }
                     InlineChangeType::PureDeletion | InlineChangeType::PureAddition => {
-                        // Pure addition/deletion: show as single wrapped line with foreground-only styling
-                        // Use space prefix (inline style), let it wrap naturally
                         let display_spans = coalesce_spans(&diff_line.inline_spans);
                         let content_spans: Vec<Span> = display_spans
                             .into_iter()
@@ -231,12 +207,11 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
 
                         let content_spans = apply_selection_to_content(content_spans, &selection, screen_row_idx, prefix_width);
 
-                        // Use space prefix for inline style
                         let (lines, row_infos) = wrap_content(
                             content_spans,
                             &diff_line.content,
                             prefix_str.clone(),
-                            "  ".to_string(), // space prefix for inline style
+                            "  ".to_string(),
                             style,
                             content_width,
                             prefix_width,
@@ -248,10 +223,7 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                         all_lines.extend(lines);
                         all_row_infos.extend(row_infos);
                     }
-                    InlineChangeType::NoChange => {
-                        // No changes - shouldn't happen for inline spans, but fall through to normal rendering
-                        // (handled below)
-                    }
+                    InlineChangeType::NoChange => {}
                 }
 
                 if change_type != InlineChangeType::NoChange {
@@ -259,7 +231,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
 
-            // Inline diff fits - render normally with inline spans
             let display_spans = coalesce_spans(&diff_line.inline_spans);
             let content_spans: Vec<Span> = display_spans
                 .into_iter()
@@ -291,7 +262,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
             all_lines.extend(lines);
             all_row_infos.extend(row_infos);
         } else {
-            // No inline spans - regular line
             let prefix_char = format!("{} ", diff_line.prefix);
             let content_spans = vec![Span::styled(diff_line.content.clone(), style)];
             let content_spans = apply_selection_to_content(content_spans, &selection, screen_row_idx, prefix_width);
@@ -314,7 +284,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    // Store the row map for selection coordinate mapping
     app.set_row_map(all_row_infos);
 
     let title = match app.current_file() {
@@ -330,7 +299,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
 
-    // No Wrap needed - we handle it manually
     let paragraph = Paragraph::new(all_lines).block(block);
 
     frame.render_widget(paragraph, area);
