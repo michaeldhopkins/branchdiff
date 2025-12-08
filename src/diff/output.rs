@@ -72,7 +72,6 @@ where
                 let inline_result = compute_inline_diff_merged(old_content, &content, LineSource::Unstaged);
 
                 if inline_result.is_meaningful {
-                    // Use spans directly - they already have correct source and is_deletion
                     return DiffLine::new(original_source, content, ' ', Some(line_num))
                         .with_file_path(path)
                         .with_inline_spans(inline_result.spans);
@@ -89,7 +88,6 @@ where
                         let inline_result = compute_inline_diff_merged(old_content, &content, LineSource::Committed);
 
                         if inline_result.is_meaningful {
-                            // Use spans directly - they already have correct source and is_deletion
                             return DiffLine::new(LineSource::Base, content, ' ', Some(line_num))
                                 .with_file_path(path)
                                 .with_inline_spans(inline_result.spans);
@@ -113,7 +111,6 @@ where
                             LineSource::Base
                         };
 
-                        // Use spans directly - they already have correct source and is_deletion
                         return DiffLine::new(original_source, content, ' ', Some(line_num))
                             .with_file_path(path)
                             .with_inline_spans(inline_result.spans);

@@ -273,11 +273,6 @@ mod tests {
         // New text includes: c + b + o + n + d.des + c + r + i + ption = "bond.description"
     }
 
-    // ============================================================
-    // Integration tests using actual diff algorithm output
-    // These test the ACTUAL spans produced, not hand-crafted ones
-    // ============================================================
-
     #[test]
     fn test_inline_diff_commercial_renewal_to_bond_coalesces() {
         // FAILING TEST: This tests the actual diff output for commercial_renewal -> bond
@@ -432,10 +427,6 @@ mod tests {
         );
     }
 
-    // ============================================================
-    // Tests for width-aware inline diff display
-    // ============================================================
-
     #[test]
     fn test_inline_display_width_simple() {
         let spans = vec![
@@ -507,10 +498,6 @@ mod tests {
         assert_ne!(ScreenRowKind::SplitDeletion, ScreenRowKind::SplitInsertion);
     }
 
-    // ============================================================
-    // Tests for truncate_with_ellipsis
-    // ============================================================
-
     #[test]
     fn test_truncate_with_ellipsis_no_truncation_needed() {
         assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
@@ -536,10 +523,6 @@ mod tests {
         assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
         assert_eq!(truncate_with_ellipsis("hello", 4), "h...");
     }
-
-    // ============================================================
-    // Tests for status_bar_height
-    // ============================================================
 
     fn create_test_app_for_status_bar(
         current_branch: Option<&str>,
@@ -642,11 +625,6 @@ mod tests {
         assert_eq!(status_bar_height(&app, (threshold - 1) as u16), 2,
             "At width {} (one below threshold) should use 2 lines", threshold - 1);
     }
-
-    // ============================================================
-    // Tests for status bar layout decisions (draw_status_bar behavior)
-    // These test the various layout branches that can occur
-    // ============================================================
 
     /// Helper to compute what the status bar would show at a given width
     /// Returns (uses_two_lines, branch_truncated, help_level)
@@ -761,10 +739,6 @@ mod tests {
         assert!(!two_lines_few, "1 file should fit on 1 line at width 85");
         assert!(two_lines_many, "999 files should need 2 lines at width 85");
     }
-
-    // ============================================================
-    // Tests for character-level background highlighting
-    // ============================================================
 
     #[test]
     fn test_highlight_bg_color_deleted_base_is_lighter() {
@@ -970,10 +944,6 @@ mod tests {
         let ins_text: String = ins_spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(ins_text, "anew1bnew2c");
     }
-
-    // ============================================================
-    // Tests for classify_inline_change
-    // ============================================================
 
     #[test]
     fn test_classify_inline_change_pure_deletion() {

@@ -25,7 +25,6 @@ pub fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Vec<Optio
                 old_idx += 1;
             }
             ChangeTag::Insert => {
-                // result[new_idx] stays None - this line was inserted
                 new_idx += 1;
             }
         }
