@@ -10,57 +10,36 @@ mod inline;
 mod output;
 mod provenance;
 
-// Re-export public types
 pub use inline::InlineSpan;
 
-// Re-export for tests (also used internally via use statements)
 #[allow(unused_imports)]
 pub(crate) use inline::compute_inline_diff_merged;
 
-// Internal imports for the algorithm
 use output::{build_working_line_output, determine_deletion_source};
 use provenance::{build_modification_map, build_provenance_map};
 
-/// The source/provenance of a line
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineSource {
-    /// Unchanged from merge-base (context line)
     Base,
-    /// Added/changed in commits on feature branch
     Committed,
-    /// Staged in index, ready to commit
     Staged,
-    /// Unstaged working tree changes
     Unstaged,
-    /// Deleted from base (was in merge-base, now gone)
     DeletedBase,
-    /// Deleted from committed (was in HEAD, deleted in staged/working)
     DeletedCommitted,
-    /// Deleted from staged (was staged, deleted in working tree)
     DeletedStaged,
-    /// Added in commit but then removed in working tree (canceled change)
     CanceledCommitted,
-    /// Added in staging but then removed in working tree (canceled change)
     CanceledStaged,
-    /// File header line
     FileHeader,
-    /// Elided lines indicator (used in context-only view)
     Elided,
 }
 
-/// A single line in the diff output
 #[derive(Debug, Clone)]
 pub struct DiffLine {
     pub source: LineSource,
     pub content: String,
     pub prefix: char,
-    /// Line number in the current file (if applicable)
     pub line_number: Option<usize>,
-    /// The file this line belongs to
     pub file_path: Option<String>,
-    /// Inline spans for within-line diff highlighting (if any)
-    /// When empty, the entire content should be shown with the line's source style
-    /// When populated, each span indicates whether it's emphasized (changed) or not
     pub inline_spans: Vec<InlineSpan>,
 }
 
@@ -76,7 +55,6 @@ impl DiffLine {
         }
     }
 
-    /// Create a DiffLine with inline highlighting spans
     pub fn with_inline_spans(mut self, spans: Vec<InlineSpan>) -> Self {
         self.inline_spans = spans;
         self
@@ -98,7 +76,6 @@ impl DiffLine {
         }
     }
 
-    /// Create an elided lines marker showing how many lines were skipped
     pub fn elided(count: usize) -> Self {
         Self {
             source: LineSource::Elided,
@@ -111,33 +88,14 @@ impl DiffLine {
     }
 }
 
-/// Result of diffing a single file across all 4 states
 #[derive(Debug)]
 pub struct FileDiff {
     pub lines: Vec<DiffLine>,
 }
 
-/// Compute file diff showing inline changes with proper source attribution
-///
-/// This function computes a 4-way diff showing changes across:
-/// - base (merge-base with main/master)
-/// - head (committed on branch)
-/// - index (staged)
-/// - working (working tree)
-///
-/// ## Architecture: Pure Provenance-Driven Design
-///
-/// The key insight: **provenance is the ONLY source of truth**.
-///
-/// We do NOT use base→working diff to structure output. Instead:
-/// 1. Build provenance maps: base→head→index→working
-/// 2. Build modification maps: adjacent delete-insert pairs at each stage
-/// 3. Build reverse provenance to find deleted lines
-/// 4. Walk through working lines, outputting each with its provenance-determined source
-/// 5. Interleave deleted base lines at appropriate positions
-///
-/// Inline diffs are ONLY created from explicit modification maps - never from
-/// content similarity detected by the diff algorithm.
+/// Compute 4-way diff: base→head→index→working.
+/// Uses provenance maps (not content similarity) to determine line sources.
+/// Inline diffs only created from explicit modification maps.
 pub fn compute_file_diff_v2(
     path: &str,
     base_content: Option<&str>,
@@ -155,7 +113,6 @@ pub fn compute_file_diff_v2(
 
     let is_deleted = working_content.is_none() && index_content.is_none();
 
-    // Handle deleted files
     if is_deleted {
         let to_delete = head_content.or(base_content).unwrap_or("");
         for (i, line) in to_delete.lines().enumerate() {
@@ -169,27 +126,22 @@ pub fn compute_file_diff_v2(
         return FileDiff { lines };
     }
 
-    // Build line vectors
     let base_lines: Vec<&str> = base.lines().collect();
     let head_lines: Vec<&str> = head.lines().collect();
     let index_lines: Vec<&str> = index.lines().collect();
     let working_lines: Vec<&str> = working.lines().collect();
 
-    // Special case: if base == working, only show "canceled" lines
-    // (lines added in commits/staging but removed in working tree)
+    // If base == working, only show "canceled" lines (added then removed)
     if base == working {
-        // Build provenance maps to find canceled lines
         let head_from_base = build_provenance_map(&base_lines, &head_lines);
         let index_from_head = build_provenance_map(&head_lines, &index_lines);
         let working_from_index = build_provenance_map(&index_lines, &working_lines);
 
-        // Find canceled committed lines (in HEAD but not base, and not in working)
         for (head_idx, head_line) in head_lines.iter().enumerate() {
             if head_from_base.get(head_idx).copied().flatten().is_some() {
-                continue; // Line came from base, not a committed addition
+                continue;
             }
 
-            // Check if HEAD line is in working via index
             let mut in_working = false;
             for (index_idx, &prov) in index_from_head.iter().enumerate() {
                 if prov == Some(head_idx) {
@@ -213,10 +165,9 @@ pub fn compute_file_diff_v2(
             }
         }
 
-        // Find canceled staged lines (in INDEX but not head, and not in working)
         for (index_idx, index_line) in index_lines.iter().enumerate() {
             if index_from_head.get(index_idx).copied().flatten().is_some() {
-                continue; // Line came from head, not a staged addition
+                continue;
             }
 
             let mut in_working = false;
@@ -240,34 +191,19 @@ pub fn compute_file_diff_v2(
         return FileDiff { lines };
     }
 
-    // =========================================================================
-    // STEP 1: Build provenance maps (forward direction)
-    // =========================================================================
-    // provenance[new_idx] = Some(old_idx) means new line came from old line
-    // provenance[new_idx] = None means new line was inserted
+    // Build provenance maps: provenance[new_idx] = Some(old_idx) if line came from old
     let head_from_base = build_provenance_map(&base_lines, &head_lines);
     let index_from_head = build_provenance_map(&head_lines, &index_lines);
     let working_from_index = build_provenance_map(&index_lines, &working_lines);
 
-    // =========================================================================
-    // STEP 2: Build modification maps (adjacent delete-insert pairs)
-    // =========================================================================
-    // modification_map[new_idx] = (old_idx, old_content)
-    // Only created for ADJACENT delete-insert pairs with meaningful similarity
+    // Build modification maps for adjacent delete-insert pairs with meaningful similarity
     let base_head_mods = build_modification_map(&base_lines, &head_lines, LineSource::Committed);
     let head_index_mods = build_modification_map(&head_lines, &index_lines, LineSource::Staged);
     let index_working_mods = build_modification_map(&index_lines, &working_lines, LineSource::Unstaged);
 
-    // =========================================================================
-    // STEP 3: Build reverse provenance (to find deleted lines)
-    // =========================================================================
-    // For each base line, track which working line (if any) it ended up as
-    // base_to_working[base_idx] = Some(working_idx) if base line is still present
-    // base_to_working[base_idx] = None if base line was deleted
-
+    // Build reverse provenance: base_to_working[base_idx] = Some(working_idx) if still present
     let mut base_to_working: Vec<Option<usize>> = vec![None; base_lines.len()];
 
-    // Track base lines that are still present via provenance chain
     for working_idx in 0..working_lines.len() {
         if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
             if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
