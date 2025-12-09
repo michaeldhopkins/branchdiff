@@ -55,6 +55,10 @@ pub fn compute_inline_diff_merged(
     let diff = TextDiff::from_chars(old_line, new_line);
     let mut spans = Vec::new();
     let mut max_unchanged_segment = 0usize;
+    let mut total_unchanged_chars = 0usize;
+    let mut num_unchanged_segments = 0usize;
+    let mut _total_deleted_chars = 0usize;
+    let mut _total_inserted_chars = 0usize;
 
     let mut pending_unchanged = String::new();
     let mut pending_deleted = String::new();
@@ -64,10 +68,12 @@ pub fn compute_inline_diff_merged(
         let text = change.value();
         match change.tag() {
             ChangeTag::Equal => {
+                total_unchanged_chars += text.chars().count();
                 if !pending_deleted.is_empty() || !pending_inserted.is_empty() {
                     if !pending_unchanged.is_empty() {
                         let segment_len = pending_unchanged.chars().count();
                         max_unchanged_segment = max_unchanged_segment.max(segment_len);
+                        num_unchanged_segments += 1;
                         spans.push(InlineSpan {
                             text: pending_unchanged.clone(),
                             source: None,
@@ -95,9 +101,11 @@ pub fn compute_inline_diff_merged(
                 pending_unchanged.push_str(text);
             }
             ChangeTag::Delete => {
+                _total_deleted_chars += text.chars().count();
                 pending_deleted.push_str(text);
             }
             ChangeTag::Insert => {
+                _total_inserted_chars += text.chars().count();
                 pending_inserted.push_str(text);
             }
         }
@@ -107,6 +115,7 @@ pub fn compute_inline_diff_merged(
     if !pending_unchanged.is_empty() {
         let segment_len = pending_unchanged.chars().count();
         max_unchanged_segment = max_unchanged_segment.max(segment_len);
+        num_unchanged_segments += 1;
         spans.push(InlineSpan {
             text: pending_unchanged,
             source: None,
@@ -129,14 +138,26 @@ pub fn compute_inline_diff_merged(
     }
 
     // Determine if inline diff is meaningful:
-    // - There must be a contiguous unchanged segment of meaningful length
-    // - This prevents false positives from scattered single-char matches
+    // We need:
+    // 1. A contiguous unchanged segment of meaningful length (>= 5 chars)
+    // 2. Not too many scattered unchanged segments (fragmentation)
     //
-    // We require: longest contiguous unchanged segment >= 5 chars
-    // This accepts: "do_thing(data)" -> "do_thing(data, params)" (14 char segment)
-    // This accepts: "hello world" -> "hello earth" (6 char segment "hello ")
-    // This rejects: "body_line" -> "new body" (4 char segment "body")
-    let is_meaningful = max_unchanged_segment >= 5;
+    // The fragmentation check catches cases like a for-loop becoming a comment,
+    // where scattered single-char or word matches (like "the", "span", " ") create
+    // many small unchanged segments but the lines are structurally completely different.
+    //
+    // A diff with 1-3 unchanged segments is likely a real modification (prefix, middle, suffix)
+    // A diff with 5+ unchanged segments is likely coincidental character matches
+    //
+    // Examples:
+    // - "do_thing(data)" -> "do_thing(data, params)": 2 segments (prefix + suffix) ✓
+    // - "end" -> "end # comment": 1 segment (prefix) ✓
+    // - "hello world" -> "hello earth": 2 segments ✓
+    // - "for i in (x..y).rev() {" -> "// comment text": many scattered segments ✗
+    let has_meaningful_segment = max_unchanged_segment >= 5;
+    let not_too_fragmented = num_unchanged_segments <= 4;
+
+    let is_meaningful = has_meaningful_segment && not_too_fragmented;
 
     InlineDiffResult { spans, is_meaningful }
 }
