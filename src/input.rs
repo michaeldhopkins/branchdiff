@@ -19,6 +19,7 @@ pub enum AppAction {
     UpdateSelection(u16, u16),
     EndSelection,
     Copy,
+    CopyOrQuit,
     None,
 }
 
@@ -36,7 +37,10 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
     match (code, modifiers) {
         // Quit
         (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => AppAction::Quit,
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => AppAction::Quit,
+
+        // Ctrl+C: copy if selection exists, otherwise quit
+        // (Cmd+C on macOS is intercepted by the terminal, not the app)
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => AppAction::CopyOrQuit,
 
         (KeyCode::Up, _) => AppAction::ScrollUp(1),
         (KeyCode::Down, _) => AppAction::ScrollDown(1),
@@ -68,7 +72,7 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         // Cycle view mode
         (KeyCode::Char('c'), KeyModifiers::NONE) => AppAction::CycleViewMode,
 
-        // Copy selection (Ctrl+C when not quitting, or 'y' like vim yank)
+        // Copy selection with 'y' (vim yank)
         (KeyCode::Char('y'), KeyModifiers::NONE) => AppAction::Copy,
 
         _ => AppAction::None,
@@ -128,10 +132,11 @@ mod tests {
     }
 
     #[test]
-    fn test_quit_with_ctrl_c() {
+    fn test_copy_or_quit_with_ctrl_c() {
         let event = key_event(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(handle_event(event), AppAction::Quit);
+        assert_eq!(handle_event(event), AppAction::CopyOrQuit);
     }
+
 
     #[test]
     fn test_scroll_up_with_arrow() {

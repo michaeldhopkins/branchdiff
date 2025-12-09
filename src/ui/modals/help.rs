@@ -51,7 +51,7 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
             Span::raw("  Cycle view mode"),
         ]),
         Line::from(vec![
-            Span::styled("    y           ", Style::default().fg(Color::Cyan)),
+            Span::styled("    Ctrl+c / y  ", Style::default().fg(Color::Cyan)),
             Span::raw("  Copy selection"),
         ]),
         Line::from(vec![
