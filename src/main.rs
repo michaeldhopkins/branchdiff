@@ -225,6 +225,13 @@ fn run_app<B: Backend>(
                 AppAction::Copy => {
                     let _ = app.copy_selection();
                 }
+                AppAction::CopyOrQuit => {
+                    if app.has_selection() {
+                        let _ = app.copy_selection();
+                    } else if app.should_quit() {
+                        return Ok(());
+                    }
+                }
                 AppAction::None => {}
             }
         }
