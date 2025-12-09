@@ -428,6 +428,216 @@ mod tests {
     }
 
     #[test]
+    fn test_variable_rename_def_to_inserted_pribond() {
+        let old = "        let def_pos = line_contents.iter().position(|&c| c.contains(\"pribond\")).unwrap();";
+        let new = "        let inserted_pribond_pos = line_contents.iter().position(|&c| c.contains(\"pribond\")).unwrap();";
+
+        let result = compute_inline_diff_merged(old, new, LineSource::Committed);
+
+        let num_unchanged: usize = result.spans.iter()
+            .filter(|s| s.source.is_none())
+            .count();
+        eprintln!("\n=== def_pos -> inserted_pribond_pos ===");
+        eprintln!("is_meaningful: {}", result.is_meaningful);
+        eprintln!("num unchanged segments: {}", num_unchanged);
+        eprintln!("Raw spans ({}):", result.spans.len());
+        for (i, span) in result.spans.iter().enumerate() {
+            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text);
+        }
+
+        let coalesced = coalesce_spans(&result.spans);
+        eprintln!("Coalesced spans ({}):", coalesced.len());
+        for (i, span) in coalesced.iter().enumerate() {
+            eprintln!("  span[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text);
+        }
+
+        assert!(
+            result.is_meaningful,
+            "Variable rename should be meaningful"
+        );
+
+        let deletion = coalesced.iter().find(|s| s.is_deletion);
+        assert!(deletion.is_some(), "Should have deletion");
+        assert!(
+            deletion.unwrap().text.contains("def"),
+            "Deletion should contain 'def', got: {:?}", deletion.unwrap().text
+        );
+
+        let insertion = coalesced.iter().find(|s| !s.is_deletion && s.source.is_some());
+        assert!(insertion.is_some(), "Should have insertion");
+        assert!(
+            insertion.unwrap().text.contains("inserted_pribond"),
+            "Insertion should contain 'inserted_pribond', got: {:?}", insertion.unwrap().text
+        );
+    }
+
+    #[test]
+    fn test_def_principal_modification_should_not_be_meaningful() {
+        let old = "def principal_mailing_address";
+        let new = "def pribond_descripal_mailtiong_address";
+
+        let result = compute_inline_diff_merged(old, new, LineSource::Committed);
+
+        let num_unchanged: usize = result.spans.iter()
+            .filter(|s| s.source.is_none())
+            .count();
+        eprintln!("\n=== def principal -> pribond ===");
+        eprintln!("is_meaningful: {}", result.is_meaningful);
+        eprintln!("num unchanged segments: {}", num_unchanged);
+        eprintln!("Raw spans ({}):", result.spans.len());
+        for (i, span) in result.spans.iter().enumerate() {
+            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text);
+        }
+
+        assert!(
+            !result.is_meaningful,
+            "Gibberish transformation should NOT be meaningful - num_unchanged_segments={}",
+            num_unchanged
+        );
+    }
+
+    #[test]
+    fn test_for_loop_to_comment_should_not_be_meaningful() {
+        let old = "    for i in (last_changed + 1..spans.len()).rev() {";
+        let new = "    // Always preserve the final unchanged span if it exists - it's the common suffix";
+
+        let result = compute_inline_diff_merged(old, new, LineSource::Committed);
+
+        let num_unchanged: usize = result.spans.iter()
+            .filter(|s| s.source.is_none())
+            .count();
+        eprintln!("\n=== for loop -> comment ===");
+        eprintln!("is_meaningful: {}", result.is_meaningful);
+        eprintln!("num unchanged segments: {}", num_unchanged);
+        eprintln!("Raw spans ({}):", result.spans.len());
+        for (i, span) in result.spans.iter().enumerate() {
+            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text);
+        }
+
+        assert!(
+            !result.is_meaningful,
+            "A for loop changing to a comment should NOT be meaningful - num_unchanged_segments={}",
+            num_unchanged
+        );
+    }
+
+    #[test]
+    fn test_coalesce_describe_inactive_to_authorization() {
+        let old = r#"describe "inactive account" do"#;
+        let new = r#"describe "authorization" do"#;
+
+        let result = compute_inline_diff_merged(old, new, LineSource::Committed);
+
+        eprintln!("\n=== describe inactive -> authorization ===");
+        eprintln!("is_meaningful: {}", result.is_meaningful);
+        eprintln!("Raw spans ({}):", result.spans.len());
+        for (i, span) in result.spans.iter().enumerate() {
+            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text);
+        }
+
+        let coalesced = coalesce_spans(&result.spans);
+
+        eprintln!("Coalesced spans ({}):", coalesced.len());
+        for (i, span) in coalesced.iter().enumerate() {
+            eprintln!("  span[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text);
+        }
+
+        let deletion = coalesced.iter().find(|s| s.is_deletion);
+        assert!(deletion.is_some(), "Should have a deletion span");
+        let deletion = deletion.unwrap();
+
+        assert!(
+            deletion.text.contains("inactive account"),
+            "Deletion should contain 'inactive account', got: {:?}", deletion.text
+        );
+
+        let insertion = coalesced.iter().find(|s| !s.is_deletion && s.source.is_some());
+        assert!(insertion.is_some(), "Should have an insertion span");
+        let insertion = insertion.unwrap();
+
+        assert!(
+            insertion.text.contains("authorization"),
+            "Insertion should contain 'authorization', got: {:?}", insertion.text
+        );
+
+        let prefix = coalesced.first().filter(|s| s.source.is_none());
+        assert!(prefix.is_some(), "Should have unchanged prefix");
+        assert!(
+            prefix.unwrap().text.contains("describe"),
+            "Prefix should contain 'describe', got: {:?}", prefix.unwrap().text
+        );
+
+        let suffix = coalesced.last().filter(|s| s.source.is_none());
+        assert!(suffix.is_some(), "Should have unchanged suffix");
+        assert!(
+            suffix.unwrap().text.contains(" do"),
+            "Suffix should contain ' do', got: {:?}", suffix.unwrap().text
+        );
+    }
+
+    #[test]
+    fn test_coalesce_let_variable_rename() {
+        let old = "let(:letters_of_bondability_requests_policy)";
+        let new = "let(:principal)";
+
+        let result = compute_inline_diff_merged(old, new, LineSource::Committed);
+
+        eprintln!("\n=== let variable rename ===");
+        eprintln!("is_meaningful: {}", result.is_meaningful);
+        eprintln!("Raw spans ({}):", result.spans.len());
+        for (i, span) in result.spans.iter().enumerate() {
+            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text);
+        }
+
+        let coalesced = coalesce_spans(&result.spans);
+
+        eprintln!("Coalesced spans ({}):", coalesced.len());
+        for (i, span) in coalesced.iter().enumerate() {
+            eprintln!("  span[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text);
+        }
+
+        let deletion = coalesced.iter().find(|s| s.is_deletion);
+        assert!(deletion.is_some(), "Should have a deletion span");
+        let deletion = deletion.unwrap();
+
+        assert!(
+            deletion.text.contains("letters_of_bondability_requests_policy"),
+            "Deletion should contain the full variable name, got: {:?}", deletion.text
+        );
+
+        let insertion = coalesced.iter().find(|s| !s.is_deletion && s.source.is_some());
+        assert!(insertion.is_some(), "Should have an insertion span");
+        let insertion = insertion.unwrap();
+
+        assert!(
+            insertion.text.contains("principal"),
+            "Insertion should contain 'principal', got: {:?}", insertion.text
+        );
+
+        let prefix = coalesced.first().filter(|s| s.source.is_none());
+        assert!(prefix.is_some(), "Should have unchanged prefix");
+        assert!(
+            prefix.unwrap().text.starts_with("let(:"),
+            "Prefix should start with 'let(:', got: {:?}", prefix.unwrap().text
+        );
+
+        let suffix = coalesced.last().filter(|s| s.source.is_none());
+        assert!(suffix.is_some(), "Should have unchanged suffix");
+        assert!(
+            suffix.unwrap().text == ")",
+            "Suffix should be ')', got: {:?}", suffix.unwrap().text
+        );
+    }
+
+    #[test]
     fn test_inline_display_width_simple() {
         let spans = vec![
             make_span("hello ", None, false),
@@ -920,7 +1130,8 @@ mod tests {
 
     #[test]
     fn test_build_spans_with_multiple_changes() {
-        // Multiple deletions and insertions interspersed
+        // Multiple deletions and insertions interspersed with short gaps
+        // Since gaps are < 5 chars and not structural, they get coalesced
         let spans = vec![
             make_span("a", None, false),
             make_span("old1", Some(LineSource::DeletedBase), true),
@@ -934,13 +1145,12 @@ mod tests {
         let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
         let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
 
-        // Deletion should have: a, old1, b, old2, c (5 spans)
-        assert_eq!(del_spans.len(), 5);
+        // After coalescing, short gaps get absorbed
+        // Deletion text should be: aold1bold2c (coalesced into fewer spans)
         let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(del_text, "aold1bold2c");
 
-        // Insertion should have: a, new1, b, new2, c (5 spans)
-        assert_eq!(ins_spans.len(), 5);
+        // Insertion text should be: anew1bnew2c
         let ins_text: String = ins_spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(ins_text, "anew1bnew2c");
     }

@@ -1692,18 +1692,21 @@ end
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
         let prefixes: Vec<char> = lines.iter().map(|l| l.prefix).collect();
 
-        let def_pos = line_contents.iter().position(|&c| c.contains("pribond")).unwrap();
-        let deleted_pos = line_contents.iter().position(|&c| c.contains("commercial_renewal")).unwrap();
-        let inserted_pos = line_contents.iter().position(|&c| c.contains("new content")).unwrap();
+        let deleted_principal_pos = line_contents.iter().position(|&c| c.contains("principal_mailing_address")).unwrap();
+        let inserted_pribond_pos = line_contents.iter().position(|&c| c.contains("pribond")).unwrap();
+        let deleted_commercial_pos = line_contents.iter().position(|&c| c.contains("commercial_renewal")).unwrap();
+        let inserted_new_content_pos = line_contents.iter().position(|&c| c.contains("new content")).unwrap();
         let end_pos = line_contents.iter().position(|&c| c == "end").unwrap();
 
-        assert_eq!(prefixes[deleted_pos], '-');
-        assert!(deleted_pos > def_pos);
+        assert_eq!(prefixes[deleted_principal_pos], '-', "principal should be deleted");
+        assert_eq!(prefixes[inserted_pribond_pos], '+', "pribond should be inserted");
+        assert_eq!(prefixes[deleted_commercial_pos], '-', "commercial_renewal should be deleted");
+        assert_eq!(prefixes[inserted_new_content_pos], '+', "new content should be inserted");
+        assert_eq!(prefixes[end_pos], ' ', "end should be unchanged context");
 
-        assert_eq!(def_pos, 0);
-        assert_eq!(deleted_pos, 1);
-        assert_eq!(inserted_pos, 2);
-        assert_eq!(end_pos, 3);
+        assert!(deleted_principal_pos < deleted_commercial_pos, "both deletions should come together");
+        assert!(deleted_commercial_pos < inserted_pribond_pos, "deletions should come before insertions");
+        assert!(inserted_pribond_pos < inserted_new_content_pos, "both insertions should come together");
     }
 
     #[test]

@@ -91,11 +91,26 @@ pub fn coalesce_spans(spans: &[InlineSpan]) -> Vec<InlineSpan> {
     }
 
     let mut suffix_start = spans.len();
-    for i in (last_changed + 1..spans.len()).rev() {
-        if should_preserve_as_suffix(&spans[i].text) {
-            suffix_start = i;
-        } else {
-            break;
+
+    // Always preserve the final unchanged span if it exists - it's the common suffix
+    // For internal gaps, be more selective about what to preserve
+    if last_changed + 1 < spans.len() {
+        // There's at least one unchanged span after the last change
+        // Always preserve the very last span (true line ending)
+        let last_idx = spans.len() - 1;
+
+        // Work backwards from second-to-last, requiring structural chars for internal gaps
+        for i in (last_changed + 1..last_idx).rev() {
+            if should_preserve_as_suffix(&spans[i].text) {
+                suffix_start = i;
+            } else {
+                break;
+            }
+        }
+
+        // Always include the final span as suffix
+        if suffix_start > last_idx {
+            suffix_start = last_idx;
         }
     }
 
@@ -183,8 +198,9 @@ pub fn build_deletion_spans_with_highlight(
     let base_style = line_style(del_source);
     let highlight_style = line_style_with_highlight(del_source);
 
+    let coalesced = coalesce_spans(inline_spans);
     let mut result = Vec::new();
-    for span in inline_spans {
+    for span in coalesced {
         if span.is_deletion {
             result.push(Span::styled(span.text.clone(), highlight_style));
         } else if span.source.is_none() {
@@ -202,8 +218,9 @@ pub fn build_insertion_spans_with_highlight(
     let base_style = line_style(ins_source);
     let highlight_style = line_style_with_highlight(ins_source);
 
+    let coalesced = coalesce_spans(inline_spans);
     let mut result = Vec::new();
-    for span in inline_spans {
+    for span in coalesced {
         if span.is_deletion {
             continue;
         } else if span.source.is_some() {
