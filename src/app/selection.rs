@@ -61,6 +61,11 @@ impl App {
         self.selection = None;
     }
 
+    /// Check if there's an active selection
+    pub fn has_selection(&self) -> bool {
+        self.selection.is_some()
+    }
+
     /// Convert screen coordinates to content position
     /// Now uses row_map to correctly handle wrapped lines and split inline diffs
     fn screen_to_content_position(&self, screen_x: u16, screen_y: u16) -> Option<Position> {
