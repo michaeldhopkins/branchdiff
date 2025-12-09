@@ -304,8 +304,26 @@ pub fn compute_file_diff_v2(
         None
     };
 
+    // Find head position for a working line (via provenance or modification maps)
+    let get_working_head_idx = |working_idx: usize| -> Option<usize> {
+        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
+            if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
+                return Some(head_idx);
+            }
+        }
+
+        if let Some((index_idx, _)) = index_working_mods.get(&working_idx) {
+            if let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten() {
+                return Some(head_idx);
+            }
+        }
+
+        None
+    };
+
     let mut line_num = 1usize;
     let mut next_base_deletion = 0usize;
+    let mut output_head_positions: Vec<Option<usize>> = Vec::new();
 
     for working_idx in 0..working_lines.len() {
         let working_content = working_lines[working_idx].trim_end();
@@ -345,12 +363,17 @@ pub fn compute_file_diff_v2(
                         '-',
                         None,
                     ).with_file_path(path));
+                    let head_idx_for_deletion = head_from_base.iter()
+                        .position(|&h| h == Some(next_base_deletion));
+                    output_head_positions.push(head_idx_for_deletion);
                 }
                 next_base_deletion += 1;
             }
         }
 
         let source = trace_source(working_idx);
+        let working_head_idx = get_working_head_idx(working_idx);
+        output_head_positions.push(working_head_idx);
         let output_line = build_working_line_output(
             working_idx,
             working_content,
@@ -394,6 +417,9 @@ pub fn compute_file_diff_v2(
                 '-',
                 None,
             ).with_file_path(path));
+            let head_idx_for_deletion = head_from_base.iter()
+                .position(|&h| h == Some(next_base_deletion));
+            output_head_positions.push(head_idx_for_deletion);
         }
         next_base_deletion += 1;
     }
@@ -487,11 +513,7 @@ pub fn compute_file_diff_v2(
     }
 
     // Insert canceled lines near their original positions
-    let mut output_head_positions: Vec<Option<usize>> = Vec::new();
-    for line in &lines {
-        let head_pos = head_lines.iter().position(|h| h.trim_end() == line.content);
-        output_head_positions.push(head_pos);
-    }
+    // Note: output_head_positions was built during line construction above
 
     for (head_idx, content) in canceled_committed.into_iter().rev() {
         let mut insert_pos = lines.len();
@@ -1707,6 +1729,72 @@ end
         assert!(deleted_principal_pos < deleted_commercial_pos, "both deletions should come together");
         assert!(deleted_commercial_pos < inserted_pribond_pos, "deletions should come before insertions");
         assert!(inserted_pribond_pos < inserted_new_content_pos, "both insertions should come together");
+    }
+
+    #[test]
+    fn test_unstaged_modification_of_newly_committed_method_appears_in_correct_position() {
+        let base = "def abeyance_required?
+  abeyance? || active?
+end
+
+def from_domino?
+  legacy_unid.present?
+end
+";
+        let head = "def abeyance_required?
+  abeyance? || active?
+end
+
+def can_request_letter_of_bondability?
+  !commercial? && (active? || abeyance?)
+end
+
+def from_domino?
+  legacy_unid.present?
+end
+";
+        let index = head;
+        let working = "def abeyance_required?
+  abeyance? || active?
+end
+
+def can_request_letter_of_bondability?
+  !inactive? && status != \"Destroy\"
+end
+
+def from_domino?
+  legacy_unid.present?
+end
+";
+
+        let diff = compute_file_diff_v2("principal.rb", Some(base), Some(head), Some(index), Some(working));
+        let lines = content_lines(&diff);
+
+        let abeyance_pos = lines.iter().position(|l| l.content.contains("abeyance_required")).unwrap();
+        let can_request_pos = lines.iter().position(|l| l.content.contains("can_request_letter_of_bondability")).unwrap();
+        let from_domino_pos = lines.iter().position(|l| l.content.contains("from_domino")).unwrap();
+
+        let commercial_line_pos = lines.iter().position(|l| l.content.contains("!commercial?"));
+        let inactive_line_pos = lines.iter().position(|l| l.content.contains("!inactive?"));
+
+        assert!(can_request_pos > abeyance_pos, "can_request method should come after abeyance_required");
+        assert!(can_request_pos < from_domino_pos, "can_request method should come before from_domino");
+
+        if let Some(commercial_pos) = commercial_line_pos {
+            assert!(
+                commercial_pos > abeyance_pos && commercial_pos < from_domino_pos,
+                "!commercial? line should appear between abeyance_required and from_domino, not at pos {} (abeyance={}, from_domino={})",
+                commercial_pos, abeyance_pos, from_domino_pos
+            );
+        }
+
+        if let Some(inactive_pos) = inactive_line_pos {
+            assert!(
+                inactive_pos > abeyance_pos && inactive_pos < from_domino_pos,
+                "!inactive? line should appear between abeyance_required and from_domino, not at pos {} (abeyance={}, from_domino={})",
+                inactive_pos, abeyance_pos, from_domino_pos
+            );
+        }
     }
 
     #[test]
