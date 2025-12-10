@@ -151,18 +151,28 @@ impl App {
         self.collapsed_files.contains(path)
     }
 
-    /// Check if a file path matches any auto-collapse pattern
+    /// Check if a file path matches any auto-collapse pattern (lock files)
     fn should_auto_collapse(path: &str) -> bool {
         AUTO_COLLAPSE_PATTERNS.iter().any(|pattern| path.ends_with(pattern))
     }
 
-    /// Auto-collapse files matching lock/generated file patterns
+    /// Check if a file header indicates a deleted file
+    fn is_deleted_file(header_content: &str) -> bool {
+        header_content.ends_with("(deleted)")
+    }
+
+    /// Auto-collapse files matching lock/generated file patterns and deleted files
     /// Skips files that have been manually toggled by the user
-    fn auto_collapse_lock_files(&mut self) {
+    fn auto_collapse_files(&mut self) {
         for file in &self.files {
             if let Some(first_line) = file.lines.first() {
                 if let Some(ref path) = first_line.file_path {
-                    if Self::should_auto_collapse(path) && !self.manually_toggled.contains(path) {
+                    if self.manually_toggled.contains(path) {
+                        continue;
+                    }
+                    let should_collapse = Self::should_auto_collapse(path)
+                        || Self::is_deleted_file(&first_line.content);
+                    if should_collapse {
                         self.collapsed_files.insert(path.clone());
                     }
                 }
@@ -183,7 +193,7 @@ impl App {
         self.current_branch = result.current_branch;
         self.files = result.files;
         self.lines = result.lines;
-        self.auto_collapse_lock_files();
+        self.auto_collapse_files();
         self.clamp_scroll();
     }
 
@@ -285,7 +295,6 @@ mod tests {
 
     #[test]
     fn test_auto_collapse_lock_files() {
-        // Create files including a lock file
         let gemfile_lock = FileDiff {
             lines: vec![
                 DiffLine::file_header("Gemfile.lock"),
@@ -307,17 +316,41 @@ mod tests {
 
         let mut app = create_test_app_with_files(vec![gemfile_lock, regular_file, cargo_lock]);
 
-        // Initially nothing is collapsed
         assert!(!app.is_file_collapsed("Gemfile.lock"));
         assert!(!app.is_file_collapsed("src/main.rs"));
         assert!(!app.is_file_collapsed("Cargo.lock"));
 
-        // After auto-collapse, lock files should be collapsed
-        app.auto_collapse_lock_files();
+        app.auto_collapse_files();
 
         assert!(app.is_file_collapsed("Gemfile.lock"), "Gemfile.lock should be auto-collapsed");
         assert!(!app.is_file_collapsed("src/main.rs"), "Regular files should not be collapsed");
         assert!(app.is_file_collapsed("Cargo.lock"), "Cargo.lock should be auto-collapsed");
+    }
+
+    #[test]
+    fn test_auto_collapse_deleted_files() {
+        let deleted_file = FileDiff {
+            lines: vec![
+                DiffLine::deleted_file_header("src/old_file.rs"),
+                change_line("deleted content"),
+            ],
+        };
+        let regular_file = FileDiff {
+            lines: vec![
+                DiffLine::file_header("src/main.rs"),
+                change_line("some code"),
+            ],
+        };
+
+        let mut app = create_test_app_with_files(vec![deleted_file, regular_file]);
+
+        assert!(!app.is_file_collapsed("src/old_file.rs"));
+        assert!(!app.is_file_collapsed("src/main.rs"));
+
+        app.auto_collapse_files();
+
+        assert!(app.is_file_collapsed("src/old_file.rs"), "deleted file should be auto-collapsed");
+        assert!(!app.is_file_collapsed("src/main.rs"), "regular files should not be collapsed");
     }
 
     #[test]
@@ -331,14 +364,35 @@ mod tests {
 
         let mut app = create_test_app_with_files(vec![gemfile_lock]);
 
-        app.auto_collapse_lock_files();
+        app.auto_collapse_files();
         assert!(app.is_file_collapsed("Gemfile.lock"), "should be auto-collapsed initially");
 
         app.toggle_file_collapsed("Gemfile.lock");
         assert!(!app.is_file_collapsed("Gemfile.lock"), "should be expanded after toggle");
 
-        app.auto_collapse_lock_files();
+        app.auto_collapse_files();
         assert!(!app.is_file_collapsed("Gemfile.lock"), "should stay expanded after re-running auto-collapse");
+    }
+
+    #[test]
+    fn test_manually_toggled_deleted_files_not_auto_collapsed() {
+        let deleted_file = FileDiff {
+            lines: vec![
+                DiffLine::deleted_file_header("src/old_file.rs"),
+                change_line("deleted content"),
+            ],
+        };
+
+        let mut app = create_test_app_with_files(vec![deleted_file]);
+
+        app.auto_collapse_files();
+        assert!(app.is_file_collapsed("src/old_file.rs"), "should be auto-collapsed initially");
+
+        app.toggle_file_collapsed("src/old_file.rs");
+        assert!(!app.is_file_collapsed("src/old_file.rs"), "should be expanded after toggle");
+
+        app.auto_collapse_files();
+        assert!(!app.is_file_collapsed("src/old_file.rs"), "should stay expanded after re-running auto-collapse");
     }
 
     #[test]
