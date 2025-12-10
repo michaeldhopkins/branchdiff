@@ -76,6 +76,17 @@ impl DiffLine {
         }
     }
 
+    pub fn deleted_file_header(path: &str) -> Self {
+        Self {
+            source: LineSource::FileHeader,
+            content: format!("{} (deleted)", path),
+            prefix: ' ',
+            line_number: None,
+            file_path: Some(path.to_string()),
+            inline_spans: Vec::new(),
+        }
+    }
+
     pub fn elided(count: usize) -> Self {
         Self {
             source: LineSource::Elided,
@@ -104,18 +115,43 @@ pub fn compute_file_diff_v2(
     working_content: Option<&str>,
 ) -> FileDiff {
     let mut lines = Vec::new();
-    lines.push(DiffLine::file_header(path));
 
-    let base = base_content.unwrap_or("");
-    let head = head_content.unwrap_or(base);
-    let index = index_content.unwrap_or(head);
-    let working = working_content.unwrap_or(index);
+    // Handle file deletions at various stages
+    // Unstaged deletion: file exists in index but not working tree
+    if working_content.is_none() && index_content.is_some() {
+        lines.push(DiffLine::deleted_file_header(path));
+        let content = index_content.unwrap();
+        for (i, line) in content.lines().enumerate() {
+            lines.push(DiffLine::new(
+                LineSource::DeletedStaged,
+                line.to_string(),
+                '-',
+                Some(i + 1),
+            ).with_file_path(path));
+        }
+        return FileDiff { lines };
+    }
 
-    let is_deleted = working_content.is_none() && index_content.is_none();
+    // Staged deletion: file exists in HEAD but not in index or working
+    if index_content.is_none() && working_content.is_none() && head_content.is_some() {
+        lines.push(DiffLine::deleted_file_header(path));
+        let content = head_content.unwrap();
+        for (i, line) in content.lines().enumerate() {
+            lines.push(DiffLine::new(
+                LineSource::DeletedCommitted,
+                line.to_string(),
+                '-',
+                Some(i + 1),
+            ).with_file_path(path));
+        }
+        return FileDiff { lines };
+    }
 
-    if is_deleted {
-        let to_delete = head_content.or(base_content).unwrap_or("");
-        for (i, line) in to_delete.lines().enumerate() {
+    // Committed deletion: file exists in base but not in HEAD/index/working
+    if head_content.is_none() && index_content.is_none() && working_content.is_none() && base_content.is_some() {
+        lines.push(DiffLine::deleted_file_header(path));
+        let content = base_content.unwrap();
+        for (i, line) in content.lines().enumerate() {
             lines.push(DiffLine::new(
                 LineSource::DeletedBase,
                 line.to_string(),
@@ -125,6 +161,13 @@ pub fn compute_file_diff_v2(
         }
         return FileDiff { lines };
     }
+
+    lines.push(DiffLine::file_header(path));
+
+    let base = base_content.unwrap_or("");
+    let head = head_content.unwrap_or(base);
+    let index = index_content.unwrap_or(head);
+    let working = working_content.unwrap_or(index);
 
     let base_lines: Vec<&str> = base.lines().collect();
     let head_lines: Vec<&str> = head.lines().collect();
@@ -706,17 +749,61 @@ mod tests {
     }
 
     #[test]
-    fn test_deleted_file() {
+    fn test_deleted_file_staged_deletion() {
         let base = "line1\nline2";
 
         let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), None, None);
 
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+        assert_eq!(diff.lines[0].content, "test.txt (deleted)");
+
         let deleted_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| matches!(l.source, LineSource::DeletedBase | LineSource::DeletedCommitted))
+            .filter(|l| l.source == LineSource::DeletedCommitted)
             .collect();
 
-        assert!(!deleted_lines.is_empty());
+        assert_eq!(deleted_lines.len(), 2);
         assert!(deleted_lines.iter().all(|l| l.prefix == '-'));
+        assert_eq!(deleted_lines[0].content, "line1");
+        assert_eq!(deleted_lines[1].content, "line2");
+    }
+
+    #[test]
+    fn test_deleted_file_unstaged_deletion() {
+        let content = "line1\nline2\nline3";
+
+        let diff = compute_file_diff_v2("test.txt", Some(content), Some(content), Some(content), None);
+
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+        assert_eq!(diff.lines[0].content, "test.txt (deleted)");
+
+        let deleted_lines: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::DeletedStaged)
+            .collect();
+
+        assert_eq!(deleted_lines.len(), 3);
+        assert!(deleted_lines.iter().all(|l| l.prefix == '-'));
+        assert_eq!(deleted_lines[0].content, "line1");
+        assert_eq!(deleted_lines[1].content, "line2");
+        assert_eq!(deleted_lines[2].content, "line3");
+    }
+
+    #[test]
+    fn test_deleted_file_committed_deletion() {
+        let base = "old content\nmore old content";
+
+        let diff = compute_file_diff_v2("test.txt", Some(base), None, None, None);
+
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+        assert_eq!(diff.lines[0].content, "test.txt (deleted)");
+
+        let deleted_lines: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::DeletedBase)
+            .collect();
+
+        assert_eq!(deleted_lines.len(), 2);
+        assert!(deleted_lines.iter().all(|l| l.prefix == '-'));
+        assert_eq!(deleted_lines[0].content, "old content");
+        assert_eq!(deleted_lines[1].content, "more old content");
     }
 
     #[test]
