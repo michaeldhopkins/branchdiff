@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use super::inline::compute_inline_diff_merged;
 use super::{DiffLine, LineSource};
 
 /// Determine where a base line was deleted (in commit, staging, or working)
@@ -66,32 +65,24 @@ where
 
     match source {
         LineSource::Unstaged => {
-            // Check if this is a modification of an index line
             if let Some((index_idx, old_content)) = index_working_mods.get(&working_idx) {
                 let original_source = trace_index_source(*index_idx);
-                let inline_result = compute_inline_diff_merged(old_content, &content, LineSource::Unstaged);
-
-                if inline_result.is_meaningful {
-                    return DiffLine::new(original_source, content, ' ', Some(line_num))
-                        .with_file_path(path)
-                        .with_inline_spans(inline_result.spans);
-                }
+                return DiffLine::new(original_source, content, ' ', Some(line_num))
+                    .with_file_path(path)
+                    .with_old_content(old_content)
+                    .with_change_source(LineSource::Unstaged);
             }
             default_line()
         }
 
         LineSource::Committed => {
-            // Check if this is a modification of a base line
             if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
                 if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
                     if let Some((_base_idx, old_content)) = base_head_mods.get(&head_idx) {
-                        let inline_result = compute_inline_diff_merged(old_content, &content, LineSource::Committed);
-
-                        if inline_result.is_meaningful {
-                            return DiffLine::new(LineSource::Base, content, ' ', Some(line_num))
-                                .with_file_path(path)
-                                .with_inline_spans(inline_result.spans);
-                        }
+                        return DiffLine::new(LineSource::Base, content, ' ', Some(line_num))
+                            .with_file_path(path)
+                            .with_old_content(old_content)
+                            .with_change_source(LineSource::Committed);
                     }
                 }
             }
@@ -99,22 +90,18 @@ where
         }
 
         LineSource::Staged => {
-            // Check if this is a modification of a head line
             if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
                 if let Some((_head_idx, old_content)) = head_index_mods.get(&index_idx) {
-                    let inline_result = compute_inline_diff_merged(old_content, &content, LineSource::Staged);
+                    let original_source = if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
+                        trace_head_source(head_idx)
+                    } else {
+                        LineSource::Base
+                    };
 
-                    if inline_result.is_meaningful {
-                        let original_source = if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
-                            trace_head_source(head_idx)
-                        } else {
-                            LineSource::Base
-                        };
-
-                        return DiffLine::new(original_source, content, ' ', Some(line_num))
-                            .with_file_path(path)
-                            .with_inline_spans(inline_result.spans);
-                    }
+                    return DiffLine::new(original_source, content, ' ', Some(line_num))
+                        .with_file_path(path)
+                        .with_old_content(old_content)
+                        .with_change_source(LineSource::Staged);
                 }
             }
             default_line()
