@@ -3,9 +3,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 
 use crate::diff::{compute_file_diff_v2, DiffLine, FileDiff, LineSource};
 use crate::git;
+
+const PARALLEL_THRESHOLD: usize = 4;
 
 #[derive(Debug)]
 pub struct RefreshResult {
@@ -13,6 +16,51 @@ pub struct RefreshResult {
     pub lines: Vec<DiffLine>,
     pub merge_base: String,
     pub current_branch: Option<String>,
+}
+
+enum FileProcessResult {
+    Diff(FileDiff),
+    Binary { path: String },
+}
+
+fn process_single_file(
+    repo_path: &Path,
+    file_path: &str,
+    merge_base: &str,
+) -> FileProcessResult {
+    if git::is_binary_file(repo_path, file_path) {
+        return FileProcessResult::Binary { path: file_path.to_string() };
+    }
+
+    let base_content = if merge_base.is_empty() {
+        None
+    } else {
+        git::get_file_at_ref(repo_path, file_path, merge_base)
+            .ok()
+            .flatten()
+    };
+
+    let head_content = git::get_file_at_ref(repo_path, file_path, "HEAD")
+        .ok()
+        .flatten();
+
+    let index_content = git::get_file_at_ref(repo_path, file_path, "")
+        .ok()
+        .flatten();
+
+    let working_content = git::get_working_tree_file(repo_path, file_path)
+        .ok()
+        .flatten();
+
+    let file_diff = compute_file_diff_v2(
+        file_path,
+        base_content.as_deref(),
+        head_content.as_deref(),
+        index_content.as_deref(),
+        working_content.as_deref(),
+    );
+
+    FileProcessResult::Diff(file_diff)
 }
 
 pub fn compute_refresh(
@@ -30,57 +78,42 @@ pub fn compute_refresh(
     let changed_files = git::get_all_changed_files(repo_path, &merge_base)
         .context("Failed to get changed files")?;
 
+    let results: Vec<FileProcessResult> = if changed_files.len() >= PARALLEL_THRESHOLD {
+        changed_files
+            .par_iter()
+            .map(|file| process_single_file(repo_path, &file.path, &merge_base))
+            .collect()
+    } else {
+        changed_files
+            .iter()
+            .map(|file| process_single_file(repo_path, &file.path, &merge_base))
+            .collect()
+    };
+
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Err(anyhow::anyhow!("refresh cancelled"));
+    }
+
     let mut files = Vec::new();
     let mut lines = Vec::new();
 
-    for file in changed_files {
-        if cancel_flag.load(Ordering::Relaxed) {
-            return Err(anyhow::anyhow!("refresh cancelled"));
+    for result in results {
+        match result {
+            FileProcessResult::Diff(file_diff) => {
+                lines.extend(file_diff.lines.iter().cloned());
+                lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
+                files.push(file_diff);
+            }
+            FileProcessResult::Binary { path } => {
+                lines.push(DiffLine::file_header(&path));
+                lines.push(DiffLine::new(
+                    LineSource::Base,
+                    "[binary file]".to_string(),
+                    ' ',
+                    None,
+                ));
+            }
         }
-
-        if git::is_binary_file(repo_path, &file.path) {
-            lines.push(DiffLine::file_header(&file.path));
-            lines.push(DiffLine::new(
-                LineSource::Base,
-                "[binary file]".to_string(),
-                ' ',
-                None,
-            ));
-            continue;
-        }
-
-        let base_content = if merge_base.is_empty() {
-            None
-        } else {
-            git::get_file_at_ref(repo_path, &file.path, &merge_base)
-                .ok()
-                .flatten()
-        };
-
-        let head_content = git::get_file_at_ref(repo_path, &file.path, "HEAD")
-            .ok()
-            .flatten();
-
-        let index_content = git::get_file_at_ref(repo_path, &file.path, "")
-            .ok()
-            .flatten();
-
-        let working_content = git::get_working_tree_file(repo_path, &file.path)
-            .ok()
-            .flatten();
-
-        let file_diff = compute_file_diff_v2(
-            &file.path,
-            base_content.as_deref(),
-            head_content.as_deref(),
-            index_content.as_deref(),
-            working_content.as_deref(),
-        );
-
-        lines.extend(file_diff.lines.iter().cloned());
-        lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
-
-        files.push(file_diff);
     }
 
     let current_branch = git::get_current_branch(repo_path).unwrap_or(None);
