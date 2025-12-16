@@ -5,7 +5,7 @@ mod refresh;
 mod selection;
 mod view_mode;
 
-pub use refresh::{compute_refresh, RefreshResult};
+pub use refresh::{compute_refresh, compute_single_file_diff, RefreshResult};
 pub use selection::Selection;
 
 use std::collections::HashSet;
@@ -195,6 +195,43 @@ impl App {
         self.lines = result.lines;
         self.auto_collapse_files();
         self.clamp_scroll();
+    }
+
+    pub fn update_single_file(&mut self, file_path: &str, new_diff: Option<FileDiff>) {
+        let existing_idx = self.files.iter().position(|f| {
+            f.lines.first()
+                .and_then(|l| l.file_path.as_ref())
+                .map(|p| p == file_path)
+                .unwrap_or(false)
+        });
+
+        match (existing_idx, new_diff) {
+            (Some(idx), Some(diff)) => {
+                self.files[idx] = diff;
+            }
+            (Some(idx), None) => {
+                self.files.remove(idx);
+            }
+            (None, Some(diff)) => {
+                self.files.push(diff);
+            }
+            (None, None) => {
+            }
+        }
+
+        self.regenerate_lines();
+        self.auto_collapse_files();
+        self.clamp_scroll();
+    }
+
+    fn regenerate_lines(&mut self) {
+        use crate::diff::LineSource;
+
+        self.lines.clear();
+        for file in &self.files {
+            self.lines.extend(file.lines.iter().cloned());
+            self.lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
+        }
     }
 
     pub fn toggle_help(&mut self) {

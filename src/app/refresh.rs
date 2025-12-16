@@ -63,6 +63,48 @@ fn process_single_file(
     FileProcessResult::Diff(file_diff)
 }
 
+pub fn compute_single_file_diff(
+    repo_path: &Path,
+    file_path: &str,
+    merge_base: &str,
+) -> Option<FileDiff> {
+    if git::is_binary_file(repo_path, file_path) {
+        return None;
+    }
+
+    let base_content = if merge_base.is_empty() {
+        None
+    } else {
+        git::get_file_at_ref(repo_path, file_path, merge_base)
+            .ok()
+            .flatten()
+    };
+
+    let head_content = git::get_file_at_ref(repo_path, file_path, "HEAD")
+        .ok()
+        .flatten();
+
+    let index_content = git::get_file_at_ref(repo_path, file_path, "")
+        .ok()
+        .flatten();
+
+    let working_content = git::get_working_tree_file(repo_path, file_path)
+        .ok()
+        .flatten();
+
+    if base_content == working_content && base_content == head_content && base_content == index_content {
+        return None;
+    }
+
+    Some(compute_file_diff_v2(
+        file_path,
+        base_content.as_deref(),
+        head_content.as_deref(),
+        index_content.as_deref(),
+        working_content.as_deref(),
+    ))
+}
+
 pub fn compute_refresh(
     repo_path: &Path,
     base_branch: &str,
