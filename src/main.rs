@@ -27,6 +27,8 @@ use app::{compute_refresh, App, RefreshResult};
 use input::{handle_event, AppAction};
 
 const FETCH_INTERVAL: Duration = Duration::from_secs(30);
+const REFRESH_FALLBACK_INTERVAL: Duration = Duration::from_secs(5);
+const REFRESH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Parser)]
 #[command(name = "branchdiff")]
@@ -173,6 +175,8 @@ fn run_app<B: Backend>(
     let mut refresh_in_progress = false;
     let mut refresh_pending = false;
     let cancel_flag = Arc::new(AtomicBool::new(false));
+    let mut last_refresh = Instant::now();
+    let mut refresh_started_at: Option<Instant> = None;
 
     let (fetch_tx, fetch_rx) = mpsc::channel::<FetchResult>();
     let mut last_fetch = Instant::now();
@@ -201,7 +205,9 @@ fn run_app<B: Backend>(
                         cancel_flag.store(true, Ordering::Relaxed);
                         refresh_pending = true;
                     } else {
+                        cancel_flag.store(false, Ordering::Relaxed);
                         refresh_in_progress = true;
+                        refresh_started_at = Some(Instant::now());
                         spawn_refresh(
                             repo_root.clone(),
                             app.base_branch.clone(),
@@ -239,15 +245,18 @@ fn run_app<B: Backend>(
         // 2. Check for completed refresh (non-blocking)
         if let Ok(outcome) = refresh_rx.try_recv() {
             refresh_in_progress = false;
+            refresh_started_at = None;
 
             if let RefreshOutcome::Success(result) = outcome {
                 app.apply_refresh_result(result);
+                last_refresh = Instant::now();
             }
 
             if refresh_pending {
                 refresh_pending = false;
                 cancel_flag.store(false, Ordering::Relaxed);
                 refresh_in_progress = true;
+                refresh_started_at = Some(Instant::now());
                 spawn_refresh(
                     repo_root.clone(),
                     app.base_branch.clone(),
@@ -259,25 +268,54 @@ fn run_app<B: Backend>(
 
         // 3. Check for file change events (trigger new refresh if idle)
         if let Ok(Ok(events)) = file_events.try_recv() {
-            let should_refresh = events.iter().any(|e| {
-                if e.kind != DebouncedEventKind::Any {
-                    return false;
-                }
+            let dominated_events: Vec<_> = events.iter()
+                .filter(|e| e.kind == DebouncedEventKind::Any)
+                .filter(|e| {
+                    let path_str = e.path.to_string_lossy();
+                    // Ignore noisy directories
+                    !(path_str.contains("/tmp/")
+                        || path_str.contains("/node_modules/")
+                        || path_str.contains("/vendor/bundle/")
+                        || path_str.contains("/.bundle/")
+                        || path_str.contains("/log/")
+                        || path_str.ends_with(".lock"))
+                })
+                .collect();
+
+            let dominated_relevant: Vec<_> = dominated_events.iter()
+                .filter(|e| {
+                    let path_str = e.path.to_string_lossy();
+                    if path_str.contains(".git/") {
+                        path_str.ends_with(".git/index")
+                            || path_str.ends_with(".git/HEAD")
+                            || path_str.contains(".git/refs/")
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            let should_refresh = !dominated_relevant.is_empty();
+
+            // Only cancel for git-related changes (branch switch, etc.)
+            let has_git_change = dominated_events.iter().any(|e| {
                 let path_str = e.path.to_string_lossy();
-                if path_str.contains(".git/") {
-                    path_str.ends_with(".git/index")
-                        || path_str.ends_with(".git/HEAD")
-                        || path_str.contains(".git/refs/")
-                } else {
-                    true
-                }
+                path_str.contains(".git/") && (
+                    path_str.ends_with(".git/HEAD")
+                    || path_str.contains(".git/refs/")
+                )
             });
+
             if should_refresh {
-                if refresh_in_progress {
+                if refresh_in_progress && has_git_change {
                     cancel_flag.store(true, Ordering::Relaxed);
                     refresh_pending = true;
+                } else if refresh_in_progress {
+                    refresh_pending = true;
                 } else {
+                    cancel_flag.store(false, Ordering::Relaxed);
                     refresh_in_progress = true;
+                    refresh_started_at = Some(Instant::now());
                     spawn_refresh(
                         repo_root.clone(),
                         app.base_branch.clone(),
@@ -301,7 +339,9 @@ fn run_app<B: Backend>(
                 if new_base != app.merge_base {
                     app.merge_base = new_base;
                     if !refresh_in_progress {
+                        cancel_flag.store(false, Ordering::Relaxed);
                         refresh_in_progress = true;
+                        refresh_started_at = Some(Instant::now());
                         spawn_refresh(
                             repo_root.clone(),
                             app.base_branch.clone(),
@@ -326,7 +366,31 @@ fn run_app<B: Backend>(
             );
         }
 
-        // 6. Render
+        // 6. Watchdog: reset stuck refresh_in_progress
+        if refresh_in_progress {
+            if let Some(started) = refresh_started_at {
+                if started.elapsed() >= REFRESH_WATCHDOG_TIMEOUT {
+                    refresh_in_progress = false;
+                    refresh_started_at = None;
+                    refresh_pending = true;
+                }
+            }
+        }
+
+        // 7. Periodic fallback refresh (in case file watcher stops working)
+        if !refresh_in_progress && last_refresh.elapsed() >= REFRESH_FALLBACK_INTERVAL {
+            cancel_flag.store(false, Ordering::Relaxed);
+            refresh_in_progress = true;
+            refresh_started_at = Some(Instant::now());
+            spawn_refresh(
+                repo_root.clone(),
+                app.base_branch.clone(),
+                refresh_tx.clone(),
+                cancel_flag.clone(),
+            );
+        }
+
+        // 8. Render
         terminal.draw(|f| ui::draw(f, app))?;
     }
 }
