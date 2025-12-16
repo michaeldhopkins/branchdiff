@@ -23,7 +23,8 @@ use crossterm::{
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use ratatui::prelude::*;
 
-use app::{compute_refresh, App, RefreshResult};
+use app::{compute_refresh, compute_single_file_diff, App, RefreshResult};
+use diff::FileDiff;
 use input::{handle_event, AppAction};
 
 const FETCH_INTERVAL: Duration = Duration::from_secs(30);
@@ -121,7 +122,20 @@ fn main() -> Result<()> {
 
 enum RefreshOutcome {
     Success(RefreshResult),
+    SingleFile { path: String, diff: Option<FileDiff> },
     Cancelled,
+}
+
+fn spawn_single_file_refresh(
+    repo_path: PathBuf,
+    file_path: String,
+    merge_base: String,
+    refresh_tx: mpsc::Sender<RefreshOutcome>,
+) {
+    thread::spawn(move || {
+        let diff = compute_single_file_diff(&repo_path, &file_path, &merge_base);
+        let _ = refresh_tx.send(RefreshOutcome::SingleFile { path: file_path, diff });
+    });
 }
 
 fn spawn_refresh(
@@ -247,9 +261,16 @@ fn run_app<B: Backend>(
             refresh_in_progress = false;
             refresh_started_at = None;
 
-            if let RefreshOutcome::Success(result) = outcome {
-                app.apply_refresh_result(result);
-                last_refresh = Instant::now();
+            match outcome {
+                RefreshOutcome::Success(result) => {
+                    app.apply_refresh_result(result);
+                    last_refresh = Instant::now();
+                }
+                RefreshOutcome::SingleFile { path, diff } => {
+                    app.update_single_file(&path, diff);
+                    last_refresh = Instant::now();
+                }
+                RefreshOutcome::Cancelled => {}
             }
 
             if refresh_pending {
@@ -313,15 +334,40 @@ fn run_app<B: Backend>(
                 } else if refresh_in_progress {
                     refresh_pending = true;
                 } else {
-                    cancel_flag.store(false, Ordering::Relaxed);
-                    refresh_in_progress = true;
-                    refresh_started_at = Some(Instant::now());
-                    spawn_refresh(
-                        repo_root.clone(),
-                        app.base_branch.clone(),
-                        refresh_tx.clone(),
-                        cancel_flag.clone(),
-                    );
+                    let source_files: Vec<_> = dominated_relevant.iter()
+                        .filter(|e| !e.path.to_string_lossy().contains(".git/"))
+                        .collect();
+
+                    let can_use_single_file = !has_git_change
+                        && source_files.len() == 1
+                        && !app.files.is_empty();
+
+                    if can_use_single_file {
+                        let file_path = source_files[0].path
+                            .strip_prefix(&repo_root)
+                            .unwrap_or(&source_files[0].path)
+                            .to_string_lossy()
+                            .to_string();
+
+                        refresh_in_progress = true;
+                        refresh_started_at = Some(Instant::now());
+                        spawn_single_file_refresh(
+                            repo_root.clone(),
+                            file_path,
+                            app.merge_base.clone(),
+                            refresh_tx.clone(),
+                        );
+                    } else {
+                        cancel_flag.store(false, Ordering::Relaxed);
+                        refresh_in_progress = true;
+                        refresh_started_at = Some(Instant::now());
+                        spawn_refresh(
+                            repo_root.clone(),
+                            app.base_branch.clone(),
+                            refresh_tx.clone(),
+                            cancel_flag.clone(),
+                        );
+                    }
                 }
             }
         }
