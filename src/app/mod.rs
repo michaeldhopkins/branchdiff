@@ -197,6 +197,15 @@ impl App {
         self.clamp_scroll();
     }
 
+    pub fn ensure_inline_spans_for_visible(&mut self, visible_height: usize) {
+        let start = self.scroll_offset;
+        let end = (start + visible_height).min(self.lines.len());
+
+        for line in &mut self.lines[start..end] {
+            line.ensure_inline_spans();
+        }
+    }
+
     pub fn update_single_file(&mut self, file_path: &str, new_diff: Option<FileDiff>) {
         let existing_idx = self.files.iter().position(|f| {
             f.lines.first()

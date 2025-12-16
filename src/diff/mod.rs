@@ -41,6 +41,8 @@ pub struct DiffLine {
     pub line_number: Option<usize>,
     pub file_path: Option<String>,
     pub inline_spans: Vec<InlineSpan>,
+    pub old_content: Option<String>,
+    pub change_source: Option<LineSource>,
 }
 
 impl DiffLine {
@@ -52,12 +54,34 @@ impl DiffLine {
             line_number,
             file_path: None,
             inline_spans: Vec::new(),
+            old_content: None,
+            change_source: None,
         }
     }
 
     pub fn with_inline_spans(mut self, spans: Vec<InlineSpan>) -> Self {
         self.inline_spans = spans;
         self
+    }
+
+    pub fn with_old_content(mut self, old: &str) -> Self {
+        self.old_content = Some(old.to_string());
+        self
+    }
+
+    pub fn with_change_source(mut self, change_source: LineSource) -> Self {
+        self.change_source = Some(change_source);
+        self
+    }
+
+    pub fn ensure_inline_spans(&mut self) {
+        if self.inline_spans.is_empty() {
+            if let Some(ref old) = self.old_content {
+                let source = self.change_source.unwrap_or(self.source);
+                let result = compute_inline_diff_merged(old, &self.content, source);
+                self.inline_spans = result.spans;
+            }
+        }
     }
 
     pub fn with_file_path(mut self, path: &str) -> Self {
@@ -73,6 +97,8 @@ impl DiffLine {
             line_number: None,
             file_path: Some(path.to_string()),
             inline_spans: Vec::new(),
+            old_content: None,
+            change_source: None,
         }
     }
 
@@ -84,6 +110,8 @@ impl DiffLine {
             line_number: None,
             file_path: Some(path.to_string()),
             inline_spans: Vec::new(),
+            old_content: None,
+            change_source: None,
         }
     }
 
@@ -95,6 +123,8 @@ impl DiffLine {
             line_number: None,
             file_path: None,
             inline_spans: Vec::new(),
+            old_content: None,
+            change_source: None,
         }
     }
 }
@@ -102,6 +132,14 @@ impl DiffLine {
 #[derive(Debug)]
 pub struct FileDiff {
     pub lines: Vec<DiffLine>,
+}
+
+impl FileDiff {
+    pub fn ensure_all_inline_spans(&mut self) {
+        for line in &mut self.lines {
+            line.ensure_inline_spans();
+        }
+    }
 }
 
 /// Compute 4-way diff: base→head→index→working.
@@ -611,7 +649,18 @@ pub fn compute_file_diff_v2(
 mod tests {
     use super::*;
 
-    // Helper to get non-header lines
+    fn compute_file_diff_v2_with_inline(
+        path: &str,
+        base: Option<&str>,
+        head: Option<&str>,
+        index: Option<&str>,
+        working: Option<&str>,
+    ) -> FileDiff {
+        let mut diff = compute_file_diff_v2(path, base, head, index, working);
+        diff.ensure_all_inline_spans();
+        diff
+    }
+
     fn content_lines(diff: &FileDiff) -> Vec<&DiffLine> {
         diff.lines.iter().filter(|l| l.source != LineSource::FileHeader).collect()
     }
@@ -619,7 +668,7 @@ mod tests {
     #[test]
     fn test_no_changes() {
         let content = "line1\nline2\nline3";
-        let diff = compute_file_diff_v2("test.txt", Some(content), Some(content), Some(content), Some(content));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(content), Some(content), Some(content), Some(content));
 
         assert_eq!(diff.lines.len(), 1);
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
@@ -630,7 +679,7 @@ mod tests {
         let base = "line1\nline2";
         let head = "line1\nline2\nline3";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
 
         let committed_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::Committed)
@@ -646,7 +695,7 @@ mod tests {
         let head = "line1\nline2\ncommitted_line";
         let working = "line1\nline2";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
 
         let canceled_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::CanceledCommitted)
@@ -663,7 +712,7 @@ mod tests {
         let index = "line1\nline2\nstaged_line";
         let working = "line1\nline2";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(index), Some(working));
 
         let canceled_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::CanceledStaged)
@@ -680,7 +729,7 @@ mod tests {
         let head = "line1\nline2\nversion1";
         let working = "line1\nline2\nversion2";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
 
         let canceled_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::CanceledCommitted)
@@ -695,7 +744,7 @@ mod tests {
         let index = "line1\nline2\nversion1";
         let working = "line1\nline2\nversion2";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(index), Some(working));
 
         let canceled_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::CanceledStaged)
@@ -709,7 +758,7 @@ mod tests {
         let content = "line1\nline2";
         let working = "line1\nline2\nline3";
 
-        let diff = compute_file_diff_v2("test.txt", Some(content), Some(content), Some(content), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(content), Some(content), Some(content), Some(working));
 
         let unstaged_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::Unstaged)
@@ -724,7 +773,7 @@ mod tests {
         let base = "line1\nline2";
         let index = "line1\nline2\nline3";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(index), Some(index));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(index), Some(index));
 
         let staged_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::Staged)
@@ -738,7 +787,7 @@ mod tests {
     fn test_new_file() {
         let working = "line1\nline2";
 
-        let diff = compute_file_diff_v2("test.txt", None, None, None, Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", None, None, None, Some(working));
 
         let unstaged_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::Unstaged)
@@ -752,7 +801,7 @@ mod tests {
     fn test_deleted_file_staged_deletion() {
         let base = "line1\nline2";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), None, None);
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), None, None);
 
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
         assert_eq!(diff.lines[0].content, "test.txt (deleted)");
@@ -771,7 +820,7 @@ mod tests {
     fn test_deleted_file_unstaged_deletion() {
         let content = "line1\nline2\nline3";
 
-        let diff = compute_file_diff_v2("test.txt", Some(content), Some(content), Some(content), None);
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(content), Some(content), Some(content), None);
 
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
         assert_eq!(diff.lines[0].content, "test.txt (deleted)");
@@ -791,7 +840,7 @@ mod tests {
     fn test_deleted_file_committed_deletion() {
         let base = "old content\nmore old content";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), None, None, None);
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), None, None, None);
 
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
         assert_eq!(diff.lines[0].content, "test.txt (deleted)");
@@ -811,7 +860,7 @@ mod tests {
         let base = "line1\nold content\nline3";
         let working = "line1\nnew content\nline3";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -826,7 +875,7 @@ mod tests {
         let base = "before\nprocess_data(input)\nafter";
         let working = "before\nprocess_data(input, options)\nafter";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let contents: Vec<_> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -841,7 +890,7 @@ mod tests {
         let base = "line1\nprocess_item(data1)\nline3\nprocess_item(data2)\nline5";
         let working = "line1\nprocess_item(data1, options)\nline3\nprocess_item(data2, options)\nline5";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -856,7 +905,7 @@ mod tests {
         let base = "line1\nfunction getData()\nline3";
         let head = "line1\nfunction getData(params)\nline3";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -874,7 +923,7 @@ mod tests {
         let base = "line1\nfunction getData()\nline3";
         let index = "line1\nfunction getData(params)\nline3";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(index), Some(index));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(index), Some(index));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -892,7 +941,7 @@ mod tests {
         let base = "line1\nline2\nline3\nline4\nline5";
         let working = "line1\nline2\nmodified\nline4\nline5";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let pure_context: Vec<_> = lines.iter()
@@ -908,7 +957,7 @@ mod tests {
         let base = "line1\nto_delete\nline3";
         let working = "line1\nline3";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -928,7 +977,7 @@ mod tests {
         let base = "line1\nline2";
         let working = "line1\nnew_line\nline2";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let with_numbers: Vec<_> = lines.iter()
@@ -949,7 +998,7 @@ mod tests {
         let head = "line1\ncommitted line\n";
         let working = "line1\ncommitted line # with comment\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -974,7 +1023,7 @@ mod tests {
         let index = "line1\nstaged line\n";
         let working = "line1\nstaged line modified\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -997,7 +1046,7 @@ mod tests {
         let base = "do_thing(data)\n";
         let head = "do_thing(data, params)\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1017,7 +1066,7 @@ mod tests {
         let index = "staged version\n";
         let working = "working version\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1035,7 +1084,7 @@ mod tests {
         let base = "line1\n";
         let head = "line1\ncommitted line\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let added: Vec<_> = lines.iter().filter(|l| l.prefix == '+').collect();
@@ -1051,7 +1100,7 @@ mod tests {
         let head = "line1\n";
         let index = "line1\nstaged line\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(index));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(index));
         let lines = content_lines(&diff);
 
         let added: Vec<_> = lines.iter().filter(|l| l.prefix == '+').collect();
@@ -1130,7 +1179,7 @@ mod tests {
         let base = "abcdefgh\n";
         let working = "xyz12345\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1147,7 +1196,7 @@ mod tests {
         let base = "context\nalpha: aaa,\nbeta: bbb,\ngamma: ccc,\nend";
         let working = "context\nxray: xxx,\nyankee: yyy,\nzulu: zzz,\nend";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1168,7 +1217,7 @@ mod tests {
         let base = "before\ndescribed_class.new(bond).execute\nafter";
         let working = "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1198,7 +1247,7 @@ mod tests {
         let base = "before\ndescribed_class.new(bond).execute\nafter";
         let head = "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1233,7 +1282,7 @@ mod tests {
         let base = "before\ndescribed_class.new(bond).execute\nafter";
         let head = "before\n\ndescribed_class.new(bond).execute # comment\n\nafter";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1259,7 +1308,7 @@ mod tests {
         let index = "before\ndescribed_class.new(bond).execute\nafter";
         let working = "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1290,7 +1339,7 @@ mod tests {
         let index = "before\noriginal_code()\nafter";
         let working = "before\noriginal_code() # added comment\nafter";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1322,7 +1371,7 @@ mod tests {
         let index = head;
         let working = "context 'first' do\n  it 'test' do\n  end\n  it 'new test' do\n  end # added comment\nend\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1374,7 +1423,7 @@ context 'new' do
 end
 ";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1431,7 +1480,7 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let execute_lines: Vec<_> = lines.iter()
@@ -1475,7 +1524,7 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let new_test_lines: Vec<_> = lines.iter()
@@ -1533,7 +1582,7 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let new_context_idx = lines.iter().position(|l| l.content.contains("context 'new'"));
@@ -1596,7 +1645,7 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let third_context_idx = lines.iter().position(|l| l.content.contains("context 'third new'"));
@@ -1628,7 +1677,7 @@ end
         let base = "do_thing(data)\n";
         let working = "do_thing(data, parameters)\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1652,7 +1701,7 @@ end
         let base = "line1\n";
         let working = "line1\nnew line\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let added: Vec<_> = lines.iter().filter(|l| l.prefix == '+').collect();
@@ -1665,7 +1714,7 @@ end
         let base = "line1\nto_delete\nline3\n";
         let working = "line1\nline3\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1684,7 +1733,7 @@ end
             expiration_date: "2025-08-30",
 "#;
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let effective_lines: Vec<_> = lines.iter()
@@ -1716,7 +1765,7 @@ end
         let base = "line1\nline2\nline3\nto_delete\nline5";
         let working = "line1\nline2\nNEW_LINE\nline3\nline5";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -1737,7 +1786,7 @@ end
         let base = "def principal_mailing_address\n  commercial_renewal.principal_mailing_address\nend";
         let working = "def principal_mailing_address\n  \"new content\"\nend";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -1770,7 +1819,7 @@ end
         let base = "def foo\n  body_line\nend";
         let working = "def foo\n  \"new body\"\nend";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -1795,7 +1844,7 @@ end
         let base = "def principal_mailing_address\n  commercial_renewal.principal_mailing_address\nend";
         let working = "def pribond_descripal_mailtiong_address\n  \"new content\"\nend";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -1854,7 +1903,7 @@ def from_domino?
 end
 ";
 
-        let diff = compute_file_diff_v2("principal.rb", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_file_diff_v2_with_inline("principal.rb", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let abeyance_pos = lines.iter().position(|l| l.content.contains("abeyance_required")).unwrap();
@@ -1889,7 +1938,7 @@ end
         let base = "def foo\nend\nend";
         let working = "def foo\nnew_line\nend\nend";
 
-        let diff = compute_file_diff_v2("test.rb", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 4);
@@ -1912,7 +1961,7 @@ end
         let base = "def foo\nend\nend";
         let head = "def foo\nnew_line\nend\nend";
 
-        let diff = compute_file_diff_v2("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
         assert_eq!(lines.len(), 4);
 
@@ -1935,7 +1984,7 @@ end
         let base = "class Foo\n  def bar\n  end\nend";
         let head = "class Foo\n  def bar\n    new_line\n  end\nend";
 
-        let diff = compute_file_diff_v2("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 5);
@@ -1955,7 +2004,7 @@ end
         let base = "do\n  body\nend\nend";
         let head = "do\n  body\n  new_end\nend\nend";
 
-        let diff = compute_file_diff_v2("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 5);
@@ -1982,7 +2031,7 @@ end
         let base = "do\n  body\nend";
         let head = "do\n  body\nend\n  extra";
 
-        let diff = compute_file_diff_v2("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 4);
@@ -2006,7 +2055,7 @@ end
         let base = "line1\nline2\nend\nend\nend";
         let head = "line1\nline2\nnew_line\nend\nend\nend";
 
-        let diff = compute_file_diff_v2("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 6);
@@ -2067,7 +2116,7 @@ end"##;
             eprintln!("  head[{}]: '{}'", i, line);
         }
 
-        let diff = compute_file_diff_v2("spec.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_file_diff_v2_with_inline("spec.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         eprintln!("\nDiff output ({} lines):", lines.len());

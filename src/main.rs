@@ -437,6 +437,8 @@ fn run_app<B: Backend>(
         }
 
         // 8. Render
+        let visible_height = terminal.size()?.height as usize;
+        app.ensure_inline_spans_for_visible(visible_height);
         terminal.draw(|f| ui::draw(f, app))?;
     }
 }
