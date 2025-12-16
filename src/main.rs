@@ -86,7 +86,7 @@ fn main() -> Result<()> {
 
     // Setup file watcher
     let (file_tx, file_rx) = mpsc::channel();
-    let mut debouncer = new_debouncer(Duration::from_millis(100), file_tx)?;
+    let mut debouncer = new_debouncer(Duration::from_millis(20), file_tx)?;
 
     // Watch the repo directory
     debouncer

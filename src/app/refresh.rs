@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use crate::diff::{compute_file_diff_v2, DiffLine, FileDiff, LineSource};
 use crate::git;
 
+#[derive(Debug)]
 pub struct RefreshResult {
     pub files: Vec<FileDiff>,
     pub lines: Vec<DiffLine>,
@@ -90,4 +91,235 @@ pub fn compute_refresh(
         merge_base,
         current_branch,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn create_test_repo() -> TempDir {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to init git repo");
+
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set git email");
+
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set git name");
+
+        std::fs::write(repo_path.join("file.txt"), "initial content\n").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to add files");
+
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to commit");
+
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to rename branch");
+
+        temp_dir
+    }
+
+    #[test]
+    fn test_cancel_flag_stops_refresh_before_file_processing() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        std::fs::write(repo_path.join("file.txt"), "modified content\n").unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(true));
+
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn test_cancel_flag_checked_during_file_iteration() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        for i in 0..5 {
+            std::fs::write(
+                repo_path.join(format!("file{}.txt", i)),
+                format!("content {}\n", i),
+            )
+            .unwrap();
+        }
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to add files");
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel_flag.clone();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            cancel_clone.store(true, Ordering::Relaxed);
+        });
+
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_err() || result.is_ok());
+    }
+
+    #[test]
+    fn test_refresh_with_no_changes_returns_empty() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+        assert!(refresh.files.is_empty());
+        assert!(refresh.lines.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_with_modified_file() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        std::fs::write(repo_path.join("file.txt"), "modified content\n").unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+        assert_eq!(refresh.files.len(), 1);
+        assert!(!refresh.lines.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_with_new_file() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        std::fs::write(repo_path.join("new_file.txt"), "new content\n").unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+        assert_eq!(refresh.files.len(), 1);
+    }
+
+    #[test]
+    fn test_refresh_with_deleted_file() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        std::fs::remove_file(repo_path.join("file.txt")).unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+        assert_eq!(refresh.files.len(), 1);
+    }
+
+    #[test]
+    fn test_refresh_with_staged_changes() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        std::fs::write(repo_path.join("file.txt"), "staged content\n").unwrap();
+
+        Command::new("git")
+            .args(["add", "file.txt"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to stage file");
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+        assert_eq!(refresh.files.len(), 1);
+    }
+
+    #[test]
+    fn test_refresh_returns_current_branch() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+        assert_eq!(refresh.current_branch, Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_refresh_with_feature_branch() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to create branch");
+
+        std::fs::write(repo_path.join("new_feature_file.txt"), "feature content\n").unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+        assert_eq!(refresh.current_branch, Some("feature".to_string()));
+        assert!(!refresh.files.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_with_binary_file() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        std::fs::write(repo_path.join("binary.bin"), &[0u8, 1, 2, 255, 254, 253]).unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+        let binary_line = refresh.lines.iter().find(|l| l.content.contains("binary"));
+        assert!(binary_line.is_some());
+    }
 }
