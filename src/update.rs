@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use notify_debouncer_mini::DebouncedEventKind;
 
 use crate::app::App;
+use crate::gitignore::GitignoreFilter;
 use crate::input::AppAction;
 use crate::message::{FetchResult, Message, RefreshOutcome, RefreshTrigger, UpdateResult};
 
@@ -281,16 +282,25 @@ fn is_noisy_path(path_str: &str) -> bool {
 /// Handle file system change events.
 fn handle_file_change(
     events: Vec<notify_debouncer_mini::DebouncedEvent>,
-    app: &App,
+    app: &mut App,
     refresh_state: &mut RefreshState,
     repo_root: &Path,
 ) -> UpdateResult {
     let mut result = UpdateResult::default();
 
+    // Rebuild gitignore matcher if any .gitignore file changed
+    let gitignore_changed = events
+        .iter()
+        .any(|e| GitignoreFilter::is_gitignore_file(&e.path));
+    if gitignore_changed {
+        app.gitignore_filter.rebuild();
+    }
+
     let dominated_events: Vec<_> = events
         .iter()
         .filter(|e| e.kind == DebouncedEventKind::Any)
         .filter(|e| !is_noisy_path(&e.path.to_string_lossy()))
+        .filter(|e| !app.gitignore_filter.is_ignored(&e.path))
         .collect();
 
     let mut should_refresh = false;
@@ -417,8 +427,10 @@ mod tests {
     use std::collections::HashSet;
 
     fn create_test_app(lines: Vec<DiffLine>) -> App {
+        let repo_path = PathBuf::from("/tmp/test");
         App {
-            repo_path: PathBuf::from("/tmp/test"),
+            gitignore_filter: GitignoreFilter::new(&repo_path),
+            repo_path,
             base_branch: "main".to_string(),
             merge_base: "abc123".to_string(),
             current_branch: Some("feature".to_string()),

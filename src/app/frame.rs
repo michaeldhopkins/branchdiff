@@ -265,12 +265,15 @@ impl FrameContext {
 mod tests {
     use super::*;
     use crate::app::ViewMode;
+    use crate::gitignore::GitignoreFilter;
     use std::collections::HashSet;
     use std::path::PathBuf;
 
     fn create_test_app(lines: Vec<DiffLine>) -> App {
+        let repo_path = PathBuf::from("/tmp/test");
         App {
-            repo_path: PathBuf::from("/tmp/test"),
+            gitignore_filter: GitignoreFilter::new(&repo_path),
+            repo_path,
             base_branch: "main".to_string(),
             merge_base: "abc123".to_string(),
             current_branch: Some("feature".to_string()),

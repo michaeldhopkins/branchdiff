@@ -201,9 +201,12 @@ mod tests {
         use std::path::PathBuf;
         use branchdiff::app::{App, ViewMode};
         use branchdiff::diff::FileDiff;
+        use branchdiff::gitignore::GitignoreFilter;
 
+        let repo_path = PathBuf::from("/tmp/test");
         let app = App {
-            repo_path: PathBuf::from("/tmp/test"),
+            gitignore_filter: GitignoreFilter::new(&repo_path),
+            repo_path,
             base_branch: "main".to_string(),
             merge_base: "abc123".to_string(),
             current_branch: Some("feature".to_string()),

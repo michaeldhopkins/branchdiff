@@ -3,6 +3,7 @@
 pub mod app;
 pub mod diff;
 pub mod git;
+pub mod gitignore;
 pub mod input;
 pub mod message;
 pub mod update;
