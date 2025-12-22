@@ -1,6 +1,6 @@
 use crate::diff::{DiffLine, LineSource};
 
-use super::{App, FrameContext};
+use super::{App, DisplayableItem, FrameContext};
 
 impl App {
     pub fn scroll_up(&mut self, n: usize) {
@@ -20,17 +20,19 @@ impl App {
         }
     }
 
-    #[allow(deprecated)]
     pub fn next_file(&mut self) {
-        let lines = self.displayable_lines();
-        if lines.is_empty() {
+        let items = self.compute_displayable_items();
+        if items.is_empty() {
             return;
         }
 
-        for (i, line) in lines.iter().enumerate().skip(self.scroll_offset + 1) {
-            if line.source == LineSource::FileHeader {
-                self.scroll_offset = i;
-                return;
+        for (i, item) in items.iter().enumerate().skip(self.scroll_offset + 1) {
+            if let DisplayableItem::Line(idx) = item {
+                if self.lines[*idx].source == LineSource::FileHeader {
+                    self.scroll_offset = i;
+                    self.needs_inline_spans = true;
+                    return;
+                }
             }
         }
     }
@@ -43,20 +45,20 @@ impl App {
 
         if let Some(pos) = ctx.find_next_file_header(self, self.scroll_offset) {
             self.scroll_offset = pos;
+            self.needs_inline_spans = true;
         }
     }
 
-    #[allow(deprecated)]
     pub fn prev_file(&mut self) {
-        let lines = self.displayable_lines();
-        if lines.is_empty() || self.scroll_offset == 0 {
+        let items = self.compute_displayable_items();
+        if items.is_empty() || self.scroll_offset == 0 {
             return;
         }
 
-        let current_is_header = lines
-            .get(self.scroll_offset)
-            .map(|l| l.source == LineSource::FileHeader)
-            .unwrap_or(false);
+        let current_is_header = match items.get(self.scroll_offset) {
+            Some(DisplayableItem::Line(idx)) => self.lines[*idx].source == LineSource::FileHeader,
+            _ => false,
+        };
 
         let search_start = if current_is_header {
             self.scroll_offset.saturating_sub(1)
@@ -65,9 +67,12 @@ impl App {
         };
 
         for i in (0..=search_start).rev() {
-            if lines[i].source == LineSource::FileHeader {
-                self.scroll_offset = i;
-                return;
+            if let DisplayableItem::Line(idx) = items[i] {
+                if self.lines[idx].source == LineSource::FileHeader {
+                    self.scroll_offset = i;
+                    self.needs_inline_spans = true;
+                    return;
+                }
             }
         }
     }
@@ -80,22 +85,20 @@ impl App {
 
         if let Some(pos) = ctx.find_prev_file_header(self, self.scroll_offset) {
             self.scroll_offset = pos;
+            self.needs_inline_spans = true;
         }
     }
 
-    /// Page up
     pub fn page_up(&mut self) {
         let page_size = self.viewport_height.saturating_sub(2);
         self.scroll_up(page_size);
     }
 
-    /// Page down
     pub fn page_down(&mut self) {
         let page_size = self.viewport_height.saturating_sub(2);
         self.scroll_down(page_size);
     }
 
-    /// Go to top
     pub fn go_to_top(&mut self) {
         if self.scroll_offset != 0 {
             self.scroll_offset = 0;
@@ -103,13 +106,10 @@ impl App {
         }
     }
 
-    /// Go to bottom - find the scroll offset where the last logical line's bottom
-    /// aligns with the bottom of the viewport
-    #[allow(deprecated)]
     pub fn go_to_bottom(&mut self) {
         let old_offset = self.scroll_offset;
-        let all_lines = self.displayable_lines();
-        self.scroll_offset = self.max_scroll_offset(&all_lines);
+        let items = self.compute_displayable_items();
+        self.scroll_offset = self.max_scroll_for_items(&items);
         if self.scroll_offset != old_offset {
             self.needs_inline_spans = true;
         }
@@ -124,34 +124,41 @@ impl App {
         }
     }
 
-    /// Find the maximum valid scroll offset for a set of lines
-    fn max_scroll_offset(&self, lines: &[DiffLine]) -> usize {
-        if lines.is_empty() {
+    /// Compute max scroll offset from displayable items (no cloning)
+    fn max_scroll_for_items(&self, items: &[DisplayableItem]) -> usize {
+        if items.is_empty() {
             return 0;
         }
 
-        let total_rows: usize = lines.iter()
-            .map(|l| self.wrapped_line_height(l))
+        let total_rows: usize = items
+            .iter()
+            .map(|item| match item {
+                DisplayableItem::Line(idx) => self.wrapped_line_height(&self.lines[*idx]),
+                DisplayableItem::Elided(_) => 1,
+            })
             .sum();
 
         if total_rows <= self.viewport_height {
             return 0;
         }
 
-        // Work backwards from the end to find how many logical lines fit in viewport
+        // Work backwards to find how many items fit in viewport
         let mut rows_from_end = 0;
-        let mut lines_from_end = 0;
+        let mut items_from_end = 0;
 
-        for line in lines.iter().rev() {
-            let line_height = self.wrapped_line_height(line);
-            if rows_from_end + line_height > self.viewport_height {
+        for item in items.iter().rev() {
+            let height = match item {
+                DisplayableItem::Line(idx) => self.wrapped_line_height(&self.lines[*idx]),
+                DisplayableItem::Elided(_) => 1,
+            };
+            if rows_from_end + height > self.viewport_height {
                 break;
             }
-            rows_from_end += line_height;
-            lines_from_end += 1;
+            rows_from_end += height;
+            items_from_end += 1;
         }
 
-        lines.len().saturating_sub(lines_from_end)
+        items.len().saturating_sub(items_from_end)
     }
 
     /// Set viewport height (called during rendering)
@@ -163,11 +170,10 @@ impl App {
         }
     }
 
-    /// Clamp scroll offset to valid range (accounting for line wrapping)
-    #[allow(deprecated)]
+    /// Clamp scroll offset to valid range
     pub(super) fn clamp_scroll(&mut self) {
-        let all_lines = self.displayable_lines();
-        let max_scroll = self.max_scroll_offset(&all_lines);
+        let items = self.compute_displayable_items();
+        let max_scroll = self.max_scroll_for_items(&items);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
@@ -177,7 +183,7 @@ impl App {
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
-    /// Scroll down using pre-computed FrameContext (avoids recomputing displayable items)
+    /// Scroll down using pre-computed FrameContext
     pub fn scroll_down_with_frame(&mut self, n: usize, ctx: &FrameContext) {
         let old_offset = self.scroll_offset;
         self.scroll_offset = self.scroll_offset.saturating_add(n);
@@ -196,41 +202,50 @@ impl App {
         if content_len <= self.content_width {
             1
         } else {
-            // Ceiling division: how many rows needed to show all content
             (content_len + self.content_width - 1) / self.content_width
         }
     }
 
-    /// Get visible lines for current scroll position, accounting for line wrapping
-    #[deprecated(note = "Use FrameContext::iter_visible_items() instead")]
-    #[allow(deprecated)]
+    /// Get visible lines for testing; production code uses FrameContext::iter_visible_items()
+    #[cfg(test)]
     pub fn visible_lines(&self) -> Vec<DiffLine> {
-        let all_lines = self.displayable_lines();
-        if all_lines.is_empty() {
+        let items = self.compute_displayable_items();
+        if items.is_empty() {
             return Vec::new();
         }
 
-        let start = self.scroll_offset.min(all_lines.len());
-
-        // Calculate how many logical lines we can show, accounting for wrapping
+        let start = self.scroll_offset.min(items.len());
         let mut screen_rows_used = 0;
         let mut end = start;
 
-        while end < all_lines.len() && screen_rows_used < self.viewport_height {
-            screen_rows_used += self.wrapped_line_height(&all_lines[end]);
+        while end < items.len() && screen_rows_used < self.viewport_height {
+            let height = match &items[end] {
+                DisplayableItem::Line(idx) => self.wrapped_line_height(&self.lines[*idx]),
+                DisplayableItem::Elided(_) => 1,
+            };
+            screen_rows_used += height;
             end += 1;
         }
 
-        all_lines[start..end].to_vec()
+        // Convert items back to lines for backwards compatibility
+        items[start..end]
+            .iter()
+            .filter_map(|item| match item {
+                DisplayableItem::Line(idx) => Some(self.lines[*idx].clone()),
+                DisplayableItem::Elided(count) => {
+                    Some(DiffLine::new(LineSource::Elided, format!("{} lines hidden", count), ' ', None))
+                }
+            })
+            .collect()
     }
 
-    #[allow(deprecated)]
     pub fn scroll_percentage(&self) -> u16 {
-        let line_count = self.displayable_line_count();
-        if line_count == 0 || line_count <= self.viewport_height {
+        let items = self.compute_displayable_items();
+        let item_count = items.len();
+        if item_count == 0 || item_count <= self.viewport_height {
             100
         } else {
-            let max_scroll = line_count.saturating_sub(self.viewport_height);
+            let max_scroll = self.max_scroll_for_items(&items);
             if max_scroll == 0 {
                 return 100;
             }
@@ -403,7 +418,6 @@ mod tests {
 
     #[test]
     fn test_scroll_percentage_bounds() {
-        // Create app with 50 lines, viewport of 10
         let lines: Vec<DiffLine> = (0..50)
             .map(|i| base_line(&format!("line {}", i)))
             .collect();
@@ -418,11 +432,13 @@ mod tests {
         app.scroll_offset = 40; // 50 - 10 = 40
         assert_eq!(app.scroll_percentage(), 100);
 
-        // Even if scroll_offset exceeds max (shouldn't happen but must not show >100%)
+        // Even if scroll_offset exceeds max
         app.scroll_offset = 100;
-        assert!(app.scroll_percentage() <= 100,
+        assert!(
+            app.scroll_percentage() <= 100,
             "scroll_percentage should never exceed 100, got {}",
-            app.scroll_percentage());
+            app.scroll_percentage()
+        );
 
         // Empty lines: 100%
         let empty_app = create_test_app(vec![]);
@@ -434,5 +450,33 @@ mod tests {
             .collect();
         let small_app = create_test_app(small_lines);
         assert_eq!(small_app.scroll_percentage(), 100);
+    }
+
+    #[test]
+    fn test_max_scroll_for_items() {
+        let lines: Vec<DiffLine> = (0..20)
+            .map(|i| base_line(&format!("line {}", i)))
+            .collect();
+        let mut app = create_test_app(lines);
+        app.viewport_height = 10;
+
+        let items = app.compute_displayable_items();
+        let max_scroll = app.max_scroll_for_items(&items);
+
+        assert_eq!(max_scroll, 10); // 20 lines - 10 viewport = 10
+    }
+
+    #[test]
+    fn test_clamp_scroll() {
+        let lines: Vec<DiffLine> = (0..20)
+            .map(|i| base_line(&format!("line {}", i)))
+            .collect();
+        let mut app = create_test_app(lines);
+        app.viewport_height = 10;
+        app.scroll_offset = 100; // Way past end
+
+        app.clamp_scroll();
+
+        assert_eq!(app.scroll_offset, 10); // Clamped to max
     }
 }
