@@ -142,6 +142,161 @@ impl FileDiff {
     }
 }
 
+use std::collections::HashMap;
+
+fn index_line_in_working(
+    index_idx: usize,
+    working_from_index: &[Option<usize>],
+    index_working_mods: &HashMap<usize, (usize, &str)>,
+) -> bool {
+    for &working_prov in working_from_index {
+        if working_prov == Some(index_idx) {
+            return true;
+        }
+    }
+    for (src_idx, _) in index_working_mods.values() {
+        if *src_idx == index_idx {
+            return true;
+        }
+    }
+    false
+}
+
+fn collect_canceled_committed(
+    head_lines: &[&str],
+    head_from_base: &[Option<usize>],
+    index_from_head: &[Option<usize>],
+    working_from_index: &[Option<usize>],
+    head_index_mods: &HashMap<usize, (usize, &str)>,
+    index_working_mods: &HashMap<usize, (usize, &str)>,
+) -> Vec<(usize, String)> {
+    let mut result = Vec::new();
+
+    for (head_idx, head_line) in head_lines.iter().enumerate() {
+        if head_from_base.get(head_idx).copied().flatten().is_some() {
+            continue;
+        }
+
+        let mut in_working = false;
+
+        // Check via direct provenance
+        for (index_idx, &prov) in index_from_head.iter().enumerate() {
+            if prov == Some(head_idx) {
+                if index_line_in_working(index_idx, working_from_index, index_working_mods) {
+                    in_working = true;
+                    break;
+                }
+            }
+        }
+
+        // Check via modification maps
+        if !in_working {
+            for (index_idx, (src_head_idx, _)) in head_index_mods {
+                if *src_head_idx == head_idx {
+                    if index_line_in_working(*index_idx, working_from_index, index_working_mods) {
+                        in_working = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !in_working {
+            result.push((head_idx, head_line.trim_end().to_string()));
+        }
+    }
+
+    result
+}
+
+fn collect_canceled_staged(
+    index_lines: &[&str],
+    index_from_head: &[Option<usize>],
+    working_from_index: &[Option<usize>],
+    index_working_mods: &HashMap<usize, (usize, &str)>,
+) -> Vec<(usize, String)> {
+    let mut result = Vec::new();
+
+    for (index_idx, index_line) in index_lines.iter().enumerate() {
+        if index_from_head.get(index_idx).copied().flatten().is_some() {
+            continue;
+        }
+
+        if !index_line_in_working(index_idx, working_from_index, index_working_mods) {
+            result.push((index_idx, index_line.trim_end().to_string()));
+        }
+    }
+
+    result
+}
+
+fn find_insertion_position(positions: &[Option<usize>], target_idx: usize) -> usize {
+    for (i, &pos) in positions.iter().enumerate().rev() {
+        if let Some(p) = pos {
+            if p < target_idx {
+                return i + 1;
+            }
+        }
+    }
+    positions.len()
+}
+
+fn insert_canceled_lines(
+    lines: &mut Vec<DiffLine>,
+    canceled: Vec<(usize, String)>,
+    source: LineSource,
+    path: &str,
+    positions: &mut Vec<Option<usize>>,
+) {
+    for (idx, content) in canceled.into_iter().rev() {
+        let insert_pos = find_insertion_position(positions, idx);
+        let canceled_line = DiffLine::new(source, content, '±', None).with_file_path(path);
+        lines.insert(insert_pos, canceled_line);
+        positions.insert(insert_pos, Some(idx));
+    }
+}
+
+fn build_deletion_diff(path: &str, content: &str, source: LineSource) -> FileDiff {
+    let mut lines = vec![DiffLine::deleted_file_header(path)];
+    for (i, line) in content.lines().enumerate() {
+        lines.push(
+            DiffLine::new(source, line.to_string(), '-', Some(i + 1)).with_file_path(path),
+        );
+    }
+    FileDiff { lines }
+}
+
+fn check_file_deletion(
+    path: &str,
+    base_content: Option<&str>,
+    head_content: Option<&str>,
+    index_content: Option<&str>,
+    working_content: Option<&str>,
+) -> Option<FileDiff> {
+    // Unstaged deletion: file exists in index but not working tree
+    if working_content.is_none() {
+        if let Some(content) = index_content {
+            return Some(build_deletion_diff(path, content, LineSource::DeletedStaged));
+        }
+    }
+
+    // Staged deletion: file exists in HEAD but not in index or working
+    if index_content.is_none() && working_content.is_none() {
+        if let Some(content) = head_content {
+            return Some(build_deletion_diff(path, content, LineSource::DeletedCommitted));
+        }
+    }
+
+    // Committed deletion: file exists in base but not in HEAD/index/working
+    if head_content.is_none() && index_content.is_none() && working_content.is_none() {
+        if let Some(content) = base_content {
+            return Some(build_deletion_diff(path, content, LineSource::DeletedBase));
+        }
+    }
+
+    None
+}
+
 /// Compute 4-way diff: base→head→index→working.
 /// Uses provenance maps (not content similarity) to determine line sources.
 /// Inline diffs only created from explicit modification maps.
@@ -152,55 +307,11 @@ pub fn compute_file_diff_v2(
     index_content: Option<&str>,
     working_content: Option<&str>,
 ) -> FileDiff {
-    let mut lines = Vec::new();
-
-    // Handle file deletions at various stages
-    // Unstaged deletion: file exists in index but not working tree
-    if working_content.is_none() && index_content.is_some() {
-        lines.push(DiffLine::deleted_file_header(path));
-        let content = index_content.unwrap();
-        for (i, line) in content.lines().enumerate() {
-            lines.push(DiffLine::new(
-                LineSource::DeletedStaged,
-                line.to_string(),
-                '-',
-                Some(i + 1),
-            ).with_file_path(path));
-        }
-        return FileDiff { lines };
+    if let Some(deletion_diff) = check_file_deletion(path, base_content, head_content, index_content, working_content) {
+        return deletion_diff;
     }
 
-    // Staged deletion: file exists in HEAD but not in index or working
-    if index_content.is_none() && working_content.is_none() && head_content.is_some() {
-        lines.push(DiffLine::deleted_file_header(path));
-        let content = head_content.unwrap();
-        for (i, line) in content.lines().enumerate() {
-            lines.push(DiffLine::new(
-                LineSource::DeletedCommitted,
-                line.to_string(),
-                '-',
-                Some(i + 1),
-            ).with_file_path(path));
-        }
-        return FileDiff { lines };
-    }
-
-    // Committed deletion: file exists in base but not in HEAD/index/working
-    if head_content.is_none() && index_content.is_none() && working_content.is_none() && base_content.is_some() {
-        lines.push(DiffLine::deleted_file_header(path));
-        let content = base_content.unwrap();
-        for (i, line) in content.lines().enumerate() {
-            lines.push(DiffLine::new(
-                LineSource::DeletedBase,
-                line.to_string(),
-                '-',
-                Some(i + 1),
-            ).with_file_path(path));
-        }
-        return FileDiff { lines };
-    }
-
-    lines.push(DiffLine::file_header(path));
+    let mut lines = vec![DiffLine::file_header(path)];
 
     let base = base_content.unwrap_or("");
     let head = head_content.unwrap_or(base);
@@ -505,142 +616,40 @@ pub fn compute_file_diff_v2(
         next_base_deletion += 1;
     }
 
-    // Collect "canceled" lines: added in commits/staging but removed in working tree
-    let mut canceled_committed: Vec<(usize, String)> = Vec::new();
+    // Collect and insert canceled lines (added in commits/staging but removed in working)
+    let canceled_committed = collect_canceled_committed(
+        &head_lines,
+        &head_from_base,
+        &index_from_head,
+        &working_from_index,
+        &head_index_mods,
+        &index_working_mods,
+    );
+    insert_canceled_lines(
+        &mut lines,
+        canceled_committed,
+        LineSource::CanceledCommitted,
+        path,
+        &mut output_head_positions,
+    );
 
-    for (head_idx, head_line) in head_lines.iter().enumerate() {
-        if head_from_base.get(head_idx).copied().flatten().is_some() {
-            continue;
-        }
-
-        let mut in_working = false;
-        for (index_idx, &prov) in index_from_head.iter().enumerate() {
-            if prov == Some(head_idx) {
-                for &working_prov in working_from_index.iter() {
-                    if working_prov == Some(index_idx) {
-                        in_working = true;
-                        break;
-                    }
-                }
-                if !in_working {
-                    for (_, (src_idx, _)) in &index_working_mods {
-                        if *src_idx == index_idx {
-                            in_working = true;
-                            break;
-                        }
-                    }
-                }
-                if in_working {
-                    break;
-                }
-            }
-        }
-
-        if !in_working {
-            for (index_idx, (src_head_idx, _)) in &head_index_mods {
-                if *src_head_idx == head_idx {
-                    for &working_prov in working_from_index.iter() {
-                        if working_prov == Some(*index_idx) {
-                            in_working = true;
-                            break;
-                        }
-                    }
-                    if !in_working {
-                        for (_, (src_idx, _)) in &index_working_mods {
-                            if *src_idx == *index_idx {
-                                in_working = true;
-                                break;
-                            }
-                        }
-                    }
-                    if in_working {
-                        break;
-                    }
-                }
-            }
-        }
-
-        if !in_working {
-            canceled_committed.push((head_idx, head_line.trim_end().to_string()));
-        }
-    }
-
-    let mut canceled_staged: Vec<(usize, String)> = Vec::new();
-
-    for (index_idx, index_line) in index_lines.iter().enumerate() {
-        if index_from_head.get(index_idx).copied().flatten().is_some() {
-            continue;
-        }
-
-        let mut in_working = false;
-        for &working_prov in working_from_index.iter() {
-            if working_prov == Some(index_idx) {
-                in_working = true;
-                break;
-            }
-        }
-        if !in_working {
-            for (_, (src_idx, _)) in &index_working_mods {
-                if *src_idx == index_idx {
-                    in_working = true;
-                    break;
-                }
-            }
-        }
-
-        if !in_working {
-            canceled_staged.push((index_idx, index_line.trim_end().to_string()));
-        }
-    }
-
-    // Insert canceled lines near their original positions
-    // Note: output_head_positions was built during line construction above
-
-    for (head_idx, content) in canceled_committed.into_iter().rev() {
-        let mut insert_pos = lines.len();
-        for (i, &pos) in output_head_positions.iter().enumerate().rev() {
-            if let Some(p) = pos {
-                if p < head_idx {
-                    insert_pos = i + 1;
-                    break;
-                }
-            }
-        }
-        let canceled_line = DiffLine::new(
-            LineSource::CanceledCommitted,
-            content,
-            '±',
-            None,
-        ).with_file_path(path);
-        lines.insert(insert_pos, canceled_line);
-        output_head_positions.insert(insert_pos, Some(head_idx));
-    }
-
-    let mut output_index_positions: Vec<Option<usize>> = Vec::new();
-    for line in &lines {
-        let index_pos = index_lines.iter().position(|h| h.trim_end() == line.content);
-        output_index_positions.push(index_pos);
-    }
-
-    for (index_idx, content) in canceled_staged.into_iter().rev() {
-        let mut insert_pos = lines.len();
-        for (i, &pos) in output_index_positions.iter().enumerate().rev() {
-            if let Some(p) = pos {
-                if p < index_idx {
-                    insert_pos = i + 1;
-                    break;
-                }
-            }
-        }
-        let canceled_line = DiffLine::new(
-            LineSource::CanceledStaged,
-            content,
-            '±',
-            None,
-        ).with_file_path(path);
-        lines.insert(insert_pos, canceled_line);
-        output_index_positions.insert(insert_pos, Some(index_idx));
-    }
+    let canceled_staged = collect_canceled_staged(
+        &index_lines,
+        &index_from_head,
+        &working_from_index,
+        &index_working_mods,
+    );
+    let mut output_index_positions: Vec<Option<usize>> = lines
+        .iter()
+        .map(|line| index_lines.iter().position(|h| h.trim_end() == line.content))
+        .collect();
+    insert_canceled_lines(
+        &mut lines,
+        canceled_staged,
+        LineSource::CanceledStaged,
+        path,
+        &mut output_index_positions,
+    );
 
     FileDiff { lines }
 }
