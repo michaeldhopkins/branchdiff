@@ -49,15 +49,25 @@ pub enum Message {
     Tick,
 }
 
+/// What type of refresh to trigger (if any).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RefreshTrigger {
+    /// No refresh needed.
+    #[default]
+    None,
+    /// Full refresh of all files.
+    Full,
+    /// Refresh only this specific file.
+    SingleFile(PathBuf),
+}
+
 /// Result of processing a message.
 #[derive(Debug, Default)]
 pub struct UpdateResult {
     /// Should quit the application.
     pub quit: bool,
-    /// Should trigger a full refresh.
-    pub trigger_refresh: bool,
-    /// Should trigger single-file refresh for this path.
-    pub trigger_single_file: Option<PathBuf>,
+    /// What type of refresh to trigger.
+    pub refresh: RefreshTrigger,
     /// Should trigger a fetch.
     pub trigger_fetch: bool,
 }
@@ -70,8 +80,7 @@ mod tests {
     fn test_update_result_default() {
         let result = UpdateResult::default();
         assert!(!result.quit);
-        assert!(!result.trigger_refresh);
-        assert!(result.trigger_single_file.is_none());
+        assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(!result.trigger_fetch);
     }
 

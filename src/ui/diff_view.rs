@@ -364,7 +364,7 @@ impl<'a> DiffViewModel<'a> {
 
                     if !del_spans.is_empty() {
                         let del_style = line_style(del_source);
-                        let del_prefix_str = if prefix_str.len() > 0 {
+                        let del_prefix_str = if !prefix_str.is_empty() {
                             " ".repeat(prefix_str.len())
                         } else {
                             String::new()

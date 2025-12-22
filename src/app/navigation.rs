@@ -206,39 +206,6 @@ impl App {
         }
     }
 
-    /// Get visible lines for testing; production code uses FrameContext::iter_visible_items()
-    #[cfg(test)]
-    pub fn visible_lines(&self) -> Vec<DiffLine> {
-        let items = self.compute_displayable_items();
-        if items.is_empty() {
-            return Vec::new();
-        }
-
-        let start = self.scroll_offset.min(items.len());
-        let mut screen_rows_used = 0;
-        let mut end = start;
-
-        while end < items.len() && screen_rows_used < self.viewport_height {
-            let height = match &items[end] {
-                DisplayableItem::Line(idx) => self.wrapped_line_height(&self.lines[*idx]),
-                DisplayableItem::Elided(_) => 1,
-            };
-            screen_rows_used += height;
-            end += 1;
-        }
-
-        // Convert items back to lines for backwards compatibility
-        items[start..end]
-            .iter()
-            .filter_map(|item| match item {
-                DisplayableItem::Line(idx) => Some(self.lines[*idx].clone()),
-                DisplayableItem::Elided(count) => {
-                    Some(DiffLine::new(LineSource::Elided, format!("{} lines hidden", count), ' ', None))
-                }
-            })
-            .collect()
-    }
-
     pub fn scroll_percentage(&self) -> u16 {
         let items = self.compute_displayable_items();
         let item_count = items.len();

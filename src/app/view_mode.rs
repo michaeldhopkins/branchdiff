@@ -3,44 +3,6 @@ use crate::diff::{DiffLine, LineSource};
 use super::{App, ViewMode};
 
 impl App {
-    /// Filter out lines belonging to collapsed files (keep headers)
-    /// Used only by displayable_lines() for testing
-    #[cfg(test)]
-    fn filter_collapsed(&self, lines: Vec<DiffLine>) -> Vec<DiffLine> {
-        if self.collapsed_files.is_empty() {
-            return lines;
-        }
-
-        // Track current file as we iterate, since some lines (like Elided) don't have file_path
-        let mut current_file: Option<String> = None;
-        let mut result = Vec::new();
-
-        for line in lines {
-            // Update current file when we see a file header
-            if line.source == LineSource::FileHeader {
-                current_file = line.file_path.clone();
-                result.push(line); // Always show file headers
-                continue;
-            }
-
-            // Use line's file_path if available, otherwise use tracked current_file
-            let file_path = line.file_path.as_ref().or(current_file.as_ref());
-
-            // Hide lines from collapsed files
-            let should_show = if let Some(path) = file_path {
-                !self.collapsed_files.contains(path)
-            } else {
-                true
-            };
-
-            if should_show {
-                result.push(line);
-            }
-        }
-
-        result
-    }
-
     pub fn changed_line_count(&self) -> usize {
         self.lines.iter().filter(|line| {
             matches!(
@@ -159,12 +121,6 @@ impl App {
         (result, index_map)
     }
 
-    /// For testing; production code uses compute_context_items()
-    #[cfg(test)]
-    pub(super) fn build_context_lines(&self) -> Vec<DiffLine> {
-        self.build_context_lines_with_mapping().0
-    }
-
     pub(super) fn build_changes_only_lines(&self) -> Vec<DiffLine> {
         self.lines.iter().filter(|line| {
             matches!(
@@ -180,17 +136,6 @@ impl App {
                     | LineSource::FileHeader
             )
         }).cloned().collect()
-    }
-
-    /// For testing; production code uses compute_displayable_items() or FrameContext
-    #[cfg(test)]
-    pub fn displayable_lines(&self) -> Vec<DiffLine> {
-        let lines = match self.view_mode {
-            ViewMode::Full => self.lines.clone(),
-            ViewMode::Context => self.build_context_lines(),
-            ViewMode::ChangesOnly => self.build_changes_only_lines(),
-        };
-        self.filter_collapsed(lines)
     }
 
     /// Compute displayable items as indices (more efficient than cloning lines)
@@ -241,8 +186,8 @@ impl App {
         let mut result = Vec::new();
         let mut last_shown: Option<usize> = None;
 
-        for i in 0..self.lines.len() {
-            if show[i] {
+        for (i, &is_shown) in show.iter().enumerate() {
+            if is_shown {
                 // Check if there's a gap since last shown line
                 if let Some(last) = last_shown {
                     let gap = i - last - 1;
