@@ -69,6 +69,7 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 | `c` | Cycle view mode (context → changes → full) |
 | `r` | Refresh |
 | `y` | Copy selection |
+| `p` | Copy current file path |
 | `?` | Toggle help |
 | `q` / `Esc` / `Ctrl+c` | Quit |
 

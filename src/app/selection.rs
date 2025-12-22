@@ -200,6 +200,29 @@ impl App {
         }
     }
 
+    /// Copy current file path to clipboard
+    pub fn copy_current_path(&mut self) -> Result<bool> {
+        if let Some(path) = self.current_file() {
+            let mut clipboard = Clipboard::new()
+                .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
+            clipboard.set_text(path)
+                .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {}", e))?;
+            self.path_copied_at = Some(std::time::Instant::now());
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Check if the "copied" flash should be shown (within 800ms of copy)
+    pub fn should_show_copied_flash(&self) -> bool {
+        if let Some(copied_at) = self.path_copied_at {
+            copied_at.elapsed() < std::time::Duration::from_millis(800)
+        } else {
+            false
+        }
+    }
+
     /// Check if a screen position is on a file header, and return the file path if so
     pub fn get_file_header_at(&self, screen_x: u16, screen_y: u16) -> Option<String> {
         let (offset_x, offset_y) = self.content_offset;

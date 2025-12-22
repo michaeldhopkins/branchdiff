@@ -201,6 +201,9 @@ fn handle_input(
         AppAction::Copy => {
             let _ = app.copy_selection();
         }
+        AppAction::CopyPath => {
+            let _ = app.copy_current_path();
+        }
         AppAction::CopyOrQuit => {
             if app.has_selection() {
                 let _ = app.copy_selection();
@@ -432,6 +435,7 @@ mod tests {
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
+            path_copied_at: None,
         }
     }
 

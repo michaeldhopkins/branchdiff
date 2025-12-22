@@ -266,6 +266,7 @@ mod tests {
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
+            path_copied_at: None,
         }
     }
 

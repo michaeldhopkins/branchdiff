@@ -767,6 +767,7 @@ mod tests {
             collapsed_files: std::collections::HashSet::new(),
             manually_toggled: std::collections::HashSet::new(),
             needs_inline_spans: true,
+            path_copied_at: None,
         }
     }
 
