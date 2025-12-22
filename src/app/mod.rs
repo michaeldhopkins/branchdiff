@@ -1552,4 +1552,52 @@ mod tests {
         app.cycle_view_mode();
         assert!(app.needs_inline_spans(), "cycle_view_mode should mark dirty even if empty");
     }
+
+    #[test]
+    fn test_format_diff_for_copy_basic() {
+        let lines = vec![
+            DiffLine::file_header("test.rs"),
+            base_line("unchanged"),
+            change_line("added line"),
+        ];
+        let app = create_test_app(lines);
+
+        let output = app.format_diff_for_copy();
+
+        assert!(output.contains("── test.rs ──"));
+        assert!(output.contains("  unchanged"));
+        assert!(output.contains("+ added line"));
+    }
+
+    #[test]
+    fn test_format_diff_for_copy_respects_collapsed_files() {
+        let mut lines = vec![
+            DiffLine::file_header("collapsed.rs"),
+            base_line("hidden line"),
+            DiffLine::file_header("visible.rs"),
+            change_line("visible line"),
+        ];
+        // Set file_path on non-header lines
+        lines[1].file_path = Some("collapsed.rs".to_string());
+        lines[3].file_path = Some("visible.rs".to_string());
+
+        let mut app = create_test_app(lines);
+        app.collapsed_files.insert("collapsed.rs".to_string());
+
+        let output = app.format_diff_for_copy();
+
+        // Header for collapsed file should still appear
+        assert!(output.contains("── collapsed.rs ──"));
+        // But content should be hidden
+        assert!(!output.contains("hidden line"));
+        // Visible file content should appear
+        assert!(output.contains("visible line"));
+    }
+
+    #[test]
+    fn test_format_diff_for_copy_empty() {
+        let app = create_test_app(vec![]);
+        let output = app.format_diff_for_copy();
+        assert!(output.is_empty());
+    }
 }

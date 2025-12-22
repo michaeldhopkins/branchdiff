@@ -70,6 +70,7 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 | `r` | Refresh |
 | `y` | Copy selection |
 | `p` | Copy current file path |
+| `Y` | Copy entire diff |
 | `?` | Toggle help |
 | `q` / `Esc` / `Ctrl+c` | Quit |
 
