@@ -1,7 +1,8 @@
 use anyhow::Result;
 use arboard::Clipboard;
 
-use super::App;
+use super::{App, DisplayableItem};
+use crate::diff::LineSource;
 use crate::ui::ScreenRowInfo;
 
 /// Get substring by character positions (not byte positions)
@@ -212,6 +213,85 @@ impl App {
         } else {
             Ok(false)
         }
+    }
+
+    /// Copy entire diff to clipboard (respects view mode and collapsed files)
+    pub fn copy_diff(&mut self) -> Result<bool> {
+        let text = self.format_diff_for_copy();
+        if text.is_empty() {
+            return Ok(false);
+        }
+
+        let mut clipboard = Clipboard::new()
+            .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
+        clipboard.set_text(text)
+            .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {}", e))?;
+        self.path_copied_at = Some(std::time::Instant::now());
+        Ok(true)
+    }
+
+    /// Format the diff for copying to clipboard
+    pub(crate) fn format_diff_for_copy(&self) -> String {
+        let items = self.compute_displayable_items();
+        if items.is_empty() {
+            return String::new();
+        }
+
+        // Calculate max line number width
+        let max_line_num = items
+            .iter()
+            .filter_map(|item| {
+                if let DisplayableItem::Line(idx) = item {
+                    self.lines[*idx].line_number
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        let line_num_width = if max_line_num > 0 {
+            max_line_num.to_string().len()
+        } else {
+            0
+        };
+
+        let mut result = String::new();
+
+        for item in &items {
+            match item {
+                DisplayableItem::Elided(count) => {
+                    let padding = if line_num_width > 0 {
+                        " ".repeat(line_num_width + 1)
+                    } else {
+                        String::new()
+                    };
+                    result.push_str(&format!("{}... {} lines hidden ...\n", padding, count));
+                }
+                DisplayableItem::Line(idx) => {
+                    let line = &self.lines[*idx];
+
+                    // Format line number
+                    let line_num_str = if let Some(num) = line.line_number {
+                        format!("{:>width$} ", num, width = line_num_width)
+                    } else if line_num_width > 0 {
+                        " ".repeat(line_num_width + 1)
+                    } else {
+                        String::new()
+                    };
+
+                    if line.source == LineSource::FileHeader {
+                        result.push_str(&format!("{}── {} ──\n", line_num_str, line.content));
+                    } else {
+                        result.push_str(&format!(
+                            "{}{} {}\n",
+                            line_num_str, line.prefix, line.content
+                        ));
+                    }
+                }
+            }
+        }
+
+        result
     }
 
     /// Check if the "copied" flash should be shown (within 800ms of copy)
