@@ -198,11 +198,37 @@ impl App {
     }
 
     pub fn ensure_inline_spans_for_visible(&mut self, visible_height: usize) {
-        let start = self.scroll_offset;
-        let end = (start + visible_height).min(self.lines.len());
-
-        for line in &mut self.lines[start..end] {
-            line.ensure_inline_spans();
+        // In context/changes view, the displayed lines map to different original indices
+        // We need to compute inline spans for the actual lines that will be displayed
+        match self.view_mode {
+            ViewMode::Full => {
+                let start = self.scroll_offset;
+                let end = (start + visible_height).min(self.lines.len());
+                for line in &mut self.lines[start..end] {
+                    line.ensure_inline_spans();
+                }
+            }
+            ViewMode::Context => {
+                let (_, index_map) = self.build_context_lines_with_mapping();
+                let start = self.scroll_offset;
+                let end = (start + visible_height).min(index_map.len());
+                for mapped_idx in &index_map[start..end] {
+                    if let Some(original_idx) = mapped_idx {
+                        if *original_idx < self.lines.len() {
+                            self.lines[*original_idx].ensure_inline_spans();
+                        }
+                    }
+                }
+            }
+            ViewMode::ChangesOnly => {
+                // ChangesOnly only shows lines that are already marked as changes,
+                // so we compute inline spans for all lines with old_content
+                for line in &mut self.lines {
+                    if line.old_content.is_some() {
+                        line.ensure_inline_spans();
+                    }
+                }
+            }
         }
     }
 
