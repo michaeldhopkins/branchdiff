@@ -12,6 +12,7 @@ impl App {
         self.clamp_scroll();
     }
 
+    #[allow(deprecated)]
     pub fn next_file(&mut self) {
         let lines = self.displayable_lines();
         if lines.is_empty() {
@@ -37,6 +38,7 @@ impl App {
         }
     }
 
+    #[allow(deprecated)]
     pub fn prev_file(&mut self) {
         let lines = self.displayable_lines();
         if lines.is_empty() || self.scroll_offset == 0 {
@@ -92,6 +94,7 @@ impl App {
 
     /// Go to bottom - find the scroll offset where the last logical line's bottom
     /// aligns with the bottom of the viewport
+    #[allow(deprecated)]
     pub fn go_to_bottom(&mut self) {
         let all_lines = self.displayable_lines();
         self.scroll_offset = self.max_scroll_offset(&all_lines);
@@ -139,6 +142,7 @@ impl App {
     }
 
     /// Clamp scroll offset to valid range (accounting for line wrapping)
+    #[allow(deprecated)]
     pub(super) fn clamp_scroll(&mut self) {
         let all_lines = self.displayable_lines();
         let max_scroll = self.max_scroll_offset(&all_lines);
@@ -172,6 +176,8 @@ impl App {
     }
 
     /// Get visible lines for current scroll position, accounting for line wrapping
+    #[deprecated(note = "Use FrameContext::iter_visible_items() instead")]
+    #[allow(deprecated)]
     pub fn visible_lines(&self) -> Vec<DiffLine> {
         let all_lines = self.displayable_lines();
         if all_lines.is_empty() {
@@ -192,6 +198,7 @@ impl App {
         all_lines[start..end].to_vec()
     }
 
+    #[allow(deprecated)]
     pub fn scroll_percentage(&self) -> u16 {
         let line_count = self.displayable_line_count();
         if line_count == 0 || line_count <= self.viewport_height {

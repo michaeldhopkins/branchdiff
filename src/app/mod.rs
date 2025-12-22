@@ -311,9 +311,18 @@ impl App {
 
     /// Get the file path of the first visible line
     pub fn current_file(&self) -> Option<String> {
-        self.visible_lines()
-            .into_iter()
-            .find_map(|line| line.file_path)
+        let items = self.compute_displayable_items();
+        let start = self.scroll_offset.min(items.len());
+        let end = (start + self.viewport_height).min(items.len());
+
+        for item in &items[start..end] {
+            if let DisplayableItem::Line(idx) = item {
+                if let Some(ref path) = self.lines[*idx].file_path {
+                    return Some(path.clone());
+                }
+            }
+        }
+        None
     }
 
     /// Set content area layout info (called during rendering)
