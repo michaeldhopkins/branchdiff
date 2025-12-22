@@ -20,6 +20,7 @@ pub enum AppAction {
     EndSelection,
     Copy,
     CopyPath,
+    CopyDiff,
     CopyOrQuit,
     None,
 }
@@ -78,6 +79,10 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
 
         // Copy current file path with 'p'
         (KeyCode::Char('p'), KeyModifiers::NONE) => AppAction::CopyPath,
+
+        // Copy entire diff with 'Y' (vim yank all)
+        (KeyCode::Char('Y'), KeyModifiers::SHIFT) => AppAction::CopyDiff,
+        (KeyCode::Char('Y'), KeyModifiers::NONE) => AppAction::CopyDiff,
 
         _ => AppAction::None,
     }
@@ -288,6 +293,12 @@ mod tests {
     fn test_copy_path_with_p() {
         let event = key_event(KeyCode::Char('p'), KeyModifiers::NONE);
         assert_eq!(handle_event(event), AppAction::CopyPath);
+    }
+
+    #[test]
+    fn test_copy_diff_with_shift_y() {
+        let event = key_event(KeyCode::Char('Y'), KeyModifiers::SHIFT);
+        assert_eq!(handle_event(event), AppAction::CopyDiff);
     }
 
     // Unknown input test

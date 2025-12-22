@@ -204,6 +204,9 @@ fn handle_input(
         AppAction::CopyPath => {
             let _ = app.copy_current_path();
         }
+        AppAction::CopyDiff => {
+            let _ = app.copy_diff();
+        }
         AppAction::CopyOrQuit => {
             if app.has_selection() {
                 let _ = app.copy_selection();
