@@ -13,7 +13,7 @@ use notify_debouncer_mini::DebouncedEventKind;
 
 use crate::app::App;
 use crate::input::AppAction;
-use crate::message::{FetchResult, Message, RefreshOutcome, UpdateResult};
+use crate::message::{FetchResult, Message, RefreshOutcome, RefreshTrigger, UpdateResult};
 
 /// Timer state for periodic operations.
 pub struct Timers {
@@ -182,7 +182,7 @@ fn handle_input(
         AppAction::PrevFile => app.prev_file(),
         AppAction::Refresh => {
             if refresh_state.is_idle() {
-                result.trigger_refresh = true;
+                result.refresh = RefreshTrigger::Full;
             } else {
                 refresh_state.cancel_and_mark_pending();
             }
@@ -236,7 +236,7 @@ fn handle_refresh(
     }
 
     if refresh_state.complete() {
-        result.trigger_refresh = true;
+        result.refresh = RefreshTrigger::Full;
     }
 
     result
@@ -328,9 +328,9 @@ fn handle_file_change(
                     .to_string_lossy()
                     .to_string();
 
-                result.trigger_single_file = Some(PathBuf::from(file_path));
+                result.refresh = RefreshTrigger::SingleFile(PathBuf::from(file_path));
             } else {
-                result.trigger_refresh = true;
+                result.refresh = RefreshTrigger::Full;
             }
         }
     }
@@ -358,7 +358,7 @@ fn handle_fetch(
         if new_base != app.merge_base {
             app.merge_base = new_base;
             if refresh_state.is_idle() {
-                result.trigger_refresh = true;
+                result.refresh = RefreshTrigger::Full;
             } else {
                 refresh_state.mark_pending();
             }
@@ -389,7 +389,7 @@ fn handle_tick(
     // Watchdog: reset stuck refresh
     if let Some(started) = refresh_state.started_at() {
         if started.elapsed() >= config.refresh_watchdog_timeout {
-            result.trigger_refresh = true;
+            result.refresh = RefreshTrigger::Full;
         }
     }
 
@@ -397,7 +397,7 @@ fn handle_tick(
     if refresh_state.is_idle()
         && timers.last_refresh.elapsed() >= config.refresh_fallback_interval
     {
-        result.trigger_refresh = true;
+        result.refresh = RefreshTrigger::Full;
     }
 
     result
@@ -464,7 +464,7 @@ mod tests {
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::Refresh, &mut app, &mut refresh_state);
-        assert!(result.trigger_refresh);
+        assert_eq!(result.refresh, RefreshTrigger::Full);
     }
 
     #[test]
@@ -476,7 +476,7 @@ mod tests {
         };
 
         let result = handle_input(AppAction::Refresh, &mut app, &mut refresh_state);
-        assert!(!result.trigger_refresh);
+        assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(refresh_state.has_pending());
     }
 
@@ -499,7 +499,7 @@ mod tests {
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers);
 
-        assert!(!result.trigger_refresh);
+        assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(refresh_state.is_idle());
         assert_eq!(app.merge_base, "def456");
         assert!(timers.last_refresh.elapsed() < Duration::from_secs(1));
@@ -517,7 +517,7 @@ mod tests {
         let outcome = RefreshOutcome::Cancelled;
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers);
 
-        assert!(result.trigger_refresh);
+        assert_eq!(result.refresh, RefreshTrigger::Full);
         assert!(refresh_state.is_idle());
     }
 
@@ -577,7 +577,7 @@ mod tests {
 
         let result = handle_fetch(fetch_result, &mut app, &mut refresh_state, &mut timers);
 
-        assert!(result.trigger_refresh);
+        assert_eq!(result.refresh, RefreshTrigger::Full);
         assert_eq!(app.merge_base, "new_base");
     }
 
@@ -631,7 +631,7 @@ mod tests {
         };
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
-        assert!(result.trigger_refresh);
+        assert_eq!(result.refresh, RefreshTrigger::Full);
     }
 
     #[test]
@@ -647,7 +647,7 @@ mod tests {
         };
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
-        assert!(result.trigger_refresh);
+        assert_eq!(result.refresh, RefreshTrigger::Full);
     }
 
     #[test]
