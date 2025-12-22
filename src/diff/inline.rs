@@ -55,10 +55,7 @@ pub fn compute_inline_diff_merged(
     let diff = TextDiff::from_chars(old_line, new_line);
     let mut spans = Vec::new();
     let mut max_unchanged_segment = 0usize;
-    let mut total_unchanged_chars = 0usize;
     let mut num_unchanged_segments = 0usize;
-    let mut _total_deleted_chars = 0usize;
-    let mut _total_inserted_chars = 0usize;
 
     let mut pending_unchanged = String::new();
     let mut pending_deleted = String::new();
@@ -68,7 +65,6 @@ pub fn compute_inline_diff_merged(
         let text = change.value();
         match change.tag() {
             ChangeTag::Equal => {
-                total_unchanged_chars += text.chars().count();
                 if !pending_deleted.is_empty() || !pending_inserted.is_empty() {
                     if !pending_unchanged.is_empty() {
                         let segment_len = pending_unchanged.chars().count();
@@ -101,11 +97,9 @@ pub fn compute_inline_diff_merged(
                 pending_unchanged.push_str(text);
             }
             ChangeTag::Delete => {
-                _total_deleted_chars += text.chars().count();
                 pending_deleted.push_str(text);
             }
             ChangeTag::Insert => {
-                _total_inserted_chars += text.chars().count();
                 pending_inserted.push_str(text);
             }
         }
