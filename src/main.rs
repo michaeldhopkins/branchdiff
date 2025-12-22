@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -41,6 +41,10 @@ struct Cli {
     /// Print diff to stdout and exit (non-interactive mode)
     #[arg(short = 'p', long = "print")]
     print: bool,
+
+    /// Run stress test for profiling (renders N frames with simulated input)
+    #[arg(long, value_name = "FRAMES")]
+    benchmark: Option<usize>,
 }
 
 fn main() -> Result<()> {
@@ -65,6 +69,11 @@ fn main() -> Result<()> {
         }
         print::print_diff(&app)?;
         return Ok(());
+    }
+
+    // Benchmark mode: stress test for profiling
+    if let Some(frames) = cli.benchmark {
+        return run_benchmark(repo_root, frames);
     }
 
     // Setup terminal
@@ -114,6 +123,93 @@ fn main() -> Result<()> {
     terminal.show_cursor()?;
 
     result
+}
+
+fn run_benchmark(repo_root: PathBuf, frames: usize) -> Result<()> {
+    use ratatui::backend::TestBackend;
+
+    eprintln!("Loading diff from {}...", repo_root.display());
+    let load_start = Instant::now();
+    let mut app = App::new(repo_root)?;
+    let load_time = load_start.elapsed();
+    eprintln!(
+        "Loaded {} lines across {} files in {:?}",
+        app.lines.len(),
+        app.files.len(),
+        load_time
+    );
+
+    if app.lines.is_empty() {
+        eprintln!("No changes to benchmark. Try running in a repo with uncommitted changes.");
+        return Ok(());
+    }
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend)?;
+    let visible_height = 40_usize;
+
+    app.set_viewport_height(visible_height);
+    app.collapsed_files.clear();
+
+    eprintln!("Running {} frames...", frames);
+    let bench_start = Instant::now();
+
+    let ctx = FrameContext::new(&app);
+    let max_scroll = ctx.max_scroll(&app);
+
+    for frame_num in 0..frames {
+        let action = match frame_num % 20 {
+            0..=4 => AppAction::ScrollDown(3),
+            5..=9 => AppAction::ScrollUp(2),
+            10 => AppAction::NextFile,
+            11 => AppAction::PrevFile,
+            12 => AppAction::CycleViewMode,
+            13 => AppAction::GoToBottom,
+            14 => AppAction::GoToTop,
+            15 => AppAction::PageDown,
+            16 => AppAction::PageUp,
+            _ => AppAction::ScrollDown(1),
+        };
+
+        match action {
+            AppAction::ScrollDown(n) => {
+                let new_offset = (app.scroll_offset + n).min(max_scroll);
+                app.scroll_offset = new_offset;
+            }
+            AppAction::ScrollUp(n) => {
+                app.scroll_offset = app.scroll_offset.saturating_sub(n);
+            }
+            AppAction::NextFile => app.next_file(),
+            AppAction::PrevFile => app.prev_file(),
+            AppAction::CycleViewMode => app.cycle_view_mode(),
+            AppAction::GoToBottom => app.go_to_bottom(),
+            AppAction::GoToTop => app.go_to_top(),
+            AppAction::PageDown => app.page_down(),
+            AppAction::PageUp => app.page_up(),
+            _ => {}
+        }
+
+        if app.needs_inline_spans() {
+            app.ensure_inline_spans_for_visible(visible_height);
+            app.clear_needs_inline_spans();
+        }
+
+        terminal.draw(|f| {
+            let frame_ctx = FrameContext::new(&app);
+            ui::draw_with_frame(f, &mut app, &frame_ctx)
+        })?;
+    }
+
+    let bench_time = bench_start.elapsed();
+    let avg_frame = bench_time.as_micros() as f64 / frames as f64;
+
+    eprintln!("\nResults:");
+    eprintln!("  Total time:     {:?}", bench_time);
+    eprintln!("  Frames:         {}", frames);
+    eprintln!("  Avg frame:      {:.1} µs", avg_frame);
+    eprintln!("  Throughput:     {:.0} fps", 1_000_000.0 / avg_frame);
+
+    Ok(())
 }
 
 fn spawn_single_file_refresh(
