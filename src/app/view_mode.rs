@@ -331,6 +331,7 @@ impl App {
                 ViewMode::Context => ViewMode::ChangesOnly,
                 ViewMode::ChangesOnly => ViewMode::Full,
             };
+            self.needs_inline_spans = true;
             return;
         }
 
@@ -349,6 +350,7 @@ impl App {
         }
 
         self.clamp_scroll();
+        self.needs_inline_spans = true;
     }
 
     fn get_original_index_at_offset(&self, offset: usize) -> Option<usize> {
@@ -478,6 +480,7 @@ mod tests {
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
+            needs_inline_spans: true,
         }
     }
 
