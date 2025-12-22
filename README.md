@@ -31,8 +31,24 @@ branchdiff [path]
 |------|-------------|
 | `-p`, `--print` | Print diff to stdout and exit (non-interactive mode) |
 | `--no-auto-fetch` | Disable automatic fetching of base branch |
+| `--benchmark N` | Run stress test rendering N frames (for profiling) |
 | `-h`, `--help` | Print help |
 | `-V`, `--version` | Print version |
+
+### Profiling
+
+The `--benchmark` flag runs a non-interactive stress test for profiling:
+
+```bash
+# Run 1000 frames of simulated usage
+branchdiff --benchmark 1000
+
+# Profile with samply (recommended)
+cargo install samply
+samply record branchdiff --benchmark 5000
+```
+
+The benchmark simulates scrolling, file navigation, and view mode changes while rendering each frame.
 
 ## Keybindings
 
