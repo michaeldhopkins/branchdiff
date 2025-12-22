@@ -13,7 +13,7 @@ use super::colors::line_style;
 use super::selection::{get_line_selection_range, apply_selection_to_span};
 use super::spans::{coalesce_spans, inline_display_width, get_deletion_source, get_insertion_source, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight, classify_inline_change, InlineChangeType};
 use super::wrapping::wrap_content;
-use super::{ScreenRowInfo, ScreenRowKind, PREFIX_CHAR_WIDTH};
+use super::{ScreenRowInfo, PREFIX_CHAR_WIDTH};
 
 fn apply_selection_to_content(
     content_spans: Vec<Span<'static>>,
@@ -46,7 +46,6 @@ fn apply_selection_to_content(
 
 pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible_lines = app.visible_lines();
-    let scroll_offset = app.scroll_offset;
 
     let max_line_num = visible_lines
         .iter()
@@ -73,8 +72,7 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut all_row_infos: Vec<ScreenRowInfo> = Vec::new();
     let mut screen_row_idx = 0;
 
-    for (visible_idx, diff_line) in visible_lines.iter().enumerate() {
-        let abs_line_idx = scroll_offset + visible_idx;
+    for diff_line in visible_lines.iter() {
         let style = line_style(diff_line.source);
 
         let prefix_str = if let Some(num) = diff_line.line_number {
@@ -101,8 +99,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
 
             all_lines.push(Line::from(spans));
             all_row_infos.push(ScreenRowInfo {
-                logical_idx: abs_line_idx,
-                kind: ScreenRowKind::Normal,
                 content: diff_line.content.clone(),
                 is_file_header: true,
                 file_path: diff_line.file_path.clone(),
@@ -121,8 +117,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
 
             all_lines.push(Line::from(spans));
             all_row_infos.push(ScreenRowInfo {
-                logical_idx: abs_line_idx,
-                kind: ScreenRowKind::Normal,
                 content: diff_line.content.clone(),
                 is_file_header: false,
                 file_path: diff_line.file_path.clone(),
@@ -162,8 +156,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                                 del_style,
                                 content_width,
                                 prefix_width,
-                                abs_line_idx,
-                                ScreenRowKind::SplitDeletion,
                             );
 
                             screen_row_idx += del_lines.len();
@@ -184,8 +176,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                             ins_style,
                             content_width,
                             prefix_width,
-                            abs_line_idx,
-                            ScreenRowKind::SplitInsertion,
                         );
 
                         screen_row_idx += ins_lines.len();
@@ -215,8 +205,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                             style,
                             content_width,
                             prefix_width,
-                            abs_line_idx,
-                            ScreenRowKind::Normal,
                         );
 
                         screen_row_idx += lines.len();
@@ -254,8 +242,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                 style,
                 content_width,
                 prefix_width,
-                abs_line_idx,
-                ScreenRowKind::Normal,
             );
 
             screen_row_idx += lines.len();
@@ -274,8 +260,6 @@ pub fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
                 style,
                 content_width,
                 prefix_width,
-                abs_line_idx,
-                ScreenRowKind::Normal,
             );
 
             screen_row_idx += lines.len();

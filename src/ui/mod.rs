@@ -19,26 +19,9 @@ pub use status_bar::{draw_status_bar, status_bar_height};
 
 const PREFIX_CHAR_WIDTH: usize = 2; // prefix char + trailing space
 
-/// What kind of screen row this is
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScreenRowKind {
-    /// Normal single-row line or first row of wrapped content
-    Normal,
-    /// Continuation row of wrapped content (2nd, 3rd, etc.)
-    WrappedContinuation,
-    /// The "-" deletion line when inline diff splits into two lines
-    SplitDeletion,
-    /// The "+" insertion line when inline diff splits into two lines
-    SplitInsertion,
-}
-
 /// Represents how a logical DiffLine maps to a screen row
 #[derive(Debug, Clone)]
 pub struct ScreenRowInfo {
-    /// Index into the logical DiffLine array (absolute, accounting for scroll)
-    pub logical_idx: usize,
-    /// What kind of row this is
-    pub kind: ScreenRowKind,
     /// The actual text content of this screen row (for copy operations)
     pub content: String,
     /// Whether this row is a file header (for collapse detection)
@@ -94,7 +77,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::spans::{coalesce_spans, is_fragmented, inline_display_width, get_deletion_source, get_insertion_source, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight, classify_inline_change, InlineChangeType};
+    use super::spans::{coalesce_spans, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight, classify_inline_change, InlineChangeType};
     use super::colors::{highlight_bg_color, line_style, line_style_with_highlight};
     use super::status_bar::truncate_with_ellipsis;
     use crate::diff::{InlineSpan, LineSource, compute_inline_diff_merged};
@@ -698,14 +681,6 @@ mod tests {
             make_span("deleted", Some(LineSource::DeletedBase), true),
         ];
         assert_eq!(spans::get_insertion_source(&spans), LineSource::Committed);
-    }
-
-    #[test]
-    fn test_screen_row_kind_equality() {
-        assert_eq!(ScreenRowKind::Normal, ScreenRowKind::Normal);
-        assert_eq!(ScreenRowKind::SplitDeletion, ScreenRowKind::SplitDeletion);
-        assert_ne!(ScreenRowKind::Normal, ScreenRowKind::SplitDeletion);
-        assert_ne!(ScreenRowKind::SplitDeletion, ScreenRowKind::SplitInsertion);
     }
 
     #[test]
