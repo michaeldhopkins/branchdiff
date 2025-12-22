@@ -23,6 +23,41 @@ enum FileProcessResult {
     Binary { path: String },
 }
 
+struct FileContents {
+    base: Option<String>,
+    head: Option<String>,
+    index: Option<String>,
+    working: Option<String>,
+}
+
+impl FileContents {
+    fn fetch(repo_path: &Path, file_path: &str, merge_base: &str) -> Self {
+        let base = if merge_base.is_empty() {
+            None
+        } else {
+            git::get_file_at_ref(repo_path, file_path, merge_base)
+                .ok()
+                .flatten()
+        };
+        Self {
+            base,
+            head: git::get_file_at_ref(repo_path, file_path, "HEAD")
+                .ok()
+                .flatten(),
+            index: git::get_file_at_ref(repo_path, file_path, "")
+                .ok()
+                .flatten(),
+            working: git::get_working_tree_file(repo_path, file_path)
+                .ok()
+                .flatten(),
+        }
+    }
+
+    fn all_equal(&self) -> bool {
+        self.base == self.working && self.base == self.head && self.base == self.index
+    }
+}
+
 fn process_single_file(
     repo_path: &Path,
     file_path: &str,
@@ -32,32 +67,13 @@ fn process_single_file(
         return FileProcessResult::Binary { path: file_path.to_string() };
     }
 
-    let base_content = if merge_base.is_empty() {
-        None
-    } else {
-        git::get_file_at_ref(repo_path, file_path, merge_base)
-            .ok()
-            .flatten()
-    };
-
-    let head_content = git::get_file_at_ref(repo_path, file_path, "HEAD")
-        .ok()
-        .flatten();
-
-    let index_content = git::get_file_at_ref(repo_path, file_path, "")
-        .ok()
-        .flatten();
-
-    let working_content = git::get_working_tree_file(repo_path, file_path)
-        .ok()
-        .flatten();
-
+    let contents = FileContents::fetch(repo_path, file_path, merge_base);
     let file_diff = compute_file_diff_v2(
         file_path,
-        base_content.as_deref(),
-        head_content.as_deref(),
-        index_content.as_deref(),
-        working_content.as_deref(),
+        contents.base.as_deref(),
+        contents.head.as_deref(),
+        contents.index.as_deref(),
+        contents.working.as_deref(),
     );
 
     FileProcessResult::Diff(file_diff)
@@ -72,36 +88,18 @@ pub fn compute_single_file_diff(
         return None;
     }
 
-    let base_content = if merge_base.is_empty() {
-        None
-    } else {
-        git::get_file_at_ref(repo_path, file_path, merge_base)
-            .ok()
-            .flatten()
-    };
+    let contents = FileContents::fetch(repo_path, file_path, merge_base);
 
-    let head_content = git::get_file_at_ref(repo_path, file_path, "HEAD")
-        .ok()
-        .flatten();
-
-    let index_content = git::get_file_at_ref(repo_path, file_path, "")
-        .ok()
-        .flatten();
-
-    let working_content = git::get_working_tree_file(repo_path, file_path)
-        .ok()
-        .flatten();
-
-    if base_content == working_content && base_content == head_content && base_content == index_content {
+    if contents.all_equal() {
         return None;
     }
 
     Some(compute_file_diff_v2(
         file_path,
-        base_content.as_deref(),
-        head_content.as_deref(),
-        index_content.as_deref(),
-        working_content.as_deref(),
+        contents.base.as_deref(),
+        contents.head.as_deref(),
+        contents.index.as_deref(),
+        contents.working.as_deref(),
     ))
 }
 
