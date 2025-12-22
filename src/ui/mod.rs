@@ -3,7 +3,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::App;
+use crate::app::{App, FrameContext};
 
 pub mod colors;
 pub mod diff_view;
@@ -67,6 +67,50 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.set_viewport_height(content_height);
 
     diff_view::draw_diff_view(frame, app, diff_area);
+    draw_status_bar(frame, app, status_area);
+
+    if app.show_help {
+        draw_help_modal(frame, size);
+    }
+}
+
+/// Draw the main UI with a pre-computed frame context
+pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
+    let size = frame.area();
+
+    let has_warning = app.conflict_warning.is_some();
+    let status_height = status_bar_height(app, size.width);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if has_warning {
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(status_height),
+            ]
+        } else {
+            vec![
+                Constraint::Min(1),
+                Constraint::Length(status_height),
+            ]
+        })
+        .split(size);
+
+    let (warning_area, diff_area, status_area) = if has_warning {
+        (Some(chunks[0]), chunks[1], chunks[2])
+    } else {
+        (None, chunks[0], chunks[1])
+    };
+
+    if let (Some(area), Some(warning)) = (warning_area, &app.conflict_warning) {
+        draw_warning_banner(frame, warning, area);
+    }
+
+    let content_height = diff_area.height.saturating_sub(2) as usize;
+    app.set_viewport_height(content_height);
+
+    diff_view::draw_diff_view_with_frame(frame, app, diff_area, ctx);
     draw_status_bar(frame, app, status_area);
 
     if app.show_help {
