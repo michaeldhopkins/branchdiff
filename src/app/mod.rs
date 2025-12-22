@@ -8,7 +8,7 @@ mod view_mode;
 
 pub use frame::{DisplayableItem, FrameContext};
 pub use refresh::{compute_refresh, compute_single_file_diff, RefreshResult};
-pub use selection::Selection;
+pub use selection::{Position, Selection};
 
 use std::collections::HashSet;
 use std::path::PathBuf;
