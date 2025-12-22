@@ -1,6 +1,6 @@
 use crate::diff::{DiffLine, LineSource};
 
-use super::App;
+use super::{App, FrameContext};
 
 impl App {
     pub fn scroll_up(&mut self, n: usize) {
@@ -23,6 +23,17 @@ impl App {
                 self.scroll_offset = i;
                 return;
             }
+        }
+    }
+
+    /// Navigate to next file using pre-computed FrameContext
+    pub fn next_file_with_frame(&mut self, ctx: &FrameContext) {
+        if ctx.item_count() == 0 {
+            return;
+        }
+
+        if let Some(pos) = ctx.find_next_file_header(self, self.scroll_offset) {
+            self.scroll_offset = pos;
         }
     }
 
@@ -51,6 +62,17 @@ impl App {
         }
     }
 
+    /// Navigate to previous file using pre-computed FrameContext
+    pub fn prev_file_with_frame(&mut self, ctx: &FrameContext) {
+        if ctx.item_count() == 0 || self.scroll_offset == 0 {
+            return;
+        }
+
+        if let Some(pos) = ctx.find_prev_file_header(self, self.scroll_offset) {
+            self.scroll_offset = pos;
+        }
+    }
+
     /// Page up
     pub fn page_up(&mut self) {
         let page_size = self.viewport_height.saturating_sub(2);
@@ -73,6 +95,11 @@ impl App {
     pub fn go_to_bottom(&mut self) {
         let all_lines = self.displayable_lines();
         self.scroll_offset = self.max_scroll_offset(&all_lines);
+    }
+
+    /// Go to bottom using pre-computed FrameContext
+    pub fn go_to_bottom_with_frame(&mut self, ctx: &FrameContext) {
+        self.scroll_offset = ctx.max_scroll(self);
     }
 
     /// Find the maximum valid scroll offset for a set of lines
@@ -118,6 +145,18 @@ impl App {
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
+    /// Clamp scroll offset using pre-computed FrameContext
+    pub fn clamp_scroll_with_frame(&mut self, ctx: &FrameContext) {
+        let max_scroll = ctx.max_scroll(self);
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
+    }
+
+    /// Scroll down using pre-computed FrameContext (avoids recomputing displayable items)
+    pub fn scroll_down_with_frame(&mut self, n: usize, ctx: &FrameContext) {
+        self.scroll_offset = self.scroll_offset.saturating_add(n);
+        self.clamp_scroll_with_frame(ctx);
+    }
+
     /// Calculate how many screen rows a line will take when wrapped
     pub(super) fn wrapped_line_height(&self, line: &DiffLine) -> usize {
         if self.content_width == 0 {
@@ -159,6 +198,21 @@ impl App {
             100
         } else {
             let max_scroll = line_count.saturating_sub(self.viewport_height);
+            if max_scroll == 0 {
+                return 100;
+            }
+            let pct = ((self.scroll_offset as f64 / max_scroll as f64) * 100.0) as u16;
+            pct.min(100)
+        }
+    }
+
+    /// Compute scroll percentage using pre-computed FrameContext
+    pub fn scroll_percentage_with_frame(&self, ctx: &FrameContext) -> u16 {
+        let item_count = ctx.item_count();
+        if item_count == 0 || item_count <= self.viewport_height {
+            100
+        } else {
+            let max_scroll = ctx.max_scroll(self);
             if max_scroll == 0 {
                 return 100;
             }
