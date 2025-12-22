@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Terminal UI showing unified diff of current branch vs main/master"
 license = "UNLICENSED"
+repository = "https://github.com/michaeldhopkins/branchdiff"
+homepage = "https://github.com/michaeldhopkins/branchdiff"
+keywords = ["git", "diff", "tui", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = "0.29"
@@ -53,3 +57,8 @@ extend_with_drain = "deny"
 [profile.profiling]
 inherits = "release"
 debug = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
