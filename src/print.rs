@@ -3,10 +3,10 @@ use std::io::{self, Write};
 use anyhow::Result;
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::app::App;
-use crate::diff::LineSource;
-use crate::ui::colors::line_style;
-use crate::ui::spans::coalesce_spans;
+use branchdiff::app::App;
+use branchdiff::diff::LineSource;
+use branchdiff::ui::colors::line_style;
+use branchdiff::ui::spans::coalesce_spans;
 
 const RESET: &str = "\x1b[0m";
 
@@ -150,7 +150,7 @@ pub fn print_diff(app: &App) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::DiffLine;
+    use branchdiff::diff::DiffLine;
 
     #[test]
     fn test_color_to_ansi_basic_colors() {
@@ -199,8 +199,8 @@ mod tests {
     fn test_print_diff_produces_output() {
         use std::collections::HashSet;
         use std::path::PathBuf;
-        use crate::app::{App, ViewMode};
-        use crate::diff::FileDiff;
+        use branchdiff::app::{App, ViewMode};
+        use branchdiff::diff::FileDiff;
 
         let app = App {
             repo_path: PathBuf::from("/tmp/test"),

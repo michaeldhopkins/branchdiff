@@ -1,9 +1,9 @@
-mod app;
-mod diff;
-mod git;
 mod input;
 mod print;
-mod ui;
+
+use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, RefreshResult};
+use branchdiff::diff::FileDiff;
+use branchdiff::git;
 
 use std::io;
 use std::path::PathBuf;
@@ -23,8 +23,7 @@ use crossterm::{
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use ratatui::prelude::*;
 
-use app::{compute_refresh, compute_single_file_diff, App, RefreshResult};
-use diff::FileDiff;
+use branchdiff::ui;
 use input::{handle_event, AppAction};
 
 const FETCH_INTERVAL: Duration = Duration::from_secs(30);

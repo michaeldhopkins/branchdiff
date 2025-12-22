@@ -191,6 +191,136 @@ impl App {
         self.filter_collapsed(lines)
     }
 
+    /// Compute displayable items as indices (more efficient than cloning lines)
+    pub fn compute_displayable_items(&self) -> Vec<super::DisplayableItem> {
+        let items = match self.view_mode {
+            ViewMode::Full => self.compute_full_items(),
+            ViewMode::Context => self.compute_context_items(),
+            ViewMode::ChangesOnly => self.compute_changes_only_items(),
+        };
+        self.filter_collapsed_items(items)
+    }
+
+    /// Full mode: all lines as indices
+    fn compute_full_items(&self) -> Vec<super::DisplayableItem> {
+        (0..self.lines.len())
+            .map(super::DisplayableItem::Line)
+            .collect()
+    }
+
+    /// Changes-only mode: filter to just change lines
+    fn compute_changes_only_items(&self) -> Vec<super::DisplayableItem> {
+        self.lines.iter()
+            .enumerate()
+            .filter(|(_, line)| {
+                matches!(
+                    line.source,
+                    LineSource::Committed
+                        | LineSource::Staged
+                        | LineSource::Unstaged
+                        | LineSource::DeletedBase
+                        | LineSource::DeletedCommitted
+                        | LineSource::DeletedStaged
+                        | LineSource::CanceledCommitted
+                        | LineSource::CanceledStaged
+                        | LineSource::FileHeader
+                )
+            })
+            .map(|(i, _)| super::DisplayableItem::Line(i))
+            .collect()
+    }
+
+    /// Context mode: show context around changes with Elided markers
+    fn compute_context_items(&self) -> Vec<super::DisplayableItem> {
+        use super::DisplayableItem;
+
+        let show = self.compute_context_visibility();
+
+        let mut result = Vec::new();
+        let mut last_shown: Option<usize> = None;
+
+        for i in 0..self.lines.len() {
+            if show[i] {
+                // Check if there's a gap since last shown line
+                if let Some(last) = last_shown {
+                    let gap = i - last - 1;
+                    if gap > 0 {
+                        result.push(DisplayableItem::Elided(gap));
+                    }
+                }
+                result.push(DisplayableItem::Line(i));
+                last_shown = Some(i);
+            }
+        }
+
+        // Handle trailing gap
+        if let Some(last) = last_shown {
+            let trailing_hidden: usize = (last + 1..self.lines.len())
+                .filter(|&i| !show[i])
+                .count();
+            if trailing_hidden > 0 {
+                result.push(DisplayableItem::Elided(trailing_hidden));
+            }
+        }
+
+        result
+    }
+
+    /// Filter out items belonging to collapsed files (keep headers)
+    fn filter_collapsed_items(&self, items: Vec<super::DisplayableItem>) -> Vec<super::DisplayableItem> {
+        use super::DisplayableItem;
+
+        if self.collapsed_files.is_empty() {
+            return items;
+        }
+
+        let mut current_file: Option<String> = None;
+        let mut result = Vec::new();
+
+        for item in items {
+            match item {
+                DisplayableItem::Line(idx) => {
+                    let line = &self.lines[idx];
+
+                    // Update current file when we see a file header
+                    if line.source == LineSource::FileHeader {
+                        current_file = line.file_path.clone();
+                        result.push(item); // Always show file headers
+                        continue;
+                    }
+
+                    // Use line's file_path if available, otherwise use tracked current_file
+                    let file_path = line.file_path.as_ref().or(current_file.as_ref());
+
+                    // Hide lines from collapsed files
+                    let should_show = if let Some(path) = file_path {
+                        !self.collapsed_files.contains(path)
+                    } else {
+                        true
+                    };
+
+                    if should_show {
+                        result.push(item);
+                    }
+                }
+                DisplayableItem::Elided(_) => {
+                    // Elided markers don't have file_path, use current_file
+                    let should_show = if let Some(ref path) = current_file {
+                        !self.collapsed_files.contains(path)
+                    } else {
+                        true
+                    };
+
+                    if should_show {
+                        result.push(item);
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     pub fn cycle_view_mode(&mut self) {
         if self.lines.is_empty() {
             self.view_mode = match self.view_mode {

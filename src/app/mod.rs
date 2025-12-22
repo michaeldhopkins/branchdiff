@@ -1,10 +1,12 @@
 //! Application state and logic module for branchdiff
 
+mod frame;
 mod navigation;
 mod refresh;
 mod selection;
 mod view_mode;
 
+pub use frame::{DisplayableItem, FrameContext};
 pub use refresh::{compute_refresh, compute_single_file_diff, RefreshResult};
 pub use selection::Selection;
 
@@ -99,6 +101,31 @@ pub struct App {
 }
 
 impl App {
+    /// Create an App instance for benchmarking with pre-built lines
+    pub fn new_for_bench(lines: Vec<DiffLine>) -> Self {
+        Self {
+            repo_path: PathBuf::from("/bench"),
+            base_branch: "main".to_string(),
+            merge_base: "bench".to_string(),
+            current_branch: Some("feature".to_string()),
+            files: Vec::new(),
+            lines,
+            scroll_offset: 0,
+            viewport_height: 50,
+            error: None,
+            show_help: false,
+            view_mode: ViewMode::Full,
+            selection: None,
+            content_offset: (1, 1),
+            line_num_width: 4,
+            content_width: 120,
+            conflict_warning: None,
+            row_map: Vec::new(),
+            collapsed_files: HashSet::new(),
+            manually_toggled: HashSet::new(),
+        }
+    }
+
     /// Create a new App instance
     pub fn new(repo_path: PathBuf) -> Result<Self> {
         let base_branch = git::detect_base_branch(&repo_path)
