@@ -73,6 +73,8 @@ impl App {
         }).count()
     }
 
+    #[deprecated(note = "Use FrameContext::item_count() instead")]
+    #[allow(deprecated)]
     pub(super) fn displayable_line_count(&self) -> usize {
         self.displayable_lines().len()
     }
@@ -182,6 +184,7 @@ impl App {
         }).cloned().collect()
     }
 
+    #[deprecated(note = "Use FrameContext instead for better performance")]
     pub fn displayable_lines(&self) -> Vec<DiffLine> {
         let lines = match self.view_mode {
             ViewMode::Full => self.lines.clone(),
