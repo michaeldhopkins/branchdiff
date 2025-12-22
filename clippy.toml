@@ -1,0 +1,17 @@
+# Clippy configuration for branchdiff
+# These thresholds prevent architectural regression while allowing current state
+
+# Max bool fields in a struct before suggesting an enum
+max-struct-bools = 2
+
+# Max bool params in a function before suggesting an enum
+max-fn-params-bools = 2
+
+# Cognitive complexity threshold (default is 25)
+cognitive-complexity-threshold = 30
+
+# Max lines in a function - set above current max (259) to catch growth
+too-many-lines-threshold = 275
+
+# Max function arguments - set above current max (15) to catch growth
+too-many-arguments-threshold = 16
