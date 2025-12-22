@@ -177,6 +177,128 @@ fn spawn_fetch(
     });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitPathType {
+    Irrelevant,
+    Relevant,
+    BranchSwitch,
+}
+
+fn classify_git_path(path_str: &str) -> GitPathType {
+    if !path_str.contains(".git/") {
+        return GitPathType::Irrelevant;
+    }
+    if path_str.ends_with(".git/HEAD") || path_str.contains(".git/refs/") {
+        GitPathType::BranchSwitch
+    } else if path_str.ends_with(".git/index") {
+        GitPathType::Relevant
+    } else {
+        GitPathType::Irrelevant
+    }
+}
+
+fn is_noisy_path(path_str: &str) -> bool {
+    path_str.contains("/tmp/")
+        || path_str.contains("/node_modules/")
+        || path_str.contains("/vendor/bundle/")
+        || path_str.contains("/.bundle/")
+        || path_str.contains("/log/")
+        || path_str.ends_with(".lock")
+}
+
+enum RefreshState {
+    Idle,
+    InProgress {
+        started_at: Instant,
+        cancel_flag: Arc<AtomicBool>,
+    },
+    InProgressPending {
+        started_at: Instant,
+        cancel_flag: Arc<AtomicBool>,
+    },
+}
+
+impl RefreshState {
+    fn is_idle(&self) -> bool {
+        matches!(self, RefreshState::Idle)
+    }
+
+    fn started_at(&self) -> Option<Instant> {
+        match self {
+            RefreshState::Idle => None,
+            RefreshState::InProgress { started_at, .. } => Some(*started_at),
+            RefreshState::InProgressPending { started_at, .. } => Some(*started_at),
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        matches!(self, RefreshState::InProgressPending { .. })
+    }
+
+    fn mark_pending(&mut self) {
+        if let RefreshState::InProgress { started_at, cancel_flag } = self {
+            *self = RefreshState::InProgressPending {
+                started_at: *started_at,
+                cancel_flag: cancel_flag.clone(),
+            };
+        }
+    }
+
+    fn cancel_and_mark_pending(&mut self) {
+        match self {
+            RefreshState::InProgress { started_at, cancel_flag } => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                *self = RefreshState::InProgressPending {
+                    started_at: *started_at,
+                    cancel_flag: cancel_flag.clone(),
+                };
+            }
+            RefreshState::InProgressPending { cancel_flag, .. } => {
+                cancel_flag.store(true, Ordering::Relaxed);
+            }
+            RefreshState::Idle => {}
+        }
+    }
+
+    fn start(
+        &mut self,
+        repo_path: PathBuf,
+        base_branch: String,
+        refresh_tx: mpsc::Sender<RefreshOutcome>,
+    ) {
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        *self = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: cancel_flag.clone(),
+        };
+        spawn_refresh(repo_path, base_branch, refresh_tx, cancel_flag);
+    }
+
+    fn start_single_file(
+        &mut self,
+        repo_path: PathBuf,
+        file_path: String,
+        merge_base: String,
+        refresh_tx: mpsc::Sender<RefreshOutcome>,
+    ) {
+        *self = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        spawn_single_file_refresh(repo_path, file_path, merge_base, refresh_tx);
+    }
+
+    fn complete(&mut self) -> bool {
+        let had_pending = self.has_pending();
+        *self = RefreshState::Idle;
+        had_pending
+    }
+
+    fn reset_watchdog(&mut self) {
+        *self = RefreshState::Idle;
+    }
+}
+
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -186,11 +308,8 @@ fn run_app<B: Backend>(
     repo_root: PathBuf,
     auto_fetch: bool,
 ) -> Result<()> {
-    let mut refresh_in_progress = false;
-    let mut refresh_pending = false;
-    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let mut refresh_state = RefreshState::Idle;
     let mut last_refresh = Instant::now();
-    let mut refresh_started_at: Option<Instant> = None;
 
     let (fetch_tx, fetch_rx) = mpsc::channel::<FetchResult>();
     let mut last_fetch = Instant::now();
@@ -215,19 +334,14 @@ fn run_app<B: Backend>(
                 AppAction::NextFile => app.next_file(),
                 AppAction::PrevFile => app.prev_file(),
                 AppAction::Refresh => {
-                    if refresh_in_progress {
-                        cancel_flag.store(true, Ordering::Relaxed);
-                        refresh_pending = true;
-                    } else {
-                        cancel_flag.store(false, Ordering::Relaxed);
-                        refresh_in_progress = true;
-                        refresh_started_at = Some(Instant::now());
-                        spawn_refresh(
+                    if refresh_state.is_idle() {
+                        refresh_state.start(
                             repo_root.clone(),
                             app.base_branch.clone(),
                             refresh_tx.clone(),
-                            cancel_flag.clone(),
                         );
+                    } else {
+                        refresh_state.cancel_and_mark_pending();
                     }
                 }
                 AppAction::ToggleHelp => app.toggle_help(),
@@ -258,9 +372,6 @@ fn run_app<B: Backend>(
 
         // 2. Check for completed refresh (non-blocking)
         if let Ok(outcome) = refresh_rx.try_recv() {
-            refresh_in_progress = false;
-            refresh_started_at = None;
-
             match outcome {
                 RefreshOutcome::Success(result) => {
                     app.apply_refresh_result(result);
@@ -273,16 +384,11 @@ fn run_app<B: Backend>(
                 RefreshOutcome::Cancelled => {}
             }
 
-            if refresh_pending {
-                refresh_pending = false;
-                cancel_flag.store(false, Ordering::Relaxed);
-                refresh_in_progress = true;
-                refresh_started_at = Some(Instant::now());
-                spawn_refresh(
+            if refresh_state.complete() {
+                refresh_state.start(
                     repo_root.clone(),
                     app.base_branch.clone(),
                     refresh_tx.clone(),
-                    cancel_flag.clone(),
                 );
             }
         }
@@ -291,81 +397,62 @@ fn run_app<B: Backend>(
         if let Ok(Ok(events)) = file_events.try_recv() {
             let dominated_events: Vec<_> = events.iter()
                 .filter(|e| e.kind == DebouncedEventKind::Any)
-                .filter(|e| {
-                    let path_str = e.path.to_string_lossy();
-                    // Ignore noisy directories
-                    !(path_str.contains("/tmp/")
-                        || path_str.contains("/node_modules/")
-                        || path_str.contains("/vendor/bundle/")
-                        || path_str.contains("/.bundle/")
-                        || path_str.contains("/log/")
-                        || path_str.ends_with(".lock"))
-                })
+                .filter(|e| !is_noisy_path(&e.path.to_string_lossy()))
                 .collect();
 
-            let dominated_relevant: Vec<_> = dominated_events.iter()
-                .filter(|e| {
-                    let path_str = e.path.to_string_lossy();
-                    if path_str.contains(".git/") {
-                        path_str.ends_with(".git/index")
-                            || path_str.ends_with(".git/HEAD")
-                            || path_str.contains(".git/refs/")
-                    } else {
-                        true
+            let mut should_refresh = false;
+            let mut has_git_change = false;
+            let mut source_files = Vec::new();
+
+            for event in &dominated_events {
+                let path_str = event.path.to_string_lossy();
+                match classify_git_path(&path_str) {
+                    GitPathType::BranchSwitch => {
+                        should_refresh = true;
+                        has_git_change = true;
                     }
-                })
-                .collect();
-
-            let should_refresh = !dominated_relevant.is_empty();
-
-            // Only cancel for git-related changes (branch switch, etc.)
-            let has_git_change = dominated_events.iter().any(|e| {
-                let path_str = e.path.to_string_lossy();
-                path_str.contains(".git/") && (
-                    path_str.ends_with(".git/HEAD")
-                    || path_str.contains(".git/refs/")
-                )
-            });
+                    GitPathType::Relevant => {
+                        should_refresh = true;
+                    }
+                    GitPathType::Irrelevant => {
+                        if !path_str.contains(".git/") {
+                            should_refresh = true;
+                            source_files.push(&event.path);
+                        }
+                    }
+                }
+            }
 
             if should_refresh {
-                if refresh_in_progress && has_git_change {
-                    cancel_flag.store(true, Ordering::Relaxed);
-                    refresh_pending = true;
-                } else if refresh_in_progress {
-                    refresh_pending = true;
+                if !refresh_state.is_idle() {
+                    if has_git_change {
+                        refresh_state.cancel_and_mark_pending();
+                    } else {
+                        refresh_state.mark_pending();
+                    }
                 } else {
-                    let source_files: Vec<_> = dominated_relevant.iter()
-                        .filter(|e| !e.path.to_string_lossy().contains(".git/"))
-                        .collect();
-
                     let can_use_single_file = !has_git_change
                         && source_files.len() == 1
                         && !app.files.is_empty();
 
                     if can_use_single_file {
-                        let file_path = source_files[0].path
+                        let file_path = source_files[0]
                             .strip_prefix(&repo_root)
-                            .unwrap_or(&source_files[0].path)
+                            .unwrap_or(source_files[0])
                             .to_string_lossy()
                             .to_string();
 
-                        refresh_in_progress = true;
-                        refresh_started_at = Some(Instant::now());
-                        spawn_single_file_refresh(
+                        refresh_state.start_single_file(
                             repo_root.clone(),
                             file_path,
                             app.merge_base.clone(),
                             refresh_tx.clone(),
                         );
                     } else {
-                        cancel_flag.store(false, Ordering::Relaxed);
-                        refresh_in_progress = true;
-                        refresh_started_at = Some(Instant::now());
-                        spawn_refresh(
+                        refresh_state.start(
                             repo_root.clone(),
                             app.base_branch.clone(),
                             refresh_tx.clone(),
-                            cancel_flag.clone(),
                         );
                     }
                 }
@@ -384,18 +471,14 @@ fn run_app<B: Backend>(
             if let Some(new_base) = result.new_merge_base {
                 if new_base != app.merge_base {
                     app.merge_base = new_base;
-                    if !refresh_in_progress {
-                        cancel_flag.store(false, Ordering::Relaxed);
-                        refresh_in_progress = true;
-                        refresh_started_at = Some(Instant::now());
-                        spawn_refresh(
+                    if refresh_state.is_idle() {
+                        refresh_state.start(
                             repo_root.clone(),
                             app.base_branch.clone(),
                             refresh_tx.clone(),
-                            cancel_flag.clone(),
                         );
                     } else {
-                        refresh_pending = true;
+                        refresh_state.mark_pending();
                     }
                 }
             }
@@ -412,27 +495,19 @@ fn run_app<B: Backend>(
             );
         }
 
-        // 6. Watchdog: reset stuck refresh_in_progress
-        if refresh_in_progress {
-            if let Some(started) = refresh_started_at {
-                if started.elapsed() >= REFRESH_WATCHDOG_TIMEOUT {
-                    refresh_in_progress = false;
-                    refresh_started_at = None;
-                    refresh_pending = true;
-                }
+        // 6. Watchdog: reset stuck refresh
+        if let Some(started) = refresh_state.started_at() {
+            if started.elapsed() >= REFRESH_WATCHDOG_TIMEOUT {
+                refresh_state.reset_watchdog();
             }
         }
 
         // 7. Periodic fallback refresh (in case file watcher stops working)
-        if !refresh_in_progress && last_refresh.elapsed() >= REFRESH_FALLBACK_INTERVAL {
-            cancel_flag.store(false, Ordering::Relaxed);
-            refresh_in_progress = true;
-            refresh_started_at = Some(Instant::now());
-            spawn_refresh(
+        if refresh_state.is_idle() && last_refresh.elapsed() >= REFRESH_FALLBACK_INTERVAL {
+            refresh_state.start(
                 repo_root.clone(),
                 app.base_branch.clone(),
                 refresh_tx.clone(),
-                cancel_flag.clone(),
             );
         }
 
