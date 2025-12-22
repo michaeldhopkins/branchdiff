@@ -132,7 +132,7 @@ pub struct FileDiff {
 
 
 fn index_survives_to_working(index_idx: usize, working_from_index: &[Option<usize>]) -> bool {
-    working_from_index.iter().any(|&prov| prov == Some(index_idx))
+    working_from_index.contains(&Some(index_idx))
 }
 
 fn index_line_in_working(

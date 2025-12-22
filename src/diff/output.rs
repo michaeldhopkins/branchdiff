@@ -13,7 +13,7 @@ pub fn determine_deletion_source(
 ) -> LineSource {
     // Check if base line still exists in head (by provenance, not content)
     // A base line exists in head if some head line traces back to this base line
-    let in_head = head_from_base.iter().any(|&opt| opt == Some(base_idx));
+    let in_head = head_from_base.contains(&Some(base_idx));
 
     if !in_head {
         return LineSource::DeletedBase;  // Deleted in commit
@@ -23,7 +23,7 @@ pub fn determine_deletion_source(
     let head_idx = head_from_base.iter().position(|&opt| opt == Some(base_idx));
     if let Some(head_idx) = head_idx {
         // Check if this head line still exists in index
-        let in_index = index_from_head.iter().any(|&opt| opt == Some(head_idx));
+        let in_index = index_from_head.contains(&Some(head_idx));
 
         if !in_index {
             return LineSource::DeletedCommitted;  // Deleted in staging
