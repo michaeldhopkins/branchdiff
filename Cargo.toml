@@ -22,3 +22,16 @@ insta = "1"
 proptest = "1.5"
 assert_cmd = "2"
 predicates = "3"
+
+[lints.clippy]
+# Enforce enums over boolean state flags
+struct-excessive-bools = "warn"
+fn-params-excessive-bools = "warn"
+
+# Complexity limits to catch functions that need refactoring
+cognitive-complexity = "warn"
+too-many-lines = "warn"
+
+# Already-default lints we want to keep enforced
+collapsible-if = "warn"
+too-many-arguments = "warn"
