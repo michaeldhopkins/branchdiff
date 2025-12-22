@@ -12,7 +12,6 @@ mod provenance;
 
 pub use inline::InlineSpan;
 
-#[allow(unused_imports)]
 pub(crate) use inline::compute_inline_diff_merged;
 
 use std::collections::HashMap;
