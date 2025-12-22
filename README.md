@@ -15,9 +15,21 @@ Terminal UI showing unified diff of current branch vs main/master.
 
 ## Installation
 
+### Shell installer (macOS/Linux)
+
 ```bash
-cargo install --path .
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/michaeldhopkins/branchdiff/releases/latest/download/branchdiff-installer.sh | sh
 ```
+
+### From source
+
+```bash
+cargo install --git https://github.com/michaeldhopkins/branchdiff
+```
+
+### Manual download
+
+Download binaries from [GitHub Releases](https://github.com/michaeldhopkins/branchdiff/releases).
 
 ## Usage
 
