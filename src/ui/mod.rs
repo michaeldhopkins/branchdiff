@@ -766,6 +766,7 @@ mod tests {
             row_map: Vec::new(),
             collapsed_files: std::collections::HashSet::new(),
             manually_toggled: std::collections::HashSet::new(),
+            needs_inline_spans: true,
         }
     }
 

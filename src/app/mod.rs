@@ -98,6 +98,8 @@ pub struct App {
     pub collapsed_files: HashSet<String>,
     /// Set of files that have been manually toggled (won't be auto-collapsed)
     pub manually_toggled: HashSet<String>,
+    /// Track whether inline spans need recomputation for visible lines
+    pub needs_inline_spans: bool,
 }
 
 impl App {
@@ -123,6 +125,7 @@ impl App {
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
+            needs_inline_spans: true,
         }
     }
 
@@ -157,6 +160,7 @@ impl App {
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
+            needs_inline_spans: true,
         };
 
         app.refresh()?;
@@ -171,6 +175,7 @@ impl App {
         } else {
             self.collapsed_files.insert(path.to_string());
         }
+        self.needs_inline_spans = true;
     }
 
     /// Check if a file is collapsed
@@ -222,6 +227,7 @@ impl App {
         self.lines = result.lines;
         self.auto_collapse_files();
         self.clamp_scroll();
+        self.needs_inline_spans = true;
     }
 
     pub fn ensure_inline_spans_for_visible(&mut self, visible_height: usize) {
@@ -284,6 +290,7 @@ impl App {
         self.regenerate_lines();
         self.auto_collapse_files();
         self.clamp_scroll();
+        self.needs_inline_spans = true;
     }
 
     fn regenerate_lines(&mut self) {
@@ -327,9 +334,22 @@ impl App {
 
     /// Set content area layout info (called during rendering)
     pub fn set_content_layout(&mut self, offset_x: u16, offset_y: u16, line_num_width: usize, content_width: usize) {
+        if self.content_width != content_width {
+            self.needs_inline_spans = true;
+        }
         self.content_offset = (offset_x, offset_y);
         self.line_num_width = line_num_width;
         self.content_width = content_width;
+    }
+
+    /// Check if inline spans need recomputation
+    pub fn needs_inline_spans(&self) -> bool {
+        self.needs_inline_spans
+    }
+
+    /// Clear the needs_inline_spans flag after computation
+    pub fn clear_needs_inline_spans(&mut self) {
+        self.needs_inline_spans = false;
     }
 }
 
@@ -360,6 +380,7 @@ mod tests {
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
+            needs_inline_spans: true,
         }
     }
 
@@ -398,6 +419,7 @@ mod tests {
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
+            needs_inline_spans: true,
         }
     }
 
@@ -1380,5 +1402,174 @@ mod tests {
 
         let refresh_result = result.unwrap();
         assert!(refresh_result.lines.is_empty() || !refresh_result.merge_base.is_empty());
+    }
+
+    // === Tests for needs_inline_spans dirty flag ===
+
+    #[test]
+    fn test_initial_state_needs_inline_spans() {
+        let app = create_test_app(vec![]);
+        assert!(app.needs_inline_spans(), "New app should need inline spans");
+    }
+
+    #[test]
+    fn test_clear_needs_inline_spans() {
+        let mut app = create_test_app(vec![]);
+        assert!(app.needs_inline_spans());
+        app.clear_needs_inline_spans();
+        assert!(!app.needs_inline_spans());
+    }
+
+    #[test]
+    fn test_scroll_marks_needs_inline_spans() {
+        let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
+        let mut app = create_test_app(lines);
+        app.viewport_height = 10;
+        app.clear_needs_inline_spans();
+
+        app.scroll_down(5);
+        assert!(app.needs_inline_spans(), "scroll_down should mark dirty");
+
+        app.clear_needs_inline_spans();
+        app.scroll_up(2);
+        assert!(app.needs_inline_spans(), "scroll_up should mark dirty");
+    }
+
+    #[test]
+    fn test_page_navigation_marks_needs_inline_spans() {
+        let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
+        let mut app = create_test_app(lines);
+        app.viewport_height = 10;
+        app.clear_needs_inline_spans();
+
+        app.page_down();
+        assert!(app.needs_inline_spans(), "page_down should mark dirty");
+
+        app.clear_needs_inline_spans();
+        app.page_up();
+        assert!(app.needs_inline_spans(), "page_up should mark dirty");
+    }
+
+    #[test]
+    fn test_go_to_extremes_marks_needs_inline_spans() {
+        let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
+        let mut app = create_test_app(lines);
+        app.viewport_height = 10;
+        app.clear_needs_inline_spans();
+
+        app.go_to_bottom();
+        assert!(app.needs_inline_spans(), "go_to_bottom should mark dirty");
+
+        app.clear_needs_inline_spans();
+        app.go_to_top();
+        assert!(app.needs_inline_spans(), "go_to_top should mark dirty");
+    }
+
+    #[test]
+    fn test_view_mode_change_marks_needs_inline_spans() {
+        let lines = vec![base_line("context"), change_line("change")];
+        let mut app = create_test_app(lines);
+        app.clear_needs_inline_spans();
+
+        app.cycle_view_mode();
+        assert!(app.needs_inline_spans(), "cycle_view_mode should mark dirty");
+    }
+
+    #[test]
+    fn test_file_collapse_marks_needs_inline_spans() {
+        let lines = vec![DiffLine::file_header("test.rs"), change_line("change")];
+        let mut app = create_test_app(lines);
+        app.clear_needs_inline_spans();
+
+        app.toggle_file_collapsed("test.rs");
+        assert!(app.needs_inline_spans(), "toggle_file_collapsed should mark dirty");
+    }
+
+    #[test]
+    fn test_content_refresh_marks_needs_inline_spans() {
+        let mut app = create_test_app(vec![]);
+        app.clear_needs_inline_spans();
+
+        let result = RefreshResult {
+            files: vec![],
+            lines: vec![change_line("new")],
+            merge_base: "abc".to_string(),
+            current_branch: Some("feature".to_string()),
+        };
+        app.apply_refresh_result(result);
+        assert!(app.needs_inline_spans(), "apply_refresh_result should mark dirty");
+    }
+
+    #[test]
+    fn test_viewport_change_marks_needs_inline_spans() {
+        let mut app = create_test_app(vec![]);
+        app.clear_needs_inline_spans();
+
+        app.set_viewport_height(30);
+        assert!(app.needs_inline_spans(), "set_viewport_height should mark dirty");
+    }
+
+    // === Tests for operations that should NOT mark dirty ===
+
+    #[test]
+    fn test_toggle_help_does_not_mark_dirty() {
+        let mut app = create_test_app(vec![]);
+        app.clear_needs_inline_spans();
+
+        app.toggle_help();
+        assert!(!app.needs_inline_spans(), "toggle_help should not mark dirty");
+    }
+
+    #[test]
+    fn test_scroll_at_top_does_not_mark_dirty() {
+        let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
+        let mut app = create_test_app(lines);
+        app.scroll_offset = 0;
+        app.clear_needs_inline_spans();
+
+        app.scroll_up(5);
+        assert!(!app.needs_inline_spans(), "scroll_up at top should not mark dirty");
+    }
+
+    #[test]
+    fn test_scroll_at_bottom_does_not_mark_dirty() {
+        let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
+        let mut app = create_test_app(lines);
+        app.viewport_height = 10;
+        app.go_to_bottom();
+        app.clear_needs_inline_spans();
+
+        app.scroll_down(100);
+        assert!(!app.needs_inline_spans(), "scroll_down at bottom should not mark dirty");
+    }
+
+    #[test]
+    fn test_go_to_top_when_at_top_does_not_mark_dirty() {
+        let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
+        let mut app = create_test_app(lines);
+        app.scroll_offset = 0;
+        app.clear_needs_inline_spans();
+
+        app.go_to_top();
+        assert!(!app.needs_inline_spans(), "go_to_top when at top should not mark dirty");
+    }
+
+    #[test]
+    fn test_same_viewport_height_does_not_mark_dirty() {
+        let mut app = create_test_app(vec![]);
+        app.viewport_height = 20;
+        app.clear_needs_inline_spans();
+
+        app.set_viewport_height(20);
+        assert!(!app.needs_inline_spans(), "setting same viewport height should not mark dirty");
+    }
+
+    #[test]
+    fn test_cycle_view_mode_with_empty_lines_still_marks_dirty() {
+        let mut app = create_test_app(vec![]);
+        app.clear_needs_inline_spans();
+
+        app.cycle_view_mode();
+        assert!(app.needs_inline_spans(), "cycle_view_mode should mark dirty even if empty");
     }
 }

@@ -4,12 +4,20 @@ use super::{App, FrameContext};
 
 impl App {
     pub fn scroll_up(&mut self, n: usize) {
+        let old_offset = self.scroll_offset;
         self.scroll_offset = self.scroll_offset.saturating_sub(n);
+        if self.scroll_offset != old_offset {
+            self.needs_inline_spans = true;
+        }
     }
 
     pub fn scroll_down(&mut self, n: usize) {
+        let old_offset = self.scroll_offset;
         self.scroll_offset = self.scroll_offset.saturating_add(n);
         self.clamp_scroll();
+        if self.scroll_offset != old_offset {
+            self.needs_inline_spans = true;
+        }
     }
 
     #[allow(deprecated)]
@@ -89,20 +97,31 @@ impl App {
 
     /// Go to top
     pub fn go_to_top(&mut self) {
-        self.scroll_offset = 0;
+        if self.scroll_offset != 0 {
+            self.scroll_offset = 0;
+            self.needs_inline_spans = true;
+        }
     }
 
     /// Go to bottom - find the scroll offset where the last logical line's bottom
     /// aligns with the bottom of the viewport
     #[allow(deprecated)]
     pub fn go_to_bottom(&mut self) {
+        let old_offset = self.scroll_offset;
         let all_lines = self.displayable_lines();
         self.scroll_offset = self.max_scroll_offset(&all_lines);
+        if self.scroll_offset != old_offset {
+            self.needs_inline_spans = true;
+        }
     }
 
     /// Go to bottom using pre-computed FrameContext
     pub fn go_to_bottom_with_frame(&mut self, ctx: &FrameContext) {
+        let old_offset = self.scroll_offset;
         self.scroll_offset = ctx.max_scroll(self);
+        if self.scroll_offset != old_offset {
+            self.needs_inline_spans = true;
+        }
     }
 
     /// Find the maximum valid scroll offset for a set of lines
@@ -137,8 +156,11 @@ impl App {
 
     /// Set viewport height (called during rendering)
     pub fn set_viewport_height(&mut self, height: usize) {
-        self.viewport_height = height;
-        self.clamp_scroll();
+        if self.viewport_height != height {
+            self.viewport_height = height;
+            self.needs_inline_spans = true;
+            self.clamp_scroll();
+        }
     }
 
     /// Clamp scroll offset to valid range (accounting for line wrapping)
@@ -157,8 +179,12 @@ impl App {
 
     /// Scroll down using pre-computed FrameContext (avoids recomputing displayable items)
     pub fn scroll_down_with_frame(&mut self, n: usize, ctx: &FrameContext) {
+        let old_offset = self.scroll_offset;
         self.scroll_offset = self.scroll_offset.saturating_add(n);
         self.clamp_scroll_with_frame(ctx);
+        if self.scroll_offset != old_offset {
+            self.needs_inline_spans = true;
+        }
     }
 
     /// Calculate how many screen rows a line will take when wrapped
@@ -257,6 +283,7 @@ mod tests {
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
+            needs_inline_spans: true,
         }
     }
 
