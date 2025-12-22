@@ -19,6 +19,7 @@ pub enum AppAction {
     UpdateSelection(u16, u16),
     EndSelection,
     Copy,
+    CopyPath,
     CopyOrQuit,
     None,
 }
@@ -74,6 +75,9 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
 
         // Copy selection with 'y' (vim yank)
         (KeyCode::Char('y'), KeyModifiers::NONE) => AppAction::Copy,
+
+        // Copy current file path with 'p'
+        (KeyCode::Char('p'), KeyModifiers::NONE) => AppAction::CopyPath,
 
         _ => AppAction::None,
     }
@@ -278,6 +282,12 @@ mod tests {
     fn test_cycle_view_mode_with_c() {
         let event = key_event(KeyCode::Char('c'), KeyModifiers::NONE);
         assert_eq!(handle_event(event), AppAction::CycleViewMode);
+    }
+
+    #[test]
+    fn test_copy_path_with_p() {
+        let event = key_event(KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(handle_event(event), AppAction::CopyPath);
     }
 
     // Unknown input test

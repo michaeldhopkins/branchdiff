@@ -37,6 +37,8 @@ pub struct DiffViewModel<'a> {
     pub collapsed_files: &'a HashSet<String>,
     /// Rendering area dimensions.
     pub area: Rect,
+    /// Whether to show the "copied" flash in the title.
+    pub show_copied_flash: bool,
 }
 
 /// Output from rendering (data App needs to store).
@@ -59,6 +61,7 @@ impl<'a> DiffViewModel<'a> {
             selection: &app.selection,
             collapsed_files: &app.collapsed_files,
             area,
+            show_copied_flash: app.should_show_copied_flash(),
         }
     }
 
@@ -125,17 +128,24 @@ impl<'a> DiffViewModel<'a> {
             }
         }
 
-        // Determine title based on current file
+        // Determine title based on current file (with optional "copied" flash)
         let current_file = self.find_current_file();
-        let title = match current_file {
-            Some(file) => Line::from(vec![Span::styled(
-                format!(" {} ", file),
-                Style::default().fg(Color::White),
-            )]),
-            None => Line::from(vec![Span::styled(
-                " branchdiff ",
-                Style::default().fg(Color::DarkGray),
-            )]),
+        let title = if self.show_copied_flash {
+            Line::from(vec![Span::styled(
+                " ✓ Copied ",
+                Style::default().fg(Color::Green),
+            )])
+        } else {
+            match current_file {
+                Some(file) => Line::from(vec![Span::styled(
+                    format!(" {} ", file),
+                    Style::default().fg(Color::White),
+                )]),
+                None => Line::from(vec![Span::styled(
+                    " branchdiff ",
+                    Style::default().fg(Color::DarkGray),
+                )]),
+            }
         };
 
         let block = Block::default()
@@ -154,13 +164,13 @@ impl<'a> DiffViewModel<'a> {
         }
     }
 
-    /// Find the current file being displayed (first file header in visible items).
+    /// Find the current file being displayed (file path of first visible line).
     fn find_current_file(&self) -> Option<String> {
         for item in self.items {
             if let DisplayableItem::Line(idx) = item {
                 let line = &self.lines[*idx];
-                if line.source == LineSource::FileHeader {
-                    return line.file_path.clone();
+                if let Some(ref path) = line.file_path {
+                    return Some(path.clone());
                 }
             }
         }
@@ -600,6 +610,7 @@ mod tests {
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
+            path_copied_at: None,
         }
     }
 
@@ -640,6 +651,36 @@ mod tests {
         let current_file = view_model.find_current_file();
 
         assert_eq!(current_file, Some("test.rs".to_string()));
+    }
+
+    #[test]
+    fn test_diff_view_model_find_current_file_when_header_scrolled_above() {
+        // Create two files: first.rs with 5 lines, then second.rs
+        let mut lines = vec![DiffLine::file_header("first.rs")];
+        for i in 0..5 {
+            let mut line = base_line(&format!("line{}", i));
+            line.file_path = Some("first.rs".to_string());
+            lines.push(line);
+        }
+        lines.push(DiffLine::file_header("second.rs"));
+        let mut line = base_line("second file content");
+        line.file_path = Some("second.rs".to_string());
+        lines.push(line);
+
+        let mut app = create_test_app(lines);
+        app.viewport_height = 4;
+        // Scroll down so first.rs header is above viewport but content is still visible
+        app.scroll_offset = 2;
+
+        let ctx = FrameContext::new(&app);
+        let area = Rect::new(0, 0, 80, 24);
+
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+        let current_file = view_model.find_current_file();
+
+        // Should still show first.rs since its content is visible,
+        // not second.rs just because its header is the first header in view
+        assert_eq!(current_file, Some("first.rs".to_string()));
     }
 
     #[test]
@@ -699,5 +740,28 @@ mod tests {
         let spans = vec![Span::raw("test content")];
         let result = apply_selection_to_content(spans.clone(), &None, 0, 0);
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_diff_view_model_show_copied_flash() {
+        let mut app = create_test_app(vec![DiffLine::file_header("test.rs")]);
+
+        // Initially no flash
+        let ctx = FrameContext::new(&app);
+        let area = Rect::new(0, 0, 80, 24);
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+        assert!(!view_model.show_copied_flash);
+
+        // After setting path_copied_at to now, flash should be active
+        app.path_copied_at = Some(std::time::Instant::now());
+        let ctx = FrameContext::new(&app);
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+        assert!(view_model.show_copied_flash);
+
+        // After 800ms+ elapsed, flash should be inactive
+        app.path_copied_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(900));
+        let ctx = FrameContext::new(&app);
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+        assert!(!view_model.show_copied_flash);
     }
 }

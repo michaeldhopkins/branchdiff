@@ -100,6 +100,8 @@ pub struct App {
     pub manually_toggled: HashSet<String>,
     /// Track whether inline spans need recomputation for visible lines
     pub needs_inline_spans: bool,
+    /// Timestamp when path was last copied (for flash feedback)
+    pub path_copied_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -126,6 +128,7 @@ impl App {
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
+            path_copied_at: None,
         }
     }
 
@@ -161,6 +164,7 @@ impl App {
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
+            path_copied_at: None,
         };
 
         app.refresh()?;
@@ -379,6 +383,7 @@ mod tests {
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
+            path_copied_at: None,
         }
     }
 
@@ -439,6 +444,7 @@ mod tests {
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
+            path_copied_at: None,
         }
     }
 
