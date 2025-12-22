@@ -8,7 +8,7 @@ use branchdiff::git;
 use branchdiff::ui;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -22,6 +22,8 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use ignore::WalkBuilder;
+use notify::RecursiveMode::{NonRecursive, Recursive};
 use notify_debouncer_mini::new_debouncer;
 use ratatui::prelude::*;
 
@@ -86,13 +88,11 @@ fn main() -> Result<()> {
     // Create app and load initial state
     let mut app = App::new(repo_root.clone())?;
 
-    // Setup file watcher
+    // Setup file watcher (only watch non-ignored directories)
     let (file_tx, file_rx) = mpsc::channel();
     let mut debouncer = new_debouncer(Duration::from_millis(20), file_tx)?;
 
-    debouncer
-        .watcher()
-        .watch(&repo_root, notify::RecursiveMode::Recursive)?;
+    setup_watcher(debouncer.watcher(), &repo_root)?;
 
     // Setup refresh channel for background git operations
     let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshOutcome>();
@@ -106,6 +106,7 @@ fn main() -> Result<()> {
     let result = run_app(
         &mut terminal,
         &mut app,
+        debouncer.watcher(),
         file_rx,
         refresh_tx,
         refresh_rx,
@@ -260,6 +261,7 @@ fn spawn_fetch(repo_path: PathBuf, base_branch: String, fetch_tx: mpsc::Sender<F
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
+    watcher: &mut (impl notify::Watcher + ?Sized),
     file_events: mpsc::Receiver<Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>>,
     refresh_tx: mpsc::Sender<RefreshOutcome>,
     refresh_rx: mpsc::Receiver<RefreshOutcome>,
@@ -280,6 +282,13 @@ fn run_app<B: Backend>(
         )?;
 
         // Process each message
+        for msg in &messages {
+            // Watch any newly created directories
+            if let Message::FileChanged(events) = msg {
+                watch_new_directories(watcher, &repo_root, events)?;
+            }
+        }
+
         for msg in messages {
             let result = update(
                 msg,
@@ -372,4 +381,114 @@ fn collect_messages(
     messages.push(Message::Tick);
 
     Ok(messages)
+}
+
+/// Setup file watcher to only watch non-ignored directories.
+///
+/// Uses `ignore::WalkBuilder` to respect .gitignore rules, avoiding watches
+/// on large ignored directories like `target/` or `node_modules/`.
+fn setup_watcher(watcher: &mut (impl notify::Watcher + ?Sized), repo_root: &Path) -> Result<()> {
+    // Watch specific .git paths we care about (for detecting commits, branch switches)
+    let git_dir = repo_root.join(".git");
+    if git_dir.exists() {
+        // Watch index for staging changes
+        let index = git_dir.join("index");
+        if index.exists() {
+            watcher.watch(&index, NonRecursive)?;
+        }
+        // Watch HEAD for branch switches
+        let head = git_dir.join("HEAD");
+        if head.exists() {
+            watcher.watch(&head, NonRecursive)?;
+        }
+        // Watch refs for branch updates
+        let refs = git_dir.join("refs");
+        if refs.exists() {
+            watcher.watch(&refs, Recursive)?;
+        }
+    }
+
+    // Walk non-ignored directories and watch each one
+    for entry in WalkBuilder::new(repo_root)
+        .hidden(false) // Don't skip hidden files (but .git is handled separately)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .filter_entry(|e| {
+            // Skip .git directory (handled above)
+            e.file_name() != ".git"
+        })
+        .build()
+        .flatten()
+    {
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            watcher.watch(entry.path(), NonRecursive)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Add watches for any newly created directories in file change events.
+///
+/// When a new directory is created in the repo, we need to watch it to detect
+/// file changes. This function checks each event path and adds watches for
+/// new directories that aren't gitignored.
+///
+/// Note: Deleted directories are handled automatically by notify - the watch
+/// becomes invalid when the directory is removed.
+fn watch_new_directories(
+    watcher: &mut (impl notify::Watcher + ?Sized),
+    repo_root: &Path,
+    events: &[notify_debouncer_mini::DebouncedEvent],
+) -> Result<()> {
+    for event in events {
+        let path = &event.path;
+
+        // Only care about directories that currently exist
+        if !path.is_dir() {
+            continue;
+        }
+
+        // Must be under repo_root
+        if !path.starts_with(repo_root) {
+            continue;
+        }
+
+        // Skip anything inside .git
+        if let Ok(relative) = path.strip_prefix(repo_root) {
+            if relative.components().any(|c| c.as_os_str() == ".git") {
+                continue;
+            }
+        }
+
+        // Check if this directory should be watched (respects gitignore)
+        if is_directory_watchable(path) {
+            watcher.watch(path, NonRecursive)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if a directory should be watched by verifying it's not gitignored.
+///
+/// Uses WalkBuilder on the parent directory to check if the target would be
+/// included when respecting gitignore rules.
+fn is_directory_watchable(dir_path: &Path) -> bool {
+    let parent = match dir_path.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Walk the parent with depth 1 and see if our directory is yielded
+    WalkBuilder::new(parent)
+        .max_depth(Some(1))
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .build()
+        .flatten()
+        .any(|entry| entry.path() == dir_path)
 }
