@@ -3,6 +3,9 @@
 pub mod app;
 pub mod diff;
 pub mod git;
+pub mod input;
+pub mod message;
+pub mod update;
 pub mod ui;
 
 // Re-export commonly used types for benchmarks
