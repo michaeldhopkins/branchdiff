@@ -517,7 +517,10 @@ fn run_app<B: Backend>(
 
         // 8. Render with FrameContext
         let visible_height = terminal.size()?.height as usize;
-        app.ensure_inline_spans_for_visible(visible_height);
+        if app.needs_inline_spans() {
+            app.ensure_inline_spans_for_visible(visible_height);
+            app.clear_needs_inline_spans();
+        }
         terminal.draw(|f| {
             let frame_ctx = FrameContext::new(app);
             ui::draw_with_frame(f, app, &frame_ctx)
