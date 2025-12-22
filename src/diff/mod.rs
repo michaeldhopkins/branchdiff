@@ -925,6 +925,107 @@ mod tests {
     }
 
     #[test]
+    fn test_committed_modification_with_additions_before() {
+        // Simulates: new lines added at top, AND existing lines modified
+        // This is the "workon" bug scenario - realistic file structure
+        let base = r#"layout {
+    pane size=1 borderless=true {
+        plugin location="tab-bar"
+    }
+    pane split_direction="vertical" {
+        pane split_direction="horizontal" size="50%" {
+            pane size="70%" {
+                command "claude"
+            }
+            pane size="30%" {
+            }
+        }
+        pane size="50%" {
+            command "branchdiff"
+        }
+    }
+    pane size=1 borderless=true {
+        plugin location="status-bar"
+    }
+}"#;
+
+        let head = r#"keybinds {
+    unbind "Alt f"
+}
+
+layout {
+    pane size=1 borderless=true {
+        plugin location="tab-bar"
+    }
+    pane split_direction="vertical" {
+        pane split_direction="horizontal" size="50%" {
+            pane size="80%" {
+                command "claude"
+            }
+            pane size="20%" {
+            }
+        }
+        pane size="50%" {
+            command "branchdiff"
+        }
+    }
+    pane size=1 borderless=true {
+        plugin location="status-bar"
+    }
+}"#;
+
+        let diff = compute_file_diff_v2_with_inline("workon.kdl", Some(base), Some(head), Some(head), Some(head));
+        let lines = content_lines(&diff);
+
+        // Debug: print all lines with their sources
+        for (i, line) in lines.iter().enumerate() {
+            eprintln!("[{}] {:?} '{}' old_content={:?} inline_spans={}",
+                i, line.source, line.content, line.old_content.is_some(), line.inline_spans.len());
+        }
+
+        // The "keybinds" lines should be Committed additions
+        let additions: Vec<_> = lines.iter()
+            .filter(|l| l.source == LineSource::Committed && l.prefix == '+')
+            .collect();
+        assert!(additions.iter().any(|l| l.content.contains("keybinds")),
+            "Should have committed addition for 'keybinds', got additions: {:?}",
+            additions.iter().map(|l| &l.content).collect::<Vec<_>>());
+
+        // The modified line (70% -> 80%) should show as modified with inline spans
+        // It should NOT be shown as Base
+        let modified_line = lines.iter()
+            .find(|l| l.content.contains("80%"));
+        assert!(modified_line.is_some(), "Should have a line containing '80%'");
+
+        let modified = modified_line.unwrap();
+        // Modified lines show as Base (gray context) with inline highlighting
+        assert_eq!(modified.source, LineSource::Base,
+            "Modified line '{}' should be Base (with inline highlighting), not {:?}",
+            modified.content, modified.source);
+        // Must have old_content set for inline diff computation
+        assert!(modified.old_content.is_some(),
+            "Modified line should have old_content set");
+        assert!(!modified.inline_spans.is_empty(),
+            "Modified line '{}' should have inline spans showing the change from 70% to 80%",
+            modified.content);
+
+        // Also check the 30% -> 20% modification
+        let modified_line_2 = lines.iter()
+            .find(|l| l.content.contains("20%"));
+        assert!(modified_line_2.is_some(), "Should have a line containing '20%'");
+
+        let modified2 = modified_line_2.unwrap();
+        assert_eq!(modified2.source, LineSource::Base,
+            "Modified line '{}' should be Base (with inline highlighting), not {:?}",
+            modified2.content, modified2.source);
+        assert!(modified2.old_content.is_some(),
+            "Modified line should have old_content set");
+        assert!(!modified2.inline_spans.is_empty(),
+            "Modified line '{}' should have inline spans showing the change from 30% to 20%",
+            modified2.content);
+    }
+
+    #[test]
     fn test_staged_modification_shows_merged() {
         let base = "line1\nfunction getData()\nline3";
         let index = "line1\nfunction getData(params)\nline3";
