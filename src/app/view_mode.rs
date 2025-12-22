@@ -55,6 +55,24 @@ impl App {
         }).count()
     }
 
+    pub fn additions_count(&self) -> usize {
+        self.lines.iter().filter(|line| {
+            matches!(
+                line.source,
+                LineSource::Committed | LineSource::Staged | LineSource::Unstaged
+            )
+        }).count()
+    }
+
+    pub fn deletions_count(&self) -> usize {
+        self.lines.iter().filter(|line| {
+            matches!(
+                line.source,
+                LineSource::DeletedBase | LineSource::DeletedCommitted | LineSource::DeletedStaged
+            )
+        }).count()
+    }
+
     pub(super) fn displayable_line_count(&self) -> usize {
         self.displayable_lines().len()
     }
@@ -296,5 +314,74 @@ impl App {
                 0
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::DiffLine;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn create_test_app(lines: Vec<DiffLine>) -> App {
+        App {
+            repo_path: PathBuf::from("/tmp/test"),
+            base_branch: "main".to_string(),
+            merge_base: "abc123".to_string(),
+            current_branch: Some("feature".to_string()),
+            files: Vec::new(),
+            lines,
+            scroll_offset: 0,
+            viewport_height: 10,
+            error: None,
+            show_help: false,
+            view_mode: ViewMode::Full,
+            selection: None,
+            content_offset: (1, 1),
+            line_num_width: 0,
+            content_width: 80,
+            conflict_warning: None,
+            row_map: Vec::new(),
+            collapsed_files: HashSet::new(),
+            manually_toggled: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn test_additions_count() {
+        let lines = vec![
+            DiffLine::new(LineSource::Committed, "+new".to_string(), '+', None),
+            DiffLine::new(LineSource::Staged, "+staged".to_string(), '+', None),
+            DiffLine::new(LineSource::Unstaged, "+unstaged".to_string(), '+', None),
+            DiffLine::new(LineSource::Base, " context".to_string(), ' ', None),
+        ];
+        let app = create_test_app(lines);
+        assert_eq!(app.additions_count(), 3);
+    }
+
+    #[test]
+    fn test_deletions_count() {
+        let lines = vec![
+            DiffLine::new(LineSource::DeletedBase, "-old".to_string(), '-', None),
+            DiffLine::new(LineSource::DeletedCommitted, "-old2".to_string(), '-', None),
+            DiffLine::new(LineSource::DeletedStaged, "-old3".to_string(), '-', None),
+            DiffLine::new(LineSource::Base, " context".to_string(), ' ', None),
+        ];
+        let app = create_test_app(lines);
+        assert_eq!(app.deletions_count(), 3);
+    }
+
+    #[test]
+    fn test_canceled_lines_excluded_from_counts() {
+        let lines = vec![
+            DiffLine::new(LineSource::Committed, "+new".to_string(), '+', None),
+            DiffLine::new(LineSource::CanceledCommitted, "+canceled".to_string(), '+', None),
+            DiffLine::new(LineSource::CanceledStaged, "+also_canceled".to_string(), '+', None),
+            DiffLine::new(LineSource::DeletedBase, "-deleted".to_string(), '-', None),
+        ];
+        let app = create_test_app(lines);
+        assert_eq!(app.additions_count(), 1);
+        assert_eq!(app.deletions_count(), 1);
     }
 }
