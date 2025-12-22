@@ -2,7 +2,7 @@ mod print;
 
 use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, FrameContext};
 use branchdiff::input::{handle_event, AppAction};
-use branchdiff::message::{FetchResult, Message, RefreshOutcome};
+use branchdiff::message::{FetchResult, Message, RefreshOutcome, RefreshTrigger};
 use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
 use branchdiff::git;
 use branchdiff::ui;
@@ -198,24 +198,26 @@ fn run_app<B: Backend>(
                 return Ok(());
             }
 
-            if result.trigger_refresh {
-                let cancel_flag = refresh_state.start();
-                spawn_refresh(
-                    repo_root.clone(),
-                    app.base_branch.clone(),
-                    refresh_tx.clone(),
-                    cancel_flag,
-                );
-            }
-
-            if let Some(file_path) = result.trigger_single_file {
-                refresh_state.start_single_file();
-                spawn_single_file_refresh(
-                    repo_root.clone(),
-                    file_path.to_string_lossy().to_string(),
-                    app.merge_base.clone(),
-                    refresh_tx.clone(),
-                );
+            match result.refresh {
+                RefreshTrigger::Full => {
+                    let cancel_flag = refresh_state.start();
+                    spawn_refresh(
+                        repo_root.clone(),
+                        app.base_branch.clone(),
+                        refresh_tx.clone(),
+                        cancel_flag,
+                    );
+                }
+                RefreshTrigger::SingleFile(file_path) => {
+                    refresh_state.start_single_file();
+                    spawn_single_file_refresh(
+                        repo_root.clone(),
+                        file_path.to_string_lossy().to_string(),
+                        app.merge_base.clone(),
+                        refresh_tx.clone(),
+                    );
+                }
+                RefreshTrigger::None => {}
             }
 
             if result.trigger_fetch {
