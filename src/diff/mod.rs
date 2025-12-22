@@ -15,6 +15,8 @@ pub use inline::InlineSpan;
 #[allow(unused_imports)]
 pub(crate) use inline::compute_inline_diff_merged;
 
+use std::collections::HashMap;
+
 use output::{build_working_line_output, determine_deletion_source};
 use provenance::{build_modification_map, build_provenance_map};
 
@@ -142,24 +144,71 @@ impl FileDiff {
     }
 }
 
-use std::collections::HashMap;
+fn index_survives_to_working(index_idx: usize, working_from_index: &[Option<usize>]) -> bool {
+    working_from_index.iter().any(|&prov| prov == Some(index_idx))
+}
 
 fn index_line_in_working(
     index_idx: usize,
     working_from_index: &[Option<usize>],
     index_working_mods: &HashMap<usize, (usize, &str)>,
 ) -> bool {
-    for &working_prov in working_from_index {
-        if working_prov == Some(index_idx) {
-            return true;
-        }
+    if index_survives_to_working(index_idx, working_from_index) {
+        return true;
     }
-    for (src_idx, _) in index_working_mods.values() {
-        if *src_idx == index_idx {
+    index_working_mods.values().any(|(src_idx, _)| *src_idx == index_idx)
+}
+
+fn head_survives_to_working(
+    head_idx: usize,
+    index_from_head: &[Option<usize>],
+    working_from_index: &[Option<usize>],
+) -> bool {
+    for (index_idx, &prov) in index_from_head.iter().enumerate() {
+        if prov == Some(head_idx) && index_survives_to_working(index_idx, working_from_index) {
             return true;
         }
     }
     false
+}
+
+fn collect_canceled_simple(
+    head_lines: &[&str],
+    index_lines: &[&str],
+    head_from_base: &[Option<usize>],
+    index_from_head: &[Option<usize>],
+    working_from_index: &[Option<usize>],
+    path: &str,
+) -> Vec<DiffLine> {
+    let mut result = Vec::new();
+
+    // Canceled committed: lines added in head but not in working
+    for (head_idx, head_line) in head_lines.iter().enumerate() {
+        if head_from_base.get(head_idx).copied().flatten().is_some() {
+            continue;
+        }
+        if !head_survives_to_working(head_idx, index_from_head, working_from_index) {
+            result.push(
+                DiffLine::new(LineSource::CanceledCommitted, head_line.trim_end().to_string(), '±', None)
+                    .with_file_path(path),
+            );
+        }
+    }
+
+    // Canceled staged: lines added in index but not in working
+    for (index_idx, index_line) in index_lines.iter().enumerate() {
+        if index_from_head.get(index_idx).copied().flatten().is_some() {
+            continue;
+        }
+        if !index_survives_to_working(index_idx, working_from_index) {
+            result.push(
+                DiffLine::new(LineSource::CanceledStaged, index_line.trim_end().to_string(), '±', None)
+                    .with_file_path(path),
+            );
+        }
+    }
+
+    result
 }
 
 fn collect_canceled_committed(
@@ -329,56 +378,14 @@ pub fn compute_file_diff_v2(
         let index_from_head = build_provenance_map(&head_lines, &index_lines);
         let working_from_index = build_provenance_map(&index_lines, &working_lines);
 
-        for (head_idx, head_line) in head_lines.iter().enumerate() {
-            if head_from_base.get(head_idx).copied().flatten().is_some() {
-                continue;
-            }
-
-            let mut in_working = false;
-            for (index_idx, &prov) in index_from_head.iter().enumerate() {
-                if prov == Some(head_idx) {
-                    for &working_prov in working_from_index.iter() {
-                        if working_prov == Some(index_idx) {
-                            in_working = true;
-                            break;
-                        }
-                    }
-                    if in_working { break; }
-                }
-            }
-
-            if !in_working {
-                lines.push(DiffLine::new(
-                    LineSource::CanceledCommitted,
-                    head_line.trim_end().to_string(),
-                    '±',
-                    None,
-                ).with_file_path(path));
-            }
-        }
-
-        for (index_idx, index_line) in index_lines.iter().enumerate() {
-            if index_from_head.get(index_idx).copied().flatten().is_some() {
-                continue;
-            }
-
-            let mut in_working = false;
-            for &working_prov in working_from_index.iter() {
-                if working_prov == Some(index_idx) {
-                    in_working = true;
-                    break;
-                }
-            }
-
-            if !in_working {
-                lines.push(DiffLine::new(
-                    LineSource::CanceledStaged,
-                    index_line.trim_end().to_string(),
-                    '±',
-                    None,
-                ).with_file_path(path));
-            }
-        }
+        lines.extend(collect_canceled_simple(
+            &head_lines,
+            &index_lines,
+            &head_from_base,
+            &index_from_head,
+            &working_from_index,
+            path,
+        ));
 
         return FileDiff { lines };
     }
