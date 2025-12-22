@@ -202,7 +202,7 @@ impl App {
         if content_len <= self.content_width {
             1
         } else {
-            (content_len + self.content_width - 1) / self.content_width
+            content_len.div_ceil(self.content_width)
         }
     }
 

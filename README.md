@@ -43,10 +43,15 @@ The `--benchmark` flag runs a non-interactive stress test for profiling:
 # Run 1000 frames of simulated usage
 branchdiff --benchmark 1000
 
-# Profile with samply (recommended)
+# Generate a profiling report with source attribution
+./scripts/profile.py --frames 5000
+
+# Or profile interactively with samply
 cargo install samply
-samply record branchdiff --benchmark 5000
+samply record ./target/profiling/branchdiff --benchmark 5000
 ```
+
+The profiling script categorizes functions by source (branchdiff, ratatui, std, system) to help identify what's worth optimizing vs accepting from dependencies.
 
 The benchmark simulates scrolling, file navigation, and view mode changes while rendering each frame.
 
