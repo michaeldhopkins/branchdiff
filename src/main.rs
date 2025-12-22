@@ -1,7 +1,7 @@
 mod input;
 mod print;
 
-use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, RefreshResult};
+use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, FrameContext, RefreshResult};
 use branchdiff::diff::FileDiff;
 use branchdiff::git;
 
@@ -515,9 +515,12 @@ fn run_app<B: Backend>(
             );
         }
 
-        // 8. Render
+        // 8. Render with FrameContext
         let visible_height = terminal.size()?.height as usize;
         app.ensure_inline_spans_for_visible(visible_height);
-        terminal.draw(|f| ui::draw(f, app))?;
+        terminal.draw(|f| {
+            let frame_ctx = FrameContext::new(app);
+            ui::draw_with_frame(f, app, &frame_ctx)
+        })?;
     }
 }

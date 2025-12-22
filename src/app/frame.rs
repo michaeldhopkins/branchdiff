@@ -47,11 +47,17 @@ impl DisplayableItem {
 ///
 /// Created fresh at the start of each render cycle. Uses lazy computation
 /// for expensive operations that may not be needed every frame.
-pub struct FrameContext<'a> {
-    app: &'a App,
-
+///
+/// Note: This struct does NOT hold a reference to App to avoid borrow conflicts.
+/// Methods that need access to app.lines take app as a parameter.
+pub struct FrameContext {
     /// Eagerly computed: displayable items (cheap relative to cloning all lines)
     items: Vec<DisplayableItem>,
+
+    /// Snapshot of app state at creation time
+    viewport_height: usize,
+    scroll_offset: usize,
+    content_width: usize,
 
     /// Lazily computed: maximum valid scroll offset
     max_scroll: OnceCell<usize>,
@@ -63,22 +69,19 @@ pub struct FrameContext<'a> {
     visible_range: OnceCell<(usize, usize)>,
 }
 
-impl<'a> FrameContext<'a> {
+impl FrameContext {
     /// Create a new frame context from the current app state
-    pub fn new(app: &'a App) -> Self {
+    pub fn new(app: &App) -> Self {
         let items = app.compute_displayable_items();
         Self {
-            app,
             items,
+            viewport_height: app.viewport_height,
+            scroll_offset: app.scroll_offset,
+            content_width: app.content_width,
             max_scroll: OnceCell::new(),
             wrap_heights: OnceCell::new(),
             visible_range: OnceCell::new(),
         }
-    }
-
-    /// Get a reference to the underlying app
-    pub fn app(&self) -> &App {
-        self.app
     }
 
     /// Get item at display index
@@ -92,17 +95,17 @@ impl<'a> FrameContext<'a> {
     }
 
     /// Get line at display index (panics if Elided)
-    pub fn line(&self, display_idx: usize) -> &DiffLine {
+    pub fn line<'a>(&self, app: &'a App, display_idx: usize) -> &'a DiffLine {
         match self.items[display_idx] {
-            DisplayableItem::Line(idx) => &self.app.lines[idx],
+            DisplayableItem::Line(idx) => &app.lines[idx],
             DisplayableItem::Elided(_) => panic!("Called line() on Elided item at index {}", display_idx),
         }
     }
 
     /// Try to get line at display index (None if Elided)
-    pub fn try_line(&self, display_idx: usize) -> Option<&DiffLine> {
+    pub fn try_line<'a>(&self, app: &'a App, display_idx: usize) -> Option<&'a DiffLine> {
         match self.items[display_idx] {
-            DisplayableItem::Line(idx) => Some(&self.app.lines[idx]),
+            DisplayableItem::Line(idx) => Some(&app.lines[idx]),
             DisplayableItem::Elided(_) => None,
         }
     }
@@ -123,8 +126,8 @@ impl<'a> FrameContext<'a> {
     }
 
     /// Get maximum valid scroll offset (lazily computed)
-    pub fn max_scroll(&self) -> usize {
-        *self.max_scroll.get_or_init(|| self.compute_max_scroll())
+    pub fn max_scroll(&self, app: &App) -> usize {
+        *self.max_scroll.get_or_init(|| self.compute_max_scroll(app))
     }
 
     /// Get visible range as (start, end) indices into items (lazily computed)
@@ -143,21 +146,11 @@ impl<'a> FrameContext<'a> {
         self.items[start..end].iter()
     }
 
-    /// Iterate over visible lines only (skips Elided markers)
-    pub fn iter_visible_lines(&self) -> impl Iterator<Item = &DiffLine> {
-        self.iter_visible_items().filter_map(|item| {
-            match item {
-                DisplayableItem::Line(idx) => Some(&self.app.lines[*idx]),
-                DisplayableItem::Elided(_) => None,
-            }
-        })
-    }
-
     /// Find the next file header starting from the given display index
-    pub fn find_next_file_header(&self, start: usize) -> Option<usize> {
+    pub fn find_next_file_header(&self, app: &App, start: usize) -> Option<usize> {
         for (i, item) in self.items.iter().enumerate().skip(start + 1) {
             if let DisplayableItem::Line(idx) = item {
-                if self.app.lines[*idx].source == LineSource::FileHeader {
+                if app.lines[*idx].source == LineSource::FileHeader {
                     return Some(i);
                 }
             }
@@ -166,7 +159,7 @@ impl<'a> FrameContext<'a> {
     }
 
     /// Find the previous file header before the given display index
-    pub fn find_prev_file_header(&self, current: usize) -> Option<usize> {
+    pub fn find_prev_file_header(&self, app: &App, current: usize) -> Option<usize> {
         if current == 0 {
             return None;
         }
@@ -174,7 +167,7 @@ impl<'a> FrameContext<'a> {
         // Check if current is a file header
         let current_is_header = matches!(
             self.items.get(current),
-            Some(DisplayableItem::Line(idx)) if self.app.lines[*idx].source == LineSource::FileHeader
+            Some(DisplayableItem::Line(idx)) if app.lines[*idx].source == LineSource::FileHeader
         );
 
         let search_start = if current_is_header {
@@ -185,7 +178,7 @@ impl<'a> FrameContext<'a> {
 
         for i in (0..=search_start).rev() {
             if let DisplayableItem::Line(idx) = self.items[i] {
-                if self.app.lines[idx].source == LineSource::FileHeader {
+                if app.lines[idx].source == LineSource::FileHeader {
                     return Some(i);
                 }
             }
@@ -194,15 +187,15 @@ impl<'a> FrameContext<'a> {
     }
 
     /// Compute the maximum valid scroll offset
-    fn compute_max_scroll(&self) -> usize {
+    fn compute_max_scroll(&self, app: &App) -> usize {
         if self.items.is_empty() {
             return 0;
         }
 
-        let wrap_heights = self.get_wrap_heights();
+        let wrap_heights = self.get_wrap_heights(app);
         let total_rows: usize = wrap_heights.iter().sum();
 
-        if total_rows <= self.app.viewport_height {
+        if total_rows <= self.viewport_height {
             return 0;
         }
 
@@ -211,7 +204,7 @@ impl<'a> FrameContext<'a> {
         let mut items_from_end = 0;
 
         for height in wrap_heights.iter().rev() {
-            if rows_from_end + height > self.app.viewport_height {
+            if rows_from_end + height > self.viewport_height {
                 break;
             }
             rows_from_end += height;
@@ -227,32 +220,26 @@ impl<'a> FrameContext<'a> {
             return (0, 0);
         }
 
-        let start = self.app.scroll_offset.min(self.items.len());
-        let wrap_heights = self.get_wrap_heights();
+        let start = self.scroll_offset.min(self.items.len());
 
-        // Calculate how many items fit in viewport, accounting for wrapping
-        let mut screen_rows_used = 0;
-        let mut end = start;
-
-        while end < self.items.len() && screen_rows_used < self.app.viewport_height {
-            screen_rows_used += wrap_heights[end];
-            end += 1;
-        }
+        // Use a simple calculation without wrap heights for initial range
+        // This is an approximation; the actual range will be refined in rendering
+        let end = (start + self.viewport_height).min(self.items.len());
 
         (start, end)
     }
 
     /// Get wrap heights for all items (lazily computed)
-    fn get_wrap_heights(&self) -> &[usize] {
-        self.wrap_heights.get_or_init(|| self.compute_wrap_heights())
+    fn get_wrap_heights(&self, app: &App) -> &[usize] {
+        self.wrap_heights.get_or_init(|| self.compute_wrap_heights(app))
     }
 
     /// Compute the screen height for each item (accounting for line wrapping)
-    fn compute_wrap_heights(&self) -> Vec<usize> {
+    fn compute_wrap_heights(&self, app: &App) -> Vec<usize> {
         self.items.iter().map(|item| {
             match item {
                 DisplayableItem::Line(idx) => {
-                    let line = &self.app.lines[*idx];
+                    let line = &app.lines[*idx];
                     self.wrapped_line_height(line)
                 }
                 DisplayableItem::Elided(_) => 1, // Elided markers are always 1 row
@@ -262,14 +249,14 @@ impl<'a> FrameContext<'a> {
 
     /// Calculate how many screen rows a line will take when wrapped
     fn wrapped_line_height(&self, line: &DiffLine) -> usize {
-        if self.app.content_width == 0 {
+        if self.content_width == 0 {
             return 1;
         }
         let content_len = line.content.len();
-        if content_len <= self.app.content_width {
+        if content_len <= self.content_width {
             1
         } else {
-            (content_len + self.app.content_width - 1) / self.app.content_width
+            (content_len + self.content_width - 1) / self.content_width
         }
     }
 }
@@ -341,7 +328,7 @@ mod tests {
 
         // All items should be Line variants in Full mode
         for i in 0..4 {
-            assert!(ctx.try_line(i).is_some());
+            assert!(ctx.try_line(&app, i).is_some());
         }
     }
 
@@ -349,7 +336,7 @@ mod tests {
     fn test_frame_context_max_scroll_empty() {
         let app = create_test_app(vec![]);
         let ctx = FrameContext::new(&app);
-        assert_eq!(ctx.max_scroll(), 0);
+        assert_eq!(ctx.max_scroll(&app), 0);
     }
 
     #[test]
@@ -358,7 +345,7 @@ mod tests {
         let mut app = create_test_app(lines);
         app.viewport_height = 10;
         let ctx = FrameContext::new(&app);
-        assert_eq!(ctx.max_scroll(), 0);
+        assert_eq!(ctx.max_scroll(&app), 0);
     }
 
     #[test]
@@ -367,7 +354,7 @@ mod tests {
         let mut app = create_test_app(lines);
         app.viewport_height = 10;
         let ctx = FrameContext::new(&app);
-        assert_eq!(ctx.max_scroll(), 10);
+        assert_eq!(ctx.max_scroll(&app), 10);
     }
 
     #[test]
@@ -395,8 +382,8 @@ mod tests {
         let app = create_test_app(lines);
         let ctx = FrameContext::new(&app);
 
-        assert_eq!(ctx.find_next_file_header(0), Some(3));
-        assert_eq!(ctx.find_next_file_header(3), None);
+        assert_eq!(ctx.find_next_file_header(&app, 0), Some(3));
+        assert_eq!(ctx.find_next_file_header(&app, 3), None);
     }
 
     #[test]
@@ -411,9 +398,9 @@ mod tests {
         let app = create_test_app(lines);
         let ctx = FrameContext::new(&app);
 
-        assert_eq!(ctx.find_prev_file_header(4), Some(3));
-        assert_eq!(ctx.find_prev_file_header(3), Some(0));
-        assert_eq!(ctx.find_prev_file_header(0), None);
+        assert_eq!(ctx.find_prev_file_header(&app, 4), Some(3));
+        assert_eq!(ctx.find_prev_file_header(&app, 3), Some(0));
+        assert_eq!(ctx.find_prev_file_header(&app, 0), None);
     }
 
     #[test]
