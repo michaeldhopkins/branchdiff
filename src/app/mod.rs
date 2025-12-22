@@ -245,11 +245,9 @@ impl App {
                 let (_, index_map) = self.build_context_lines_with_mapping();
                 let start = self.scroll_offset;
                 let end = (start + visible_height).min(index_map.len());
-                for mapped_idx in &index_map[start..end] {
-                    if let Some(original_idx) = mapped_idx {
-                        if *original_idx < self.lines.len() {
-                            self.lines[*original_idx].ensure_inline_spans();
-                        }
+                for &original_idx in index_map[start..end].iter().flatten() {
+                    if original_idx < self.lines.len() {
+                        self.lines[original_idx].ensure_inline_spans();
                     }
                 }
             }
@@ -392,6 +390,27 @@ mod tests {
     /// Helper to create an unstaged (change) line
     fn change_line(content: &str) -> DiffLine {
         DiffLine::new(LineSource::Unstaged, content.to_string(), '+', None)
+    }
+
+    /// Helper to get line from DisplayableItem (returns None for Elided)
+    fn item_to_line<'a>(app: &'a App, item: &DisplayableItem) -> Option<&'a DiffLine> {
+        match item {
+            DisplayableItem::Line(idx) => Some(&app.lines[*idx]),
+            DisplayableItem::Elided(_) => None,
+        }
+    }
+
+    /// Helper to collect non-elided lines from displayable items
+    fn collect_lines<'a>(app: &'a App, items: &[DisplayableItem]) -> Vec<&'a DiffLine> {
+        items.iter().filter_map(|item| item_to_line(app, item)).collect()
+    }
+
+    /// Helper to get visible lines using FrameContext (replaces deprecated visible_lines())
+    fn get_visible_lines(app: &App) -> Vec<&DiffLine> {
+        let ctx = FrameContext::new(app);
+        ctx.iter_visible_items()
+            .filter_map(|item| item_to_line(app, item))
+            .collect()
     }
 
     /// Helper to create a test app with files (for testing auto-collapse)
@@ -576,7 +595,8 @@ mod tests {
         ];
         let mut app = create_test_app(lines);
         app.view_mode = ViewMode::ChangesOnly;
-        let displayed = app.displayable_lines();
+        let items = app.compute_displayable_items();
+        let displayed = collect_lines(&app, &items);
         assert_eq!(displayed.len(), 3);
         assert_eq!(displayed[0].source, LineSource::FileHeader);
         assert_eq!(displayed[1].source, LineSource::Committed);
@@ -842,8 +862,9 @@ mod tests {
         let mut app = create_test_app(lines);
         app.view_mode = ViewMode::Context;
 
-        // Get the filtered lines in context mode
-        let filtered = app.build_context_lines();
+        // Get the filtered items in context mode
+        let items = app.compute_displayable_items();
+        let filtered = collect_lines(&app, &items);
 
         // The line with inline spans should be visible
         let has_merged_line = filtered.iter().any(|l| l.content == "bond.name");
@@ -891,13 +912,8 @@ mod tests {
         let mut app = create_test_app(lines);
         app.view_mode = ViewMode::Context;
 
-        let filtered = app.build_context_lines();
-
-        eprintln!("\n=== Context mode trailing lines test ===");
-        eprintln!("Filtered lines ({}):", filtered.len());
-        for (i, line) in filtered.iter().enumerate() {
-            eprintln!("  [{}] {} {:?} '{}'", i, line.prefix, line.source, line.content);
-        }
+        let items = app.compute_displayable_items();
+        let filtered = collect_lines(&app, &items);
 
         // The change should be visible
         let has_change = filtered.iter().any(|l| l.content == "new_line");
@@ -959,15 +975,8 @@ mod tests {
         let mut app = create_test_app(lines);
         app.view_mode = ViewMode::Context;
 
-        let filtered = app.build_context_lines();
-
-        eprintln!("\n=== Multi-file trailing context test ===");
-        eprintln!("Total lines: {}, Filtered: {}", app.lines.len(), filtered.len());
-        eprintln!("Last 15 filtered lines:");
-        for (i, line) in filtered.iter().rev().take(15).collect::<Vec<_>>().into_iter().rev().enumerate() {
-            let idx = filtered.len().saturating_sub(15) + i;
-            eprintln!("  [{}] {} {:?} '{}'", idx, line.prefix, line.source, line.content);
-        }
+        let items = app.compute_displayable_items();
+        let filtered = collect_lines(&app, &items);
 
         // The "+ end" line should be visible (it's Committed)
         let has_added_end = filtered.iter().any(|l| l.content == "  end" && l.source == LineSource::Committed);
@@ -1018,14 +1027,7 @@ mod tests {
         // Scroll to bottom
         app.go_to_bottom();
 
-        let visible = app.visible_lines();
-
-        eprintln!("\n=== Scroll to bottom test ===");
-        eprintln!("scroll_offset: {}", app.scroll_offset);
-        eprintln!("Visible lines ({}):", visible.len());
-        for (i, line) in visible.iter().enumerate() {
-            eprintln!("  [{}] {} {:?} '{}'", i, line.prefix, line.source, line.content);
-        }
+        let visible = get_visible_lines(&app);
 
         // The last visible line should be trailing_3
         let last_visible = visible.last().unwrap();
@@ -1079,27 +1081,19 @@ mod tests {
         app.view_mode = ViewMode::Context;
         app.viewport_height = 15; // Small viewport so we need to scroll
 
-        let all_displayable = app.displayable_lines();
-        eprintln!("\n=== Large file scroll test ===");
-        eprintln!("Total displayable lines in context mode: {}", all_displayable.len());
-        eprintln!("Viewport height: {}", app.viewport_height);
-
-        // Print all displayable lines
-        eprintln!("All displayable lines:");
-        for (i, line) in all_displayable.iter().enumerate() {
-            eprintln!("  [{}] {} {:?} '{}'", i, line.prefix, line.source, line.content);
+        // Check all displayable items before scrolling
+        {
+            let items = app.compute_displayable_items();
+            let all_displayable = collect_lines(&app, &items);
+            let last_displayable = all_displayable.last().unwrap();
+            assert_eq!(last_displayable.content, "final_end_2",
+                "Last displayable line should be final_end_2, got '{}'", last_displayable.content);
         }
 
         // Scroll to bottom
         app.go_to_bottom();
-        eprintln!("\nAfter go_to_bottom:");
-        eprintln!("  scroll_offset: {}", app.scroll_offset);
 
-        let visible = app.visible_lines();
-        eprintln!("Visible lines after scroll ({}):", visible.len());
-        for (i, line) in visible.iter().enumerate() {
-            eprintln!("  [{}] {} {:?} '{}'", i, line.prefix, line.source, line.content);
-        }
+        let visible = get_visible_lines(&app);
 
         // The trailing lines should be visible when scrolled to bottom
         let has_final_1 = visible.iter().any(|l| l.content == "final_end_1");
@@ -1107,11 +1101,6 @@ mod tests {
 
         assert!(has_final_1, "final_end_1 should be visible at bottom");
         assert!(has_final_2, "final_end_2 should be visible at bottom");
-
-        // Also check that the last line in displayable_lines is final_end_2
-        let last_displayable = all_displayable.last().unwrap();
-        assert_eq!(last_displayable.content, "final_end_2",
-            "Last displayable line should be final_end_2, got '{}'", last_displayable.content);
     }
 
     #[test]
@@ -1167,46 +1156,31 @@ mod tests {
         lines.push(DiffLine::new(LineSource::Base, "  end".to_string(), ' ', Some(106)));
         lines.push(DiffLine::new(LineSource::Base, "end".to_string(), ' ', Some(107)));
 
-        let mut app = create_test_app(lines.clone());
+        let mut app = create_test_app(lines);
         app.view_mode = ViewMode::Context;
         app.viewport_height = 20;
 
-        // Get ALL displayable lines
-        let all_displayable = app.displayable_lines();
+        // Check ALL displayable items before scrolling
+        {
+            let items = app.compute_displayable_items();
+            let all_displayable = collect_lines(&app, &items);
 
-        eprintln!("\n=== Bug scenario multi-file test ===");
-        eprintln!("Total original lines: {}", lines.len());
-        eprintln!("Total displayable in context mode: {}", all_displayable.len());
+            // 1. The "    end" (Committed) should be in displayable items
+            let has_committed_end = all_displayable.iter().any(|l| l.content == "    end" && l.source == LineSource::Committed);
+            assert!(has_committed_end, "Should have Committed '    end' in displayable lines");
 
-        // Print the LAST 20 displayable lines
-        eprintln!("\nLast 20 displayable lines:");
-        let start_idx = all_displayable.len().saturating_sub(20);
-        for (i, line) in all_displayable.iter().skip(start_idx).enumerate() {
-            eprintln!("  [{}] {} {:?} '{}'", start_idx + i, line.prefix, line.source, line.content);
+            // 2. The "  end" (Base) should be in displayable items
+            let has_base_end_indented = all_displayable.iter().any(|l| l.content == "  end" && l.source == LineSource::Base);
+            assert!(has_base_end_indented, "Should have Base '  end' in displayable lines");
+
+            // 3. The "end" (Base) should be in displayable items
+            let has_base_end = all_displayable.iter().any(|l| l.content == "end" && l.source == LineSource::Base);
+            assert!(has_base_end, "Should have Base 'end' in displayable lines");
         }
 
         // Now scroll to bottom
         app.go_to_bottom();
-        let visible = app.visible_lines();
-
-        eprintln!("\nAfter go_to_bottom (scroll_offset={}):", app.scroll_offset);
-        eprintln!("Visible lines:");
-        for (i, line) in visible.iter().enumerate() {
-            eprintln!("  [{}] {} {:?} '{}'", i, line.prefix, line.source, line.content);
-        }
-
-        // CRITICAL ASSERTIONS:
-        // 1. The "    end" (Committed) should be in displayable_lines
-        let has_committed_end = all_displayable.iter().any(|l| l.content == "    end" && l.source == LineSource::Committed);
-        assert!(has_committed_end, "Should have Committed '    end' in displayable lines");
-
-        // 2. The "  end" (Base) should be in displayable_lines
-        let has_base_end_indented = all_displayable.iter().any(|l| l.content == "  end" && l.source == LineSource::Base);
-        assert!(has_base_end_indented, "Should have Base '  end' in displayable lines");
-
-        // 3. The "end" (Base) should be in displayable_lines
-        let has_base_end = all_displayable.iter().any(|l| l.content == "end" && l.source == LineSource::Base);
-        assert!(has_base_end, "Should have Base 'end' in displayable lines");
+        let visible = get_visible_lines(&app);
 
         // 4. When scrolled to bottom, the last visible line should be "end" (Base)
         let last_visible = visible.last().unwrap();
