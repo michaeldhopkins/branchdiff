@@ -177,23 +177,23 @@ fn spawn_fetch(
     });
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GitPathType {
-    Irrelevant,
-    Relevant,
+enum GitEventType {
+    /// .git/index changes - triggers refresh
+    Index,
+    /// .git/HEAD or .git/refs/ changes - triggers refresh and cancels in-progress
     BranchSwitch,
 }
 
-fn classify_git_path(path_str: &str) -> GitPathType {
+fn classify_git_event(path_str: &str) -> Option<GitEventType> {
     if !path_str.contains(".git/") {
-        return GitPathType::Irrelevant;
+        return None;
     }
     if path_str.ends_with(".git/HEAD") || path_str.contains(".git/refs/") {
-        GitPathType::BranchSwitch
+        Some(GitEventType::BranchSwitch)
     } else if path_str.ends_with(".git/index") {
-        GitPathType::Relevant
+        Some(GitEventType::Index)
     } else {
-        GitPathType::Irrelevant
+        None
     }
 }
 
@@ -292,10 +292,6 @@ impl RefreshState {
         let had_pending = self.has_pending();
         *self = RefreshState::Idle;
         had_pending
-    }
-
-    fn reset_watchdog(&mut self) {
-        *self = RefreshState::Idle;
     }
 }
 
@@ -406,15 +402,15 @@ fn run_app<B: Backend>(
 
             for event in &dominated_events {
                 let path_str = event.path.to_string_lossy();
-                match classify_git_path(&path_str) {
-                    GitPathType::BranchSwitch => {
+                match classify_git_event(&path_str) {
+                    Some(GitEventType::BranchSwitch) => {
                         should_refresh = true;
                         has_git_change = true;
                     }
-                    GitPathType::Relevant => {
+                    Some(GitEventType::Index) => {
                         should_refresh = true;
                     }
-                    GitPathType::Irrelevant => {
+                    None => {
                         if !path_str.contains(".git/") {
                             should_refresh = true;
                             source_files.push(&event.path);
@@ -495,10 +491,14 @@ fn run_app<B: Backend>(
             );
         }
 
-        // 6. Watchdog: reset stuck refresh
+        // 6. Watchdog: reset stuck refresh and start a new one
         if let Some(started) = refresh_state.started_at() {
             if started.elapsed() >= REFRESH_WATCHDOG_TIMEOUT {
-                refresh_state.reset_watchdog();
+                refresh_state.start(
+                    repo_root.clone(),
+                    app.base_branch.clone(),
+                    refresh_tx.clone(),
+                );
             }
         }
 
