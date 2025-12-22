@@ -810,11 +810,11 @@ mod tests {
         let branch_info = "feat vs main";
 
         let stats = format!(
-            "{} file{} | {} line{}{} | {}%",
+            "{} file{} | +{} -{}{} | {}%",
             app.files.len(),
             if app.files.len() == 1 { "" } else { "s" },
-            app.changed_line_count(),
-            if app.changed_line_count() == 1 { "" } else { "s" },
+            app.additions_count(),
+            app.deletions_count(),
             "",  // no mode suffix in Full mode
             app.scroll_percentage()
         );
