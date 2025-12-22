@@ -5,6 +5,32 @@ use ratatui::{
 
 use super::ScreenRowInfo;
 
+/// Find the largest byte index <= `index` that is a valid UTF-8 char boundary
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        s.len()
+    } else {
+        let mut i = index;
+        while i > 0 && !s.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    }
+}
+
+/// Find the smallest byte index >= `index` that is a valid UTF-8 char boundary
+fn ceil_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        s.len()
+    } else {
+        let mut i = index;
+        while i < s.len() && !s.is_char_boundary(i) {
+            i += 1;
+        }
+        i
+    }
+}
+
 /// Wrap content spans into multiple lines if needed, returning Lines and ScreenRowInfo entries
 pub fn wrap_content(
     content_spans: Vec<Span<'static>>,
@@ -83,8 +109,10 @@ pub fn wrap_content(
                 current_width += remaining.len();
                 remaining = "";
             } else {
-                // Need to split
-                let (chunk, rest) = remaining.split_at(space_available);
+                // Split at valid UTF-8 boundary, taking at least one char
+                let split_at = floor_char_boundary(remaining, space_available)
+                    .max(ceil_char_boundary(remaining, 1));
+                let (chunk, rest) = remaining.split_at(split_at);
                 current_line_spans.push(Span::styled(chunk.to_string(), span_style));
                 current_content.push_str(chunk);
                 remaining = rest;
