@@ -4,6 +4,33 @@ use arboard::Clipboard;
 use super::App;
 use crate::ui::ScreenRowInfo;
 
+/// Get substring by character positions (not byte positions)
+fn char_slice(s: &str, start: usize, end: usize) -> &str {
+    let mut char_indices = s.char_indices();
+    let start_byte = char_indices.nth(start).map(|(i, _)| i).unwrap_or(s.len());
+    let end_byte = if end <= start {
+        start_byte
+    } else {
+        char_indices
+            .nth(end - start - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len())
+    };
+    &s[start_byte..end_byte]
+}
+
+/// Get substring from character position to end
+fn char_slice_from(s: &str, start: usize) -> &str {
+    let start_byte = s.char_indices().nth(start).map(|(i, _)| i).unwrap_or(s.len());
+    &s[start_byte..]
+}
+
+/// Get substring from start to character position
+fn char_slice_to(s: &str, end: usize) -> &str {
+    let end_byte = s.char_indices().nth(end).map(|(i, _)| i).unwrap_or(s.len());
+    &s[..end_byte]
+}
+
 /// Represents a position in the diff view (row, column)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
@@ -121,28 +148,30 @@ impl App {
             // Get content from the row_map (already has the correct content for this screen row)
             let content = &row_info.content;
 
+            let char_count = content.chars().count();
+
             if start.row == end.row {
                 // Single row selection
                 let start_in_content = start.col.saturating_sub(prefix_len);
                 let end_in_content = end.col.saturating_sub(prefix_len);
-                if start_in_content < content.len() {
-                    let actual_end = end_in_content.min(content.len());
+                if start_in_content < char_count {
+                    let actual_end = end_in_content.min(char_count);
                     if actual_end > start_in_content {
-                        result.push_str(&content[start_in_content..actual_end]);
+                        result.push_str(char_slice(content, start_in_content, actual_end));
                     }
                 }
             } else if screen_row == start.row {
                 // First row of multi-row selection
                 let start_in_content = start.col.saturating_sub(prefix_len);
-                if start_in_content < content.len() {
-                    result.push_str(&content[start_in_content..]);
+                if start_in_content < char_count {
+                    result.push_str(char_slice_from(content, start_in_content));
                 }
                 result.push('\n');
             } else if screen_row == end.row {
                 // Last row of multi-row selection
                 let end_in_content = end.col.saturating_sub(prefix_len);
-                let actual_end = end_in_content.min(content.len());
-                result.push_str(&content[..actual_end]);
+                let actual_end = end_in_content.min(char_count);
+                result.push_str(char_slice_to(content, actual_end));
             } else {
                 // Middle rows - take entire content
                 result.push_str(content);

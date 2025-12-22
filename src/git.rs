@@ -129,9 +129,13 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
     let mut files: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // 1. Get committed changes (merge-base to HEAD)
-    let committed = get_diff_files(repo_path, merge_base, "HEAD")?;
-    for path in committed {
-        files.insert(path);
+    // Skip if merge_base is empty (no commits yet)
+    if !merge_base.is_empty() {
+        if let Ok(committed) = get_diff_files(repo_path, merge_base, "HEAD") {
+            for path in committed {
+                files.insert(path);
+            }
+        }
     }
 
     // 2. Get staged changes (HEAD to index) and unstaged changes (index to working tree)
@@ -349,6 +353,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::process::Command;
+    use tempfile::TempDir;
 
     #[test]
     fn test_parse_diff_line_added() {
@@ -630,5 +635,31 @@ mod tests {
         let after_sha = String::from_utf8_lossy(&origin_after.stdout).trim().to_string();
 
         assert_ne!(before_sha, after_sha, "origin/main should update after fetch even when on main");
+    }
+
+    #[test]
+    fn test_get_all_changed_files_with_empty_merge_base() {
+        // Simulates a repo with no commits yet (empty merge_base)
+        let temp = TempDir::new().unwrap();
+        let repo_path = temp.path();
+
+        // Initialize empty repo
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to init git repo");
+
+        // Add an untracked file
+        fs::write(repo_path.join("new_file.txt"), "content\n").unwrap();
+
+        // Should not panic with empty merge_base
+        let result = get_all_changed_files(repo_path, "");
+        assert!(result.is_ok());
+
+        // Should find the untracked file via git status
+        let changed = result.unwrap();
+        let paths: Vec<&str> = changed.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"new_file.txt"));
     }
 }

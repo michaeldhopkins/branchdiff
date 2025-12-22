@@ -734,6 +734,27 @@ mod tests {
         assert_eq!(truncate_with_ellipsis("hello", 4), "h...");
     }
 
+    #[test]
+    fn test_truncate_with_ellipsis_utf8_characters() {
+        // Multi-byte UTF-8 characters should not panic when truncated
+        // Japanese: "日本語" = 3 chars, 9 bytes
+        assert_eq!(truncate_with_ellipsis("日本語", 3), "日本語"); // fits exactly
+        assert_eq!(truncate_with_ellipsis("日本語", 2), ".."); // too short for any char + ...
+
+        // Longer Japanese text: "日本語です" = 5 chars
+        assert_eq!(truncate_with_ellipsis("日本語です", 5), "日本語です");
+        assert_eq!(truncate_with_ellipsis("日本語です", 4), "日..."); // 1 char + ...
+
+        // Emoji: "🎉🎊🎈" = 3 chars, 12 bytes
+        assert_eq!(truncate_with_ellipsis("🎉🎊🎈", 3), "🎉🎊🎈");
+        assert_eq!(truncate_with_ellipsis("🎉🎊🎈", 2), "..");
+
+        // Mixed ASCII and UTF-8: "hello日本語" = 8 chars
+        assert_eq!(truncate_with_ellipsis("hello日本語", 10), "hello日本語");
+        assert_eq!(truncate_with_ellipsis("hello日本語", 8), "hello日本語");
+        assert_eq!(truncate_with_ellipsis("hello日本語", 7), "hell...");
+    }
+
     fn create_test_app_for_status_bar(
         current_branch: Option<&str>,
         base_branch: &str,
