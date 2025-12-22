@@ -25,13 +25,21 @@ predicates = "3"
 
 [lints.clippy]
 # Enforce enums over boolean state flags
-struct-excessive-bools = "warn"
-fn-params-excessive-bools = "warn"
+struct-excessive-bools = "deny"
+fn-params-excessive-bools = "deny"
+
+# Catch boolean patterns that could benefit from enums
+match_bool = "warn"
+bool_to_int_with_if = "warn"
 
 # Complexity limits to catch functions that need refactoring
 cognitive-complexity = "warn"
 too-many-lines = "warn"
 
-# Already-default lints we want to keep enforced
-collapsible-if = "warn"
-too-many-arguments = "warn"
+# Already-default lints we want to keep enforced (tightened to deny)
+collapsible-if = "deny"
+too-many-arguments = "deny"
+
+# Encourage idiomatic patterns
+needless-range-loop = "deny"
+extend_with_drain = "deny"

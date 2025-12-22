@@ -93,8 +93,8 @@ impl App {
             if is_interesting {
                 let start = i.saturating_sub(CONTEXT_LINES);
                 let end = (i + CONTEXT_LINES + 1).min(self.lines.len());
-                for j in start..end {
-                    show[j] = true;
+                for item in show.iter_mut().take(end).skip(start) {
+                    *item = true;
                 }
             }
         }

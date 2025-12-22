@@ -3,7 +3,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use super::{ScreenRowInfo, ScreenRowKind};
+use super::ScreenRowInfo;
 
 /// Wrap content spans into multiple lines if needed, returning Lines and ScreenRowInfo entries
 pub fn wrap_content(
@@ -14,8 +14,6 @@ pub fn wrap_content(
     style: Style,
     content_width: usize,
     prefix_width: usize,
-    logical_idx: usize,
-    kind: ScreenRowKind,
 ) -> (Vec<Line<'static>>, Vec<ScreenRowInfo>) {
     let content_len: usize = content_spans.iter().map(|s| s.content.len()).sum();
 
@@ -27,8 +25,6 @@ pub fn wrap_content(
         spans.extend(content_spans);
 
         let row_info = ScreenRowInfo {
-            logical_idx,
-            kind,
             content: content.to_string(),
             is_file_header: false,
             file_path: None,
@@ -59,7 +55,6 @@ pub fn wrap_content(
             if space_available == 0 {
                 // Emit current line and start new one
                 let mut line_spans = Vec::new();
-                let row_kind = if is_first_line { kind } else { ScreenRowKind::WrappedContinuation };
 
                 if is_first_line {
                     line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
@@ -68,12 +63,10 @@ pub fn wrap_content(
                 } else {
                     line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
                 }
-                line_spans.extend(current_line_spans.drain(..));
+                line_spans.append(&mut current_line_spans);
                 result_lines.push(Line::from(line_spans));
 
                 row_infos.push(ScreenRowInfo {
-                    logical_idx,
-                    kind: row_kind,
                     content: std::mem::take(&mut current_content),
                     is_file_header: false,
                     file_path: None,
@@ -98,7 +91,6 @@ pub fn wrap_content(
 
                 // Emit current line
                 let mut line_spans = Vec::new();
-                let row_kind = if is_first_line { kind } else { ScreenRowKind::WrappedContinuation };
 
                 if is_first_line {
                     line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
@@ -107,12 +99,10 @@ pub fn wrap_content(
                 } else {
                     line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
                 }
-                line_spans.extend(current_line_spans.drain(..));
+                line_spans.append(&mut current_line_spans);
                 result_lines.push(Line::from(line_spans));
 
                 row_infos.push(ScreenRowInfo {
-                    logical_idx,
-                    kind: row_kind,
                     content: std::mem::take(&mut current_content),
                     is_file_header: false,
                     file_path: None,
@@ -126,7 +116,6 @@ pub fn wrap_content(
     // Emit any remaining content
     if !current_line_spans.is_empty() || is_first_line {
         let mut line_spans = Vec::new();
-        let row_kind = if is_first_line { kind } else { ScreenRowKind::WrappedContinuation };
 
         if is_first_line {
             line_spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
@@ -138,8 +127,6 @@ pub fn wrap_content(
         result_lines.push(Line::from(line_spans));
 
         row_infos.push(ScreenRowInfo {
-            logical_idx,
-            kind: row_kind,
             content: current_content,
             is_file_header: false,
             file_path: None,

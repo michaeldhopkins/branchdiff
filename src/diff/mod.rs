@@ -61,11 +61,6 @@ impl DiffLine {
         }
     }
 
-    pub fn with_inline_spans(mut self, spans: Vec<InlineSpan>) -> Self {
-        self.inline_spans = spans;
-        self
-    }
-
     pub fn with_old_content(mut self, old: &str) -> Self {
         self.old_content = Some(old.to_string());
         self
@@ -136,13 +131,6 @@ pub struct FileDiff {
     pub lines: Vec<DiffLine>,
 }
 
-impl FileDiff {
-    pub fn ensure_all_inline_spans(&mut self) {
-        for line in &mut self.lines {
-            line.ensure_inline_spans();
-        }
-    }
-}
 
 fn index_survives_to_working(index_idx: usize, working_from_index: &[Option<usize>]) -> bool {
     working_from_index.iter().any(|&prov| prov == Some(index_idx))
@@ -230,22 +218,22 @@ fn collect_canceled_committed(
 
         // Check via direct provenance
         for (index_idx, &prov) in index_from_head.iter().enumerate() {
-            if prov == Some(head_idx) {
-                if index_line_in_working(index_idx, working_from_index, index_working_mods) {
-                    in_working = true;
-                    break;
-                }
+            if prov == Some(head_idx)
+                && index_line_in_working(index_idx, working_from_index, index_working_mods)
+            {
+                in_working = true;
+                break;
             }
         }
 
         // Check via modification maps
         if !in_working {
             for (index_idx, (src_head_idx, _)) in head_index_mods {
-                if *src_head_idx == head_idx {
-                    if index_line_in_working(*index_idx, working_from_index, index_working_mods) {
-                        in_working = true;
-                        break;
-                    }
+                if *src_head_idx == head_idx
+                    && index_line_in_working(*index_idx, working_from_index, index_working_mods)
+                {
+                    in_working = true;
+                    break;
                 }
             }
         }
@@ -673,7 +661,9 @@ mod tests {
         working: Option<&str>,
     ) -> FileDiff {
         let mut diff = compute_file_diff_v2(path, base, head, index, working);
-        diff.ensure_all_inline_spans();
+        for line in &mut diff.lines {
+            line.ensure_inline_spans();
+        }
         diff
     }
 

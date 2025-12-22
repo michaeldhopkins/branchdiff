@@ -36,7 +36,7 @@ pub fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Vec<Optio
 /// Represents a single change in a diff, with type-safe access to indices.
 /// Each variant contains exactly the fields that are valid for that change type.
 enum DiffChange<'a> {
-    Equal { content: &'a str },
+    Equal,
     Delete { content: &'a str, old_idx: usize },
     Insert { content: &'a str, new_idx: usize },
 }
@@ -58,10 +58,9 @@ pub fn build_modification_map<'a>(
         .map(|c| {
             let change = match c.tag() {
                 ChangeTag::Equal => {
-                    let ch = DiffChange::Equal { content: c.value().trim_end() };
                     old_idx += 1;
                     new_idx += 1;
-                    ch
+                    DiffChange::Equal
                 }
                 ChangeTag::Delete => {
                     let ch = DiffChange::Delete {
