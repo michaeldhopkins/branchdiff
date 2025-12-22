@@ -66,11 +66,12 @@ impl App {
         // First pass: mark which lines are "interesting" (changes or headers)
         // A line is interesting if:
         // 1. Its source indicates a change (Committed, Staged, Unstaged, Deleted*, FileHeader)
-        // 2. OR it has inline spans (meaning it's a merged modification line)
+        // 2. OR it has old_content or inline_spans (meaning it's a modification)
         let interesting: Vec<bool> = self.lines.iter()
             .map(|line| {
-                // Lines with inline spans are always interesting (they show modifications)
-                if !line.inline_spans.is_empty() {
+                // Lines with modifications are always interesting
+                // Check old_content (set immediately) or inline_spans (computed lazily)
+                if line.old_content.is_some() || !line.inline_spans.is_empty() {
                     return true;
                 }
                 matches!(line.source,
