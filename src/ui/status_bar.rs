@@ -47,14 +47,16 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
     }
 }
 
-/// Truncate a string with ellipsis if it exceeds max_len
+/// Truncate a string with ellipsis if it exceeds max_len (char count, not bytes)
 pub fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    let char_count = s.chars().count();
+    if char_count <= max_len {
         s.to_string()
     } else if max_len <= 3 {
         ".".repeat(max_len)
     } else {
-        format!("{}...", &s[..max_len - 3])
+        let truncated: String = s.chars().take(max_len - 3).collect();
+        format!("{}...", truncated)
     }
 }
 
