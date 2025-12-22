@@ -20,7 +20,8 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
     };
 
     let file_count = app.files.len();
-    let line_count = app.changed_line_count();
+    let additions = app.additions_count();
+    let deletions = app.deletions_count();
     let mode = match app.view_mode {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
@@ -28,11 +29,11 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
     };
 
     let stats = format!(
-        "{} file{} | {} line{}{} | {}%",
+        "{} file{} | +{} -{}{} | {}%",
         file_count,
         if file_count == 1 { "" } else { "s" },
-        line_count,
-        if line_count == 1 { "" } else { "s" },
+        additions,
+        deletions,
         mode,
         app.scroll_percentage()
     );
@@ -45,6 +46,63 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
     } else {
         2
     }
+}
+
+/// Build stats spans with colored +/- counts
+fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
+    let file_count = app.files.len();
+    let additions = app.additions_count();
+    let deletions = app.deletions_count();
+    let mode = match app.view_mode {
+        crate::app::ViewMode::Full => "",
+        crate::app::ViewMode::Context => " [context]",
+        crate::app::ViewMode::ChangesOnly => " [changes]",
+    };
+
+    vec![
+        Span::styled(
+            format!("{} file{} | ", file_count, if file_count == 1 { "" } else { "s" }),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled(format!("+{}", additions), Style::default().fg(Color::LightGreen)),
+        Span::styled(" ", Style::default().fg(Color::Cyan)),
+        Span::styled(format!("-{}", deletions), Style::default().fg(Color::Red)),
+        Span::styled(
+            format!("{} | {}%", mode, app.scroll_percentage()),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]
+}
+
+/// Build full status spans (branch info + stats) with colored +/- counts
+fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
+    let branch_info = match &app.current_branch {
+        Some(b) => format!("{} vs {}", b, app.base_branch),
+        None => format!("HEAD vs {}", app.base_branch),
+    };
+
+    let file_count = app.files.len();
+    let additions = app.additions_count();
+    let deletions = app.deletions_count();
+    let mode = match app.view_mode {
+        crate::app::ViewMode::Full => "",
+        crate::app::ViewMode::Context => " [context]",
+        crate::app::ViewMode::ChangesOnly => " [changes]",
+    };
+
+    vec![
+        Span::styled(
+            format!("{} | {} file{} | ", branch_info, file_count, if file_count == 1 { "" } else { "s" }),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled(format!("+{}", additions), Style::default().fg(Color::LightGreen)),
+        Span::styled(" ", Style::default().fg(Color::Cyan)),
+        Span::styled(format!("-{}", deletions), Style::default().fg(Color::Red)),
+        Span::styled(
+            format!("{} | {}%", mode, app.scroll_percentage()),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]
 }
 
 /// Truncate a string with ellipsis if it exceeds max_len (char count, not bytes)
@@ -70,7 +128,8 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     // Get status components
     let file_count = app.files.len();
-    let line_count = app.changed_line_count();
+    let additions = app.additions_count();
+    let deletions = app.deletions_count();
     let mode = match app.view_mode {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
@@ -78,11 +137,11 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let stats = format!(
-        "{} file{} | {} line{}{} | {}%",
+        "{} file{} | +{} -{}{} | {}%",
         file_count,
         if file_count == 1 { "" } else { "s" },
-        line_count,
-        if line_count == 1 { "" } else { "s" },
+        additions,
+        deletions,
         mode,
         app.scroll_percentage()
     );
@@ -126,7 +185,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         };
 
         let line2_content = if stats.len() <= width {
-            Line::from(Span::styled(&stats, Style::default().fg(Color::Cyan)))
+            Line::from(build_stats_spans(app))
         } else {
             let truncated = truncate_with_ellipsis(&stats, width);
             Line::from(Span::styled(truncated, Style::default().fg(Color::Cyan)))
@@ -139,24 +198,22 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let line = if full_status.len() + help.len() + 2 <= width {
             // Full status + help fit
             let padding = width.saturating_sub(full_status.len() + help.len());
-            Line::from(vec![
-                Span::styled(&full_status, Style::default().fg(Color::Cyan)),
-                Span::raw(" ".repeat(padding)),
-                Span::styled(help, Style::default().fg(Color::DarkGray)),
-            ])
+            let mut spans = build_full_status_spans(app);
+            spans.push(Span::raw(" ".repeat(padding)));
+            spans.push(Span::styled(help, Style::default().fg(Color::DarkGray)));
+            Line::from(spans)
         } else if full_status.len() + help_short.len() + 2 <= width {
             // Full status + short help fit
             let padding = width.saturating_sub(full_status.len() + help_short.len());
-            Line::from(vec![
-                Span::styled(&full_status, Style::default().fg(Color::Cyan)),
-                Span::raw(" ".repeat(padding)),
-                Span::styled(help_short, Style::default().fg(Color::DarkGray)),
-            ])
+            let mut spans = build_full_status_spans(app);
+            spans.push(Span::raw(" ".repeat(padding)));
+            spans.push(Span::styled(help_short, Style::default().fg(Color::DarkGray)));
+            Line::from(spans)
         } else if full_status.len() <= width {
             // Just status fits
-            Line::from(Span::styled(&full_status, Style::default().fg(Color::Cyan)))
+            Line::from(build_full_status_spans(app))
         } else {
-            // Need to truncate - try without branch info first, then truncate branch
+            // Need to truncate - fall back to plain cyan (truncation loses coloring)
             if stats.len() + 3 <= width {
                 // Show truncated branch + stats
                 let max_branch_len = width.saturating_sub(stats.len() + 4); // " | " + some branch
