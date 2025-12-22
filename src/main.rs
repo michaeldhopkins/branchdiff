@@ -71,6 +71,11 @@ fn main() -> Result<()> {
         let mut app = app::App::new(repo_root)?;
         app.collapsed_files.clear();
         app.view_mode = app::ViewMode::Full;
+        for line in &mut app.lines {
+            if line.old_content.is_some() {
+                line.ensure_inline_spans();
+            }
+        }
         print::print_diff(&app)?;
         return Ok(());
     }
