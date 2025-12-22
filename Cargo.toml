@@ -19,6 +19,7 @@ anyhow = "1"
 similar = { version = "2", features = ["inline"] }
 arboard = "2"
 rayon = "1.10"
+ignore = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

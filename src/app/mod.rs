@@ -48,6 +48,7 @@ use anyhow::Result;
 
 use crate::diff::{DiffLine, FileDiff};
 use crate::git;
+use crate::gitignore::GitignoreFilter;
 use crate::ui::ScreenRowInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -102,13 +103,17 @@ pub struct App {
     pub needs_inline_spans: bool,
     /// Timestamp when path was last copied (for flash feedback)
     pub path_copied_at: Option<std::time::Instant>,
+    /// Gitignore filter for file change events
+    pub gitignore_filter: GitignoreFilter,
 }
 
 impl App {
     /// Create an App instance for benchmarking with pre-built lines
     pub fn new_for_bench(lines: Vec<DiffLine>) -> Self {
+        let repo_path = PathBuf::from("/bench");
         Self {
-            repo_path: PathBuf::from("/bench"),
+            gitignore_filter: GitignoreFilter::new(&repo_path),
+            repo_path,
             base_branch: "main".to_string(),
             merge_base: "bench".to_string(),
             current_branch: Some("feature".to_string()),
@@ -143,6 +148,8 @@ impl App {
         let current_branch = git::get_current_branch(&repo_path)
             .unwrap_or(None);
 
+        let gitignore_filter = GitignoreFilter::new(&repo_path);
+
         let mut app = Self {
             repo_path,
             base_branch,
@@ -165,6 +172,7 @@ impl App {
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
             path_copied_at: None,
+            gitignore_filter,
         };
 
         app.refresh()?;
@@ -362,8 +370,10 @@ mod tests {
 
     /// Helper to create a test app with synthetic lines
     fn create_test_app(lines: Vec<DiffLine>) -> App {
+        let repo_path = std::path::PathBuf::from("/tmp/test");
         App {
-            repo_path: std::path::PathBuf::from("/tmp/test"),
+            gitignore_filter: GitignoreFilter::new(&repo_path),
+            repo_path,
             base_branch: "main".to_string(),
             merge_base: "abc123".to_string(),
             current_branch: Some("feature".to_string()),
@@ -423,8 +433,10 @@ mod tests {
         let lines: Vec<DiffLine> = files.iter()
             .flat_map(|f| f.lines.clone())
             .collect();
+        let repo_path = std::path::PathBuf::from("/tmp/test");
         App {
-            repo_path: std::path::PathBuf::from("/tmp/test"),
+            gitignore_filter: GitignoreFilter::new(&repo_path),
+            repo_path,
             base_branch: "main".to_string(),
             merge_base: "abc123".to_string(),
             current_branch: Some("feature".to_string()),

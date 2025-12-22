@@ -738,6 +738,7 @@ mod tests {
         use crate::app::{App, ViewMode};
         use crate::diff::{DiffLine, FileDiff};
         use std::path::PathBuf;
+        use crate::gitignore::GitignoreFilter;
 
         let mut files = Vec::new();
         for i in 0..file_count {
@@ -746,8 +747,10 @@ mod tests {
             });
         }
 
+        let repo_path = PathBuf::from("/tmp/test");
         App {
-            repo_path: PathBuf::from("/tmp/test"),
+            gitignore_filter: GitignoreFilter::new(&repo_path),
+            repo_path,
             base_branch: base_branch.to_string(),
             merge_base: "abc123".to_string(),
             current_branch: current_branch.map(|s| s.to_string()),
