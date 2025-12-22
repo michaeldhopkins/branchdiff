@@ -72,27 +72,28 @@ impl App {
     /// aligns with the bottom of the viewport
     pub fn go_to_bottom(&mut self) {
         let all_lines = self.displayable_lines();
-        if all_lines.is_empty() {
-            self.scroll_offset = 0;
-            return;
+        self.scroll_offset = self.max_scroll_offset(&all_lines);
+    }
+
+    /// Find the maximum valid scroll offset for a set of lines
+    fn max_scroll_offset(&self, lines: &[DiffLine]) -> usize {
+        if lines.is_empty() {
+            return 0;
         }
 
-        // Calculate total screen rows if we showed all lines
-        let total_rows: usize = all_lines.iter()
+        let total_rows: usize = lines.iter()
             .map(|l| self.wrapped_line_height(l))
             .sum();
 
         if total_rows <= self.viewport_height {
-            self.scroll_offset = 0;
-            return;
+            return 0;
         }
 
-        // Find the scroll offset where the viewport ends at the last line
         // Work backwards from the end to find how many logical lines fit in viewport
         let mut rows_from_end = 0;
         let mut lines_from_end = 0;
 
-        for line in all_lines.iter().rev() {
+        for line in lines.iter().rev() {
             let line_height = self.wrapped_line_height(line);
             if rows_from_end + line_height > self.viewport_height {
                 break;
@@ -101,7 +102,7 @@ impl App {
             lines_from_end += 1;
         }
 
-        self.scroll_offset = all_lines.len().saturating_sub(lines_from_end);
+        lines.len().saturating_sub(lines_from_end)
     }
 
     /// Set viewport height (called during rendering)
@@ -113,35 +114,7 @@ impl App {
     /// Clamp scroll offset to valid range (accounting for line wrapping)
     pub(super) fn clamp_scroll(&mut self) {
         let all_lines = self.displayable_lines();
-        if all_lines.is_empty() {
-            self.scroll_offset = 0;
-            return;
-        }
-
-        // Calculate max scroll: the scroll offset where last line ends at bottom
-        let total_rows: usize = all_lines.iter()
-            .map(|l| self.wrapped_line_height(l))
-            .sum();
-
-        if total_rows <= self.viewport_height {
-            self.scroll_offset = 0;
-            return;
-        }
-
-        // Find max scroll offset (same logic as go_to_bottom)
-        let mut rows_from_end = 0;
-        let mut lines_from_end = 0;
-
-        for line in all_lines.iter().rev() {
-            let line_height = self.wrapped_line_height(line);
-            if rows_from_end + line_height > self.viewport_height {
-                break;
-            }
-            rows_from_end += line_height;
-            lines_from_end += 1;
-        }
-
-        let max_scroll = all_lines.len().saturating_sub(lines_from_end);
+        let max_scroll = self.max_scroll_offset(&all_lines);
         self.scroll_offset = self.scroll_offset.min(max_scroll);
     }
 
