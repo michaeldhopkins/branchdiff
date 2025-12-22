@@ -4,6 +4,8 @@ use super::{App, ViewMode};
 
 impl App {
     /// Filter out lines belonging to collapsed files (keep headers)
+    /// Used only by displayable_lines() for testing
+    #[cfg(test)]
     fn filter_collapsed(&self, lines: Vec<DiffLine>) -> Vec<DiffLine> {
         if self.collapsed_files.is_empty() {
             return lines;
@@ -71,12 +73,6 @@ impl App {
                 LineSource::DeletedBase | LineSource::DeletedCommitted | LineSource::DeletedStaged
             )
         }).count()
-    }
-
-    #[deprecated(note = "Use FrameContext::item_count() instead")]
-    #[allow(deprecated)]
-    pub(super) fn displayable_line_count(&self) -> usize {
-        self.displayable_lines().len()
     }
 
     /// Compute which original line indices are visible in context mode
@@ -163,6 +159,8 @@ impl App {
         (result, index_map)
     }
 
+    /// For testing; production code uses compute_context_items()
+    #[cfg(test)]
     pub(super) fn build_context_lines(&self) -> Vec<DiffLine> {
         self.build_context_lines_with_mapping().0
     }
@@ -184,7 +182,8 @@ impl App {
         }).cloned().collect()
     }
 
-    #[deprecated(note = "Use FrameContext instead for better performance")]
+    /// For testing; production code uses compute_displayable_items() or FrameContext
+    #[cfg(test)]
     pub fn displayable_lines(&self) -> Vec<DiffLine> {
         let lines = match self.view_mode {
             ViewMode::Full => self.lines.clone(),
