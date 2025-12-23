@@ -71,12 +71,12 @@ impl DiffLine {
     }
 
     pub fn ensure_inline_spans(&mut self) {
-        if self.inline_spans.is_empty() {
-            if let Some(ref old) = self.old_content {
-                let source = self.change_source.unwrap_or(self.source);
-                let result = compute_inline_diff_merged(old, &self.content, source);
-                self.inline_spans = result.spans;
-            }
+        if self.inline_spans.is_empty()
+            && let Some(ref old) = self.old_content
+        {
+            let source = self.change_source.unwrap_or(self.source);
+            let result = compute_inline_diff_merged(old, &self.content, source);
+            self.inline_spans = result.spans;
         }
     }
 
@@ -268,10 +268,10 @@ fn collect_canceled_staged(
 
 fn find_insertion_position(positions: &[Option<usize>], target_idx: usize) -> usize {
     for (i, &pos) in positions.iter().enumerate().rev() {
-        if let Some(p) = pos {
-            if p < target_idx {
-                return i + 1;
-            }
+        if let Some(p) = pos
+            && p < target_idx
+        {
+            return i + 1;
         }
     }
     positions.len()
@@ -310,24 +310,27 @@ fn check_file_deletion(
     working_content: Option<&str>,
 ) -> Option<FileDiff> {
     // Unstaged deletion: file exists in index but not working tree
-    if working_content.is_none() {
-        if let Some(content) = index_content {
-            return Some(build_deletion_diff(path, content, LineSource::DeletedStaged));
-        }
+    if working_content.is_none()
+        && let Some(content) = index_content
+    {
+        return Some(build_deletion_diff(path, content, LineSource::DeletedStaged));
     }
 
     // Staged deletion: file exists in HEAD but not in index or working
-    if index_content.is_none() && working_content.is_none() {
-        if let Some(content) = head_content {
-            return Some(build_deletion_diff(path, content, LineSource::DeletedCommitted));
-        }
+    if index_content.is_none()
+        && working_content.is_none()
+        && let Some(content) = head_content
+    {
+        return Some(build_deletion_diff(path, content, LineSource::DeletedCommitted));
     }
 
     // Committed deletion: file exists in base but not in HEAD/index/working
-    if head_content.is_none() && index_content.is_none() && working_content.is_none() {
-        if let Some(content) = base_content {
-            return Some(build_deletion_diff(path, content, LineSource::DeletedBase));
-        }
+    if head_content.is_none()
+        && index_content.is_none()
+        && working_content.is_none()
+        && let Some(content) = base_content
+    {
+        return Some(build_deletion_diff(path, content, LineSource::DeletedBase));
     }
 
     None
@@ -391,25 +394,23 @@ pub fn compute_file_diff_v2(
     let mut base_to_working: Vec<Option<usize>> = vec![None; base_lines.len()];
 
     for working_idx in 0..working_lines.len() {
-        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
-            if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
-                if let Some(base_idx) = head_from_base.get(head_idx).copied().flatten() {
-                    base_to_working[base_idx] = Some(working_idx);
-                }
-            }
+        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
+            && let Some(head_idx) = index_from_head.get(index_idx).copied().flatten()
+            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
+        {
+            base_to_working[base_idx] = Some(working_idx);
         }
     }
 
     // Modified base lines should not show as deletions - they're merged into inline diffs
     for (head_idx, (base_idx, _)) in &base_head_mods {
         for working_idx in 0..working_lines.len() {
-            if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
-                if let Some(h_idx) = index_from_head.get(index_idx).copied().flatten() {
-                    if h_idx == *head_idx {
-                        base_to_working[*base_idx] = Some(working_idx);
-                        break;
-                    }
-                }
+            if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
+                && let Some(h_idx) = index_from_head.get(index_idx).copied().flatten()
+                && h_idx == *head_idx
+            {
+                base_to_working[*base_idx] = Some(working_idx);
+                break;
             }
         }
     }
@@ -426,10 +427,10 @@ pub fn compute_file_diff_v2(
     }
 
     for (working_idx, (index_idx, _)) in &index_working_mods {
-        if let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten() {
-            if let Some(base_idx) = head_from_base.get(head_idx).copied().flatten() {
-                base_to_working[base_idx] = Some(*working_idx);
-            }
+        if let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten()
+            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
+        {
+            base_to_working[base_idx] = Some(*working_idx);
         }
     }
 
@@ -471,20 +472,18 @@ pub fn compute_file_diff_v2(
 
     // Find base position for a working line (via provenance or modification maps)
     let get_working_base_pos = |working_idx: usize| -> Option<usize> {
-        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
-            if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
-                if let Some(base_idx) = head_from_base.get(head_idx).copied().flatten() {
-                    return Some(base_idx);
-                }
-            }
+        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
+            && let Some(head_idx) = index_from_head.get(index_idx).copied().flatten()
+            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
+        {
+            return Some(base_idx);
         }
 
-        if let Some((index_idx, _)) = index_working_mods.get(&working_idx) {
-            if let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten() {
-                if let Some(base_idx) = head_from_base.get(head_idx).copied().flatten() {
-                    return Some(base_idx);
-                }
-            }
+        if let Some((index_idx, _)) = index_working_mods.get(&working_idx)
+            && let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten()
+            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
+        {
+            return Some(base_idx);
         }
 
         None
@@ -492,16 +491,16 @@ pub fn compute_file_diff_v2(
 
     // Find head position for a working line (via provenance or modification maps)
     let get_working_head_idx = |working_idx: usize| -> Option<usize> {
-        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
-            if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
-                return Some(head_idx);
-            }
+        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
+            && let Some(head_idx) = index_from_head.get(index_idx).copied().flatten()
+        {
+            return Some(head_idx);
         }
 
-        if let Some((index_idx, _)) = index_working_mods.get(&working_idx) {
-            if let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten() {
-                return Some(head_idx);
-            }
+        if let Some((index_idx, _)) = index_working_mods.get(&working_idx)
+            && let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten()
+        {
+            return Some(head_idx);
         }
 
         None

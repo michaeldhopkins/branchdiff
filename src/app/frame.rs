@@ -149,10 +149,10 @@ impl FrameContext {
     /// Find the next file header starting from the given display index
     pub fn find_next_file_header(&self, app: &App, start: usize) -> Option<usize> {
         for (i, item) in self.items.iter().enumerate().skip(start + 1) {
-            if let DisplayableItem::Line(idx) = item {
-                if app.lines[*idx].source == LineSource::FileHeader {
-                    return Some(i);
-                }
+            if let DisplayableItem::Line(idx) = item
+                && app.lines[*idx].source == LineSource::FileHeader
+            {
+                return Some(i);
             }
         }
         None
@@ -177,10 +177,10 @@ impl FrameContext {
         };
 
         for i in (0..=search_start).rev() {
-            if let DisplayableItem::Line(idx) = self.items[i] {
-                if app.lines[idx].source == LineSource::FileHeader {
-                    return Some(i);
-                }
+            if let DisplayableItem::Line(idx) = self.items[i]
+                && app.lines[idx].source == LineSource::FileHeader
+            {
+                return Some(i);
             }
         }
         None

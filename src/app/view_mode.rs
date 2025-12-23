@@ -317,10 +317,10 @@ impl App {
                         return Some(idx);
                     }
                     for delta in 1..index_map.len() {
-                        if target_pos >= delta {
-                            if let Some(Some(idx)) = index_map.get(target_pos - delta) {
-                                return Some(*idx);
-                            }
+                        if target_pos >= delta
+                            && let Some(Some(idx)) = index_map.get(target_pos - delta)
+                        {
+                            return Some(*idx);
                         }
                         if let Some(Some(idx)) = index_map.get(target_pos + delta) {
                             return Some(*idx);
