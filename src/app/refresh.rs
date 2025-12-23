@@ -7,6 +7,7 @@ use rayon::prelude::*;
 
 use crate::diff::{compute_file_diff_v2, DiffLine, FileDiff, LineSource};
 use crate::git;
+use crate::limits::DiffMetrics;
 
 const PARALLEL_THRESHOLD: usize = 4;
 
@@ -16,6 +17,7 @@ pub struct RefreshResult {
     pub lines: Vec<DiffLine>,
     pub merge_base: String,
     pub current_branch: Option<String>,
+    pub metrics: DiffMetrics,
 }
 
 enum FileProcessResult {
@@ -158,11 +160,17 @@ pub fn compute_refresh(
 
     let current_branch = git::get_current_branch(repo_path).unwrap_or(None);
 
+    let metrics = DiffMetrics {
+        total_lines: lines.len(),
+        file_count: files.len(),
+    };
+
     Ok(RefreshResult {
         files,
         lines,
         merge_base,
         current_branch,
+        metrics,
     })
 }
 
