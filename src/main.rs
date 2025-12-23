@@ -97,7 +97,8 @@ fn main() -> Result<()> {
 
     // Setup file watcher (only watch non-ignored directories)
     let (file_tx, file_rx) = mpsc::channel();
-    let mut debouncer = new_debouncer(Duration::from_millis(20), file_tx)?;
+    // 100ms debounce balances responsiveness with efficiency during rapid saves
+    let mut debouncer = new_debouncer(Duration::from_millis(100), file_tx)?;
 
     let watcher_metrics = setup_watcher(debouncer.watcher(), &repo_root, &system_limits)?;
 

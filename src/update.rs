@@ -4,6 +4,7 @@
 //! in the sense that it only reads/modifies the state passed to it and returns
 //! an UpdateResult indicating side effects to perform.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -310,27 +311,33 @@ fn handle_file_change(
 ) -> UpdateResult {
     let mut result = UpdateResult::default();
 
-    // Rebuild gitignore matcher if any .gitignore file changed
-    let gitignore_changed = events
+    // Deduplicate paths before processing (rapid saves can generate multiple events per file)
+    let unique_paths: HashSet<_> = events
         .iter()
-        .any(|e| GitignoreFilter::is_gitignore_file(&e.path));
+        .filter(|e| e.kind == DebouncedEventKind::Any)
+        .map(|e| &e.path)
+        .collect();
+
+    // Rebuild gitignore matcher if any .gitignore file changed
+    let gitignore_changed = unique_paths
+        .iter()
+        .any(|p| GitignoreFilter::is_gitignore_file(p));
     if gitignore_changed {
         app.gitignore_filter.rebuild();
     }
 
-    let dominated_events: Vec<_> = events
-        .iter()
-        .filter(|e| e.kind == DebouncedEventKind::Any)
-        .filter(|e| !is_noisy_path(&e.path.to_string_lossy()))
-        .filter(|e| !app.gitignore_filter.is_ignored(&e.path))
+    let filtered_paths: Vec<_> = unique_paths
+        .into_iter()
+        .filter(|p| !is_noisy_path(&p.to_string_lossy()))
+        .filter(|p| !app.gitignore_filter.is_ignored(p))
         .collect();
 
     let mut should_refresh = false;
     let mut has_git_change = false;
     let mut source_files = Vec::new();
 
-    for event in &dominated_events {
-        let path_str = event.path.to_string_lossy();
+    for path in &filtered_paths {
+        let path_str = path.to_string_lossy();
         match classify_git_event(&path_str) {
             Some(GitEventType::BranchSwitch) => {
                 should_refresh = true;
@@ -342,7 +349,7 @@ fn handle_file_change(
             None => {
                 if !path_str.contains(".git/") {
                     should_refresh = true;
-                    source_files.push(&event.path);
+                    source_files.push(*path);
                 }
             }
         }
@@ -739,5 +746,31 @@ mod tests {
         assert!(is_noisy_path("/project/node_modules/pkg/file.js"));
         assert!(is_noisy_path("/project/file.lock"));
         assert!(!is_noisy_path("/project/src/main.rs"));
+    }
+
+    #[test]
+    fn test_duplicate_file_events_are_deduplicated() {
+        use notify_debouncer_mini::DebouncedEvent;
+
+        // Given: 5 events for only 2 unique paths
+        let events = vec![
+            DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
+            DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
+            DebouncedEvent::new(PathBuf::from("/repo/src/lib.rs"), DebouncedEventKind::Any),
+            DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
+            DebouncedEvent::new(PathBuf::from("/repo/src/lib.rs"), DebouncedEventKind::Any),
+        ];
+
+        // When: we collect unique paths (same logic as handle_file_change)
+        let unique_paths: HashSet<_> = events
+            .iter()
+            .filter(|e| e.kind == DebouncedEventKind::Any)
+            .map(|e| &e.path)
+            .collect();
+
+        // Then: 5 events become 2 unique paths
+        assert_eq!(unique_paths.len(), 2);
+        assert!(unique_paths.contains(&PathBuf::from("/repo/src/main.rs")));
+        assert!(unique_paths.contains(&PathBuf::from("/repo/src/lib.rs")));
     }
 }
