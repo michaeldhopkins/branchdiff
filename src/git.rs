@@ -130,11 +130,11 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
 
     // 1. Get committed changes (merge-base to HEAD)
     // Skip if merge_base is empty (no commits yet)
-    if !merge_base.is_empty() {
-        if let Ok(committed) = get_diff_files(repo_path, merge_base, "HEAD") {
-            for path in committed {
-                files.insert(path);
-            }
+    if !merge_base.is_empty()
+        && let Ok(committed) = get_diff_files(repo_path, merge_base, "HEAD")
+    {
+        for path in committed {
+            files.insert(path);
         }
     }
 

@@ -76,33 +76,32 @@ where
         }
 
         LineSource::Committed => {
-            if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
-                if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
-                    if let Some((_base_idx, old_content)) = base_head_mods.get(&head_idx) {
-                        return DiffLine::new(LineSource::Base, content, ' ', Some(line_num))
-                            .with_file_path(path)
-                            .with_old_content(old_content)
-                            .with_change_source(LineSource::Committed);
-                    }
-                }
+            if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
+                && let Some(head_idx) = index_from_head.get(index_idx).copied().flatten()
+                && let Some((_base_idx, old_content)) = base_head_mods.get(&head_idx)
+            {
+                return DiffLine::new(LineSource::Base, content, ' ', Some(line_num))
+                    .with_file_path(path)
+                    .with_old_content(old_content)
+                    .with_change_source(LineSource::Committed);
             }
             default_line()
         }
 
         LineSource::Staged => {
-            if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
-                if let Some((_head_idx, old_content)) = head_index_mods.get(&index_idx) {
-                    let original_source = if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
-                        trace_head_source(head_idx)
-                    } else {
-                        LineSource::Base
-                    };
+            if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
+                && let Some((_head_idx, old_content)) = head_index_mods.get(&index_idx)
+            {
+                let original_source = if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
+                    trace_head_source(head_idx)
+                } else {
+                    LineSource::Base
+                };
 
-                    return DiffLine::new(original_source, content, ' ', Some(line_num))
-                        .with_file_path(path)
-                        .with_old_content(old_content)
-                        .with_change_source(LineSource::Staged);
-                }
+                return DiffLine::new(original_source, content, ' ', Some(line_num))
+                    .with_file_path(path)
+                    .with_old_content(old_content)
+                    .with_change_source(LineSource::Staged);
             }
             default_line()
         }

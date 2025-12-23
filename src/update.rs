@@ -392,14 +392,14 @@ fn handle_fetch(
         app.conflict_warning = None;
     }
 
-    if let Some(new_base) = fetch_result.new_merge_base {
-        if new_base != app.merge_base {
-            app.merge_base = new_base;
-            if refresh_state.is_idle() {
-                result.refresh = RefreshTrigger::Full;
-            } else {
-                refresh_state.mark_pending();
-            }
+    if let Some(new_base) = fetch_result.new_merge_base
+        && new_base != app.merge_base
+    {
+        app.merge_base = new_base;
+        if refresh_state.is_idle() {
+            result.refresh = RefreshTrigger::Full;
+        } else {
+            refresh_state.mark_pending();
         }
     }
 
@@ -425,10 +425,10 @@ fn handle_tick(
     }
 
     // Watchdog: reset stuck refresh
-    if let Some(started) = refresh_state.started_at() {
-        if started.elapsed() >= config.refresh_watchdog_timeout {
-            result.refresh = RefreshTrigger::Full;
-        }
+    if let Some(started) = refresh_state.started_at()
+        && started.elapsed() >= config.refresh_watchdog_timeout
+    {
+        result.refresh = RefreshTrigger::Full;
     }
 
     // Periodic fallback refresh
