@@ -375,10 +375,10 @@ fn collect_messages(
     }
 
     // Check for file change events
-    if let Ok(Ok(events)) = file_events.try_recv() {
-        if !events.is_empty() {
-            messages.push(Message::FileChanged(events));
-        }
+    if let Ok(Ok(events)) = file_events.try_recv()
+        && !events.is_empty()
+    {
+        messages.push(Message::FileChanged(events));
     }
 
     // Check for completed fetch results
@@ -486,10 +486,10 @@ fn watch_new_directories(
         }
 
         // Skip anything inside .git
-        if let Ok(relative) = path.strip_prefix(repo_root) {
-            if relative.components().any(|c| c.as_os_str() == ".git") {
-                continue;
-            }
+        if let Ok(relative) = path.strip_prefix(repo_root)
+            && relative.components().any(|c| c.as_os_str() == ".git")
+        {
+            continue;
         }
 
         // Check if this directory should be watched (respects gitignore)

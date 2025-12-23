@@ -213,16 +213,16 @@ impl App {
     /// Skips files that have been manually toggled by the user
     fn auto_collapse_files(&mut self) {
         for file in &self.files {
-            if let Some(first_line) = file.lines.first() {
-                if let Some(ref path) = first_line.file_path {
-                    if self.manually_toggled.contains(path) {
-                        continue;
-                    }
-                    let should_collapse = Self::should_auto_collapse(path)
-                        || Self::is_deleted_file(&first_line.content);
-                    if should_collapse {
-                        self.collapsed_files.insert(path.clone());
-                    }
+            if let Some(first_line) = file.lines.first()
+                && let Some(ref path) = first_line.file_path
+            {
+                if self.manually_toggled.contains(path) {
+                    continue;
+                }
+                let should_collapse = Self::should_auto_collapse(path)
+                    || Self::is_deleted_file(&first_line.content);
+                if should_collapse {
+                    self.collapsed_files.insert(path.clone());
                 }
             }
         }
@@ -337,10 +337,10 @@ impl App {
         let end = (start + self.viewport_height).min(items.len());
 
         for item in &items[start..end] {
-            if let DisplayableItem::Line(idx) = item {
-                if let Some(ref path) = self.lines[*idx].file_path {
-                    return Some(path.clone());
-                }
+            if let DisplayableItem::Line(idx) = item
+                && let Some(ref path) = self.lines[*idx].file_path
+            {
+                return Some(path.clone());
             }
         }
         None

@@ -27,12 +27,12 @@ impl App {
         }
 
         for (i, item) in items.iter().enumerate().skip(self.scroll_offset + 1) {
-            if let DisplayableItem::Line(idx) = item {
-                if self.lines[*idx].source == LineSource::FileHeader {
-                    self.scroll_offset = i;
-                    self.needs_inline_spans = true;
-                    return;
-                }
+            if let DisplayableItem::Line(idx) = item
+                && self.lines[*idx].source == LineSource::FileHeader
+            {
+                self.scroll_offset = i;
+                self.needs_inline_spans = true;
+                return;
             }
         }
     }
@@ -67,12 +67,12 @@ impl App {
         };
 
         for i in (0..=search_start).rev() {
-            if let DisplayableItem::Line(idx) = items[i] {
-                if self.lines[idx].source == LineSource::FileHeader {
-                    self.scroll_offset = i;
-                    self.needs_inline_spans = true;
-                    return;
-                }
+            if let DisplayableItem::Line(idx) = items[i]
+                && self.lines[idx].source == LineSource::FileHeader
+            {
+                self.scroll_offset = i;
+                self.needs_inline_spans = true;
+                return;
             }
         }
     }

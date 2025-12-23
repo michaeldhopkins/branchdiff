@@ -35,10 +35,10 @@ fn color_to_ansi(color: Color) -> Option<&'static str> {
 fn style_to_ansi(style: Style) -> String {
     let mut codes = Vec::new();
 
-    if let Some(fg) = style.fg {
-        if let Some(code) = color_to_ansi(fg) {
-            codes.push(code);
-        }
+    if let Some(fg) = style.fg
+        && let Some(code) = color_to_ansi(fg)
+    {
+        codes.push(code);
     }
 
     if style.add_modifier.contains(Modifier::BOLD) {
