@@ -59,7 +59,7 @@ fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
         crate::app::ViewMode::ChangesOnly => " [changes]",
     };
 
-    vec![
+    let mut spans = vec![
         Span::styled(
             format!("{} file{} | ", file_count, if file_count == 1 { "" } else { "s" }),
             Style::default().fg(Color::Cyan),
@@ -71,7 +71,17 @@ fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
             format!("{} | {}%", mode, app.scroll_percentage()),
             Style::default().fg(Color::Cyan),
         ),
-    ]
+    ];
+
+    // Add performance warning if present
+    if let Some(ref warning) = app.performance_warning {
+        spans.push(Span::styled(
+            format!(" [{}]", warning),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    spans
 }
 
 /// Build full status spans (branch info + stats) with colored +/- counts
@@ -90,7 +100,7 @@ fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
         crate::app::ViewMode::ChangesOnly => " [changes]",
     };
 
-    vec![
+    let mut spans = vec![
         Span::styled(
             format!("{} | {} file{} | ", branch_info, file_count, if file_count == 1 { "" } else { "s" }),
             Style::default().fg(Color::Cyan),
@@ -102,7 +112,17 @@ fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
             format!("{} | {}%", mode, app.scroll_percentage()),
             Style::default().fg(Color::Cyan),
         ),
-    ]
+    ];
+
+    // Add performance warning if present
+    if let Some(ref warning) = app.performance_warning {
+        spans.push(Span::styled(
+            format!(" [{}]", warning),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    spans
 }
 
 /// Truncate a string with ellipsis if it exceeds max_len (char count, not bytes)

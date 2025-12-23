@@ -2,6 +2,7 @@ mod print;
 
 use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, FrameContext};
 use branchdiff::input::{handle_event, AppAction};
+use branchdiff::limits;
 use branchdiff::message::{FetchResult, Message, RefreshOutcome, RefreshTrigger};
 use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
 use branchdiff::git;
@@ -85,6 +86,9 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Detect system limits for file watching
+    let system_limits = limits::SystemLimits::detect();
+
     // Create app and load initial state
     let mut app = App::new(repo_root.clone())?;
 
@@ -92,7 +96,12 @@ fn main() -> Result<()> {
     let (file_tx, file_rx) = mpsc::channel();
     let mut debouncer = new_debouncer(Duration::from_millis(20), file_tx)?;
 
-    setup_watcher(debouncer.watcher(), &repo_root)?;
+    let watcher_metrics = setup_watcher(debouncer.watcher(), &repo_root, &system_limits)?;
+
+    // Check for watch-related warnings
+    if let Some(warning) = system_limits.check_watch_warning(&watcher_metrics) {
+        app.performance_warning = Some(warning);
+    }
 
     // Setup refresh channel for background git operations
     let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshOutcome>();
@@ -387,7 +396,16 @@ fn collect_messages(
 ///
 /// Uses `ignore::WalkBuilder` to respect .gitignore rules, avoiding watches
 /// on large ignored directories like `target/` or `node_modules/`.
-fn setup_watcher(watcher: &mut (impl notify::Watcher + ?Sized), repo_root: &Path) -> Result<()> {
+///
+/// Returns metrics about how many directories were found and watched.
+fn setup_watcher(
+    watcher: &mut (impl notify::Watcher + ?Sized),
+    repo_root: &Path,
+    limits: &limits::SystemLimits,
+) -> Result<limits::WatcherMetrics> {
+    let mut metrics = limits::WatcherMetrics::default();
+    let mut watches_added = 0;
+
     // Watch specific .git paths we care about (for detecting commits, branch switches)
     let git_dir = repo_root.join(".git");
     if git_dir.exists() {
@@ -408,7 +426,7 @@ fn setup_watcher(watcher: &mut (impl notify::Watcher + ?Sized), repo_root: &Path
         }
     }
 
-    // Walk non-ignored directories and watch each one
+    // Walk non-ignored directories and watch each one (up to the limit)
     for entry in WalkBuilder::new(repo_root)
         .hidden(false) // Don't skip hidden files (but .git is handled separately)
         .git_ignore(true)
@@ -422,11 +440,23 @@ fn setup_watcher(watcher: &mut (impl notify::Watcher + ?Sized), repo_root: &Path
         .flatten()
     {
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            watcher.watch(entry.path(), NonRecursive)?;
+            metrics.directory_count += 1;
+
+            // Stop adding watches if we've hit the limit
+            if watches_added >= limits.max_recommended_watches {
+                metrics.skipped_count += 1;
+                continue;
+            }
+
+            if watcher.watch(entry.path(), NonRecursive).is_ok() {
+                watches_added += 1;
+            } else {
+                metrics.skipped_count += 1;
+            }
         }
     }
 
-    Ok(())
+    Ok(metrics)
 }
 
 /// Add watches for any newly created directories in file change events.
