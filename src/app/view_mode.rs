@@ -400,38 +400,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::diff::DiffLine;
-    use crate::gitignore::GitignoreFilter;
-    use std::collections::HashSet;
-    use std::path::PathBuf;
-
-    fn create_test_app(lines: Vec<DiffLine>) -> App {
-        let repo_path = PathBuf::from("/tmp/test");
-        App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            base_branch: "main".to_string(),
-            merge_base: "abc123".to_string(),
-            current_branch: Some("feature".to_string()),
-            files: Vec::new(),
-            lines,
-            scroll_offset: 0,
-            viewport_height: 10,
-            error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            conflict_warning: None,
-            performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-        }
-    }
+    use crate::test_support::TestAppBuilder;
 
     #[test]
     fn test_additions_count() {
@@ -441,7 +410,7 @@ mod tests {
             DiffLine::new(LineSource::Unstaged, "+unstaged".to_string(), '+', None),
             DiffLine::new(LineSource::Base, " context".to_string(), ' ', None),
         ];
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
         assert_eq!(app.additions_count(), 3);
     }
 
@@ -453,7 +422,7 @@ mod tests {
             DiffLine::new(LineSource::DeletedStaged, "-old3".to_string(), '-', None),
             DiffLine::new(LineSource::Base, " context".to_string(), ' ', None),
         ];
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
         assert_eq!(app.deletions_count(), 3);
     }
 
@@ -465,7 +434,7 @@ mod tests {
             DiffLine::new(LineSource::CanceledStaged, "+also_canceled".to_string(), '+', None),
             DiffLine::new(LineSource::DeletedBase, "-deleted".to_string(), '-', None),
         ];
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
         assert_eq!(app.additions_count(), 1);
         assert_eq!(app.deletions_count(), 1);
     }

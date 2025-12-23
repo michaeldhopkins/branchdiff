@@ -730,68 +730,44 @@ mod tests {
         assert_eq!(truncate_with_ellipsis("hello日本語", 7), "hell...");
     }
 
-    fn create_test_app_for_status_bar(
+    fn create_status_bar_test_app(
         current_branch: Option<&str>,
         base_branch: &str,
         file_count: usize,
     ) -> crate::app::App {
-        use crate::app::{App, ViewMode};
         use crate::diff::{DiffLine, FileDiff};
-        use std::path::PathBuf;
-        use crate::gitignore::GitignoreFilter;
+        use crate::test_support::TestAppBuilder;
 
-        let mut files = Vec::new();
-        for i in 0..file_count {
-            files.push(FileDiff {
+        let files: Vec<FileDiff> = (0..file_count)
+            .map(|i| FileDiff {
                 lines: vec![DiffLine::file_header(&format!("file{}.rs", i))],
-            });
-        }
+            })
+            .collect();
 
-        let repo_path = PathBuf::from("/tmp/test");
-        App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            base_branch: base_branch.to_string(),
-            merge_base: "abc123".to_string(),
-            current_branch: current_branch.map(|s| s.to_string()),
-            files,
-            lines: Vec::new(),
-            scroll_offset: 0,
-            viewport_height: 10,
-            error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            conflict_warning: None,
-            performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: std::collections::HashSet::new(),
-            manually_toggled: std::collections::HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-        }
+        TestAppBuilder::new()
+            .with_files(files)
+            .with_base_branch(base_branch)
+            .with_current_branch(current_branch)
+            .build()
     }
 
     #[test]
     fn test_status_bar_height_wide_terminal_uses_one_line() {
-        let app = create_test_app_for_status_bar(Some("feature-branch"), "main", 5);
+        let app = create_status_bar_test_app(Some("feature-branch"), "main", 5);
         // Wide terminal should use 1 line
         assert_eq!(status_bar_height(&app, 120), 1);
     }
 
     #[test]
     fn test_status_bar_height_narrow_terminal_uses_two_lines() {
-        let app = create_test_app_for_status_bar(Some("feature-branch"), "main", 5);
+        let app = create_status_bar_test_app(Some("feature-branch"), "main", 5);
         // Narrow terminal should use 2 lines
         assert_eq!(status_bar_height(&app, 40), 2);
     }
 
     #[test]
     fn test_status_bar_height_long_branch_name_needs_two_lines() {
-        let app = create_test_app_for_status_bar(
+        let app = create_status_bar_test_app(
             Some("very-long-feature-branch-name-that-takes-space"),
             "main",
             5,
@@ -802,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_status_bar_height_no_current_branch_uses_head() {
-        let app = create_test_app_for_status_bar(None, "main", 5);
+        let app = create_status_bar_test_app(None, "main", 5);
         // "HEAD vs main" is shorter than a branch name
         // Should fit on one line with wide terminal
         assert_eq!(status_bar_height(&app, 120), 1);
@@ -810,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_status_bar_height_boundary_case() {
-        let app = create_test_app_for_status_bar(Some("feat"), "main", 1);
+        let app = create_status_bar_test_app(Some("feat"), "main", 1);
 
         let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
         let branch_info = "feat vs main";
