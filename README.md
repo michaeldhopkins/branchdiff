@@ -13,6 +13,11 @@ Terminal UI showing unified diff of current branch vs main/master.
 - Mouse support for scrolling and text selection
 - Copy selection to clipboard
 
+## Requirements
+
+- **Git**: Works with any reasonably modern git (1.7+). Some features require newer versions:
+  - Conflict detection (warning when base branch has diverged): Git 2.38+
+
 ## Installation
 
 ### Shell installer (macOS/Linux)

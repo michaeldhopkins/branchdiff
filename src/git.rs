@@ -3,6 +3,70 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 
+/// Git version required for merge-tree --write-tree (conflict detection)
+const MERGE_TREE_MIN_VERSION: (u32, u32) = (2, 38);
+
+/// Parsed git version
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl GitVersion {
+    /// Check if this version is at least the given major.minor
+    pub fn at_least(&self, major: u32, minor: u32) -> bool {
+        (self.major, self.minor) >= (major, minor)
+    }
+}
+
+impl std::fmt::Display for GitVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// Detect the installed git version
+pub fn get_git_version() -> Result<GitVersion> {
+    let output = Command::new("git")
+        .args(["--version"])
+        .output()
+        .context("Failed to run git --version")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("git --version failed: {}", stderr.trim()));
+    }
+
+    let version_str = String::from_utf8_lossy(&output.stdout);
+    parse_git_version(&version_str)
+}
+
+/// Parse git version from "git version X.Y.Z" string
+fn parse_git_version(s: &str) -> Result<GitVersion> {
+    // Format: "git version 2.34.1" or "git version 2.50.1 (Apple Git-155)"
+    let version_part = s
+        .trim()
+        .strip_prefix("git version ")
+        .ok_or_else(|| anyhow!("Unexpected git version format: {}", s))?;
+
+    // Take the first space-separated part (handles Apple Git suffix)
+    let version_num = version_part.split_whitespace().next().unwrap_or(version_part);
+
+    let parts: Vec<&str> = version_num.split('.').collect();
+    if parts.len() < 2 {
+        return Err(anyhow!("Cannot parse git version: {}", s));
+    }
+
+    let major = parts[0].parse().context("Invalid major version")?;
+    let minor = parts[1].parse().context("Invalid minor version")?;
+    let patch = parts.get(2).and_then(|p| p.parse().ok()).unwrap_or(0);
+
+    Ok(GitVersion { major, minor, patch })
+}
+
+
 /// Get the root directory of the git repository
 pub fn get_repo_root(path: &Path) -> Result<std::path::PathBuf> {
     let output = Command::new("git")
@@ -305,7 +369,14 @@ pub fn fetch_base_branch(repo_path: &Path, base_branch: &str) -> Result<()> {
     }
 }
 
-pub fn has_merge_conflicts(repo_path: &Path, base_branch: &str) -> Result<bool> {
+/// Check for merge conflicts using git merge-tree.
+/// Requires Git 2.38+ for --write-tree flag; returns Ok(false) on older versions.
+pub fn has_merge_conflicts(repo_path: &Path, base_branch: &str, git_version: &GitVersion) -> Result<bool> {
+    // merge-tree --write-tree requires Git 2.38+
+    if !git_version.at_least(MERGE_TREE_MIN_VERSION.0, MERGE_TREE_MIN_VERSION.1) {
+        return Ok(false);
+    }
+
     let remote_ref = format!("origin/{}", base_branch);
 
     let remote_exists = Command::new("git")
@@ -354,6 +425,115 @@ mod tests {
     use std::fs;
     use std::process::Command;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_parse_git_version_standard() {
+        let version = parse_git_version("git version 2.34.1").unwrap();
+        assert_eq!(version.major, 2);
+        assert_eq!(version.minor, 34);
+        assert_eq!(version.patch, 1);
+    }
+
+    #[test]
+    fn test_parse_git_version_apple() {
+        let version = parse_git_version("git version 2.50.1 (Apple Git-155)").unwrap();
+        assert_eq!(version.major, 2);
+        assert_eq!(version.minor, 50);
+        assert_eq!(version.patch, 1);
+    }
+
+    #[test]
+    fn test_parse_git_version_no_patch() {
+        let version = parse_git_version("git version 2.38").unwrap();
+        assert_eq!(version.major, 2);
+        assert_eq!(version.minor, 38);
+        assert_eq!(version.patch, 0);
+    }
+
+    #[test]
+    fn test_parse_git_version_windows() {
+        // Windows Git for Windows format
+        let version = parse_git_version("git version 2.39.2.windows.1").unwrap();
+        assert_eq!(version.major, 2);
+        assert_eq!(version.minor, 39);
+        // patch parsing stops at non-numeric suffix
+        assert_eq!(version.patch, 2);
+    }
+
+    #[test]
+    fn test_parse_git_version_ubuntu() {
+        // Ubuntu/Debian format: "2.34.1" is the version part before any suffix
+        // The split by '.' gives ["2", "34", "1", "ubuntu1"]
+        // patch = "1" parses fine
+        let version = parse_git_version("git version 2.34.1.ubuntu1").unwrap();
+        assert_eq!(version.major, 2);
+        assert_eq!(version.minor, 34);
+        assert_eq!(version.patch, 1);
+    }
+
+    #[test]
+    fn test_parse_git_version_with_newline() {
+        // Real output includes trailing newline
+        let version = parse_git_version("git version 2.34.1\n").unwrap();
+        assert_eq!(version.major, 2);
+        assert_eq!(version.minor, 34);
+        assert_eq!(version.patch, 1);
+    }
+
+    #[test]
+    fn test_parse_git_version_old_git() {
+        let version = parse_git_version("git version 1.8.0").unwrap();
+        assert_eq!(version.major, 1);
+        assert_eq!(version.minor, 8);
+        assert_eq!(version.patch, 0);
+    }
+
+    #[test]
+    fn test_parse_git_version_invalid_no_prefix() {
+        let result = parse_git_version("2.34.1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_git_version_invalid_empty() {
+        let result = parse_git_version("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_git_version_invalid_no_minor() {
+        let result = parse_git_version("git version 2");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_git_version_at_least() {
+        let v238 = GitVersion { major: 2, minor: 38, patch: 0 };
+        assert!(v238.at_least(2, 38));
+        assert!(v238.at_least(2, 37));
+        assert!(v238.at_least(2, 25));
+        assert!(!v238.at_least(2, 39));
+        assert!(!v238.at_least(3, 0));
+
+        // Test major version comparison
+        let v3 = GitVersion { major: 3, minor: 0, patch: 0 };
+        assert!(v3.at_least(2, 99));
+        assert!(v3.at_least(3, 0));
+        assert!(!v3.at_least(3, 1));
+    }
+
+    #[test]
+    fn test_git_version_display() {
+        let version = GitVersion { major: 2, minor: 38, patch: 1 };
+        assert_eq!(format!("{}", version), "2.38.1");
+    }
+
+    #[test]
+    fn test_get_git_version_succeeds() {
+        // Should succeed on any system with git installed
+        let version = get_git_version().unwrap();
+        assert!(version.major >= 1);
+    }
 
     #[test]
     fn test_parse_diff_line_added() {
@@ -517,7 +697,8 @@ mod tests {
     #[test]
     fn test_has_merge_conflicts_no_remote() {
         let temp = create_test_repo();
-        let result = has_merge_conflicts(temp.path(), "main");
+        let version = get_git_version().unwrap();
+        let result = has_merge_conflicts(temp.path(), "main", &version);
         assert!(result.is_ok());
         assert!(!result.unwrap());
     }
@@ -532,7 +713,8 @@ mod tests {
 
         fetch_base_branch(clone.path(), "main").unwrap();
 
-        let result = has_merge_conflicts(clone.path(), "main");
+        let version = get_git_version().unwrap();
+        let result = has_merge_conflicts(clone.path(), "main", &version);
         assert!(result.is_ok());
         assert!(!result.unwrap());
     }
@@ -551,9 +733,42 @@ mod tests {
 
         fetch_base_branch(clone.path(), "main").unwrap();
 
-        let result = has_merge_conflicts(clone.path(), "main");
+        let version = get_git_version().unwrap();
+        // Skip assertion if git < 2.38 (merge-tree --write-tree not available)
+        if version.at_least(2, 38) {
+            let result = has_merge_conflicts(clone.path(), "main", &version);
+            assert!(result.is_ok());
+            assert!(result.unwrap());
+        }
+    }
+
+    #[test]
+    fn test_has_merge_conflicts_skips_on_old_git() {
+        let temp = create_test_repo();
+        // Simulate old git version
+        let old_version = GitVersion { major: 2, minor: 30, patch: 0 };
+        let result = has_merge_conflicts(temp.path(), "main", &old_version);
         assert!(result.is_ok());
-        assert!(result.unwrap());
+        // Should return false (skip) on old git
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn test_has_merge_conflicts_version_boundary() {
+        let temp = create_test_repo();
+
+        // Git 2.37.x should skip (returns false)
+        let v237 = GitVersion { major: 2, minor: 37, patch: 99 };
+        let result = has_merge_conflicts(temp.path(), "main", &v237);
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "Git 2.37 should skip conflict detection");
+
+        // Git 2.38.0 should attempt detection (returns false here because no remote)
+        let v238 = GitVersion { major: 2, minor: 38, patch: 0 };
+        let result = has_merge_conflicts(temp.path(), "main", &v238);
+        assert!(result.is_ok());
+        // Still false because no remote, but it attempted the check
+        assert!(!result.unwrap());
     }
 
     #[test]
