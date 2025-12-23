@@ -25,7 +25,8 @@ use crossterm::{
 };
 use ignore::WalkBuilder;
 use notify::RecursiveMode::{NonRecursive, Recursive};
-use notify_debouncer_mini::new_debouncer;
+use notify::{PollWatcher, RecommendedWatcher};
+use notify_debouncer_mini::{new_debouncer_opt, Config as DebouncerConfig, Debouncer};
 use ratatui::prelude::*;
 
 #[derive(Parser)]
@@ -48,6 +49,21 @@ struct Cli {
     /// Run stress test for profiling (renders N frames with simulated input)
     #[arg(long, value_name = "FRAMES")]
     benchmark: Option<usize>,
+}
+
+/// Wrapper enum to hold either watcher type while keeping the debouncer alive.
+enum AnyDebouncer {
+    Recommended(Debouncer<RecommendedWatcher>),
+    Poll(Debouncer<PollWatcher>),
+}
+
+impl AnyDebouncer {
+    fn watcher(&mut self) -> &mut dyn notify::Watcher {
+        match self {
+            Self::Recommended(d) => d.watcher(),
+            Self::Poll(d) => d.watcher(),
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -95,10 +111,23 @@ fn main() -> Result<()> {
     // Create app and load initial state
     let mut app = App::new(repo_root.clone())?;
 
-    // Setup file watcher (only watch non-ignored directories)
+    // Setup file watcher with appropriate backend
+    // WSL's inotify is unreliable, so use polling there
     let (file_tx, file_rx) = mpsc::channel();
-    // 100ms debounce balances responsiveness with efficiency during rapid saves
-    let mut debouncer = new_debouncer(Duration::from_millis(100), file_tx)?;
+    let debouncer_config = DebouncerConfig::default()
+        .with_timeout(Duration::from_millis(100))
+        .with_notify_config(
+            notify::Config::default().with_poll_interval(Duration::from_millis(500)),
+        );
+
+    let mut debouncer = if limits::is_wsl() {
+        AnyDebouncer::Poll(new_debouncer_opt::<_, PollWatcher>(debouncer_config, file_tx)?)
+    } else {
+        AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(
+            debouncer_config,
+            file_tx,
+        )?)
+    };
 
     let watcher_metrics = setup_watcher(debouncer.watcher(), &repo_root, &system_limits)?;
 
@@ -527,4 +556,54 @@ fn is_directory_watchable(dir_path: &Path) -> bool {
         .build()
         .flatten()
         .any(|entry| entry.path() == dir_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_any_debouncer_poll_variant_creates_working_watcher() {
+        // Given: a channel for file events and a temp directory to watch
+        let (tx, _rx) = mpsc::channel();
+        let temp_dir = TempDir::new().unwrap();
+
+        let config = DebouncerConfig::default()
+            .with_timeout(Duration::from_millis(100))
+            .with_notify_config(
+                notify::Config::default().with_poll_interval(Duration::from_millis(500)),
+            );
+
+        // When: we create a Poll variant debouncer
+        let mut debouncer =
+            AnyDebouncer::Poll(new_debouncer_opt::<_, PollWatcher>(config, tx).unwrap());
+
+        // Then: we can watch a directory through the trait object
+        let result = debouncer.watcher().watch(temp_dir.path(), NonRecursive);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_any_debouncer_recommended_variant_creates_working_watcher() {
+        // Given: a channel for file events and a temp directory to watch
+        let (tx, _rx) = mpsc::channel();
+        let temp_dir = TempDir::new().unwrap();
+
+        let config = DebouncerConfig::default()
+            .with_timeout(Duration::from_millis(100))
+            .with_notify_config(
+                notify::Config::default().with_poll_interval(Duration::from_millis(500)),
+            );
+
+        // When: we create a Recommended variant debouncer
+        let mut debouncer = AnyDebouncer::Recommended(
+            new_debouncer_opt::<_, RecommendedWatcher>(config, tx).unwrap(),
+        );
+
+        // Then: we can watch a directory through the trait object
+        let result = debouncer.watcher().watch(temp_dir.path(), NonRecursive);
+        assert!(result.is_ok());
+    }
 }
