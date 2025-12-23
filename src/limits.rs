@@ -264,14 +264,7 @@ mod tests {
         assert!(!super::is_wsl());
     }
 
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn test_is_wsl_returns_bool_on_linux() {
-        // On Linux, is_wsl() checks /proc/version for "microsoft"
-        // We can't control the environment, but we can verify it returns a bool
-        let result = super::is_wsl();
-        // If we're in WSL, this returns true; otherwise false
-        // Either way, the function should work without panicking
-        assert!(result || !result); // Always true, just verifies it runs
-    }
+    // Note: No test for Linux because we can't control whether we're actually
+    // in WSL. The function reads /proc/version which we can't mock without
+    // significant complexity. The non-Linux test above provides coverage.
 }

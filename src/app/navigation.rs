@@ -389,39 +389,49 @@ mod tests {
     }
 
     #[test]
-    fn test_scroll_percentage_bounds() {
-        let lines: Vec<DiffLine> = (0..50)
-            .map(|i| base_line(&format!("line {}", i)))
-            .collect();
+    fn test_scroll_percentage_at_top_returns_zero() {
+        let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line {}", i))).collect();
         let mut app = create_test_app(lines);
         app.viewport_height = 10;
-
-        // At top: 0%
         app.scroll_offset = 0;
+
         assert_eq!(app.scroll_percentage(), 0);
+    }
 
-        // At bottom: 100%
-        app.scroll_offset = 40; // 50 - 10 = 40
+    #[test]
+    fn test_scroll_percentage_at_bottom_returns_100() {
+        let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line {}", i))).collect();
+        let mut app = create_test_app(lines);
+        app.viewport_height = 10;
+        app.scroll_offset = 40; // 50 lines - 10 viewport = 40 max scroll
+
         assert_eq!(app.scroll_percentage(), 100);
+    }
 
-        // Even if scroll_offset exceeds max
-        app.scroll_offset = 100;
-        assert!(
-            app.scroll_percentage() <= 100,
-            "scroll_percentage should never exceed 100, got {}",
-            app.scroll_percentage()
-        );
+    #[test]
+    fn test_scroll_percentage_capped_at_100() {
+        let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line {}", i))).collect();
+        let mut app = create_test_app(lines);
+        app.viewport_height = 10;
+        app.scroll_offset = 100; // Beyond max scroll
 
-        // Empty lines: 100%
-        let empty_app = create_test_app(vec![]);
-        assert_eq!(empty_app.scroll_percentage(), 100);
+        assert!(app.scroll_percentage() <= 100);
+    }
 
-        // Lines fit in viewport: 100%
-        let small_lines: Vec<DiffLine> = (0..5)
-            .map(|i| base_line(&format!("line {}", i)))
-            .collect();
-        let small_app = create_test_app(small_lines);
-        assert_eq!(small_app.scroll_percentage(), 100);
+    #[test]
+    fn test_scroll_percentage_empty_content_returns_100() {
+        let app = create_test_app(vec![]);
+
+        assert_eq!(app.scroll_percentage(), 100);
+    }
+
+    #[test]
+    fn test_scroll_percentage_content_fits_viewport_returns_100() {
+        let lines: Vec<DiffLine> = (0..5).map(|i| base_line(&format!("line {}", i))).collect();
+        let app = create_test_app(lines);
+        // viewport_height defaults to 10, so 5 lines fit
+
+        assert_eq!(app.scroll_percentage(), 100);
     }
 
     #[test]
