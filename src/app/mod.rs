@@ -93,6 +93,8 @@ pub struct App {
     pub content_width: usize,
     /// Warning message about merge conflicts (if any)
     pub conflict_warning: Option<String>,
+    /// Performance warning (large repo or diff)
+    pub performance_warning: Option<String>,
     /// Mapping from screen row index to logical line info (set during rendering)
     pub row_map: Vec<ScreenRowInfo>,
     /// Set of collapsed file paths (persists across refreshes)
@@ -129,6 +131,7 @@ impl App {
             line_num_width: 4,
             content_width: 120,
             conflict_warning: None,
+            performance_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
@@ -167,6 +170,7 @@ impl App {
             line_num_width: 0,
             content_width: 80,
             conflict_warning: None,
+            performance_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
@@ -389,6 +393,7 @@ mod tests {
             line_num_width: 0,
             content_width: 80,
             conflict_warning: None,
+            performance_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
@@ -452,6 +457,7 @@ mod tests {
             line_num_width: 0,
             content_width: 80,
             conflict_warning: None,
+            performance_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
@@ -1282,6 +1288,7 @@ mod tests {
             lines: new_lines.clone(),
             merge_base: "newbase123".to_string(),
             current_branch: Some("new-branch".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
         };
 
         app.apply_refresh_result(result);
@@ -1487,6 +1494,7 @@ mod tests {
             lines: vec![change_line("new")],
             merge_base: "abc".to_string(),
             current_branch: Some("feature".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
         };
         app.apply_refresh_result(result);
         assert!(app.needs_inline_spans(), "apply_refresh_result should mark dirty");

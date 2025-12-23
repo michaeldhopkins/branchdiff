@@ -14,6 +14,7 @@ use notify_debouncer_mini::DebouncedEventKind;
 use crate::app::App;
 use crate::gitignore::GitignoreFilter;
 use crate::input::AppAction;
+use crate::limits::DiffThresholds;
 use crate::message::{FetchResult, Message, RefreshOutcome, RefreshTrigger, UpdateResult};
 
 /// Timer state for periodic operations.
@@ -124,6 +125,7 @@ pub struct UpdateConfig {
     pub refresh_fallback_interval: Duration,
     pub refresh_watchdog_timeout: Duration,
     pub auto_fetch: bool,
+    pub diff_thresholds: DiffThresholds,
 }
 
 impl Default for UpdateConfig {
@@ -133,6 +135,7 @@ impl Default for UpdateConfig {
             refresh_fallback_interval: Duration::from_secs(5),
             refresh_watchdog_timeout: Duration::from_secs(10),
             auto_fetch: true,
+            diff_thresholds: DiffThresholds::default(),
         }
     }
 }
@@ -149,7 +152,7 @@ pub fn update(
     match msg {
         Message::Input(action) => handle_input(action, app, refresh_state),
         Message::RefreshCompleted(outcome) => {
-            handle_refresh(outcome, app, refresh_state, timers)
+            handle_refresh(outcome, app, refresh_state, timers, config)
         }
         Message::FileChanged(events) => {
             handle_file_change(events, app, refresh_state, repo_root)
@@ -227,11 +230,30 @@ fn handle_refresh(
     app: &mut App,
     refresh_state: &mut RefreshState,
     timers: &mut Timers,
+    config: &UpdateConfig,
 ) -> UpdateResult {
     let mut result = UpdateResult::default();
 
     match outcome {
         RefreshOutcome::Success(refresh_result) => {
+            // Check for diff-related warnings
+            let diff_warning = config.diff_thresholds.check_diff_warning(&refresh_result.metrics);
+
+            // Update performance warning (prefer watch warning if set, else use diff warning)
+            if app.performance_warning.as_ref().is_some_and(|w| w.contains("repo")) {
+                // Keep existing watch warning, but append diff warning if present
+                if let Some(dw) = diff_warning {
+                    app.performance_warning = Some(format!(
+                        "{} | {}",
+                        app.performance_warning.as_ref().unwrap(),
+                        dw
+                    ));
+                }
+            } else {
+                // Set or clear diff warning
+                app.performance_warning = diff_warning;
+            }
+
             app.apply_refresh_result(refresh_result);
             timers.last_refresh = Instant::now();
         }
@@ -446,6 +468,7 @@ mod tests {
             line_num_width: 0,
             content_width: 80,
             conflict_warning: None,
+            performance_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
@@ -514,9 +537,11 @@ mod tests {
             lines: vec![base_line("new content")],
             merge_base: "def456".to_string(),
             current_branch: Some("feature".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
         });
 
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers);
+        let config = UpdateConfig::default();
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config);
 
         assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(refresh_state.is_idle());
@@ -534,7 +559,8 @@ mod tests {
         let mut timers = Timers::default();
 
         let outcome = RefreshOutcome::Cancelled;
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers);
+        let config = UpdateConfig::default();
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config);
 
         assert_eq!(result.refresh, RefreshTrigger::Full);
         assert!(refresh_state.is_idle());

@@ -424,6 +424,7 @@ mod tests {
             line_num_width: 0,
             content_width: 80,
             conflict_warning: None,
+            performance_warning: None,
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
