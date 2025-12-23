@@ -1,7 +1,15 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+
+/// Maximum number of retries for transient git errors
+const MAX_RETRIES: u32 = 3;
+
+/// Base delay for exponential backoff (doubles each retry)
+const BASE_RETRY_DELAY_MS: u64 = 100;
 
 /// Git version required for merge-tree --write-tree (conflict detection)
 const MERGE_TREE_MIN_VERSION: (u32, u32) = (2, 38);
@@ -41,6 +49,42 @@ pub fn get_git_version() -> Result<GitVersion> {
 
     let version_str = String::from_utf8_lossy(&output.stdout);
     parse_git_version(&version_str)
+}
+
+/// Check if a git error is transient (retryable).
+/// Currently handles index.lock contention which occurs when another git process is running.
+fn is_transient_error(stderr: &str) -> bool {
+    stderr.contains("index.lock") || stderr.contains("Unable to create") && stderr.contains(".lock")
+}
+
+/// Run a git command with retry logic for transient errors.
+/// Uses exponential backoff: 100ms, 200ms, 400ms between retries.
+///
+/// Takes a closure that builds a fresh Command on each attempt, since Command
+/// is consumed by output().
+fn run_git_with_retry<F>(build_command: F) -> std::io::Result<Output>
+where
+    F: Fn() -> Command,
+{
+    for attempt in 0..=MAX_RETRIES {
+        let output = build_command().output()?;
+
+        if output.status.success() {
+            return Ok(output);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !is_transient_error(&stderr) || attempt == MAX_RETRIES {
+            return Ok(output);
+        }
+
+        // Exponential backoff before retry
+        let delay = Duration::from_millis(BASE_RETRY_DELAY_MS * (1 << attempt));
+        thread::sleep(delay);
+    }
+
+    // This is unreachable due to the loop structure, but satisfies the compiler
+    build_command().output()
 }
 
 /// Parse git version from "git version X.Y.Z" string
@@ -153,11 +197,12 @@ pub fn get_file_at_ref(repo_path: &Path, file_path: &str, git_ref: &str) -> Resu
         format!("{}:{}", git_ref, file_path)
     };
 
-    let output = Command::new("git")
-        .args(["show", &ref_path])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git show")?;
+    let output = run_git_with_retry(|| {
+        let mut cmd = Command::new("git");
+        cmd.args(["show", &ref_path]).current_dir(repo_path);
+        cmd
+    })
+    .context("Failed to run git show")?;
 
     if !output.status.success() {
         // File doesn't exist at this ref
@@ -204,11 +249,14 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
 
     // 2. Get staged changes (HEAD to index) and unstaged changes (index to working tree)
     // Use -uall to show individual files in untracked directories
-    let status_output = Command::new("git")
-        .args(["status", "--porcelain=v1", "-uall"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git status")?;
+    // Use retry logic to handle transient index.lock contention
+    let status_output = run_git_with_retry(|| {
+        let mut cmd = Command::new("git");
+        cmd.args(["status", "--porcelain=v1", "-uall"])
+            .current_dir(repo_path);
+        cmd
+    })
+    .context("Failed to run git status")?;
 
     if status_output.status.success() {
         let status_str = String::from_utf8_lossy(&status_output.stdout);
@@ -284,11 +332,13 @@ fn parse_diff_line(line: &str) -> Option<FileTransition> {
 
 /// Get files changed between two refs
 fn get_diff_files(repo_path: &Path, from: &str, to: &str) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args(["diff", "--name-status", from, to])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git diff --name-status")?;
+    let output = run_git_with_retry(|| {
+        let mut cmd = Command::new("git");
+        cmd.args(["diff", "--name-status", from, to])
+            .current_dir(repo_path);
+        cmd
+    })
+    .context("Failed to run git diff --name-status")?;
 
     if !output.status.success() {
         return Err(anyhow!(
@@ -886,5 +936,58 @@ mod tests {
         let changed = result.unwrap();
         let paths: Vec<&str> = changed.iter().map(|f| f.path.as_str()).collect();
         assert!(paths.contains(&"new_file.txt"));
+    }
+
+    #[test]
+    fn test_is_transient_error_index_lock() {
+        // index.lock is the most common transient error
+        assert!(is_transient_error(
+            "fatal: Unable to create '/path/.git/index.lock': File exists."
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_other_lock() {
+        // Other lock files should also be retried
+        assert!(is_transient_error(
+            "Unable to create '/path/.git/refs/heads/main.lock': File exists"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_error_not_lock() {
+        // Non-lock errors should not be retried
+        assert!(!is_transient_error("fatal: not a git repository"));
+        assert!(!is_transient_error("fatal: pathspec 'foo' did not match any files"));
+        assert!(!is_transient_error(""));
+    }
+
+    #[test]
+    fn test_run_git_with_retry_succeeds_on_first_attempt() {
+        // A simple git command that should succeed immediately
+        let output = run_git_with_retry(|| {
+            let mut cmd = Command::new("git");
+            cmd.args(["--version"]);
+            cmd
+        })
+        .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("git version"));
+    }
+
+    #[test]
+    fn test_run_git_with_retry_returns_failure_for_permanent_error() {
+        // A command that fails permanently (not transient) should return the error
+        let output = run_git_with_retry(|| {
+            let mut cmd = Command::new("git");
+            cmd.args(["rev-parse", "--verify", "nonexistent-branch-12345"]);
+            cmd
+        })
+        .unwrap();
+
+        // Should fail because branch doesn't exist
+        assert!(!output.status.success());
     }
 }
