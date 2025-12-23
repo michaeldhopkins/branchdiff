@@ -240,43 +240,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ViewMode;
-    use crate::gitignore::GitignoreFilter;
-    use std::collections::HashSet;
-    use std::path::PathBuf;
-
-    fn create_test_app(lines: Vec<DiffLine>) -> App {
-        let repo_path = PathBuf::from("/tmp/test");
-        App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            base_branch: "main".to_string(),
-            merge_base: "abc123".to_string(),
-            current_branch: Some("feature".to_string()),
-            files: Vec::new(),
-            lines,
-            scroll_offset: 0,
-            viewport_height: 10,
-            error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            conflict_warning: None,
-            performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-        }
-    }
-
-    fn base_line(content: &str) -> DiffLine {
-        DiffLine::new(LineSource::Base, content.to_string(), ' ', None)
-    }
+    use crate::test_support::{base_line, TestAppBuilder};
 
     #[test]
     fn test_next_file_jumps_to_header() {
@@ -287,7 +251,7 @@ mod tests {
             DiffLine::file_header("file2.rs"),
             base_line("line3"),
         ];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.scroll_offset = 0;
 
         app.next_file();
@@ -304,7 +268,7 @@ mod tests {
             DiffLine::file_header("file2.rs"),
             base_line("line3"),
         ];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.scroll_offset = 1;
 
         app.next_file();
@@ -318,7 +282,7 @@ mod tests {
             DiffLine::file_header("file1.rs"),
             base_line("line1"),
         ];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.scroll_offset = 0;
 
         app.next_file();
@@ -335,7 +299,7 @@ mod tests {
             DiffLine::file_header("file2.rs"),
             base_line("line3"),
         ];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.scroll_offset = 4;
 
         app.prev_file();
@@ -352,7 +316,7 @@ mod tests {
             DiffLine::file_header("file2.rs"),
             base_line("line3"),
         ];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.scroll_offset = 3;
 
         app.prev_file();
@@ -366,7 +330,7 @@ mod tests {
             DiffLine::file_header("file1.rs"),
             base_line("line1"),
         ];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.scroll_offset = 0;
 
         app.prev_file();
@@ -376,14 +340,14 @@ mod tests {
 
     #[test]
     fn test_next_file_empty_lines() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         app.next_file();
         assert_eq!(app.scroll_offset, 0);
     }
 
     #[test]
     fn test_prev_file_empty_lines() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         app.prev_file();
         assert_eq!(app.scroll_offset, 0);
     }
@@ -391,7 +355,7 @@ mod tests {
     #[test]
     fn test_scroll_percentage_at_top_returns_zero() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line {}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         app.scroll_offset = 0;
 
@@ -401,7 +365,7 @@ mod tests {
     #[test]
     fn test_scroll_percentage_at_bottom_returns_100() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line {}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         app.scroll_offset = 40; // 50 lines - 10 viewport = 40 max scroll
 
@@ -411,7 +375,7 @@ mod tests {
     #[test]
     fn test_scroll_percentage_capped_at_100() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line {}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         app.scroll_offset = 100; // Beyond max scroll
 
@@ -420,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_scroll_percentage_empty_content_returns_100() {
-        let app = create_test_app(vec![]);
+        let app = TestAppBuilder::new().build();
 
         assert_eq!(app.scroll_percentage(), 100);
     }
@@ -428,7 +392,7 @@ mod tests {
     #[test]
     fn test_scroll_percentage_content_fits_viewport_returns_100() {
         let lines: Vec<DiffLine> = (0..5).map(|i| base_line(&format!("line {}", i))).collect();
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
         // viewport_height defaults to 10, so 5 lines fit
 
         assert_eq!(app.scroll_percentage(), 100);
@@ -439,7 +403,7 @@ mod tests {
         let lines: Vec<DiffLine> = (0..20)
             .map(|i| base_line(&format!("line {}", i)))
             .collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
 
         let items = app.compute_displayable_items();
@@ -453,7 +417,7 @@ mod tests {
         let lines: Vec<DiffLine> = (0..20)
             .map(|i| base_line(&format!("line {}", i)))
             .collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         app.scroll_offset = 100; // Way past end
 
