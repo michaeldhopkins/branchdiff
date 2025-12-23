@@ -56,7 +56,7 @@ pub fn build_modification_map<'a>(
     let mut new_idx = 0usize;
     let changes: Vec<DiffChange> = diff.iter_all_changes()
         .map(|c| {
-            let change = match c.tag() {
+            match c.tag() {
                 ChangeTag::Equal => {
                     old_idx += 1;
                     new_idx += 1;
@@ -78,8 +78,7 @@ pub fn build_modification_map<'a>(
                     new_idx += 1;
                     ch
                 }
-            };
-            change
+            }
         })
         .collect();
 
