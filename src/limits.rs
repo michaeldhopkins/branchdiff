@@ -56,7 +56,7 @@ fn get_fd_soft_limit() -> usize {
         // Cap at reasonable maximum to avoid overflow issues
         (rlim.rlim_cur as usize).min(100_000)
     } else {
-        // Fallback to macOS default if getrlimit fails
+        // Fallback if getrlimit fails (256 is a conservative Unix default)
         256
     }
 }
