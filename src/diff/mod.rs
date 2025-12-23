@@ -975,12 +975,6 @@ layout {
         let diff = compute_file_diff_v2_with_inline("workon.kdl", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
-        // Debug: print all lines with their sources
-        for (i, line) in lines.iter().enumerate() {
-            eprintln!("[{}] {:?} '{}' old_content={:?} inline_spans={}",
-                i, line.source, line.content, line.old_content.is_some(), line.inline_spans.len());
-        }
-
         // The "keybinds" lines should be Committed additions
         let additions: Vec<_> = lines.iter()
             .filter(|l| l.source == LineSource::Committed && l.prefix == '+')
@@ -2211,23 +2205,8 @@ end"##;
   end
 end"##;
 
-        eprintln!("\n=== Exact bug scenario test ===");
-        eprintln!("Base ({} lines):", base.lines().count());
-        for (i, line) in base.lines().enumerate() {
-            eprintln!("  base[{}]: '{}'", i, line);
-        }
-        eprintln!("Head ({} lines):", head.lines().count());
-        for (i, line) in head.lines().enumerate() {
-            eprintln!("  head[{}]: '{}'", i, line);
-        }
-
         let diff = compute_file_diff_v2_with_inline("spec.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
-
-        eprintln!("\nDiff output ({} lines):", lines.len());
-        for (i, line) in lines.iter().enumerate() {
-            eprintln!("  [{}] {} {:?} '{}'", i, line.prefix, line.source, line.content);
-        }
 
         // Expected:
         // [0] describe "#method" do       (base)
