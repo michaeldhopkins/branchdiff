@@ -639,11 +639,17 @@ mod tests {
     }
 
     fn git_cmd(dir: &Path, args: &[&str]) {
-        Command::new("git")
+        let output = Command::new("git")
             .args(args)
             .current_dir(dir)
             .output()
-            .expect("git command failed");
+            .expect("git command failed to execute");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn create_test_repo() -> tempfile::TempDir {
@@ -671,6 +677,10 @@ mod tests {
             .current_dir(clone_dir.path())
             .output()
             .expect("clone failed");
+
+        // Configure git user in clone (not inherited from origin's local config)
+        git_cmd(clone_dir.path(), &["config", "user.email", "test@test.com"]);
+        git_cmd(clone_dir.path(), &["config", "user.name", "Test"]);
 
         (origin, clone_dir)
     }
