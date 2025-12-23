@@ -60,6 +60,9 @@ fn main() -> Result<()> {
 
     let repo_root = git::get_repo_root(&repo_path).context("Not a git repository")?;
 
+    // Detect git version (for feature gating like merge-tree --write-tree)
+    let git_version = git::get_git_version().context("Failed to detect git version")?;
+
     // Non-interactive mode: print and exit
     if cli.print {
         let mut app = app::App::new(repo_root)?;
@@ -121,6 +124,7 @@ fn main() -> Result<()> {
         refresh_rx,
         repo_root,
         config,
+        git_version,
     );
 
     // Restore terminal
@@ -252,10 +256,10 @@ fn spawn_refresh(
     });
 }
 
-fn spawn_fetch(repo_path: PathBuf, base_branch: String, fetch_tx: mpsc::Sender<FetchResult>) {
+fn spawn_fetch(repo_path: PathBuf, base_branch: String, git_version: git::GitVersion, fetch_tx: mpsc::Sender<FetchResult>) {
     thread::spawn(move || {
         if git::fetch_base_branch(&repo_path, &base_branch).is_ok() {
-            let has_conflicts = git::has_merge_conflicts(&repo_path, &base_branch).unwrap_or(false);
+            let has_conflicts = git::has_merge_conflicts(&repo_path, &base_branch, &git_version).unwrap_or(false);
             let new_merge_base =
                 git::get_merge_base_preferring_origin(&repo_path, &base_branch).ok();
 
@@ -276,6 +280,7 @@ fn run_app<B: Backend>(
     refresh_rx: mpsc::Receiver<RefreshOutcome>,
     repo_root: PathBuf,
     config: UpdateConfig,
+    git_version: git::GitVersion,
 ) -> Result<()> {
     let mut refresh_state = RefreshState::Idle;
     let mut timers = Timers::default();
@@ -335,7 +340,7 @@ fn run_app<B: Backend>(
             }
 
             if result.trigger_fetch {
-                spawn_fetch(repo_root.clone(), app.base_branch.clone(), fetch_tx.clone());
+                spawn_fetch(repo_root.clone(), app.base_branch.clone(), git_version, fetch_tx.clone());
             }
         }
 
