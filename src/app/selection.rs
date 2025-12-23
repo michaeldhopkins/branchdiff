@@ -68,12 +68,11 @@ impl App {
     pub fn update_selection(&mut self, screen_x: u16, screen_y: u16) {
         // Get position first to avoid borrow conflict
         let pos = self.screen_to_content_position(screen_x, screen_y);
-        if let Some(ref mut sel) = self.selection {
-            if sel.active {
-                if let Some(p) = pos {
-                    sel.end = p;
-                }
-            }
+        if let Some(ref mut sel) = self.selection
+            && sel.active
+            && let Some(p) = pos
+        {
+            sel.end = p;
         }
     }
 
