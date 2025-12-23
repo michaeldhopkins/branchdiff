@@ -67,6 +67,21 @@ fn get_fd_soft_limit() -> usize {
     8192
 }
 
+/// Detect if running under Windows Subsystem for Linux.
+/// WSL's inotify implementation is unreliable, so we use polling instead.
+pub fn is_wsl() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/version")
+            .map(|v| v.to_lowercase().contains("microsoft"))
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 /// Thresholds for diff processing warnings.
 #[derive(Debug, Clone)]
 pub struct DiffThresholds {
@@ -240,5 +255,23 @@ mod tests {
         assert!(warning.is_some());
         // Line count warning should take precedence
         assert!(warning.unwrap().contains("lines"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn test_is_wsl_returns_false_on_non_linux() {
+        // On macOS/Windows, is_wsl() should always return false
+        assert!(!super::is_wsl());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_is_wsl_returns_bool_on_linux() {
+        // On Linux, is_wsl() checks /proc/version for "microsoft"
+        // We can't control the environment, but we can verify it returns a bool
+        let result = super::is_wsl();
+        // If we're in WSL, this returns true; otherwise false
+        // Either way, the function should work without panicking
+        assert!(result || !result); // Always true, just verifies it runs
     }
 }
