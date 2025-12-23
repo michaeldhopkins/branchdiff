@@ -264,47 +264,7 @@ impl FrameContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ViewMode;
-    use crate::gitignore::GitignoreFilter;
-    use std::collections::HashSet;
-    use std::path::PathBuf;
-
-    fn create_test_app(lines: Vec<DiffLine>) -> App {
-        let repo_path = PathBuf::from("/tmp/test");
-        App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            base_branch: "main".to_string(),
-            merge_base: "abc123".to_string(),
-            current_branch: Some("feature".to_string()),
-            files: Vec::new(),
-            lines,
-            scroll_offset: 0,
-            viewport_height: 10,
-            error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            conflict_warning: None,
-            performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-        }
-    }
-
-    fn base_line(content: &str) -> DiffLine {
-        DiffLine::new(LineSource::Base, content.to_string(), ' ', None)
-    }
-
-    fn change_line(content: &str) -> DiffLine {
-        DiffLine::new(LineSource::Committed, content.to_string(), '+', None)
-    }
+    use crate::test_support::{base_line, change_line, TestAppBuilder};
 
     #[test]
     fn test_displayable_item_as_line_index() {
@@ -326,7 +286,7 @@ mod tests {
             change_line("line2"),
             base_line("line3"),
         ];
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
         let ctx = FrameContext::new(&app);
 
         assert_eq!(ctx.item_count(), 4);
@@ -340,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_frame_context_max_scroll_empty() {
-        let app = create_test_app(vec![]);
+        let app = TestAppBuilder::new().build();
         let ctx = FrameContext::new(&app);
         assert_eq!(ctx.max_scroll(&app), 0);
     }
@@ -348,7 +308,7 @@ mod tests {
     #[test]
     fn test_frame_context_max_scroll_fits_viewport() {
         let lines: Vec<_> = (0..5).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         let ctx = FrameContext::new(&app);
         assert_eq!(ctx.max_scroll(&app), 0);
@@ -357,7 +317,7 @@ mod tests {
     #[test]
     fn test_frame_context_max_scroll_scrollable() {
         let lines: Vec<_> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         let ctx = FrameContext::new(&app);
         assert_eq!(ctx.max_scroll(&app), 10);
@@ -366,7 +326,7 @@ mod tests {
     #[test]
     fn test_frame_context_visible_range() {
         let lines: Vec<_> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 5;
         app.scroll_offset = 3;
         let ctx = FrameContext::new(&app);
@@ -385,7 +345,7 @@ mod tests {
             DiffLine::file_header("file2.rs"),
             base_line("line3"),
         ];
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
         let ctx = FrameContext::new(&app);
 
         assert_eq!(ctx.find_next_file_header(&app, 0), Some(3));
@@ -401,7 +361,7 @@ mod tests {
             DiffLine::file_header("file2.rs"),
             base_line("line3"),
         ];
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
         let ctx = FrameContext::new(&app);
 
         assert_eq!(ctx.find_prev_file_header(&app, 4), Some(3));
@@ -412,7 +372,7 @@ mod tests {
     #[test]
     fn test_frame_context_iter_visible_items() {
         let lines: Vec<_> = (0..10).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 3;
         app.scroll_offset = 2;
         let ctx = FrameContext::new(&app);
