@@ -451,46 +451,11 @@ fn handle_tick(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ViewMode;
-    use crate::diff::{DiffLine, LineSource};
-    use std::collections::HashSet;
-
-    fn create_test_app(lines: Vec<DiffLine>) -> App {
-        let repo_path = PathBuf::from("/tmp/test");
-        App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            base_branch: "main".to_string(),
-            merge_base: "abc123".to_string(),
-            current_branch: Some("feature".to_string()),
-            files: Vec::new(),
-            lines,
-            scroll_offset: 0,
-            viewport_height: 10,
-            error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            conflict_warning: None,
-            performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-        }
-    }
-
-    fn base_line(content: &str) -> DiffLine {
-        DiffLine::new(LineSource::Base, content.to_string(), ' ', None)
-    }
+    use crate::test_support::{base_line, TestAppBuilder};
 
     #[test]
     fn test_handle_input_quit() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::Quit, &mut app, &mut refresh_state);
@@ -500,7 +465,7 @@ mod tests {
     #[test]
     fn test_handle_input_scroll_down() {
         let lines: Vec<_> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         let mut refresh_state = RefreshState::Idle;
 
         handle_input(AppAction::ScrollDown(5), &mut app, &mut refresh_state);
@@ -509,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_handle_input_refresh_when_idle() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::Refresh, &mut app, &mut refresh_state);
@@ -518,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_handle_input_refresh_when_busy_marks_pending() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::InProgress {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -531,7 +496,7 @@ mod tests {
 
     #[test]
     fn test_handle_refresh_success() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::InProgress {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -558,7 +523,7 @@ mod tests {
 
     #[test]
     fn test_handle_refresh_triggers_pending() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::InProgressPending {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -575,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_handle_fetch_with_conflicts() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
         let mut timers = Timers {
             fetch_in_progress: true,
@@ -595,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_handle_fetch_clears_conflicts() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         app.conflict_warning = Some("old warning".to_string());
         let mut refresh_state = RefreshState::Idle;
         let mut timers = Timers {
@@ -614,7 +579,7 @@ mod tests {
 
     #[test]
     fn test_handle_fetch_new_merge_base_triggers_refresh() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         app.merge_base = "old_base".to_string();
         let mut refresh_state = RefreshState::Idle;
         let mut timers = Timers {

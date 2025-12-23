@@ -585,50 +585,13 @@ pub fn draw_diff_view_with_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ViewMode;
-    use crate::gitignore::GitignoreFilter;
-    use std::path::PathBuf;
-
-    fn create_test_app(lines: Vec<DiffLine>) -> App {
-        let repo_path = PathBuf::from("/tmp/test");
-        App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            base_branch: "main".to_string(),
-            merge_base: "abc123".to_string(),
-            current_branch: Some("feature".to_string()),
-            files: Vec::new(),
-            lines,
-            scroll_offset: 0,
-            viewport_height: 10,
-            error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            conflict_warning: None,
-            performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-        }
-    }
-
-    fn base_line(content: &str) -> DiffLine {
-        DiffLine::new(LineSource::Base, content.to_string(), ' ', None)
-    }
-
-    fn change_line(content: &str) -> DiffLine {
-        DiffLine::new(LineSource::Committed, content.to_string(), '+', Some(1))
-    }
+    use crate::test_support::{base_line, change_line, TestAppBuilder};
 
     #[test]
     fn test_diff_view_model_from_app() {
-        let app = create_test_app(vec![DiffLine::file_header("test.rs"), base_line("content")]);
+        let app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs"), base_line("content")])
+            .build();
         let ctx = FrameContext::new(&app);
         let area = Rect::new(0, 0, 80, 24);
 
@@ -647,7 +610,7 @@ mod tests {
             base_line("line1"),
             change_line("line2"),
         ];
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
         let ctx = FrameContext::new(&app);
         let area = Rect::new(0, 0, 80, 24);
 
@@ -671,8 +634,10 @@ mod tests {
         line.file_path = Some("second.rs".to_string());
         lines.push(line);
 
-        let mut app = create_test_app(lines);
-        app.viewport_height = 4;
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_viewport_height(4)
+            .build();
         // Scroll down so first.rs header is above viewport but content is still visible
         app.scroll_offset = 2;
 
@@ -689,7 +654,9 @@ mod tests {
 
     #[test]
     fn test_diff_view_model_is_file_collapsed() {
-        let mut app = create_test_app(vec![DiffLine::file_header("test.rs")]);
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs")])
+            .build();
         app.collapsed_files.insert("test.rs".to_string());
 
         let ctx = FrameContext::new(&app);
@@ -704,7 +671,9 @@ mod tests {
     fn test_diff_view_model_with_selection() {
         use crate::app::Position;
 
-        let mut app = create_test_app(vec![base_line("selectable content")]);
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![base_line("selectable content")])
+            .build();
         app.selection = Some(Selection {
             start: Position { row: 0, col: 5 },
             end: Position { row: 0, col: 15 },
@@ -748,7 +717,9 @@ mod tests {
 
     #[test]
     fn test_diff_view_model_show_copied_flash() {
-        let mut app = create_test_app(vec![DiffLine::file_header("test.rs")]);
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs")])
+            .build();
 
         // Initially no flash
         let ctx = FrameContext::new(&app);

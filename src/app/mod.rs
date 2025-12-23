@@ -371,46 +371,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::diff::{DiffLine, LineSource};
-
-    /// Helper to create a test app with synthetic lines
-    fn create_test_app(lines: Vec<DiffLine>) -> App {
-        let repo_path = std::path::PathBuf::from("/tmp/test");
-        App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            base_branch: "main".to_string(),
-            merge_base: "abc123".to_string(),
-            current_branch: Some("feature".to_string()),
-            files: Vec::new(),
-            lines,
-            scroll_offset: 0,
-            viewport_height: 10,
-            error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            conflict_warning: None,
-            performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-        }
-    }
-
-    /// Helper to create a base (context) line
-    fn base_line(content: &str) -> DiffLine {
-        DiffLine::new(LineSource::Base, content.to_string(), ' ', None)
-    }
-
-    /// Helper to create an unstaged (change) line
-    fn change_line(content: &str) -> DiffLine {
-        DiffLine::new(LineSource::Unstaged, content.to_string(), '+', None)
-    }
+    use crate::test_support::{base_line, change_line, TestAppBuilder};
 
     /// Helper to get line from DisplayableItem (returns None for Elided)
     fn item_to_line<'a>(app: &'a App, item: &DisplayableItem) -> Option<&'a DiffLine> {
@@ -425,45 +386,12 @@ mod tests {
         items.iter().filter_map(|item| item_to_line(app, item)).collect()
     }
 
-    /// Helper to get visible lines using FrameContext (replaces deprecated visible_lines())
+    /// Helper to get visible lines using FrameContext
     fn get_visible_lines(app: &App) -> Vec<&DiffLine> {
         let ctx = FrameContext::new(app);
         ctx.iter_visible_items()
             .filter_map(|item| item_to_line(app, item))
             .collect()
-    }
-
-    /// Helper to create a test app with files (for testing auto-collapse)
-    fn create_test_app_with_files(files: Vec<FileDiff>) -> App {
-        let lines: Vec<DiffLine> = files.iter()
-            .flat_map(|f| f.lines.clone())
-            .collect();
-        let repo_path = std::path::PathBuf::from("/tmp/test");
-        App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            base_branch: "main".to_string(),
-            merge_base: "abc123".to_string(),
-            current_branch: Some("feature".to_string()),
-            files,
-            lines,
-            scroll_offset: 0,
-            viewport_height: 10,
-            error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            conflict_warning: None,
-            performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-        }
     }
 
     #[test]
@@ -487,7 +415,7 @@ mod tests {
             ],
         };
 
-        let mut app = create_test_app_with_files(vec![gemfile_lock, regular_file, cargo_lock]);
+        let mut app = TestAppBuilder::new().with_files(vec![gemfile_lock, regular_file, cargo_lock]).build();
 
         assert!(!app.is_file_collapsed("Gemfile.lock"));
         assert!(!app.is_file_collapsed("src/main.rs"));
@@ -515,7 +443,7 @@ mod tests {
             ],
         };
 
-        let mut app = create_test_app_with_files(vec![deleted_file, regular_file]);
+        let mut app = TestAppBuilder::new().with_files(vec![deleted_file, regular_file]).build();
 
         assert!(!app.is_file_collapsed("src/old_file.rs"));
         assert!(!app.is_file_collapsed("src/main.rs"));
@@ -535,7 +463,7 @@ mod tests {
             ],
         };
 
-        let mut app = create_test_app_with_files(vec![gemfile_lock]);
+        let mut app = TestAppBuilder::new().with_files(vec![gemfile_lock]).build();
 
         app.auto_collapse_files();
         assert!(app.is_file_collapsed("Gemfile.lock"), "should be auto-collapsed initially");
@@ -556,7 +484,7 @@ mod tests {
             ],
         };
 
-        let mut app = create_test_app_with_files(vec![deleted_file]);
+        let mut app = TestAppBuilder::new().with_files(vec![deleted_file]).build();
 
         app.auto_collapse_files();
         assert!(app.is_file_collapsed("src/old_file.rs"), "should be auto-collapsed initially");
@@ -603,7 +531,7 @@ mod tests {
             DiffLine::new(LineSource::DeletedStaged, "deleted staged".to_string(), '-', None),
             base_line("context line 3"),
         ];
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
         assert_eq!(app.changed_line_count(), 6);
     }
 
@@ -617,7 +545,7 @@ mod tests {
             DiffLine::new(LineSource::Unstaged, "unstaged".to_string(), '+', Some(2)),
             base_line("context line 3"),
         ];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view_mode = ViewMode::ChangesOnly;
         let items = app.compute_displayable_items();
         let displayed = collect_lines(&app, &items);
@@ -629,7 +557,7 @@ mod tests {
 
     #[test]
     fn test_should_quit_dismisses_help_first() {
-        let mut app = create_test_app(Vec::new());
+        let mut app = TestAppBuilder::new().build();
         assert!(!app.show_help);
         assert!(app.should_quit());
 
@@ -642,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_cycle_view_mode_empty_lines() {
-        let mut app = create_test_app(Vec::new());
+        let mut app = TestAppBuilder::new().build();
         app.cycle_view_mode();
         assert_eq!(app.view_mode, ViewMode::Context);
         assert_eq!(app.scroll_offset, 0);
@@ -659,7 +587,7 @@ mod tests {
             change_line("changed"),
             base_line("line3"),
         ];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
 
         app.cycle_view_mode();
@@ -680,7 +608,7 @@ mod tests {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
 
         // Scroll to middle of file (around line 15)
@@ -707,7 +635,7 @@ mod tests {
         }
         lines.push(change_line("change at end"));
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
 
         // Scroll to line 20 (far from the change at 50)
@@ -733,7 +661,7 @@ mod tests {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
 
         // Position so the change is visible (change is at index 20)
@@ -756,7 +684,7 @@ mod tests {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         app.scroll_offset = 0;
 
@@ -775,7 +703,7 @@ mod tests {
         }
         lines.push(change_line("change at bottom"));
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
 
         // Scroll to bottom
@@ -798,7 +726,7 @@ mod tests {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view_mode = ViewMode::Context;
 
         // The change is at original index 5
@@ -823,7 +751,7 @@ mod tests {
             lines.push(base_line(&format!("end{}", i)));
         }
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view_mode = ViewMode::Context;
 
         // Original index 0 is far from change at 20, so it's elided
@@ -883,7 +811,7 @@ mod tests {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view_mode = ViewMode::Context;
 
         // Get the filtered items in context mode
@@ -933,7 +861,7 @@ mod tests {
         lines.push(base_line("end"));
         lines.push(base_line("end"));
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view_mode = ViewMode::Context;
 
         let items = app.compute_displayable_items();
@@ -996,7 +924,7 @@ mod tests {
         lines.push(base_line("end"));   // These are the missing lines
         lines.push(base_line("end"));
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view_mode = ViewMode::Context;
 
         let items = app.compute_displayable_items();
@@ -1044,7 +972,7 @@ mod tests {
         lines.push(base_line("trailing_2"));
         lines.push(base_line("trailing_3"));
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view_mode = ViewMode::Context;
         app.viewport_height = 20;
 
@@ -1101,7 +1029,7 @@ mod tests {
         lines.push(base_line("final_end_1"));
         lines.push(base_line("final_end_2"));
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view_mode = ViewMode::Context;
         app.viewport_height = 15; // Small viewport so we need to scroll
 
@@ -1180,7 +1108,7 @@ mod tests {
         lines.push(DiffLine::new(LineSource::Base, "  end".to_string(), ' ', Some(106)));
         lines.push(DiffLine::new(LineSource::Base, "end".to_string(), ' ', Some(107)));
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view_mode = ViewMode::Context;
         app.viewport_height = 20;
 
@@ -1275,7 +1203,7 @@ mod tests {
 
     #[test]
     fn test_refresh_result_can_be_applied_to_app() {
-        let mut app = create_test_app(vec![base_line("old content")]);
+        let mut app = TestAppBuilder::new().with_lines(vec![base_line("old content")]).build();
 
         let new_lines = vec![
             DiffLine::file_header("new_file.txt"),
@@ -1407,13 +1335,13 @@ mod tests {
 
     #[test]
     fn test_initial_state_needs_inline_spans() {
-        let app = create_test_app(vec![]);
+        let app = TestAppBuilder::new().build();
         assert!(app.needs_inline_spans(), "New app should need inline spans");
     }
 
     #[test]
     fn test_clear_needs_inline_spans() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         assert!(app.needs_inline_spans());
         app.clear_needs_inline_spans();
         assert!(!app.needs_inline_spans());
@@ -1422,7 +1350,7 @@ mod tests {
     #[test]
     fn test_scroll_marks_needs_inline_spans() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         app.clear_needs_inline_spans();
 
@@ -1437,7 +1365,7 @@ mod tests {
     #[test]
     fn test_page_navigation_marks_needs_inline_spans() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         app.clear_needs_inline_spans();
 
@@ -1452,7 +1380,7 @@ mod tests {
     #[test]
     fn test_go_to_extremes_marks_needs_inline_spans() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         app.clear_needs_inline_spans();
 
@@ -1467,7 +1395,7 @@ mod tests {
     #[test]
     fn test_view_mode_change_marks_needs_inline_spans() {
         let lines = vec![base_line("context"), change_line("change")];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.clear_needs_inline_spans();
 
         app.cycle_view_mode();
@@ -1477,7 +1405,7 @@ mod tests {
     #[test]
     fn test_file_collapse_marks_needs_inline_spans() {
         let lines = vec![DiffLine::file_header("test.rs"), change_line("change")];
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.clear_needs_inline_spans();
 
         app.toggle_file_collapsed("test.rs");
@@ -1486,7 +1414,7 @@ mod tests {
 
     #[test]
     fn test_content_refresh_marks_needs_inline_spans() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         app.clear_needs_inline_spans();
 
         let result = RefreshResult {
@@ -1502,7 +1430,7 @@ mod tests {
 
     #[test]
     fn test_viewport_change_marks_needs_inline_spans() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         app.clear_needs_inline_spans();
 
         app.set_viewport_height(30);
@@ -1513,7 +1441,7 @@ mod tests {
 
     #[test]
     fn test_toggle_help_does_not_mark_dirty() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         app.clear_needs_inline_spans();
 
         app.toggle_help();
@@ -1523,7 +1451,7 @@ mod tests {
     #[test]
     fn test_scroll_at_top_does_not_mark_dirty() {
         let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.scroll_offset = 0;
         app.clear_needs_inline_spans();
 
@@ -1534,7 +1462,7 @@ mod tests {
     #[test]
     fn test_scroll_at_bottom_does_not_mark_dirty() {
         let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.viewport_height = 10;
         app.go_to_bottom();
         app.clear_needs_inline_spans();
@@ -1546,7 +1474,7 @@ mod tests {
     #[test]
     fn test_go_to_top_when_at_top_does_not_mark_dirty() {
         let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.scroll_offset = 0;
         app.clear_needs_inline_spans();
 
@@ -1556,7 +1484,7 @@ mod tests {
 
     #[test]
     fn test_same_viewport_height_does_not_mark_dirty() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         app.viewport_height = 20;
         app.clear_needs_inline_spans();
 
@@ -1566,7 +1494,7 @@ mod tests {
 
     #[test]
     fn test_cycle_view_mode_with_empty_lines_still_marks_dirty() {
-        let mut app = create_test_app(vec![]);
+        let mut app = TestAppBuilder::new().build();
         app.clear_needs_inline_spans();
 
         app.cycle_view_mode();
@@ -1580,7 +1508,7 @@ mod tests {
             base_line("unchanged"),
             change_line("added line"),
         ];
-        let app = create_test_app(lines);
+        let app = TestAppBuilder::new().with_lines(lines).build();
 
         let output = app.format_diff_for_copy();
 
@@ -1601,7 +1529,7 @@ mod tests {
         lines[1].file_path = Some("collapsed.rs".to_string());
         lines[3].file_path = Some("visible.rs".to_string());
 
-        let mut app = create_test_app(lines);
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.collapsed_files.insert("collapsed.rs".to_string());
 
         let output = app.format_diff_for_copy();
@@ -1616,7 +1544,7 @@ mod tests {
 
     #[test]
     fn test_format_diff_for_copy_empty() {
-        let app = create_test_app(vec![]);
+        let app = TestAppBuilder::new().build();
         let output = app.format_diff_for_copy();
         assert!(output.is_empty());
     }

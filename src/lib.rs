@@ -10,6 +10,9 @@ pub mod message;
 pub mod update;
 pub mod ui;
 
+#[cfg(test)]
+pub mod test_support;
+
 // Re-export commonly used types for benchmarks
 pub use app::{App, ViewMode};
 pub use diff::{DiffLine, LineSource};
