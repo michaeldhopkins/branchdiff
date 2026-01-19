@@ -28,6 +28,8 @@ pub struct ScreenRowInfo {
     pub is_file_header: bool,
     /// The file path this row belongs to (for collapse toggle)
     pub file_path: Option<String>,
+    /// Whether this row is a continuation of a wrapped line (not start of new logical line)
+    pub is_continuation: bool,
 }
 
 /// Draw the main UI with a pre-computed frame context
