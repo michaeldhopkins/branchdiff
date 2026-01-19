@@ -14,6 +14,9 @@ use crate::diff::FileDiff;
 /// Re-exported from input module for convenience.
 pub use crate::input::AppAction;
 
+/// Fallback refresh interval in seconds for large repos where file watching is limited.
+pub const FALLBACK_REFRESH_SECS: u64 = 5;
+
 /// Result of a background fetch operation.
 #[derive(Debug)]
 pub struct FetchResult {
