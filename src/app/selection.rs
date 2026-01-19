@@ -166,7 +166,12 @@ impl App {
                 if start_in_content < char_count {
                     result.push_str(char_slice_from(content, start_in_content));
                 }
-                result.push('\n');
+                // Only add newline if next row is a new logical line (not a wrapped continuation)
+                if screen_row + 1 < self.row_map.len()
+                    && !self.row_map[screen_row + 1].is_continuation
+                {
+                    result.push('\n');
+                }
             } else if screen_row == end.row {
                 // Last row of multi-row selection
                 let end_in_content = end.col.saturating_sub(prefix_len);
@@ -175,7 +180,12 @@ impl App {
             } else {
                 // Middle rows - take entire content
                 result.push_str(content);
-                result.push('\n');
+                // Only add newline if next row is a new logical line (not a wrapped continuation)
+                if screen_row + 1 < self.row_map.len()
+                    && !self.row_map[screen_row + 1].is_continuation
+                {
+                    result.push('\n');
+                }
             }
         }
 
@@ -322,5 +332,103 @@ impl App {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestAppBuilder;
+    use crate::ui::ScreenRowInfo;
+
+    fn make_row(content: &str, is_continuation: bool) -> ScreenRowInfo {
+        ScreenRowInfo {
+            content: content.to_string(),
+            is_file_header: false,
+            file_path: None,
+            is_continuation,
+        }
+    }
+
+    #[test]
+    fn test_get_selected_text_unwrapped_lines() {
+        // Two separate logical lines (no wrapping)
+        let mut app = TestAppBuilder::new().build();
+        app.line_num_width = 3;
+        app.row_map = vec![
+            make_row("line one", false),
+            make_row("line two", false),
+        ];
+        app.selection = Some(Selection {
+            start: Position { row: 0, col: 6 }, // After prefix "123 + "
+            end: Position { row: 1, col: 14 },  // Include "line two"
+            active: false,
+        });
+
+        let text = app.get_selected_text().unwrap();
+        assert_eq!(text, "line one\nline two");
+    }
+
+    #[test]
+    fn test_get_selected_text_wrapped_line_no_extra_newlines() {
+        // One logical line wrapped across two screen rows
+        let mut app = TestAppBuilder::new().build();
+        app.line_num_width = 3;
+        app.row_map = vec![
+            make_row("first part ", false), // Start of logical line
+            make_row("second part", true),  // Continuation (wrapped)
+        ];
+        app.selection = Some(Selection {
+            start: Position { row: 0, col: 6 },
+            end: Position { row: 1, col: 17 },
+            active: false,
+        });
+
+        let text = app.get_selected_text().unwrap();
+        // Should NOT have newline between wrapped parts
+        assert_eq!(text, "first part second part");
+    }
+
+    #[test]
+    fn test_get_selected_text_mixed_wrapped_and_unwrapped() {
+        // Two logical lines, first one wraps
+        let mut app = TestAppBuilder::new().build();
+        app.line_num_width = 3;
+        app.row_map = vec![
+            make_row("wrapped ", false),    // Line 1, part 1
+            make_row("line", true),         // Line 1, part 2 (continuation)
+            make_row("normal line", false), // Line 2 (new logical line)
+        ];
+        app.selection = Some(Selection {
+            start: Position { row: 0, col: 6 },
+            end: Position { row: 2, col: 17 },
+            active: false,
+        });
+
+        let text = app.get_selected_text().unwrap();
+        // Newline only between logical lines, not within wrapped line
+        assert_eq!(text, "wrapped line\nnormal line");
+    }
+
+    #[test]
+    fn test_get_selected_text_starting_on_continuation() {
+        // Selection starts on a continuation row
+        let mut app = TestAppBuilder::new().build();
+        app.line_num_width = 3;
+        app.row_map = vec![
+            make_row("first ", false),       // Line 1, part 1
+            make_row("second", true),        // Line 1, part 2 (continuation)
+            make_row("next line", false),    // Line 2 (new logical line)
+        ];
+        // Start selection on the continuation row
+        app.selection = Some(Selection {
+            start: Position { row: 1, col: 6 },
+            end: Position { row: 2, col: 15 },
+            active: false,
+        });
+
+        let text = app.get_selected_text().unwrap();
+        // Should get content from continuation + newline + next line
+        assert_eq!(text, "second\nnext line");
     }
 }

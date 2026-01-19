@@ -207,6 +207,7 @@ impl<'a> DiffViewModel<'a> {
             content: elided_text,
             is_file_header: false,
             file_path: None,
+            is_continuation: false,
         });
     }
 
@@ -313,6 +314,7 @@ impl<'a> DiffViewModel<'a> {
             content: diff_line.content.clone(),
             is_file_header: true,
             file_path: diff_line.file_path.clone(),
+            is_continuation: false,
         });
 
         1
@@ -343,6 +345,7 @@ impl<'a> DiffViewModel<'a> {
             content: diff_line.content.clone(),
             is_file_header: false,
             file_path: diff_line.file_path.clone(),
+            is_continuation: false,
         });
 
         1
@@ -695,6 +698,7 @@ mod tests {
                     content: "test".to_string(),
                     is_file_header: false,
                     file_path: None,
+                    is_continuation: false,
                 },
             ],
             content_offset: (1, 2),
