@@ -3,6 +3,8 @@
 //! This module provides automatic detection of system resource limits
 //! and generates warnings when thresholds are exceeded.
 
+use crate::message::FALLBACK_REFRESH_SECS;
+
 /// System resource limits detected at startup.
 #[derive(Debug, Clone)]
 pub struct SystemLimits {
@@ -25,16 +27,8 @@ impl SystemLimits {
 
     /// Check if watch metrics exceed thresholds and return a warning message.
     pub fn check_watch_warning(&self, metrics: &WatcherMetrics) -> Option<String> {
-        if metrics.skipped_count > 0 {
-            Some(format!(
-                "Large repo: {} dirs, {} not watched",
-                metrics.directory_count, metrics.skipped_count
-            ))
-        } else if metrics.directory_count > self.max_recommended_watches {
-            Some(format!(
-                "Large repo: {} dirs (limit {})",
-                metrics.directory_count, self.max_recommended_watches
-            ))
+        if metrics.skipped_count > 0 || metrics.directory_count > self.max_recommended_watches {
+            Some(format!("Large repo: refreshing every {}s", FALLBACK_REFRESH_SECS))
         } else {
             None
         }
@@ -176,9 +170,7 @@ mod tests {
         };
         let warning = limits.check_watch_warning(&metrics);
         assert!(warning.is_some());
-        let msg = warning.unwrap();
-        assert!(msg.contains("200"));
-        assert!(msg.contains("128"));
+        assert_eq!(warning.unwrap(), "Large repo: refreshing every 5s");
     }
 
     #[test]
@@ -193,10 +185,7 @@ mod tests {
         };
         let warning = limits.check_watch_warning(&metrics);
         assert!(warning.is_some());
-        let msg = warning.unwrap();
-        assert!(msg.contains("200"));
-        assert!(msg.contains("72"));
-        assert!(msg.contains("not watched"));
+        assert_eq!(warning.unwrap(), "Large repo: refreshing every 5s");
     }
 
     #[test]

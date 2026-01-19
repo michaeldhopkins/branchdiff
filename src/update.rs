@@ -16,7 +16,9 @@ use crate::app::App;
 use crate::gitignore::GitignoreFilter;
 use crate::input::AppAction;
 use crate::limits::DiffThresholds;
-use crate::message::{FetchResult, Message, RefreshOutcome, RefreshTrigger, UpdateResult};
+use crate::message::{
+    FetchResult, Message, RefreshOutcome, RefreshTrigger, UpdateResult, FALLBACK_REFRESH_SECS,
+};
 
 /// Timer state for periodic operations.
 pub struct Timers {
@@ -133,7 +135,7 @@ impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
             fetch_interval: Duration::from_secs(30),
-            refresh_fallback_interval: Duration::from_secs(5),
+            refresh_fallback_interval: Duration::from_secs(FALLBACK_REFRESH_SECS),
             refresh_watchdog_timeout: Duration::from_secs(10),
             auto_fetch: true,
             diff_thresholds: DiffThresholds::default(),
@@ -655,13 +657,10 @@ mod tests {
     fn test_handle_tick_fallback_refresh() {
         let mut refresh_state = RefreshState::Idle;
         let mut timers = Timers {
-            last_refresh: Instant::now() - Duration::from_secs(10),
+            last_refresh: Instant::now() - Duration::from_secs(FALLBACK_REFRESH_SECS + 5),
             ..Default::default()
         };
-        let config = UpdateConfig {
-            refresh_fallback_interval: Duration::from_secs(5),
-            ..Default::default()
-        };
+        let config = UpdateConfig::default();
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
         assert_eq!(result.refresh, RefreshTrigger::Full);
