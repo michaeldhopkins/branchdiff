@@ -91,6 +91,37 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 | `?` | Toggle help |
 | `q` / `Esc` / `Ctrl+c` | Quit |
 
+## Contributing
+
+### Requirements
+
+- Rust 1.85+ (edition 2024)
+
+### Build and test
+
+```bash
+git clone https://github.com/michaeldhopkins/branchdiff
+cd branchdiff
+cargo build
+cargo test
+```
+
+### Install local build
+
+After making changes, install the binary locally:
+
+```bash
+cargo install --path .
+```
+
+### Before committing
+
+Run clippy with warnings as errors (required by CI):
+
+```bash
+cargo clippy -- -D warnings
+```
+
 ## License
 
 All rights reserved. Copyright (c) 2025 Michael Hopkins.
