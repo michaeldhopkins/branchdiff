@@ -54,6 +54,7 @@ pub fn wrap_content(
             content: content.to_string(),
             is_file_header: false,
             file_path: None,
+            is_continuation: false,
         };
 
         return (vec![Line::from(spans)], vec![row_info]);
@@ -96,6 +97,7 @@ pub fn wrap_content(
                     content: std::mem::take(&mut current_content),
                     is_file_header: false,
                     file_path: None,
+                    is_continuation: !row_infos.is_empty(),
                 });
 
                 current_width = 0;
@@ -134,6 +136,7 @@ pub fn wrap_content(
                     content: std::mem::take(&mut current_content),
                     is_file_header: false,
                     file_path: None,
+                    is_continuation: !row_infos.is_empty(),
                 });
 
                 current_width = 0;
@@ -158,6 +161,7 @@ pub fn wrap_content(
             content: current_content,
             is_file_header: false,
             file_path: None,
+            is_continuation: !row_infos.is_empty(),
         });
     }
 
