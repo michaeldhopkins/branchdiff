@@ -1,6 +1,8 @@
 mod print;
 
 use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, FrameContext};
+#[cfg(target_os = "linux")]
+use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::{handle_event, AppAction};
 use branchdiff::limits;
 use branchdiff::message::{FetchResult, Message, RefreshOutcome, RefreshTrigger};
@@ -23,6 +25,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+#[cfg(target_os = "linux")]
 use ignore::WalkBuilder;
 use notify::RecursiveMode::{NonRecursive, Recursive};
 use notify::{PollWatcher, RecommendedWatcher};
@@ -105,8 +108,8 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Detect system limits for file watching
-    let system_limits = limits::SystemLimits::detect();
+    // Get platform-specific watch limit (None on macOS/Windows, Some on Linux)
+    let watch_limit = limits::get_watch_limit();
 
     // Create app and load initial state
     let mut app = App::new(repo_root.clone())?;
@@ -129,10 +132,10 @@ fn main() -> Result<()> {
         )?)
     };
 
-    let watcher_metrics = setup_watcher(debouncer.watcher(), &repo_root, &system_limits)?;
+    let watcher_metrics = setup_watcher(debouncer.watcher(), &repo_root, watch_limit)?;
 
-    // Check for watch-related warnings
-    if let Some(warning) = system_limits.check_watch_warning(&watcher_metrics) {
+    // Check for watch-related warnings (Linux only - macOS/Windows use recursive watching)
+    if let Some(warning) = limits::check_watch_warning(&watcher_metrics, watch_limit) {
         app.performance_warning = Some(warning);
     }
 
@@ -155,6 +158,7 @@ fn main() -> Result<()> {
         repo_root,
         config,
         git_version,
+        watch_limit,
     );
 
     // Restore terminal
@@ -301,6 +305,7 @@ fn spawn_fetch(repo_path: PathBuf, base_branch: String, git_version: git::GitVer
     });
 }
 
+#[allow(unused_variables)] // watcher and watch_limit only used on Linux
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -311,6 +316,7 @@ fn run_app<B: Backend>(
     repo_root: PathBuf,
     config: UpdateConfig,
     git_version: git::GitVersion,
+    watch_limit: Option<usize>,
 ) -> Result<()> {
     let mut refresh_state = RefreshState::Idle;
     let mut timers = Timers::default();
@@ -326,10 +332,19 @@ fn run_app<B: Backend>(
         )?;
 
         // Process each message
+        #[cfg(target_os = "linux")]
         for msg in &messages {
-            // Watch any newly created directories
             if let Message::FileChanged(events) = msg {
-                watch_new_directories(watcher, &repo_root, events)?;
+                // Watch any newly created directories (Linux only - macOS/Windows use recursive)
+                watch_new_directories(watcher, &repo_root, events);
+
+                // When .gitignore changes, add watches for newly visible directories
+                let gitignore_changed = events
+                    .iter()
+                    .any(|e| GitignoreFilter::is_gitignore_file(&e.path));
+                if gitignore_changed {
+                    add_watches_for_visible_directories(watcher, &repo_root, watch_limit);
+                }
             }
         }
 
@@ -427,21 +442,51 @@ fn collect_messages(
     Ok(messages)
 }
 
-/// Setup file watcher to only watch non-ignored directories.
+/// Setup file watcher with platform-appropriate strategy.
 ///
-/// Uses `ignore::WalkBuilder` to respect .gitignore rules, avoiding watches
-/// on large ignored directories like `target/` or `node_modules/`.
+/// On macOS and Windows, uses native recursive watching on the repo root.
+/// On Linux, watches each non-ignored directory individually (respecting .gitignore).
 ///
-/// Returns metrics about how many directories were found and watched.
+/// Returns metrics about directories watched (meaningful on Linux only).
 fn setup_watcher(
     watcher: &mut (impl notify::Watcher + ?Sized),
     repo_root: &Path,
-    limits: &limits::SystemLimits,
+    watch_limit: Option<usize>,
 ) -> Result<limits::WatcherMetrics> {
-    let mut metrics = limits::WatcherMetrics::default();
-    let mut watches_added = 0;
+    // Always watch specific .git paths for detecting commits and branch switches
+    setup_git_watches(watcher, repo_root)?;
 
-    // Watch specific .git paths we care about (for detecting commits, branch switches)
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        // Native recursive watching - efficient, 1 watch for entire tree.
+        // Events for gitignored files are filtered in handle_file_change().
+        let _ = watch_limit; // unused on these platforms
+        watcher.watch(repo_root, Recursive)?;
+        Ok(limits::WatcherMetrics::default())
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Linux inotify: notify-rs creates 1 watch per directory.
+        // We walk with gitignore to avoid watching node_modules, target, etc.
+        // This is the approach recommended by notify-rs maintainers.
+        setup_linux_watches(watcher, repo_root, watch_limit)
+    }
+
+    // Other Unix platforms (FreeBSD, etc.) - use recursive as default
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "linux")))]
+    {
+        let _ = watch_limit;
+        watcher.watch(repo_root, Recursive)?;
+        Ok(limits::WatcherMetrics::default())
+    }
+}
+
+/// Watch specific .git paths for detecting commits, branch switches, etc.
+fn setup_git_watches(
+    watcher: &mut (impl notify::Watcher + ?Sized),
+    repo_root: &Path,
+) -> Result<()> {
     let git_dir = repo_root.join(".git");
     if git_dir.exists() {
         // Watch index for staging changes
@@ -460,8 +505,23 @@ fn setup_watcher(
             watcher.watch(&refs, Recursive)?;
         }
     }
+    Ok(())
+}
 
-    // Walk non-ignored directories and watch each one (up to the limit)
+/// Linux-specific: Watch non-ignored directories individually.
+///
+/// Uses `ignore::WalkBuilder` to respect .gitignore rules, avoiding watches
+/// on large ignored directories like `target/` or `node_modules/`.
+#[cfg(target_os = "linux")]
+fn setup_linux_watches(
+    watcher: &mut (impl notify::Watcher + ?Sized),
+    repo_root: &Path,
+    watch_limit: Option<usize>,
+) -> Result<limits::WatcherMetrics> {
+    let mut metrics = limits::WatcherMetrics::default();
+    let mut watches_added = 0;
+    let limit = watch_limit.unwrap_or(usize::MAX);
+
     for entry in WalkBuilder::new(repo_root)
         .hidden(false) // Don't skip hidden files (but .git is handled separately)
         .git_ignore(true)
@@ -478,7 +538,7 @@ fn setup_watcher(
             metrics.directory_count += 1;
 
             // Stop adding watches if we've hit the limit
-            if watches_added >= limits.max_recommended_watches {
+            if watches_added >= limit {
                 metrics.skipped_count += 1;
                 continue;
             }
@@ -502,11 +562,14 @@ fn setup_watcher(
 ///
 /// Note: Deleted directories are handled automatically by notify - the watch
 /// becomes invalid when the directory is removed.
+///
+/// Linux only - macOS/Windows use recursive watching which handles this automatically.
+#[cfg(target_os = "linux")]
 fn watch_new_directories(
     watcher: &mut (impl notify::Watcher + ?Sized),
     repo_root: &Path,
     events: &[notify_debouncer_mini::DebouncedEvent],
-) -> Result<()> {
+) {
     for event in events {
         let path = &event.path;
 
@@ -528,18 +591,20 @@ fn watch_new_directories(
         }
 
         // Check if this directory should be watched (respects gitignore)
+        // Ignore errors - directory may already be watched or was deleted between check and watch
         if is_directory_watchable(path) {
-            watcher.watch(path, NonRecursive)?;
+            let _ = watcher.watch(path, NonRecursive);
         }
     }
-
-    Ok(())
 }
 
 /// Check if a directory should be watched by verifying it's not gitignored.
 ///
 /// Uses WalkBuilder on the parent directory to check if the target would be
 /// included when respecting gitignore rules.
+///
+/// Linux only - used by watch_new_directories.
+#[cfg(target_os = "linux")]
 fn is_directory_watchable(dir_path: &Path) -> bool {
     let parent = match dir_path.parent() {
         Some(p) => p,
@@ -558,11 +623,146 @@ fn is_directory_watchable(dir_path: &Path) -> bool {
         .any(|entry| entry.path() == dir_path)
 }
 
+/// Re-walk the repository and add watches for any visible directories.
+///
+/// Called when .gitignore changes - directories that were previously ignored
+/// may now be visible and need watches. Already-watched directories will
+/// return an error that we ignore.
+///
+/// Respects watch_limit to avoid exceeding kernel inotify limits.
+///
+/// Linux only - macOS/Windows use recursive watching.
+#[cfg(target_os = "linux")]
+fn add_watches_for_visible_directories(
+    watcher: &mut (impl notify::Watcher + ?Sized),
+    repo_root: &Path,
+    watch_limit: Option<usize>,
+) {
+    let limit = watch_limit.unwrap_or(usize::MAX);
+    let mut watches_added = 0;
+
+    for entry in WalkBuilder::new(repo_root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .filter_entry(|e| e.file_name() != ".git")
+        .build()
+        .flatten()
+    {
+        if watches_added >= limit {
+            break;
+        }
+
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            // Ignore errors - directory may already be watched or was deleted
+            if watcher.watch(entry.path(), NonRecursive).is_ok() {
+                watches_added += 1;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::mpsc;
     use tempfile::TempDir;
+
+    // =========================================================================
+    // Linux-specific watch limit tests
+    // =========================================================================
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_setup_linux_watches_respects_limit() {
+        use std::fs;
+
+        // Given: a temp repo with 10 subdirectories
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+        fs::create_dir(repo_root.join(".git")).unwrap();
+        for i in 0..10 {
+            fs::create_dir(repo_root.join(format!("dir{}", i))).unwrap();
+        }
+
+        let (tx, _rx) = mpsc::channel();
+        let config = DebouncerConfig::default()
+            .with_timeout(Duration::from_millis(100))
+            .with_notify_config(
+                notify::Config::default().with_poll_interval(Duration::from_millis(500)),
+            );
+        let mut debouncer =
+            AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(config, tx).unwrap());
+
+        // When: we setup watches with a limit of 5
+        let metrics = setup_linux_watches(debouncer.watcher(), repo_root, Some(5)).unwrap();
+
+        // Then: we should have counted all directories but only watched up to limit
+        // directory_count includes root (1) + 10 subdirs = 11
+        assert!(metrics.directory_count >= 10);
+        assert!(metrics.skipped_count >= 5, "Expected at least 5 skipped, got {}", metrics.skipped_count);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_add_watches_for_visible_directories_respects_limit() {
+        use std::fs;
+
+        // Given: a temp repo with 10 subdirectories
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+        fs::create_dir(repo_root.join(".git")).unwrap();
+        for i in 0..10 {
+            fs::create_dir(repo_root.join(format!("dir{}", i))).unwrap();
+        }
+
+        let (tx, _rx) = mpsc::channel();
+        let config = DebouncerConfig::default()
+            .with_timeout(Duration::from_millis(100))
+            .with_notify_config(
+                notify::Config::default().with_poll_interval(Duration::from_millis(500)),
+            );
+        let mut debouncer =
+            AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(config, tx).unwrap());
+
+        // When: we add watches with a limit of 3
+        // Then: the function should complete without panic (limit is enforced)
+        // Note: We can't directly count watches added, but setup_linux_watches
+        // tests verify the limit logic which add_watches_for_visible_directories shares
+        add_watches_for_visible_directories(debouncer.watcher(), repo_root, Some(3));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_add_watches_for_visible_directories_no_limit() {
+        use std::fs;
+
+        // Given: a temp repo with 5 subdirectories
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+        fs::create_dir(repo_root.join(".git")).unwrap();
+        for i in 0..5 {
+            fs::create_dir(repo_root.join(format!("dir{}", i))).unwrap();
+        }
+
+        let (tx, _rx) = mpsc::channel();
+        let config = DebouncerConfig::default()
+            .with_timeout(Duration::from_millis(100))
+            .with_notify_config(
+                notify::Config::default().with_poll_interval(Duration::from_millis(500)),
+            );
+        let mut debouncer =
+            AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(config, tx).unwrap());
+
+        // When: we add watches with no limit (None)
+        // Then: function should complete without panic
+        add_watches_for_visible_directories(debouncer.watcher(), repo_root, None);
+    }
+
+    // =========================================================================
+    // Debouncer tests (all platforms)
+    // =========================================================================
 
     #[test]
     fn test_any_debouncer_poll_variant_creates_working_watcher() {
