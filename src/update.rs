@@ -130,6 +130,8 @@ pub struct UpdateConfig {
     pub refresh_watchdog_timeout: Duration,
     pub auto_fetch: bool,
     pub diff_thresholds: DiffThresholds,
+    /// Whether to use fallback periodic refresh (for large repos exceeding file watch limits)
+    pub needs_fallback_refresh: bool,
 }
 
 impl Default for UpdateConfig {
@@ -140,6 +142,7 @@ impl Default for UpdateConfig {
             refresh_watchdog_timeout: Duration::from_secs(10),
             auto_fetch: true,
             diff_thresholds: DiffThresholds::default(),
+            needs_fallback_refresh: false,
         }
     }
 }
@@ -456,8 +459,9 @@ fn handle_tick(
         result.refresh = RefreshTrigger::Full;
     }
 
-    // Periodic fallback refresh
-    if refresh_state.is_idle()
+    // Periodic fallback refresh (only when file watching is insufficient)
+    if config.needs_fallback_refresh
+        && refresh_state.is_idle()
         && timers.last_refresh.elapsed() >= config.refresh_fallback_interval
     {
         result.refresh = RefreshTrigger::Full;
@@ -676,10 +680,28 @@ mod tests {
             last_refresh: Instant::now() - Duration::from_secs(FALLBACK_REFRESH_SECS + 5),
             ..Default::default()
         };
-        let config = UpdateConfig::default();
+        let config = UpdateConfig {
+            needs_fallback_refresh: true,
+            ..Default::default()
+        };
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
         assert_eq!(result.refresh, RefreshTrigger::Full);
+    }
+
+    #[test]
+    fn test_handle_tick_no_fallback_when_not_needed() {
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers {
+            last_refresh: Instant::now() - Duration::from_secs(FALLBACK_REFRESH_SECS + 5),
+            ..Default::default()
+        };
+        // Default: needs_fallback_refresh = false
+        let config = UpdateConfig::default();
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+        // Should NOT trigger fallback when not needed
+        assert_eq!(result.refresh, RefreshTrigger::None);
     }
 
     #[test]
