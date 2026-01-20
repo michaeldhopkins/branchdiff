@@ -84,6 +84,7 @@ impl FileContents {
 fn process_single_file(
     repo_path: &Path,
     file_path: &str,
+    old_path: Option<&str>,
     merge_base: &str,
     binary_files: &HashSet<String>,
 ) -> FileProcessResult {
@@ -98,6 +99,7 @@ fn process_single_file(
         contents.head.as_deref(),
         contents.index.as_deref(),
         contents.working.as_deref(),
+        old_path,
     );
 
     FileProcessResult::Diff(file_diff)
@@ -124,6 +126,7 @@ pub fn compute_single_file_diff(
         contents.head.as_deref(),
         contents.index.as_deref(),
         contents.working.as_deref(),
+        None, // Single file refresh doesn't track renames
     ))
 }
 
@@ -150,13 +153,13 @@ pub fn compute_refresh(
         git_thread_pool().install(|| {
             changed_files
                 .par_iter()
-                .map(|file| process_single_file(repo_path, &file.path, &merge_base, &binary_files))
+                .map(|file| process_single_file(repo_path, &file.path, file.old_path.as_deref(), &merge_base, &binary_files))
                 .collect()
         })
     } else {
         changed_files
             .iter()
-            .map(|file| process_single_file(repo_path, &file.path, &merge_base, &binary_files))
+            .map(|file| process_single_file(repo_path, &file.path, file.old_path.as_deref(), &merge_base, &binary_files))
             .collect()
     };
 
