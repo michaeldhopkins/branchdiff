@@ -64,15 +64,27 @@ pub enum RefreshTrigger {
     SingleFile(PathBuf),
 }
 
+/// Whether to continue or quit the event loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LoopAction {
+    /// Continue running.
+    #[default]
+    Continue,
+    /// Exit the application.
+    Quit,
+}
+
 /// Result of processing a message.
 #[derive(Debug, Default)]
 pub struct UpdateResult {
-    /// Should quit the application.
-    pub quit: bool,
+    /// Whether to continue or quit.
+    pub loop_action: LoopAction,
     /// What type of refresh to trigger.
     pub refresh: RefreshTrigger,
     /// Should trigger a fetch.
     pub trigger_fetch: bool,
+    /// Whether the UI needs to be redrawn.
+    pub needs_redraw: bool,
 }
 
 #[cfg(test)]
@@ -82,9 +94,10 @@ mod tests {
     #[test]
     fn test_update_result_default() {
         let result = UpdateResult::default();
-        assert!(!result.quit);
+        assert_eq!(result.loop_action, LoopAction::Continue);
         assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(!result.trigger_fetch);
+        assert!(!result.needs_redraw);
     }
 
     #[test]
