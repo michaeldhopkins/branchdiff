@@ -332,8 +332,12 @@ fn run_app<B: Backend>(
     let (fetch_tx, fetch_rx) = mpsc::channel::<FetchResult>();
 
     // Draw initial frame before entering event loop
-    let visible_height = terminal.size()?.height as usize;
-    app.ensure_inline_spans_for_visible(visible_height);
+    // Must set viewport_height BEFORE creating FrameContext, which snapshots it
+    let terminal_size = terminal.size()?;
+    let status_height = ui::status_bar_height(app, terminal_size.width);
+    let content_height = (terminal_size.height - status_height).saturating_sub(2) as usize;
+    app.set_viewport_height(content_height);
+    app.ensure_inline_spans_for_visible(content_height);
     app.clear_needs_inline_spans();
     terminal.draw(|f| {
         let frame_ctx = FrameContext::new(app);

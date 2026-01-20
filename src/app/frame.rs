@@ -380,4 +380,27 @@ mod tests {
         let visible: Vec<_> = ctx.iter_visible_items().collect();
         assert_eq!(visible.len(), 3);
     }
+
+    #[test]
+    fn test_frame_context_uses_viewport_height_at_creation_time() {
+        // This test documents that FrameContext snapshots viewport_height at creation.
+        // If viewport_height is not set correctly BEFORE creating FrameContext,
+        // the visible range will be wrong.
+        let lines: Vec<_> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+
+        // TestAppBuilder defaults viewport_height to 10
+        let ctx_with_default = FrameContext::new(&app);
+        let (start, end) = ctx_with_default.visible_range();
+        assert_eq!(end - start, 10, "With default viewport_height=10, visible range should be 10");
+
+        // Set viewport_height to 40 - now we should see 40 lines
+        app.viewport_height = 40;
+        let ctx_with_correct = FrameContext::new(&app);
+        let (start, end) = ctx_with_correct.visible_range();
+        assert_eq!(end - start, 40, "With viewport_height=40, visible range should be 40");
+
+        // This demonstrates why the initial render was broken:
+        // viewport_height must be set BEFORE FrameContext::new()
+    }
 }
