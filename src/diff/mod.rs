@@ -111,6 +111,19 @@ impl DiffLine {
         }
     }
 
+    pub fn renamed_file_header(old_path: &str, new_path: &str) -> Self {
+        Self {
+            source: LineSource::FileHeader,
+            content: format!("{} → {}", old_path, new_path),
+            prefix: ' ',
+            line_number: None,
+            file_path: Some(new_path.to_string()),
+            inline_spans: Vec::new(),
+            old_content: None,
+            change_source: None,
+        }
+    }
+
     pub fn elided(count: usize) -> Self {
         Self {
             source: LineSource::Elided,
@@ -345,12 +358,17 @@ pub fn compute_file_diff_v2(
     head_content: Option<&str>,
     index_content: Option<&str>,
     working_content: Option<&str>,
+    old_path: Option<&str>,
 ) -> FileDiff {
     if let Some(deletion_diff) = check_file_deletion(path, base_content, head_content, index_content, working_content) {
         return deletion_diff;
     }
 
-    let mut lines = vec![DiffLine::file_header(path)];
+    let header = match old_path {
+        Some(old) => DiffLine::renamed_file_header(old, path),
+        None => DiffLine::file_header(path),
+    };
+    let mut lines = vec![header];
 
     let base = base_content.unwrap_or("");
     let head = head_content.unwrap_or(base);
@@ -658,7 +676,7 @@ mod tests {
         index: Option<&str>,
         working: Option<&str>,
     ) -> FileDiff {
-        let mut diff = compute_file_diff_v2(path, base, head, index, working);
+        let mut diff = compute_file_diff_v2(path, base, head, index, working, None);
         for line in &mut diff.lines {
             line.ensure_inline_spans();
         }
@@ -676,6 +694,29 @@ mod tests {
 
         assert_eq!(diff.lines.len(), 1);
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+    }
+
+    #[test]
+    fn test_renamed_file_header() {
+        let header = DiffLine::renamed_file_header("old/path.rs", "new/path.rs");
+        assert_eq!(header.source, LineSource::FileHeader);
+        assert_eq!(header.content, "old/path.rs → new/path.rs");
+        assert_eq!(header.file_path, Some("new/path.rs".to_string()));
+    }
+
+    #[test]
+    fn test_compute_file_diff_with_rename() {
+        let content = "line1\nline2";
+        let diff = compute_file_diff_v2(
+            "new/path.rs",
+            Some(content),
+            Some(content),
+            Some(content),
+            Some(content),
+            Some("old/path.rs"),
+        );
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+        assert_eq!(diff.lines[0].content, "old/path.rs → new/path.rs");
     }
 
     #[test]
@@ -2250,6 +2291,7 @@ end"##;
             Some(base),
             Some(base),      // index same as base
             Some(modified),  // working has the change
+            None,
         );
 
         let unstaged_lines: Vec<_> = diff_before.lines.iter()
@@ -2264,6 +2306,7 @@ end"##;
             Some(base),
             Some(modified),  // index now has the change
             Some(modified),  // working same as index
+            None,
         );
 
         let staged_lines: Vec<_> = diff_after.lines.iter()

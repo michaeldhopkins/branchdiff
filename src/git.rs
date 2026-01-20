@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::{Command, Output};
 use std::thread;
@@ -231,19 +232,128 @@ pub fn get_working_tree_file(repo_path: &Path, file_path: &str) -> Result<Option
 #[derive(Debug, Clone)]
 pub struct ChangedFile {
     pub path: String,
+    /// Previous path if file was renamed/moved
+    pub old_path: Option<String>,
+}
+
+/// Detect unstaged renames using a temporary index.
+/// Creates a copy of the git index, adds untracked files with intent-to-add,
+/// then uses git's rename detection to find matches between deleted and untracked files.
+/// Returns Vec of (old_path, new_path) for detected renames.
+fn detect_unstaged_renames(
+    repo_path: &Path,
+    deleted_files: &[String],
+    untracked_files: &[String],
+) -> Result<Vec<(String, String)>> {
+    use std::io::Write;
+
+    // Early exit if no potential renames
+    if deleted_files.is_empty() || untracked_files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Find the .git directory (handles both regular repos and worktrees)
+    let git_dir_output = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to find .git directory")?;
+
+    if !git_dir_output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let git_dir = repo_path.join(
+        String::from_utf8_lossy(&git_dir_output.stdout).trim(),
+    );
+    let index_path = git_dir.join("index");
+
+    // Create temp file for the index copy
+    let mut temp_index = tempfile::NamedTempFile::new().context("Failed to create temp index")?;
+
+    // Copy existing index to temp file
+    if index_path.exists() {
+        let index_content = std::fs::read(&index_path).context("Failed to read index")?;
+        temp_index
+            .write_all(&index_content)
+            .context("Failed to write temp index")?;
+        temp_index.flush()?;
+    }
+
+    let temp_index_path = temp_index.path().to_string_lossy().to_string();
+
+    // Batch git add -N for all untracked files
+    // Using --intent-to-add with the temp index
+    let add_output = Command::new("git")
+        .args(["add", "-N", "--"])
+        .args(untracked_files)
+        .env("GIT_INDEX_FILE", &temp_index_path)
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to run git add -N")?;
+
+    if !add_output.status.success() {
+        // If add fails, just return empty (don't break the whole refresh)
+        return Ok(Vec::new());
+    }
+
+    // Run git diff with rename detection using the temp index
+    let diff_output = Command::new("git")
+        .args(["diff", "--name-status", "-M", "HEAD"])
+        .env("GIT_INDEX_FILE", &temp_index_path)
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to run git diff with temp index")?;
+
+    if !diff_output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    // Parse renames from the diff output
+    let deleted_set: HashSet<&str> = deleted_files.iter().map(String::as_str).collect();
+    let untracked_set: HashSet<&str> = untracked_files.iter().map(String::as_str).collect();
+
+    let output_str = String::from_utf8_lossy(&diff_output.stdout);
+    let mut renames = Vec::new();
+
+    for line in output_str.lines() {
+        if let Some(transition) = parse_diff_line(line)
+            && let (Some(from), Some(to)) = (&transition.from, &transition.to)
+            && from != to
+            && deleted_set.contains(from.as_str())
+            && untracked_set.contains(to.as_str())
+        {
+            renames.push((from.clone(), to.clone()));
+        }
+    }
+
+    Ok(renames)
 }
 
 /// Get all files that have changes compared to merge-base, HEAD, index, or working tree
 pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<ChangedFile>> {
-    let mut files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Map from current path to optional old_path (for renames)
+    let mut files: HashMap<String, Option<String>> = HashMap::new();
 
-    // 1. Get committed changes (merge-base to HEAD)
+    // Track worktree-deleted and untracked files for unstaged rename detection
+    let mut worktree_deleted: Vec<String> = Vec::new();
+    let mut untracked: Vec<String> = Vec::new();
+
+    // 1. Get committed changes (merge-base to HEAD) with rename detection
     // Skip if merge_base is empty (no commits yet)
     if !merge_base.is_empty()
-        && let Ok(committed) = get_diff_files(repo_path, merge_base, "HEAD")
+        && let Ok(transitions) = get_diff_transitions(repo_path, merge_base, "HEAD")
     {
-        for path in committed {
-            files.insert(path);
+        for t in transitions {
+            if let Some(path) = t.to.clone().or(t.from.clone()) {
+                // For renames, store old_path; for other changes, old_path is None
+                let old_path = if t.from.as_ref() != t.to.as_ref() {
+                    t.from.clone()
+                } else {
+                    None
+                };
+                files.insert(path, old_path);
+            }
         }
     }
 
@@ -265,23 +375,47 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
                 continue;
             }
 
-            let path = line[3..].to_string();
+            let status_codes = &line[..2];
+            let path_part = line[3..].to_string();
 
-            // Handle renames which have "old -> new" format
-            let path = if path.contains(" -> ") {
-                let parts: Vec<&str> = path.split(" -> ").collect();
-                parts[1].to_string()
+            // Track worktree-deleted files (second char is 'D') and untracked files (??)
+            // for unstaged rename detection
+            if status_codes.as_bytes()[1] == b'D' {
+                worktree_deleted.push(path_part.clone());
+            } else if status_codes == "??" {
+                untracked.push(path_part.clone());
+            }
+
+            // Handle renames which have "old -> new" format (staged renames)
+            let (path, old_path) = if path_part.contains(" -> ") {
+                let parts: Vec<&str> = path_part.split(" -> ").collect();
+                (parts[1].to_string(), Some(parts[0].to_string()))
             } else {
-                path
+                (path_part, None)
             };
 
-            files.insert(path);
+            // Only update old_path if we don't already have one (committed rename takes precedence)
+            files.entry(path).or_insert(old_path);
+        }
+    }
+
+    // 3. Detect unstaged renames (worktree mv without staging)
+    // Only runs when both deleted and untracked files exist
+    if !worktree_deleted.is_empty()
+        && !untracked.is_empty()
+        && let Ok(renames) = detect_unstaged_renames(repo_path, &worktree_deleted, &untracked)
+    {
+        for (old_path, new_path) in renames {
+            // Update the new file to reference the old path
+            files.insert(new_path, Some(old_path.clone()));
+            // Remove the deleted file entry (it's now part of the rename)
+            files.remove(&old_path);
         }
     }
 
     let mut result: Vec<ChangedFile> = files
         .into_iter()
-        .map(|path| ChangedFile { path })
+        .map(|(path, old_path)| ChangedFile { path, old_path })
         .collect();
     result.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(result)
@@ -300,6 +434,7 @@ struct FileTransition {
 impl FileTransition {
     /// Get the current/relevant path for this transition.
     /// Prefers the destination path, falls back to source for deletions.
+    #[cfg(test)]
     fn current_path(&self) -> Option<&str> {
         self.to.as_deref().or(self.from.as_deref())
     }
@@ -330,15 +465,15 @@ fn parse_diff_line(line: &str) -> Option<FileTransition> {
     }
 }
 
-/// Get files changed between two refs
-fn get_diff_files(repo_path: &Path, from: &str, to: &str) -> Result<Vec<String>> {
+/// Get file transitions between two refs with rename detection enabled
+fn get_diff_transitions(repo_path: &Path, from: &str, to: &str) -> Result<Vec<FileTransition>> {
     let output = run_git_with_retry(|| {
         let mut cmd = Command::new("git");
-        cmd.args(["diff", "--name-status", from, to])
+        cmd.args(["diff", "--name-status", "-M", from, to])
             .current_dir(repo_path);
         cmd
     })
-    .context("Failed to run git diff --name-status")?;
+    .context("Failed to run git diff --name-status -M")?;
 
     if !output.status.success() {
         return Err(anyhow!(
@@ -348,13 +483,12 @@ fn get_diff_files(repo_path: &Path, from: &str, to: &str) -> Result<Vec<String>>
     }
 
     let output_str = String::from_utf8_lossy(&output.stdout);
-    let files: Vec<String> = output_str
+    let transitions: Vec<FileTransition> = output_str
         .lines()
         .filter_map(parse_diff_line)
-        .filter_map(|t| t.current_path().map(|s| s.to_string()))
         .collect();
 
-    Ok(files)
+    Ok(transitions)
 }
 
 /// Check if a file is binary (single file check - prefer get_binary_files for batch operations)
@@ -1110,5 +1244,146 @@ mod tests {
         // Use empty merge_base (simulates new repo scenario)
         let binaries = get_binary_files(temp.path(), "");
         assert!(binaries.contains("binary.bin"));
+    }
+
+    #[test]
+    fn test_detect_unstaged_rename() {
+        let temp = create_test_repo();
+        let merge_base = get_merge_base(temp.path(), "main").unwrap();
+
+        // Rename file using filesystem mv (not git mv)
+        fs::rename(
+            temp.path().join("file.txt"),
+            temp.path().join("renamed.txt"),
+        )
+        .unwrap();
+
+        let changed = get_all_changed_files(temp.path(), &merge_base).unwrap();
+
+        // Should detect as a rename, not separate delete + add
+        assert_eq!(changed.len(), 1, "Should be one renamed file, not two");
+        let renamed = &changed[0];
+        assert_eq!(renamed.path, "renamed.txt");
+        assert_eq!(renamed.old_path, Some("file.txt".to_string()));
+    }
+
+    #[test]
+    fn test_detect_unstaged_rename_with_content_change() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path();
+
+        git_cmd(path, &["init"]);
+        git_cmd(path, &["config", "user.email", "test@test.com"]);
+        git_cmd(path, &["config", "user.name", "Test"]);
+
+        // Create a larger file so small changes stay within 50% similarity
+        let original_content = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\n";
+        fs::write(path.join("file.txt"), original_content).unwrap();
+        git_cmd(path, &["add", "."]);
+        git_cmd(path, &["commit", "-m", "initial"]);
+        git_cmd(path, &["branch", "-M", "main"]);
+
+        let merge_base = get_merge_base(path, "main").unwrap();
+
+        // Rename file and modify content slightly (add one line)
+        fs::remove_file(path.join("file.txt")).unwrap();
+        fs::write(
+            path.join("renamed.txt"),
+            format!("{}line 9\n", original_content),
+        )
+        .unwrap();
+
+        let changed = get_all_changed_files(path, &merge_base).unwrap();
+
+        // Git's rename detection should still match (>50% similarity)
+        assert_eq!(changed.len(), 1, "Should detect as rename despite small change");
+        let renamed = &changed[0];
+        assert_eq!(renamed.path, "renamed.txt");
+        assert_eq!(renamed.old_path, Some("file.txt".to_string()));
+    }
+
+    #[test]
+    fn test_no_rename_detection_when_only_deleted() {
+        let temp = create_test_repo();
+        let merge_base = get_merge_base(temp.path(), "main").unwrap();
+
+        // Only delete, no new files
+        fs::remove_file(temp.path().join("file.txt")).unwrap();
+
+        let changed = get_all_changed_files(temp.path(), &merge_base).unwrap();
+
+        // Should be a plain deletion
+        assert_eq!(changed.len(), 1);
+        let deleted = &changed[0];
+        assert_eq!(deleted.path, "file.txt");
+        assert!(deleted.old_path.is_none());
+    }
+
+    #[test]
+    fn test_no_rename_detection_when_only_new_file() {
+        let temp = create_test_repo();
+        let merge_base = get_merge_base(temp.path(), "main").unwrap();
+
+        // Only add, no deletions
+        fs::write(temp.path().join("new_file.txt"), "new content\n").unwrap();
+
+        let changed = get_all_changed_files(temp.path(), &merge_base).unwrap();
+
+        // Should be a plain addition
+        assert_eq!(changed.len(), 1);
+        let added = &changed[0];
+        assert_eq!(added.path, "new_file.txt");
+        assert!(added.old_path.is_none());
+    }
+
+    #[test]
+    fn test_staged_rename_with_git_mv() {
+        let temp = create_test_repo();
+        let merge_base = get_merge_base(temp.path(), "main").unwrap();
+
+        // Use git mv to rename (creates a staged rename)
+        git_cmd(temp.path(), &["mv", "file.txt", "staged_rename.txt"]);
+
+        let changed = get_all_changed_files(temp.path(), &merge_base).unwrap();
+
+        // Should detect as a staged rename
+        assert_eq!(changed.len(), 1, "Should be one renamed file");
+        let renamed = &changed[0];
+        assert_eq!(renamed.path, "staged_rename.txt");
+        assert_eq!(renamed.old_path, Some("file.txt".to_string()));
+    }
+
+    #[test]
+    fn test_unstaged_rename_in_subdirectory() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path();
+
+        git_cmd(path, &["init"]);
+        git_cmd(path, &["config", "user.email", "test@test.com"]);
+        git_cmd(path, &["config", "user.name", "Test"]);
+
+        // Create file in subdirectory
+        fs::create_dir(path.join("subdir")).unwrap();
+        fs::write(path.join("subdir/file.txt"), "content\n").unwrap();
+        git_cmd(path, &["add", "."]);
+        git_cmd(path, &["commit", "-m", "initial"]);
+        git_cmd(path, &["branch", "-M", "main"]);
+
+        let merge_base = get_merge_base(path, "main").unwrap();
+
+        // Rename within subdirectory using filesystem mv
+        fs::rename(
+            path.join("subdir/file.txt"),
+            path.join("subdir/renamed.txt"),
+        )
+        .unwrap();
+
+        let changed = get_all_changed_files(path, &merge_base).unwrap();
+
+        // Should detect as a rename
+        assert_eq!(changed.len(), 1, "Should be one renamed file");
+        let renamed = &changed[0];
+        assert_eq!(renamed.path, "subdir/renamed.txt");
+        assert_eq!(renamed.old_path, Some("subdir/file.txt".to_string()));
     }
 }

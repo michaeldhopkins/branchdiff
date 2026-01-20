@@ -1235,7 +1235,7 @@ mod tests {
         let base = "line1\nline2\nline3\n";
         let working = "line1\nline2\nline3\nline4\nline5\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working), None);
 
         let unstaged: Vec<_> = diff.lines.iter()
             .filter(|l| matches!(l.source, LineSource::Unstaged))
@@ -1253,7 +1253,7 @@ mod tests {
         let base = "line1\nline2\nline3\nline4\nline5\n";
         let working = "line1\nINSERTED\nline2\nline3\nline4\nline5\nAPPEND1\nAPPEND2\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working), None);
 
         let unstaged: Vec<_> = diff.lines.iter()
             .filter(|l| matches!(l.source, LineSource::Unstaged))
