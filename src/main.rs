@@ -5,7 +5,9 @@ use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, Fram
 use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::{handle_event, AppAction};
 use branchdiff::limits;
-use branchdiff::message::{FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger};
+use branchdiff::message::{
+    FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger, FALLBACK_REFRESH_SECS,
+};
 use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
 use branchdiff::git;
 use branchdiff::ui;
@@ -135,8 +137,13 @@ fn main() -> Result<()> {
     let watcher_metrics = setup_watcher(debouncer.watcher(), &repo_root, watch_limit)?;
 
     // Check for watch-related warnings (Linux only - macOS/Windows use recursive watching)
-    if let Some(warning) = limits::check_watch_warning(&watcher_metrics, watch_limit) {
-        app.performance_warning = Some(warning);
+    // Also determines if we need fallback periodic refresh
+    let needs_fallback_refresh = limits::check_watch_warning(&watcher_metrics, watch_limit).is_some();
+    if needs_fallback_refresh {
+        app.performance_warning = Some(format!(
+            "Large repo: refreshing every {}s",
+            FALLBACK_REFRESH_SECS
+        ));
     }
 
     // Setup refresh channel for background git operations
@@ -145,6 +152,7 @@ fn main() -> Result<()> {
     // Main loop
     let config = UpdateConfig {
         auto_fetch: !cli.no_auto_fetch,
+        needs_fallback_refresh,
         ..Default::default()
     };
 

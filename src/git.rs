@@ -357,7 +357,7 @@ fn get_diff_files(repo_path: &Path, from: &str, to: &str) -> Result<Vec<String>>
     Ok(files)
 }
 
-/// Check if a file is binary
+/// Check if a file is binary (single file check - prefer get_binary_files for batch operations)
 pub fn is_binary_file(repo_path: &Path, file_path: &str) -> bool {
     let output = Command::new("git")
         .args(["diff", "--numstat", "--", file_path])
@@ -372,6 +372,48 @@ pub fn is_binary_file(repo_path: &Path, file_path: &str) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Get all binary files in the diff between merge_base and working tree.
+/// Returns a HashSet of file paths that are binary.
+/// This is more efficient than calling is_binary_file() for each file.
+pub fn get_binary_files(repo_path: &Path, merge_base: &str) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+
+    let mut binaries = HashSet::new();
+
+    // Compare merge_base to working tree (covers committed + staged + unstaged changes)
+    // If merge_base is empty (new repo), check against empty tree
+    let base_ref = if merge_base.is_empty() {
+        "4b825dc642cb6eb9a060e54bf8d69288fbee4904" // git's empty tree SHA
+    } else {
+        merge_base
+    };
+
+    // git diff --numstat <ref> (with no second ref) compares ref to working tree
+    let output = Command::new("git")
+        .args(["diff", "--numstat", base_ref])
+        .current_dir(repo_path)
+        .output();
+
+    if let Ok(o) = output {
+        let s = String::from_utf8_lossy(&o.stdout);
+        for line in s.lines() {
+            // Binary files show as "-\t-\tfilename" in numstat output
+            // Renames show as "-\t-\told => new"
+            if let Some(path) = line.strip_prefix("-\t-\t") {
+                let actual_path = if path.contains(" => ") {
+                    // Extract the new filename from "old => new" format
+                    path.split(" => ").last().unwrap_or(path)
+                } else {
+                    path
+                };
+                binaries.insert(actual_path.to_string());
+            }
+        }
+    }
+
+    binaries
 }
 
 pub fn fetch_base_branch(repo_path: &Path, base_branch: &str) -> Result<()> {
@@ -989,5 +1031,84 @@ mod tests {
 
         // Should fail because branch doesn't exist
         assert!(!output.status.success());
+    }
+
+    #[test]
+    fn test_get_binary_files_empty_repo() {
+        let temp = create_test_repo();
+        let merge_base = get_merge_base(temp.path(), "main").unwrap();
+
+        // No binary files in a clean repo
+        let binaries = get_binary_files(temp.path(), &merge_base);
+        assert!(binaries.is_empty());
+    }
+
+    #[test]
+    fn test_get_binary_files_detects_binary() {
+        let temp = create_test_repo();
+        let merge_base = get_merge_base(temp.path(), "main").unwrap();
+
+        // Add a binary file (null bytes make it binary)
+        fs::write(temp.path().join("binary.bin"), &[0u8, 1, 2, 255, 254, 253]).unwrap();
+        // Must be staged/tracked for git diff to see it
+        git_cmd(temp.path(), &["add", "binary.bin"]);
+
+        let binaries = get_binary_files(temp.path(), &merge_base);
+        assert!(binaries.contains("binary.bin"));
+    }
+
+    #[test]
+    fn test_get_binary_files_ignores_text_files() {
+        let temp = create_test_repo();
+        let merge_base = get_merge_base(temp.path(), "main").unwrap();
+
+        // Modify a text file
+        fs::write(temp.path().join("file.txt"), "modified content\n").unwrap();
+
+        let binaries = get_binary_files(temp.path(), &merge_base);
+        // Text files should not be in binary set
+        assert!(!binaries.contains("file.txt"));
+    }
+
+    #[test]
+    fn test_get_binary_files_handles_renamed_binary() {
+        let temp = create_test_repo();
+
+        // Create and commit a binary file
+        fs::write(temp.path().join("original.bin"), &[0u8, 1, 2, 255]).unwrap();
+        git_cmd(temp.path(), &["add", "original.bin"]);
+        git_cmd(temp.path(), &["commit", "-m", "add binary"]);
+
+        let merge_base = get_merge_base(temp.path(), "main").unwrap();
+
+        // Rename the binary file
+        fs::rename(
+            temp.path().join("original.bin"),
+            temp.path().join("renamed.bin"),
+        )
+        .unwrap();
+        git_cmd(temp.path(), &["add", "."]);
+
+        let binaries = get_binary_files(temp.path(), &merge_base);
+        // Should detect the new name, not "original.bin => renamed.bin"
+        assert!(binaries.contains("renamed.bin"));
+        assert!(!binaries.contains("original.bin => renamed.bin"));
+    }
+
+    #[test]
+    fn test_get_binary_files_with_empty_merge_base() {
+        let temp = TempDir::new().unwrap();
+        git_cmd(temp.path(), &["init"]);
+        git_cmd(temp.path(), &["config", "user.email", "test@test.com"]);
+        git_cmd(temp.path(), &["config", "user.name", "Test"]);
+
+        // Add a binary file before first commit
+        fs::write(temp.path().join("binary.bin"), &[0u8, 1, 2]).unwrap();
+        git_cmd(temp.path(), &["add", "."]);
+        git_cmd(temp.path(), &["commit", "-m", "initial"]);
+
+        // Use empty merge_base (simulates new repo scenario)
+        let binaries = get_binary_files(temp.path(), "");
+        assert!(binaries.contains("binary.bin"));
     }
 }
