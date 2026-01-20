@@ -720,6 +720,164 @@ mod tests {
     }
 
     #[test]
+    fn test_renamed_file_with_content_change() {
+        // Simulates: base == head == index, but working has a change
+        // This is the case for an unstaged rename with modifications
+        let original = "line 1\nline 2\nline 3\nline 4\nline 5";
+        let modified = "line 1\nline 2 modified\nline 3\nline 4\nline 5";
+
+        let diff = compute_file_diff_v2(
+            "renamed.txt",
+            Some(original), // base: original content
+            Some(original), // head: same as base (rename not committed)
+            Some(original), // index: same as head (rename not staged)
+            Some(modified), // working: modified content
+            Some("original.txt"),
+        );
+
+        // Modifications have source=Base but change_source=Unstaged and old_content set
+        let modified_lines: Vec<_> = diff
+            .lines
+            .iter()
+            .filter(|l| l.old_content.is_some() || l.change_source.is_some())
+            .collect();
+
+        assert!(
+            !modified_lines.is_empty(),
+            "Expected at least one modified line"
+        );
+
+        // Verify the modification is tracked correctly
+        let mod_line = modified_lines
+            .iter()
+            .find(|l| l.content.contains("line 2 modified"))
+            .expect("Should have modification for line 2");
+
+        assert_eq!(
+            mod_line.old_content.as_deref(),
+            Some("line 2"),
+            "Should track original content"
+        );
+        assert_eq!(
+            mod_line.change_source,
+            Some(LineSource::Unstaged),
+            "Should mark as unstaged modification"
+        );
+    }
+
+    #[test]
+    fn test_committed_rename_with_content_change() {
+        // Simulates: rename committed with modification
+        // base has old content, head/index/working have new content
+        let original = "line 1\nline 2\nline 3";
+        let modified = "line 1\nline 2 modified\nline 3";
+
+        let diff = compute_file_diff_v2(
+            "renamed.txt",
+            Some(original), // base: original at old path
+            Some(modified), // head: modified (rename+change committed)
+            Some(modified), // index: same as head
+            Some(modified), // working: same as head
+            Some("original.txt"),
+        );
+
+        // Should show modification as Committed (happened in commit)
+        let modified_lines: Vec<_> = diff
+            .lines
+            .iter()
+            .filter(|l| l.old_content.is_some() || l.change_source.is_some())
+            .collect();
+
+        assert!(
+            !modified_lines.is_empty(),
+            "Expected modification to be tracked"
+        );
+
+        let mod_line = modified_lines
+            .iter()
+            .find(|l| l.content.contains("line 2 modified"))
+            .expect("Should have modification for line 2");
+
+        assert_eq!(
+            mod_line.change_source,
+            Some(LineSource::Committed),
+            "Should mark as committed modification"
+        );
+    }
+
+    #[test]
+    fn test_staged_rename_with_content_change() {
+        // Simulates: rename staged with modification
+        // base/head have old content, index/working have new content
+        let original = "line 1\nline 2\nline 3";
+        let modified = "line 1\nline 2 modified\nline 3";
+
+        let diff = compute_file_diff_v2(
+            "renamed.txt",
+            Some(original), // base: original at old path
+            Some(original), // head: still at old path (not committed)
+            Some(modified), // index: modified (rename+change staged)
+            Some(modified), // working: same as index
+            Some("original.txt"),
+        );
+
+        // Should show modification as Staged
+        let modified_lines: Vec<_> = diff
+            .lines
+            .iter()
+            .filter(|l| l.old_content.is_some() || l.change_source.is_some())
+            .collect();
+
+        assert!(
+            !modified_lines.is_empty(),
+            "Expected modification to be tracked"
+        );
+
+        let mod_line = modified_lines
+            .iter()
+            .find(|l| l.content.contains("line 2 modified"))
+            .expect("Should have modification for line 2");
+
+        assert_eq!(
+            mod_line.change_source,
+            Some(LineSource::Staged),
+            "Should mark as staged modification"
+        );
+    }
+
+    #[test]
+    fn test_pure_rename_no_content_change() {
+        // Pure rename: same content everywhere, just different path
+        let content = "line 1\nline 2\nline 3";
+
+        let diff = compute_file_diff_v2(
+            "renamed.txt",
+            Some(content),
+            Some(content),
+            Some(content),
+            Some(content),
+            Some("original.txt"),
+        );
+
+        // Should have header and unchanged lines only
+        let modified_lines: Vec<_> = diff
+            .lines
+            .iter()
+            .filter(|l| l.old_content.is_some() || l.change_source.is_some())
+            .collect();
+
+        assert!(
+            modified_lines.is_empty(),
+            "Pure rename should have no modifications, got {:?}",
+            modified_lines
+        );
+
+        // Verify the header shows the rename
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+        assert_eq!(diff.lines[0].content, "original.txt → renamed.txt");
+    }
+
+    #[test]
     fn test_committed_addition() {
         let base = "line1\nline2";
         let head = "line1\nline2\nline3";
