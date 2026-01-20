@@ -22,6 +22,7 @@ pub enum AppAction {
     CopyPath,
     CopyDiff,
     CopyOrQuit,
+    Resize,
     None,
 }
 
@@ -30,6 +31,7 @@ pub fn handle_event(event: Event) -> AppAction {
     match event {
         Event::Key(key) => handle_key_event(key.code, key.modifiers),
         Event::Mouse(mouse) => handle_mouse_event(mouse.kind, mouse.column, mouse.row),
+        Event::Resize(_, _) => AppAction::Resize,
         _ => AppAction::None,
     }
 }

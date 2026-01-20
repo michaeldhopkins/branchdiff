@@ -17,7 +17,8 @@ use crate::gitignore::GitignoreFilter;
 use crate::input::AppAction;
 use crate::limits::DiffThresholds;
 use crate::message::{
-    FetchResult, Message, RefreshOutcome, RefreshTrigger, UpdateResult, FALLBACK_REFRESH_SECS,
+    FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger, UpdateResult,
+    FALLBACK_REFRESH_SECS,
 };
 
 /// Timer state for periodic operations.
@@ -171,12 +172,16 @@ fn handle_input(
     app: &mut App,
     refresh_state: &mut RefreshState,
 ) -> UpdateResult {
-    let mut result = UpdateResult::default();
+    // Most input actions require a redraw
+    let mut result = UpdateResult {
+        needs_redraw: !matches!(action, AppAction::None),
+        ..Default::default()
+    };
 
     match action {
         AppAction::Quit => {
             if app.should_quit() {
-                result.quit = true;
+                result.loop_action = LoopAction::Quit;
             }
         }
         AppAction::ScrollUp(n) => app.scroll_up(n),
@@ -218,9 +223,10 @@ fn handle_input(
             if app.has_selection() {
                 let _ = app.copy_selection();
             } else if app.should_quit() {
-                result.quit = true;
+                result.loop_action = LoopAction::Quit;
             }
         }
+        AppAction::Resize => {}
         AppAction::None => {}
     }
 
@@ -259,10 +265,12 @@ fn handle_refresh(
 
             app.apply_refresh_result(refresh_result);
             timers.last_refresh = Instant::now();
+            result.needs_redraw = true;
         }
         RefreshOutcome::SingleFile { path, diff } => {
             app.update_single_file(&path, diff);
             timers.last_refresh = Instant::now();
+            result.needs_redraw = true;
         }
         RefreshOutcome::Cancelled => {}
     }
@@ -395,10 +403,18 @@ fn handle_fetch(
     let mut result = UpdateResult::default();
     timers.fetch_in_progress = false;
 
+    // Track if conflict warning changed
+    let old_conflict = app.conflict_warning.is_some();
     if fetch_result.has_conflicts {
         app.conflict_warning = Some("Merge conflicts detected with remote".to_string());
     } else {
         app.conflict_warning = None;
+    }
+    let new_conflict = app.conflict_warning.is_some();
+
+    // Redraw if conflict status changed
+    if old_conflict != new_conflict {
+        result.needs_redraw = true;
     }
 
     if let Some(new_base) = fetch_result.new_merge_base
@@ -461,7 +477,7 @@ mod tests {
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::Quit, &mut app, &mut refresh_state);
-        assert!(result.quit);
+        assert_eq!(result.loop_action, LoopAction::Quit);
     }
 
     #[test]
@@ -736,5 +752,172 @@ mod tests {
         assert_eq!(unique_paths.len(), 2);
         assert!(unique_paths.contains(&PathBuf::from("/repo/src/main.rs")));
         assert!(unique_paths.contains(&PathBuf::from("/repo/src/lib.rs")));
+    }
+
+    // === Tests for needs_redraw flag ===
+
+    #[test]
+    fn test_handle_input_sets_needs_redraw_for_scroll() {
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![base_line("line")])
+            .build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::ScrollDown(1), &mut app, &mut refresh_state);
+        assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_input_sets_needs_redraw_for_resize() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::Resize, &mut app, &mut refresh_state);
+        assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_input_no_redraw_for_none_action() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::None, &mut app, &mut refresh_state);
+        assert!(!result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_refresh_success_sets_needs_redraw() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+
+        let outcome = RefreshOutcome::Success(crate::app::RefreshResult {
+            files: vec![],
+            lines: vec![base_line("content")],
+            merge_base: "abc".to_string(),
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+        });
+
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config);
+        assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_refresh_single_file_sets_needs_redraw() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+
+        let outcome = RefreshOutcome::SingleFile {
+            path: "test.rs".to_string(),
+            diff: None,
+        };
+
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config);
+        assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_refresh_cancelled_no_redraw() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+
+        let result = handle_refresh(
+            RefreshOutcome::Cancelled,
+            &mut app,
+            &mut refresh_state,
+            &mut timers,
+            &config,
+        );
+        assert!(!result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_fetch_conflict_change_sets_needs_redraw() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers {
+            fetch_in_progress: true,
+            ..Default::default()
+        };
+
+        // No conflict -> conflict = change
+        let result = handle_fetch(
+            FetchResult {
+                has_conflicts: true,
+                new_merge_base: None,
+            },
+            &mut app,
+            &mut refresh_state,
+            &mut timers,
+        );
+        assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_fetch_no_change_no_redraw() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers {
+            fetch_in_progress: true,
+            ..Default::default()
+        };
+
+        // No conflict before, no conflict after = no change
+        let result = handle_fetch(
+            FetchResult {
+                has_conflicts: false,
+                new_merge_base: None,
+            },
+            &mut app,
+            &mut refresh_state,
+            &mut timers,
+        );
+        assert!(!result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_tick_no_redraw() {
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::default();
+        let config = UpdateConfig {
+            auto_fetch: false,
+            ..Default::default()
+        };
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+        assert!(!result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_file_change_no_redraw() {
+        use notify_debouncer_mini::DebouncedEvent;
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let repo_root = PathBuf::from("/repo");
+
+        let events = vec![DebouncedEvent::new(
+            PathBuf::from("/repo/src/main.rs"),
+            DebouncedEventKind::Any,
+        )];
+
+        let result = handle_file_change(events, &mut app, &mut refresh_state, &repo_root);
+        // File changes trigger background refresh, not immediate redraw
+        assert!(!result.needs_redraw);
     }
 }
