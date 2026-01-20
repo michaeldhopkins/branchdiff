@@ -54,22 +54,37 @@ struct FileContents {
 }
 
 impl FileContents {
-    fn fetch(repo_path: &Path, file_path: &str, merge_base: &str) -> Self {
+    fn fetch(repo_path: &Path, file_path: &str, old_path: Option<&str>, merge_base: &str) -> Self {
+        // For base, use old_path if this is a rename (file existed at old location)
+        let base_path = old_path.unwrap_or(file_path);
+
         let base = if merge_base.is_empty() {
             None
         } else {
-            git::get_file_at_ref(repo_path, file_path, merge_base)
+            git::get_file_at_ref(repo_path, base_path, merge_base)
                 .ok()
                 .flatten()
         };
+
+        // For head/index, try new path first, fall back to old path if rename
+        let head = git::get_file_at_ref(repo_path, file_path, "HEAD")
+            .ok()
+            .flatten()
+            .or_else(|| {
+                old_path.and_then(|p| git::get_file_at_ref(repo_path, p, "HEAD").ok().flatten())
+            });
+
+        let index = git::get_file_at_ref(repo_path, file_path, "")
+            .ok()
+            .flatten()
+            .or_else(|| {
+                old_path.and_then(|p| git::get_file_at_ref(repo_path, p, "").ok().flatten())
+            });
+
         Self {
             base,
-            head: git::get_file_at_ref(repo_path, file_path, "HEAD")
-                .ok()
-                .flatten(),
-            index: git::get_file_at_ref(repo_path, file_path, "")
-                .ok()
-                .flatten(),
+            head,
+            index,
             working: git::get_working_tree_file(repo_path, file_path)
                 .ok()
                 .flatten(),
@@ -92,7 +107,7 @@ fn process_single_file(
         return FileProcessResult::Binary { path: file_path.to_string() };
     }
 
-    let contents = FileContents::fetch(repo_path, file_path, merge_base);
+    let contents = FileContents::fetch(repo_path, file_path, old_path, merge_base);
     let file_diff = compute_file_diff_v2(
         file_path,
         contents.base.as_deref(),
@@ -114,7 +129,7 @@ pub fn compute_single_file_diff(
         return None;
     }
 
-    let contents = FileContents::fetch(repo_path, file_path, merge_base);
+    let contents = FileContents::fetch(repo_path, file_path, None, merge_base);
 
     if contents.all_equal() {
         return None;
@@ -433,5 +448,108 @@ mod tests {
         let refresh = result.unwrap();
         let binary_line = refresh.lines.iter().find(|l| l.content.contains("binary"));
         assert!(binary_line.is_some());
+    }
+
+    #[test]
+    fn test_renamed_file_shows_only_content_changes() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to init git repo");
+
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set git email");
+
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set git name");
+
+        // Create a file with multiple lines
+        std::fs::write(
+            repo_path.join("original.txt"),
+            "line 1\nline 2\nline 3\nline 4\nline 5\n",
+        )
+        .unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to add files");
+
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to commit");
+
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to rename branch");
+
+        // Rename file and change one line
+        std::fs::remove_file(repo_path.join("original.txt")).unwrap();
+        std::fs::write(
+            repo_path.join("renamed.txt"),
+            "line 1\nline 2 modified\nline 3\nline 4\nline 5\n",
+        )
+        .unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+
+        // Should have detected as rename
+        assert_eq!(
+            refresh.files.len(),
+            1,
+            "Expected 1 file, got {}",
+            refresh.files.len()
+        );
+
+        // Find modified lines - these have old_content or change_source set
+        // Modifications of base lines have source=Base but change_source=Unstaged
+        let modified_lines: Vec<_> = refresh
+            .lines
+            .iter()
+            .filter(|l| l.old_content.is_some() || l.change_source.is_some())
+            .collect();
+
+        // Should have at least one modified line (the modified "line 2")
+        assert!(
+            !modified_lines.is_empty(),
+            "Expected at least one modified line, got none. Total lines: {}",
+            refresh.lines.len()
+        );
+
+        // Verify the specific modification
+        let mod_line = modified_lines
+            .iter()
+            .find(|l| l.content.contains("line 2 modified"))
+            .expect("Should have modification for line 2");
+
+        assert_eq!(
+            mod_line.old_content.as_deref(),
+            Some("line 2"),
+            "Should track original content"
+        );
+        assert_eq!(
+            mod_line.change_source,
+            Some(crate::diff::LineSource::Unstaged),
+            "Should mark as unstaged modification"
+        );
     }
 }
