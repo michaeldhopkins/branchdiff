@@ -5,7 +5,7 @@ use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, Fram
 use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::{handle_event, AppAction};
 use branchdiff::limits;
-use branchdiff::message::{FetchResult, Message, RefreshOutcome, RefreshTrigger};
+use branchdiff::message::{FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger};
 use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
 use branchdiff::git;
 use branchdiff::ui;
@@ -323,6 +323,15 @@ fn run_app<B: Backend>(
 
     let (fetch_tx, fetch_rx) = mpsc::channel::<FetchResult>();
 
+    // Draw initial frame before entering event loop
+    let visible_height = terminal.size()?.height as usize;
+    app.ensure_inline_spans_for_visible(visible_height);
+    app.clear_needs_inline_spans();
+    terminal.draw(|f| {
+        let frame_ctx = FrameContext::new(app);
+        ui::draw_with_frame(f, app, &frame_ctx)
+    })?;
+
     loop {
         // Collect messages from all sources
         let messages = collect_messages(
@@ -348,6 +357,7 @@ fn run_app<B: Backend>(
             }
         }
 
+        let mut needs_redraw = false;
         for msg in messages {
             let result = update(
                 msg,
@@ -358,7 +368,9 @@ fn run_app<B: Backend>(
                 &repo_root,
             );
 
-            if result.quit {
+            needs_redraw |= result.needs_redraw;
+
+            if result.loop_action == LoopAction::Quit {
                 return Ok(());
             }
 
@@ -389,16 +401,18 @@ fn run_app<B: Backend>(
             }
         }
 
-        // Render with FrameContext
-        let visible_height = terminal.size()?.height as usize;
-        if app.needs_inline_spans() {
-            app.ensure_inline_spans_for_visible(visible_height);
-            app.clear_needs_inline_spans();
+        // Only render when state has changed
+        if needs_redraw {
+            let visible_height = terminal.size()?.height as usize;
+            if app.needs_inline_spans() {
+                app.ensure_inline_spans_for_visible(visible_height);
+                app.clear_needs_inline_spans();
+            }
+            terminal.draw(|f| {
+                let frame_ctx = FrameContext::new(app);
+                ui::draw_with_frame(f, app, &frame_ctx)
+            })?;
         }
-        terminal.draw(|f| {
-            let frame_ctx = FrameContext::new(app);
-            ui::draw_with_frame(f, app, &frame_ctx)
-        })?;
     }
 }
 
