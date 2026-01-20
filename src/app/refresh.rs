@@ -1,15 +1,36 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 
 use crate::diff::{compute_file_diff_v2, DiffLine, FileDiff, LineSource};
 use crate::git;
 use crate::limits::DiffMetrics;
 
 const PARALLEL_THRESHOLD: usize = 4;
+
+/// Maximum threads for git subprocess operations.
+/// Caps parallelism to prevent overwhelming system resources on high-core machines.
+const MAX_GIT_THREADS: usize = 16;
+
+static GIT_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+fn git_thread_pool() -> &'static rayon::ThreadPool {
+    GIT_POOL.get_or_init(|| {
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(MAX_GIT_THREADS))
+            .unwrap_or(4);
+
+        ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .expect("failed to build git thread pool")
+    })
+}
 
 #[derive(Debug)]
 pub struct RefreshResult {
@@ -64,8 +85,9 @@ fn process_single_file(
     repo_path: &Path,
     file_path: &str,
     merge_base: &str,
+    binary_files: &HashSet<String>,
 ) -> FileProcessResult {
-    if git::is_binary_file(repo_path, file_path) {
+    if binary_files.contains(file_path) {
         return FileProcessResult::Binary { path: file_path.to_string() };
     }
 
@@ -120,15 +142,21 @@ pub fn compute_refresh(
     let changed_files = git::get_all_changed_files(repo_path, &merge_base)
         .context("Failed to get changed files")?;
 
+    // Batch binary detection - single git call instead of one per file
+    let binary_files = git::get_binary_files(repo_path, &merge_base);
+
     let results: Vec<FileProcessResult> = if changed_files.len() >= PARALLEL_THRESHOLD {
-        changed_files
-            .par_iter()
-            .map(|file| process_single_file(repo_path, &file.path, &merge_base))
-            .collect()
+        // Use dedicated thread pool to limit concurrent git subprocess spawning
+        git_thread_pool().install(|| {
+            changed_files
+                .par_iter()
+                .map(|file| process_single_file(repo_path, &file.path, &merge_base, &binary_files))
+                .collect()
+        })
     } else {
         changed_files
             .iter()
-            .map(|file| process_single_file(repo_path, &file.path, &merge_base))
+            .map(|file| process_single_file(repo_path, &file.path, &merge_base, &binary_files))
             .collect()
     };
 
