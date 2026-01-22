@@ -2,6 +2,9 @@
 
 Terminal UI showing unified diff of current branch vs main/master.
 
+<img width="742" height="1144" alt="Screenshot 2026-01-21 at 22 39 43" src="https://github.com/user-attachments/assets/afc453b4-5b43-458e-91ae-7f739ff97f8e" />
+
+
 ![branchdiff screenshot](assets/screenshot.png)
 
 ## Features
