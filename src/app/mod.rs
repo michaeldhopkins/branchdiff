@@ -17,8 +17,10 @@ use std::sync::Arc;
 
 /// File patterns that should be collapsed by default (lock files, generated files)
 const AUTO_COLLAPSE_PATTERNS: &[&str] = &[
-    // Ruby
+    // Ruby/Rails
     "Gemfile.lock",
+    "db/schema.rb",
+    "db/structure.sql",
     // JavaScript/Node
     "package-lock.json",
     "yarn.lock",
