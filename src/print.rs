@@ -228,6 +228,7 @@ mod tests {
             show_help: false,
             view_mode: ViewMode::Full,
             selection: None,
+            word_selection_anchor: None,
             content_offset: (1, 1),
             line_num_width: 0,
             content_width: 80,
@@ -238,6 +239,7 @@ mod tests {
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
             path_copied_at: None,
+            last_click: None,
         };
 
         let result = print_diff(&app);

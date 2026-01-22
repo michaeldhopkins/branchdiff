@@ -87,6 +87,9 @@ pub struct App {
     pub view_mode: ViewMode,
     /// Current text selection (if any)
     pub selection: Option<Selection>,
+    /// Anchor for word-based selection (row, word_start_col, word_end_col in screen coords)
+    /// When set, dragging extends selection by whole words
+    pub word_selection_anchor: Option<(usize, usize, usize)>,
     /// Content area offset (x, y) for coordinate mapping
     pub content_offset: (u16, u16),
     /// Width of line number column (for extracting content without line numbers)
@@ -107,6 +110,8 @@ pub struct App {
     pub needs_inline_spans: bool,
     /// Timestamp when path was last copied (for flash feedback)
     pub path_copied_at: Option<std::time::Instant>,
+    /// Last click position and time (for double-click detection)
+    pub last_click: Option<(std::time::Instant, u16, u16)>,
     /// Gitignore filter for file change events
     pub gitignore_filter: GitignoreFilter,
 }
@@ -129,6 +134,7 @@ impl App {
             show_help: false,
             view_mode: ViewMode::Full,
             selection: None,
+            word_selection_anchor: None,
             content_offset: (1, 1),
             line_num_width: 4,
             content_width: 120,
@@ -139,6 +145,7 @@ impl App {
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
             path_copied_at: None,
+            last_click: None,
         }
     }
 
@@ -168,6 +175,7 @@ impl App {
             show_help: false,
             view_mode: ViewMode::Context,
             selection: None,
+            word_selection_anchor: None,
             content_offset: (1, 1),
             line_num_width: 0,
             content_width: 80,
@@ -178,6 +186,7 @@ impl App {
             manually_toggled: HashSet::new(),
             needs_inline_spans: true,
             path_copied_at: None,
+            last_click: None,
             gitignore_filter,
         };
 
