@@ -205,13 +205,36 @@ fn handle_input(
         AppAction::ToggleHelp => app.toggle_help(),
         AppAction::CycleViewMode => app.cycle_view_mode(),
         AppAction::StartSelection(x, y) => {
-            if let Some(file_path) = app.get_file_header_at(x, y) {
+            const DOUBLE_CLICK_MS: u128 = 500;
+            const POSITION_TOLERANCE: u16 = 2;
+
+            let is_double_click = if let Some((last_time, last_x, last_y)) = app.last_click {
+                let elapsed = last_time.elapsed().as_millis();
+                let x_diff = x.abs_diff(last_x);
+                let y_diff = y.abs_diff(last_y);
+                elapsed < DOUBLE_CLICK_MS
+                    && x_diff <= POSITION_TOLERANCE
+                    && y_diff <= POSITION_TOLERANCE
+            } else {
+                false
+            };
+
+            app.last_click = Some((Instant::now(), x, y));
+
+            if is_double_click {
+                if app.get_file_header_at(x, y).is_none() {
+                    app.select_word_at(x, y);
+                }
+            } else if let Some(file_path) = app.get_file_header_at(x, y) {
                 app.toggle_file_collapsed(&file_path);
             } else {
                 app.start_selection(x, y);
             }
         }
-        AppAction::UpdateSelection(x, y) => app.update_selection(x, y),
+        AppAction::UpdateSelection(x, y) => {
+            app.update_selection(x, y);
+            app.last_click = None; // Clear to prevent false double-clicks during drag
+        }
         AppAction::EndSelection => app.end_selection(),
         AppAction::Copy => {
             let _ = app.copy_selection();
@@ -941,5 +964,75 @@ mod tests {
         let result = handle_file_change(events, &mut app, &mut refresh_state, &repo_root);
         // File changes trigger background refresh, not immediate redraw
         assert!(!result.needs_redraw);
+    }
+
+    #[test]
+    fn test_double_click_selects_word() {
+        use crate::ui::ScreenRowInfo;
+
+        let mut app = TestAppBuilder::new().build();
+        app.line_num_width = 3;
+        app.content_offset = (1, 1);
+        app.row_map = vec![ScreenRowInfo {
+            content: "hello world".to_string(),
+            is_file_header: false,
+            file_path: None,
+            is_continuation: false,
+        }];
+
+        let mut refresh_state = RefreshState::Idle;
+
+        // First click - starts selection
+        handle_input(AppAction::StartSelection(13, 1), &mut app, &mut refresh_state);
+        assert!(app.last_click.is_some());
+        // Should have started a point selection
+        assert!(app.selection.is_some());
+
+        // Second click at same position (simulate double-click by keeping last_click recent)
+        // last_click is already set from first click, and time elapsed is negligible
+        handle_input(AppAction::StartSelection(13, 1), &mut app, &mut refresh_state);
+
+        // Should have selected the word "world"
+        let sel = app.selection.as_ref().expect("Should have selection");
+        assert_eq!(sel.start.col, 12); // "world" starts at content col 6 + prefix 6
+        assert_eq!(sel.end.col, 17); // "world" ends at content col 11 + prefix 6
+    }
+
+    #[test]
+    fn test_single_click_does_not_select_word() {
+        use crate::ui::ScreenRowInfo;
+
+        let mut app = TestAppBuilder::new().build();
+        app.line_num_width = 3;
+        app.content_offset = (1, 1);
+        app.row_map = vec![ScreenRowInfo {
+            content: "hello world".to_string(),
+            is_file_header: false,
+            file_path: None,
+            is_continuation: false,
+        }];
+
+        let mut refresh_state = RefreshState::Idle;
+
+        // Single click
+        handle_input(AppAction::StartSelection(13, 1), &mut app, &mut refresh_state);
+
+        // Should have a point selection, not a word selection
+        let sel = app.selection.as_ref().expect("Should have selection");
+        // Point selection has start == end (or very close)
+        assert_eq!(sel.start.col, sel.end.col);
+    }
+
+    #[test]
+    fn test_drag_clears_last_click() {
+        let mut app = TestAppBuilder::new().build();
+        app.last_click = Some((Instant::now(), 10, 10));
+
+        let mut refresh_state = RefreshState::Idle;
+
+        // Drag action should clear last_click
+        handle_input(AppAction::UpdateSelection(15, 10), &mut app, &mut refresh_state);
+
+        assert!(app.last_click.is_none());
     }
 }
