@@ -211,8 +211,10 @@ impl App {
         header_content.ends_with("(deleted)")
     }
 
-    /// Auto-collapse files matching lock/generated file patterns and deleted files
-    /// Skips files that have been manually toggled by the user
+    /// Auto-collapse files matching lock/generated file patterns and deleted files.
+    /// Also uncollapse files that were previously collapsed due to deletion but are
+    /// no longer deleted (unless they match auto-collapse patterns).
+    /// Skips files that have been manually toggled by the user.
     fn auto_collapse_files(&mut self) {
         for file in &self.files {
             if let Some(first_line) = file.lines.first()
@@ -221,10 +223,16 @@ impl App {
                 if self.manually_toggled.contains(path) {
                     continue;
                 }
-                let should_collapse = Self::should_auto_collapse(path)
-                    || Self::is_deleted_file(&first_line.content);
-                if should_collapse {
+
+                let is_pattern_match = Self::should_auto_collapse(path);
+                let is_deleted = Self::is_deleted_file(&first_line.content);
+
+                if is_pattern_match || is_deleted {
                     self.collapsed_files.insert(path.clone());
+                } else if self.collapsed_files.contains(path) {
+                    // File was collapsed but is no longer deleted and doesn't match
+                    // auto-collapse patterns - uncollapse it
+                    self.collapsed_files.remove(path);
                 }
             }
         }
@@ -496,6 +504,60 @@ mod tests {
 
         app.auto_collapse_files();
         assert!(!app.is_file_collapsed("src/old_file.rs"), "should stay expanded after re-running auto-collapse");
+    }
+
+    #[test]
+    fn test_undeleted_file_uncollapses() {
+        // Simulate a file that was deleted (auto-collapsed) then restored
+        let deleted_file = FileDiff {
+            lines: vec![
+                DiffLine::deleted_file_header("src/restored.rs"),
+                change_line("content"),
+            ],
+        };
+
+        let mut app = TestAppBuilder::new().with_files(vec![deleted_file]).build();
+        app.auto_collapse_files();
+        assert!(app.is_file_collapsed("src/restored.rs"), "deleted file should be collapsed");
+
+        // Simulate the file being restored (no longer deleted)
+        let restored_file = FileDiff {
+            lines: vec![
+                DiffLine::file_header("src/restored.rs"),
+                change_line("content"),
+            ],
+        };
+        app.files = vec![restored_file];
+
+        app.auto_collapse_files();
+        assert!(!app.is_file_collapsed("src/restored.rs"), "restored file should be uncollapsed");
+    }
+
+    #[test]
+    fn test_undeleted_lock_file_stays_collapsed() {
+        // Lock files should stay collapsed even after being "restored"
+        let deleted_lock = FileDiff {
+            lines: vec![
+                DiffLine::deleted_file_header("Gemfile.lock"),
+                change_line("content"),
+            ],
+        };
+
+        let mut app = TestAppBuilder::new().with_files(vec![deleted_lock]).build();
+        app.auto_collapse_files();
+        assert!(app.is_file_collapsed("Gemfile.lock"), "deleted lock file should be collapsed");
+
+        // Simulate the lock file being restored
+        let restored_lock = FileDiff {
+            lines: vec![
+                DiffLine::file_header("Gemfile.lock"),
+                change_line("content"),
+            ],
+        };
+        app.files = vec![restored_lock];
+
+        app.auto_collapse_files();
+        assert!(app.is_file_collapsed("Gemfile.lock"), "lock file should stay collapsed even after restore");
     }
 
     #[test]
