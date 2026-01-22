@@ -8,6 +8,7 @@ impl App {
         self.scroll_offset = self.scroll_offset.saturating_sub(n);
         if self.scroll_offset != old_offset {
             self.needs_inline_spans = true;
+            self.clear_selection();
         }
     }
 
@@ -17,6 +18,7 @@ impl App {
         self.clamp_scroll();
         if self.scroll_offset != old_offset {
             self.needs_inline_spans = true;
+            self.clear_selection();
         }
     }
 
@@ -32,6 +34,7 @@ impl App {
             {
                 self.scroll_offset = i;
                 self.needs_inline_spans = true;
+                self.clear_selection();
                 return;
             }
         }
@@ -46,6 +49,7 @@ impl App {
         if let Some(pos) = ctx.find_next_file_header(self, self.scroll_offset) {
             self.scroll_offset = pos;
             self.needs_inline_spans = true;
+            self.clear_selection();
         }
     }
 
@@ -72,6 +76,7 @@ impl App {
             {
                 self.scroll_offset = i;
                 self.needs_inline_spans = true;
+                self.clear_selection();
                 return;
             }
         }
@@ -86,6 +91,7 @@ impl App {
         if let Some(pos) = ctx.find_prev_file_header(self, self.scroll_offset) {
             self.scroll_offset = pos;
             self.needs_inline_spans = true;
+            self.clear_selection();
         }
     }
 
@@ -103,6 +109,7 @@ impl App {
         if self.scroll_offset != 0 {
             self.scroll_offset = 0;
             self.needs_inline_spans = true;
+            self.clear_selection();
         }
     }
 
@@ -112,6 +119,7 @@ impl App {
         self.scroll_offset = self.max_scroll_for_items(&items);
         if self.scroll_offset != old_offset {
             self.needs_inline_spans = true;
+            self.clear_selection();
         }
     }
 
@@ -121,6 +129,7 @@ impl App {
         self.scroll_offset = ctx.max_scroll(self);
         if self.scroll_offset != old_offset {
             self.needs_inline_spans = true;
+            self.clear_selection();
         }
     }
 
@@ -190,6 +199,7 @@ impl App {
         self.clamp_scroll_with_frame(ctx);
         if self.scroll_offset != old_offset {
             self.needs_inline_spans = true;
+            self.clear_selection();
         }
     }
 
