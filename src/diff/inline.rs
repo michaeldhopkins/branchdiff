@@ -56,6 +56,11 @@ pub fn compute_inline_diff_merged(
     let mut spans = Vec::new();
     let mut max_unchanged_segment = 0usize;
     let mut num_unchanged_segments = 0usize;
+    // Track whether we've seen any non-whitespace content yet.
+    // Leading whitespace shouldn't count toward "meaningful" unchanged segments
+    // because indentation matching creates false positives (e.g., `}` vs `.map(...)`
+    // both have 12 spaces of indentation but are completely different code).
+    let mut seen_non_whitespace = false;
 
     let mut pending_unchanged = String::new();
     let mut pending_deleted = String::new();
@@ -67,9 +72,17 @@ pub fn compute_inline_diff_merged(
             ChangeTag::Equal => {
                 if !pending_deleted.is_empty() || !pending_inserted.is_empty() {
                     if !pending_unchanged.is_empty() {
-                        let segment_len = pending_unchanged.chars().count();
-                        max_unchanged_segment = max_unchanged_segment.max(segment_len);
-                        num_unchanged_segments += 1;
+                        // Only count this segment if we've seen non-whitespace,
+                        // OR if this segment itself contains non-whitespace
+                        let has_non_ws = pending_unchanged.chars().any(|c| !c.is_whitespace());
+                        if seen_non_whitespace || has_non_ws {
+                            let segment_len = pending_unchanged.chars().count();
+                            max_unchanged_segment = max_unchanged_segment.max(segment_len);
+                            num_unchanged_segments += 1;
+                        }
+                        if has_non_ws {
+                            seen_non_whitespace = true;
+                        }
                         spans.push(InlineSpan {
                             text: pending_unchanged.clone(),
                             source: None,
@@ -78,6 +91,9 @@ pub fn compute_inline_diff_merged(
                         pending_unchanged.clear();
                     }
                     if !pending_deleted.is_empty() {
+                        if pending_deleted.chars().any(|c| !c.is_whitespace()) {
+                            seen_non_whitespace = true;
+                        }
                         spans.push(InlineSpan {
                             text: pending_deleted.clone(),
                             source: Some(deletion_source),
@@ -86,6 +102,9 @@ pub fn compute_inline_diff_merged(
                         pending_deleted.clear();
                     }
                     if !pending_inserted.is_empty() {
+                        if pending_inserted.chars().any(|c| !c.is_whitespace()) {
+                            seen_non_whitespace = true;
+                        }
                         spans.push(InlineSpan {
                             text: pending_inserted.clone(),
                             source: Some(change_source),
@@ -107,9 +126,12 @@ pub fn compute_inline_diff_merged(
 
     // Flush any remaining content
     if !pending_unchanged.is_empty() {
-        let segment_len = pending_unchanged.chars().count();
-        max_unchanged_segment = max_unchanged_segment.max(segment_len);
-        num_unchanged_segments += 1;
+        let has_non_ws = pending_unchanged.chars().any(|c| !c.is_whitespace());
+        if seen_non_whitespace || has_non_ws {
+            let segment_len = pending_unchanged.chars().count();
+            max_unchanged_segment = max_unchanged_segment.max(segment_len);
+            num_unchanged_segments += 1;
+        }
         spans.push(InlineSpan {
             text: pending_unchanged,
             source: None,

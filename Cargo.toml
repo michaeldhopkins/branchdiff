@@ -17,6 +17,7 @@ notify-debouncer-mini = "0.5"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 similar = { version = "2", features = ["inline"] }
+imara-diff = "0.1"
 arboard = "2"
 rayon = "1.10"
 ignore = "0.4"
