@@ -2,7 +2,7 @@ use super::prelude::*;
 
 pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
     let modal_width = 52u16;
-    let modal_height = 38u16;
+    let modal_height = 47u16;
 
     let x = area.width.saturating_sub(modal_width) / 2;
     let y = area.height.saturating_sub(modal_height) / 2;
@@ -72,40 +72,69 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Colors", Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
+            Span::styled("  Line Colors", Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("    gray        ", Style::default().fg(Color::DarkGray)),
-            Span::raw("  Unchanged (in base)"),
+            Span::raw(" "),
+            Span::styled("     Base (unchanged context)          ", Style::default()),
         ]),
         Line::from(vec![
-            Span::styled("    yellow      ", Style::default().fg(Color::Yellow)),
-            Span::raw("  Unstaged addition"),
+            Span::raw(" "),
+            Span::styled(" + C Added (committed)                 ", Style::default().bg(Color::Rgb(25, 50, 50))),
         ]),
         Line::from(vec![
-            Span::styled("    red         ", Style::default().fg(Color::Red)),
-            Span::raw("  Unstaged deletion"),
+            Span::raw(" "),
+            Span::styled(" + S Added (staged)                    ", Style::default().bg(Color::Rgb(25, 50, 25))),
         ]),
         Line::from(vec![
-            Span::styled("    green       ", Style::default().fg(Color::Green)),
-            Span::raw("  Staged addition"),
+            Span::raw(" "),
+            Span::styled(" +   Added (unstaged)                  ", Style::default().bg(Color::Rgb(60, 60, 18))),
         ]),
         Line::from(vec![
-            Span::styled("    red         ", Style::default().fg(Color::Red)),
-            Span::raw("  Staged deletion"),
+            Span::raw(" "),
+            Span::styled(" - C Deleted (committed)               ", Style::default().bg(Color::Rgb(45, 20, 20))),
         ]),
         Line::from(vec![
-            Span::styled("    cyan        ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Committed addition"),
+            Span::raw(" "),
+            Span::styled(" - S Deleted (staged)                  ", Style::default().bg(Color::Rgb(55, 25, 25))),
         ]),
         Line::from(vec![
-            Span::styled("    dim red     ", Style::default().fg(Color::Red).add_modifier(Modifier::DIM)),
-            Span::raw("  Committed deletion"),
+            Span::raw(" "),
+            Span::styled(" -   Deleted (unstaged)                ", Style::default().bg(Color::Rgb(65, 30, 25))),
         ]),
         Line::from(vec![
-            Span::styled("    magenta     ", Style::default().fg(Color::Magenta)),
-            Span::raw("  Canceled (added then removed)"),
+            Span::raw(" "),
+            Span::styled(" ±   Canceled (added then removed)     ", Style::default().bg(Color::Rgb(50, 25, 50))),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Inline Highlights", Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(" + C Added (committed) char highlight  ", Style::default().bg(Color::Rgb(50, 100, 100))),
+        ]),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(" + S Added (staged) char highlight     ", Style::default().bg(Color::Rgb(50, 100, 50))),
+        ]),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(" +   Added (unstaged) char highlight   ", Style::default().bg(Color::Rgb(130, 130, 35))),
+        ]),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(" - C Deleted (committed) char highlight", Style::default().bg(Color::Rgb(90, 40, 40))),
+        ]),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(" - S Deleted (staged) char highlight   ", Style::default().bg(Color::Rgb(100, 50, 50))),
+        ]),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(" -   Deleted (unstaged) char highlight ", Style::default().bg(Color::Rgb(115, 55, 45))),
         ]),
     ];
 
@@ -126,7 +155,7 @@ mod tests {
     #[test]
     fn test_help_modal_dimensions() {
         let modal_width = 52u16;
-        let modal_height = 38u16;
+        let modal_height = 47u16;
         assert!(modal_width > 0);
         assert!(modal_height > 0);
     }
@@ -135,20 +164,20 @@ mod tests {
     fn test_help_modal_centering_large_area() {
         let area = Rect::new(0, 0, 120, 52);
         let modal_width = 52u16;
-        let modal_height = 38u16;
+        let modal_height = 47u16;
 
         let x = area.width.saturating_sub(modal_width) / 2;
         let y = area.height.saturating_sub(modal_height) / 2;
 
         assert_eq!(x, 34);
-        assert_eq!(y, 7);
+        assert_eq!(y, 2);
     }
 
     #[test]
     fn test_help_modal_centering_small_area() {
         let area = Rect::new(0, 0, 40, 20);
         let modal_width = 52u16;
-        let modal_height = 38u16;
+        let modal_height = 47u16;
 
         let x = area.width.saturating_sub(modal_width) / 2;
         let y = area.height.saturating_sub(modal_height) / 2;
@@ -161,7 +190,7 @@ mod tests {
     fn test_help_modal_clamps_to_area() {
         let area = Rect::new(0, 0, 30, 15);
         let modal_width = 52u16;
-        let modal_height = 38u16;
+        let modal_height = 47u16;
 
         let clamped_width = modal_width.min(area.width);
         let clamped_height = modal_height.min(area.height);
