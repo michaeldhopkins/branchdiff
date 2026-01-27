@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use branchdiff::app::App;
 use branchdiff::diff::LineSource;
-use branchdiff::ui::colors::line_style;
+use branchdiff::ui::colors::print_line_style as line_style;
 use branchdiff::ui::spans::coalesce_spans;
 
 const RESET: &str = "\x1b[0m";
