@@ -17,7 +17,7 @@ pub(crate) use inline::compute_inline_diff_merged;
 use std::collections::HashMap;
 
 use output::{build_working_line_output, determine_deletion_source};
-use provenance::{build_modification_map, build_provenance_map};
+use provenance::{build_modification_map, build_provenance_map, find_sources, survives_chain, survives_in};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineSource {
@@ -32,6 +32,46 @@ pub enum LineSource {
     CanceledStaged,
     FileHeader,
     Elided,
+}
+
+impl LineSource {
+    /// True for any line representing a change (addition, deletion, or canceled)
+    pub fn is_change(self) -> bool {
+        matches!(
+            self,
+            Self::Committed
+                | Self::Staged
+                | Self::Unstaged
+                | Self::DeletedBase
+                | Self::DeletedCommitted
+                | Self::DeletedStaged
+                | Self::CanceledCommitted
+                | Self::CanceledStaged
+        )
+    }
+
+    /// True for additions (committed, staged, or unstaged)
+    pub fn is_addition(self) -> bool {
+        matches!(self, Self::Committed | Self::Staged | Self::Unstaged)
+    }
+
+    /// True for deletions
+    pub fn is_deletion(self) -> bool {
+        matches!(
+            self,
+            Self::DeletedBase | Self::DeletedCommitted | Self::DeletedStaged
+        )
+    }
+
+    /// True for unstaged changes (working tree modifications)
+    pub fn is_unstaged(self) -> bool {
+        matches!(self, Self::Unstaged)
+    }
+
+    /// True for file/section headers
+    pub fn is_header(self) -> bool {
+        matches!(self, Self::FileHeader)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -144,32 +184,17 @@ pub struct FileDiff {
 }
 
 
-fn index_survives_to_working(index_idx: usize, working_from_index: &[Option<usize>]) -> bool {
-    working_from_index.contains(&Some(index_idx))
-}
-
 fn index_line_in_working(
     index_idx: usize,
     working_from_index: &[Option<usize>],
     index_working_mods: &HashMap<usize, (usize, &str)>,
 ) -> bool {
-    if index_survives_to_working(index_idx, working_from_index) {
+    if survives_in(working_from_index, index_idx) {
         return true;
     }
-    index_working_mods.values().any(|(src_idx, _)| *src_idx == index_idx)
-}
-
-fn head_survives_to_working(
-    head_idx: usize,
-    index_from_head: &[Option<usize>],
-    working_from_index: &[Option<usize>],
-) -> bool {
-    for (index_idx, &prov) in index_from_head.iter().enumerate() {
-        if prov == Some(head_idx) && index_survives_to_working(index_idx, working_from_index) {
-            return true;
-        }
-    }
-    false
+    index_working_mods
+        .values()
+        .any(|(src_idx, _)| *src_idx == index_idx)
 }
 
 fn collect_canceled_simple(
@@ -187,10 +212,15 @@ fn collect_canceled_simple(
         if head_from_base.get(head_idx).copied().flatten().is_some() {
             continue;
         }
-        if !head_survives_to_working(head_idx, index_from_head, working_from_index) {
+        if !survives_chain(head_idx, index_from_head, working_from_index) {
             result.push(
-                DiffLine::new(LineSource::CanceledCommitted, head_line.trim_end().to_string(), '±', None)
-                    .with_file_path(path),
+                DiffLine::new(
+                    LineSource::CanceledCommitted,
+                    head_line.trim_end().to_string(),
+                    '±',
+                    None,
+                )
+                .with_file_path(path),
             );
         }
     }
@@ -200,10 +230,15 @@ fn collect_canceled_simple(
         if index_from_head.get(index_idx).copied().flatten().is_some() {
             continue;
         }
-        if !index_survives_to_working(index_idx, working_from_index) {
+        if !survives_in(working_from_index, index_idx) {
             result.push(
-                DiffLine::new(LineSource::CanceledStaged, index_line.trim_end().to_string(), '±', None)
-                    .with_file_path(path),
+                DiffLine::new(
+                    LineSource::CanceledStaged,
+                    index_line.trim_end().to_string(),
+                    '±',
+                    None,
+                )
+                .with_file_path(path),
             );
         }
     }
@@ -226,31 +261,17 @@ fn collect_canceled_committed(
             continue;
         }
 
-        let mut in_working = false;
-
         // Check via direct provenance
-        for (index_idx, &prov) in index_from_head.iter().enumerate() {
-            if prov == Some(head_idx)
-                && index_line_in_working(index_idx, working_from_index, index_working_mods)
-            {
-                in_working = true;
-                break;
-            }
-        }
+        let in_working_via_provenance = find_sources(index_from_head, head_idx)
+            .any(|index_idx| index_line_in_working(index_idx, working_from_index, index_working_mods));
 
         // Check via modification maps
-        if !in_working {
-            for (index_idx, (src_head_idx, _)) in head_index_mods {
-                if *src_head_idx == head_idx
-                    && index_line_in_working(*index_idx, working_from_index, index_working_mods)
-                {
-                    in_working = true;
-                    break;
-                }
-            }
-        }
+        let in_working_via_mods = head_index_mods.iter().any(|(index_idx, (src_head_idx, _))| {
+            *src_head_idx == head_idx
+                && index_line_in_working(*index_idx, working_from_index, index_working_mods)
+        });
 
-        if !in_working {
+        if !in_working_via_provenance && !in_working_via_mods {
             result.push((head_idx, head_line.trim_end().to_string()));
         }
     }
@@ -669,6 +690,65 @@ pub fn compute_file_diff_v2(
 mod tests {
     use super::*;
 
+    // LineSource classification tests
+    #[test]
+    fn test_line_source_is_change() {
+        // These should be changes
+        assert!(LineSource::Committed.is_change());
+        assert!(LineSource::Staged.is_change());
+        assert!(LineSource::Unstaged.is_change());
+        assert!(LineSource::DeletedBase.is_change());
+        assert!(LineSource::DeletedCommitted.is_change());
+        assert!(LineSource::DeletedStaged.is_change());
+        assert!(LineSource::CanceledCommitted.is_change());
+        assert!(LineSource::CanceledStaged.is_change());
+
+        // These should NOT be changes
+        assert!(!LineSource::Base.is_change());
+        assert!(!LineSource::FileHeader.is_change());
+        assert!(!LineSource::Elided.is_change());
+    }
+
+    #[test]
+    fn test_line_source_is_addition() {
+        assert!(LineSource::Committed.is_addition());
+        assert!(LineSource::Staged.is_addition());
+        assert!(LineSource::Unstaged.is_addition());
+
+        assert!(!LineSource::Base.is_addition());
+        assert!(!LineSource::DeletedBase.is_addition());
+        assert!(!LineSource::CanceledCommitted.is_addition());
+    }
+
+    #[test]
+    fn test_line_source_is_deletion() {
+        assert!(LineSource::DeletedBase.is_deletion());
+        assert!(LineSource::DeletedCommitted.is_deletion());
+        assert!(LineSource::DeletedStaged.is_deletion());
+
+        assert!(!LineSource::Base.is_deletion());
+        assert!(!LineSource::Committed.is_deletion());
+        assert!(!LineSource::CanceledCommitted.is_deletion());
+    }
+
+    #[test]
+    fn test_line_source_is_unstaged() {
+        assert!(LineSource::Unstaged.is_unstaged());
+
+        assert!(!LineSource::Base.is_unstaged());
+        assert!(!LineSource::Committed.is_unstaged());
+        assert!(!LineSource::Staged.is_unstaged());
+    }
+
+    #[test]
+    fn test_line_source_is_header() {
+        assert!(LineSource::FileHeader.is_header());
+
+        assert!(!LineSource::Base.is_header());
+        assert!(!LineSource::Committed.is_header());
+        assert!(!LineSource::Elided.is_header());
+    }
+
     fn compute_file_diff_v2_with_inline(
         path: &str,
         base: Option<&str>,
@@ -684,7 +764,7 @@ mod tests {
     }
 
     fn content_lines(diff: &FileDiff) -> Vec<&DiffLine> {
-        diff.lines.iter().filter(|l| l.source != LineSource::FileHeader).collect()
+        diff.lines.iter().filter(|l| !l.source.is_header()).collect()
     }
 
     #[test]

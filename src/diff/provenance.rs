@@ -135,3 +135,106 @@ pub fn build_modification_map<'a>(
 
     result
 }
+
+/// Check if `target_idx` appears anywhere in `provenance` (i.e., survives to the next stage)
+pub fn survives_in(provenance: &[Option<usize>], target_idx: usize) -> bool {
+    provenance.contains(&Some(target_idx))
+}
+
+/// Find all indices in `provenance` that point to `target_idx`
+pub fn find_sources(
+    provenance: &[Option<usize>],
+    target_idx: usize,
+) -> impl Iterator<Item = usize> + '_ {
+    provenance
+        .iter()
+        .enumerate()
+        .filter_map(move |(idx, &prov)| {
+            if prov == Some(target_idx) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+}
+
+/// Check if `source_idx` survives through an intermediate stage to the final stage (chained lookup)
+pub fn survives_chain(
+    source_idx: usize,
+    intermediate_from_source: &[Option<usize>],
+    final_from_intermediate: &[Option<usize>],
+) -> bool {
+    find_sources(intermediate_from_source, source_idx)
+        .any(|intermediate_idx| survives_in(final_from_intermediate, intermediate_idx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_survives_in_found() {
+        let provenance = vec![Some(0), Some(1), None, Some(2)];
+        assert!(survives_in(&provenance, 0));
+        assert!(survives_in(&provenance, 1));
+        assert!(survives_in(&provenance, 2));
+    }
+
+    #[test]
+    fn test_survives_in_not_found() {
+        let provenance = vec![Some(0), Some(1), None, Some(2)];
+        assert!(!survives_in(&provenance, 3));
+        assert!(!survives_in(&provenance, 99));
+    }
+
+    #[test]
+    fn test_survives_in_empty() {
+        let provenance: Vec<Option<usize>> = vec![];
+        assert!(!survives_in(&provenance, 0));
+    }
+
+    #[test]
+    fn test_find_sources_single_match() {
+        let provenance = vec![Some(0), Some(1), Some(2)];
+        let sources: Vec<_> = find_sources(&provenance, 1).collect();
+        assert_eq!(sources, vec![1]);
+    }
+
+    #[test]
+    fn test_find_sources_multiple_matches() {
+        // Multiple indices can point to the same source (e.g., duplicated lines)
+        let provenance = vec![Some(0), Some(1), Some(0), Some(1)];
+        let sources: Vec<_> = find_sources(&provenance, 0).collect();
+        assert_eq!(sources, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_find_sources_no_match() {
+        let provenance = vec![Some(0), Some(1), Some(2)];
+        let sources: Vec<_> = find_sources(&provenance, 99).collect();
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn test_survives_chain_direct_path() {
+        // source 0 -> intermediate 1 -> final 2
+        let intermediate_from_source = vec![None, Some(0), None];
+        let final_from_intermediate = vec![None, None, Some(1)];
+        assert!(survives_chain(0, &intermediate_from_source, &final_from_intermediate));
+    }
+
+    #[test]
+    fn test_survives_chain_no_path() {
+        // source 0 -> intermediate 1, but intermediate 1 doesn't survive to final
+        let intermediate_from_source = vec![None, Some(0), None];
+        let final_from_intermediate = vec![Some(99), None, None];
+        assert!(!survives_chain(0, &intermediate_from_source, &final_from_intermediate));
+    }
+
+    #[test]
+    fn test_survives_chain_source_not_in_intermediate() {
+        let intermediate_from_source = vec![Some(1), Some(2)];
+        let final_from_intermediate = vec![Some(0), Some(1)];
+        assert!(!survives_chain(99, &intermediate_from_source, &final_from_intermediate));
+    }
+}
