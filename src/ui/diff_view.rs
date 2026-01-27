@@ -18,9 +18,11 @@ use crate::diff::{DiffLine, LineSource};
 
 use super::colors::{line_style, status_symbol};
 use super::selection::{apply_selection_to_span, get_line_selection_range};
+use super::colors::line_style_with_highlight;
 use super::spans::{
     build_deletion_spans_with_highlight, build_insertion_spans_with_highlight, classify_inline_change,
-    coalesce_spans, get_deletion_source, get_insertion_source, inline_display_width, InlineChangeType,
+    get_deletion_source, get_insertion_source, inline_display_width, InlineChangeType,
+    syntax_highlight_content, syntax_highlight_inline_spans,
 };
 use super::wrapping::wrap_content;
 use super::{ScreenRowInfo, PREFIX_CHAR_WIDTH};
@@ -372,8 +374,15 @@ impl<'a> DiffViewModel<'a> {
                 InlineChangeType::Mixed => {
                     let del_source = get_deletion_source(&diff_line.inline_spans);
                     let ins_source = get_insertion_source(&diff_line.inline_spans);
-                    let del_spans =
-                        build_deletion_spans_with_highlight(&diff_line.inline_spans, del_source);
+
+                    // Get old content for deletion line syntax highlighting
+                    let old_content = diff_line.old_content.as_deref().unwrap_or("");
+                    let del_spans = build_deletion_spans_with_highlight(
+                        &diff_line.inline_spans,
+                        del_source,
+                        old_content,
+                        diff_line.file_path.as_deref(),
+                    );
 
                     if !del_spans.is_empty() {
                         let del_style = line_style(del_source);
@@ -383,8 +392,6 @@ impl<'a> DiffViewModel<'a> {
                             String::new()
                         };
 
-                        let old_content: String =
-                            del_spans.iter().map(|s| s.content.as_ref()).collect();
                         let del_spans = apply_selection_to_content(
                             del_spans,
                             self.selection,
@@ -395,7 +402,7 @@ impl<'a> DiffViewModel<'a> {
                         let del_prefix_char = format!("- {} ", status_symbol(del_source));
                         let (del_lines, del_row_infos) = wrap_content(
                             del_spans,
-                            &old_content,
+                            old_content,
                             del_prefix_str,
                             del_prefix_char,
                             del_style,
@@ -410,8 +417,12 @@ impl<'a> DiffViewModel<'a> {
 
                     let new_content = &diff_line.content;
                     let ins_style = line_style(ins_source);
-                    let ins_spans =
-                        build_insertion_spans_with_highlight(&diff_line.inline_spans, ins_source);
+                    let ins_spans = build_insertion_spans_with_highlight(
+                        &diff_line.inline_spans,
+                        ins_source,
+                        new_content,
+                        diff_line.file_path.as_deref(),
+                    );
                     let ins_spans = apply_selection_to_content(
                         ins_spans,
                         self.selection,
@@ -436,17 +447,14 @@ impl<'a> DiffViewModel<'a> {
                     return all_lines.len() - rows_before;
                 }
                 InlineChangeType::PureDeletion | InlineChangeType::PureAddition => {
-                    let display_spans = coalesce_spans(&diff_line.inline_spans);
-                    let content_spans: Vec<Span> = display_spans
-                        .into_iter()
-                        .map(|inline_span| {
-                            let span_style = match inline_span.source {
-                                Some(source) => line_style(source),
-                                None => style,
-                            };
-                            Span::styled(inline_span.text, span_style)
-                        })
-                        .collect();
+                    let highlight_style = line_style_with_highlight(diff_line.source);
+                    let content_spans = syntax_highlight_inline_spans(
+                        &diff_line.inline_spans,
+                        &diff_line.content,
+                        diff_line.file_path.as_deref(),
+                        style,
+                        highlight_style,
+                    );
 
                     let content_spans = apply_selection_to_content(
                         content_spans,
@@ -475,18 +483,15 @@ impl<'a> DiffViewModel<'a> {
             }
         }
 
-        // Non-wrapped inline spans
-        let display_spans = coalesce_spans(&diff_line.inline_spans);
-        let content_spans: Vec<Span> = display_spans
-            .into_iter()
-            .map(|inline_span| {
-                let span_style = match inline_span.source {
-                    Some(source) => line_style(source),
-                    None => style,
-                };
-                Span::styled(inline_span.text, span_style)
-            })
-            .collect();
+        // Non-wrapped inline spans with syntax highlighting
+        let highlight_style = line_style_with_highlight(diff_line.source);
+        let content_spans = syntax_highlight_inline_spans(
+            &diff_line.inline_spans,
+            &diff_line.content,
+            diff_line.file_path.as_deref(),
+            style,
+            highlight_style,
+        );
 
         let content_spans =
             apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
@@ -520,7 +525,14 @@ impl<'a> DiffViewModel<'a> {
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) -> usize {
         let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source));
-        let content_spans = vec![Span::styled(diff_line.content.clone(), style)];
+
+        // Apply syntax highlighting - foreground from syntax, background from diff style
+        let content_spans = syntax_highlight_content(
+            &diff_line.content,
+            diff_line.file_path.as_deref(),
+            style,
+        );
+
         let content_spans =
             apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
 

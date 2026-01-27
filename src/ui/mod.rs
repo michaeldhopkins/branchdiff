@@ -911,7 +911,7 @@ mod tests {
             make_span("inserted", Some(LineSource::Committed), false),
         ];
 
-        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
+        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "unchanged deleted", None);
 
         // Should include unchanged and deletion, but NOT insertion
         assert_eq!(result.len(), 2, "Should have 2 spans (unchanged + deletion)");
@@ -926,7 +926,7 @@ mod tests {
             make_span("deleted", Some(LineSource::DeletedBase), true),
         ];
 
-        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
+        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "unchanged deleted", None);
 
         // Unchanged should have base style (no background highlight)
         let base_style = line_style(LineSource::DeletedBase);
@@ -945,7 +945,7 @@ mod tests {
             make_span("inserted", Some(LineSource::Committed), false),
         ];
 
-        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "unchanged inserted", None);
 
         // Should include unchanged and insertion, but NOT deletion
         assert_eq!(result.len(), 2, "Should have 2 spans (unchanged + insertion)");
@@ -960,7 +960,7 @@ mod tests {
             make_span("inserted", Some(LineSource::Committed), false),
         ];
 
-        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "unchanged inserted", None);
 
         // Unchanged should have base style (no background highlight)
         let base_style = line_style(LineSource::Committed);
@@ -975,8 +975,8 @@ mod tests {
     fn test_build_spans_with_highlight_empty_input() {
         let spans: Vec<InlineSpan> = vec![];
 
-        let del_result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
-        let ins_result = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+        let del_result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "", None);
+        let ins_result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "", None);
 
         assert!(del_result.is_empty(), "Empty input should produce empty deletion spans");
         assert!(ins_result.is_empty(), "Empty input should produce empty insertion spans");
@@ -991,8 +991,8 @@ mod tests {
             make_span("earth", Some(LineSource::Committed), false),
         ];
 
-        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
-        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "hello world", None);
+        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "hello earth", None);
 
         // Deletion line should be "hello world"
         let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1017,8 +1017,8 @@ mod tests {
             make_span("c", None, false),
         ];
 
-        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase);
-        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed);
+        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "aold1bold2c", None);
+        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "anew1bnew2c", None);
 
         // After coalescing, short gaps get absorbed
         // Deletion text should be: aold1bold2c (coalesced into fewer spans)

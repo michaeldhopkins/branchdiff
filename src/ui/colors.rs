@@ -2,6 +2,9 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::diff::LineSource;
 
+/// Default foreground color for text (neutral light gray)
+pub const DEFAULT_FG: Color = Color::Rgb(200, 200, 200);
+
 /// Background color for entire lines (subtle semantic tinting)
 /// Note: DeletedBase = committed deletion, DeletedCommitted = staged deletion,
 /// DeletedStaged = unstaged deletion (named for where line WAS, not where deletion IS)
