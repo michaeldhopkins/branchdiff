@@ -1310,8 +1310,10 @@ mod tests {
 
         let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working), None);
 
-        let unstaged: Vec<_> = diff.lines.iter()
-            .filter(|l| matches!(l.source, LineSource::Unstaged))
+        let unstaged: Vec<_> = diff
+            .lines
+            .iter()
+            .filter(|l| l.source.is_unstaged())
             .collect();
 
         assert_eq!(unstaged.len(), 2);
@@ -1328,8 +1330,10 @@ mod tests {
 
         let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working), None);
 
-        let unstaged: Vec<_> = diff.lines.iter()
-            .filter(|l| matches!(l.source, LineSource::Unstaged))
+        let unstaged: Vec<_> = diff
+            .lines
+            .iter()
+            .filter(|l| l.source.is_unstaged())
             .collect();
 
         assert!(unstaged.iter().any(|l| l.content == "INSERTED"));
