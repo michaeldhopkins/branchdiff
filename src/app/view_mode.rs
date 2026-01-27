@@ -1,40 +1,27 @@
-use crate::diff::{DiffLine, LineSource};
+use crate::diff::DiffLine;
 
 use super::{App, ViewMode};
 
 impl App {
     pub fn changed_line_count(&self) -> usize {
-        self.lines.iter().filter(|line| {
-            matches!(
-                line.source,
-                LineSource::Committed
-                    | LineSource::Staged
-                    | LineSource::Unstaged
-                    | LineSource::DeletedBase
-                    | LineSource::DeletedCommitted
-                    | LineSource::DeletedStaged
-                    | LineSource::CanceledCommitted
-                    | LineSource::CanceledStaged
-            )
-        }).count()
+        self.lines
+            .iter()
+            .filter(|line| line.source.is_change())
+            .count()
     }
 
     pub fn additions_count(&self) -> usize {
-        self.lines.iter().filter(|line| {
-            matches!(
-                line.source,
-                LineSource::Committed | LineSource::Staged | LineSource::Unstaged
-            )
-        }).count()
+        self.lines
+            .iter()
+            .filter(|line| line.source.is_addition())
+            .count()
     }
 
     pub fn deletions_count(&self) -> usize {
-        self.lines.iter().filter(|line| {
-            matches!(
-                line.source,
-                LineSource::DeletedBase | LineSource::DeletedCommitted | LineSource::DeletedStaged
-            )
-        }).count()
+        self.lines
+            .iter()
+            .filter(|line| line.source.is_deletion())
+            .count()
     }
 
     /// Compute which original line indices are visible in context mode
@@ -42,27 +29,15 @@ impl App {
         const CONTEXT_LINES: usize = 5;
 
         // First pass: mark which lines are "interesting" (changes or headers)
-        // A line is interesting if:
-        // 1. Its source indicates a change (Committed, Staged, Unstaged, Deleted*, FileHeader)
-        // 2. OR it has old_content or inline_spans (meaning it's a modification)
-        let interesting: Vec<bool> = self.lines.iter()
+        let interesting: Vec<bool> = self
+            .lines
+            .iter()
             .map(|line| {
                 // Lines with modifications are always interesting
-                // Check old_content (set immediately) or inline_spans (computed lazily)
                 if line.old_content.is_some() || !line.inline_spans.is_empty() {
                     return true;
                 }
-                matches!(line.source,
-                    LineSource::Committed |
-                    LineSource::Staged |
-                    LineSource::Unstaged |
-                    LineSource::DeletedBase |
-                    LineSource::DeletedCommitted |
-                    LineSource::DeletedStaged |
-                    LineSource::CanceledCommitted |
-                    LineSource::CanceledStaged |
-                    LineSource::FileHeader
-                )
+                line.source.is_change() || line.source.is_header()
             })
             .collect();
 
@@ -122,20 +97,11 @@ impl App {
     }
 
     pub(super) fn build_changes_only_lines(&self) -> Vec<DiffLine> {
-        self.lines.iter().filter(|line| {
-            matches!(
-                line.source,
-                LineSource::Committed
-                    | LineSource::Staged
-                    | LineSource::Unstaged
-                    | LineSource::DeletedBase
-                    | LineSource::DeletedCommitted
-                    | LineSource::DeletedStaged
-                    | LineSource::CanceledCommitted
-                    | LineSource::CanceledStaged
-                    | LineSource::FileHeader
-            )
-        }).cloned().collect()
+        self.lines
+            .iter()
+            .filter(|line| line.source.is_change() || line.source.is_header())
+            .cloned()
+            .collect()
     }
 
     /// Compute displayable items as indices (more efficient than cloning lines)
@@ -157,22 +123,10 @@ impl App {
 
     /// Changes-only mode: filter to just change lines
     fn compute_changes_only_items(&self) -> Vec<super::DisplayableItem> {
-        self.lines.iter()
+        self.lines
+            .iter()
             .enumerate()
-            .filter(|(_, line)| {
-                matches!(
-                    line.source,
-                    LineSource::Committed
-                        | LineSource::Staged
-                        | LineSource::Unstaged
-                        | LineSource::DeletedBase
-                        | LineSource::DeletedCommitted
-                        | LineSource::DeletedStaged
-                        | LineSource::CanceledCommitted
-                        | LineSource::CanceledStaged
-                        | LineSource::FileHeader
-                )
-            })
+            .filter(|(_, line)| line.source.is_change() || line.source.is_header())
             .map(|(i, _)| super::DisplayableItem::Line(i))
             .collect()
     }
@@ -230,7 +184,7 @@ impl App {
                     let line = &self.lines[idx];
 
                     // Update current file when we see a file header
-                    if line.source == LineSource::FileHeader {
+                    if line.source.is_header() {
                         current_file = line.file_path.clone();
                         result.push(item); // Always show file headers
                         continue;
@@ -399,7 +353,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::DiffLine;
+    use crate::diff::{DiffLine, LineSource};
     use crate::test_support::TestAppBuilder;
 
     #[test]
