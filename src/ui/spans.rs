@@ -1,7 +1,9 @@
+use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::diff::{InlineSpan, LineSource};
-use super::colors::{line_style, line_style_with_highlight};
+use crate::syntax::highlight_line;
+use super::colors::{line_style, line_style_with_highlight, DEFAULT_FG};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InlineChangeType {
@@ -190,44 +192,373 @@ pub fn get_insertion_source(spans: &[InlineSpan]) -> LineSource {
         .unwrap_or(LineSource::Committed)
 }
 
-/// Build spans for the deletion line: unchanged portions get base style, deleted portions get highlight.
+/// Build spans for the deletion line with syntax highlighting.
+/// Unchanged portions get base style, deleted portions get highlight.
 pub fn build_deletion_spans_with_highlight(
     inline_spans: &[InlineSpan],
     del_source: LineSource,
+    old_content: &str,
+    file_path: Option<&str>,
 ) -> Vec<Span<'static>> {
     let base_style = line_style(del_source);
     let highlight_style = line_style_with_highlight(del_source);
 
+    // Get syntax colors for the old content
+    let syntax_segments = highlight_line(old_content, file_path);
+    let mut syntax_colors: Vec<ratatui::style::Color> = Vec::with_capacity(old_content.len());
+    for seg in &syntax_segments {
+        for _ in seg.text.chars() {
+            syntax_colors.push(seg.fg_color);
+        }
+    }
+
     let coalesced = coalesce_spans(inline_spans);
     let mut result = Vec::new();
+    let mut char_idx = 0;
+
     for span in coalesced {
-        if span.is_deletion {
-            result.push(Span::styled(span.text.clone(), highlight_style));
-        } else if span.source.is_none() {
-            result.push(Span::styled(span.text.clone(), base_style));
+        // For deletion line, we show: deletions (highlighted) + unchanged portions
+        // Skip insertions (they go on the insertion line)
+        if !span.is_deletion && span.source.is_some() {
+            continue;
+        }
+
+        let bg_style = if span.is_deletion {
+            highlight_style
+        } else {
+            base_style
+        };
+
+        // Apply syntax colors character by character
+        let mut current_text = String::new();
+        let mut current_color = None;
+
+        for ch in span.text.chars() {
+            let fg_color = syntax_colors.get(char_idx).copied().unwrap_or(DEFAULT_FG);
+            char_idx += 1;
+
+            if Some(fg_color) == current_color {
+                current_text.push(ch);
+            } else {
+                if !current_text.is_empty() {
+                    let style = bg_style.fg(current_color.unwrap_or(fg_color));
+                    result.push(Span::styled(std::mem::take(&mut current_text), style));
+                }
+                current_text.push(ch);
+                current_color = Some(fg_color);
+            }
+        }
+
+        if !current_text.is_empty() {
+            let style = bg_style.fg(current_color.unwrap_or(DEFAULT_FG));
+            result.push(Span::styled(current_text, style));
         }
     }
     result
 }
 
-/// Build spans for the insertion line: unchanged portions get base style, inserted portions get highlight.
+/// Build spans for the insertion line with syntax highlighting.
+/// Unchanged portions get base style, inserted portions get highlight.
 pub fn build_insertion_spans_with_highlight(
     inline_spans: &[InlineSpan],
     ins_source: LineSource,
+    new_content: &str,
+    file_path: Option<&str>,
 ) -> Vec<Span<'static>> {
     let base_style = line_style(ins_source);
     let highlight_style = line_style_with_highlight(ins_source);
 
+    // Get syntax colors for the new content
+    let syntax_segments = highlight_line(new_content, file_path);
+    let mut syntax_colors: Vec<ratatui::style::Color> = Vec::with_capacity(new_content.len());
+    for seg in &syntax_segments {
+        for _ in seg.text.chars() {
+            syntax_colors.push(seg.fg_color);
+        }
+    }
+
     let coalesced = coalesce_spans(inline_spans);
     let mut result = Vec::new();
+    let mut char_idx = 0;
+
     for span in coalesced {
+        // For insertion line, skip deletions
         if span.is_deletion {
             continue;
-        } else if span.source.is_some() {
-            result.push(Span::styled(span.text.clone(), highlight_style));
+        }
+
+        let bg_style = if span.source.is_some() {
+            highlight_style
         } else {
-            result.push(Span::styled(span.text.clone(), base_style));
+            base_style
+        };
+
+        // Apply syntax colors character by character
+        let mut current_text = String::new();
+        let mut current_color = None;
+
+        for ch in span.text.chars() {
+            let fg_color = syntax_colors.get(char_idx).copied().unwrap_or(DEFAULT_FG);
+            char_idx += 1;
+
+            if Some(fg_color) == current_color {
+                current_text.push(ch);
+            } else {
+                if !current_text.is_empty() {
+                    let style = bg_style.fg(current_color.unwrap_or(fg_color));
+                    result.push(Span::styled(std::mem::take(&mut current_text), style));
+                }
+                current_text.push(ch);
+                current_color = Some(fg_color);
+            }
+        }
+
+        if !current_text.is_empty() {
+            let style = bg_style.fg(current_color.unwrap_or(DEFAULT_FG));
+            result.push(Span::styled(current_text, style));
         }
     }
     result
+}
+
+/// Apply syntax highlighting to line content.
+/// Returns spans with syntax-based foreground colors and the base style's background preserved.
+pub fn syntax_highlight_content(
+    content: &str,
+    file_path: Option<&str>,
+    base_style: Style,
+) -> Vec<Span<'static>> {
+    let segments = highlight_line(content, file_path);
+
+    segments
+        .into_iter()
+        .map(|seg| {
+            // Preserve background from base_style, use foreground from syntax
+            let style = base_style.fg(seg.fg_color);
+            Span::styled(seg.text, style)
+        })
+        .collect()
+}
+
+/// Apply syntax highlighting to inline diff spans.
+/// This merges syntax colors with diff backgrounds - syntax provides foreground,
+/// diff provides background based on whether the segment is changed or unchanged.
+pub fn syntax_highlight_inline_spans(
+    inline_spans: &[InlineSpan],
+    content: &str,
+    file_path: Option<&str>,
+    base_style: Style,
+    highlight_style: Style,
+) -> Vec<Span<'static>> {
+    let syntax_segments = highlight_line(content, file_path);
+
+    // Build a character-indexed color map from syntax highlighting
+    let mut syntax_colors: Vec<ratatui::style::Color> = Vec::with_capacity(content.len());
+    for seg in &syntax_segments {
+        for _ in seg.text.chars() {
+            syntax_colors.push(seg.fg_color);
+        }
+    }
+
+    let coalesced = coalesce_spans(inline_spans);
+    let mut result = Vec::new();
+    let mut char_idx = 0;
+
+    for span in coalesced {
+        if span.is_deletion {
+            // Skip deletions - they're shown on a separate line
+            continue;
+        }
+
+        let bg_style = if span.source.is_some() {
+            highlight_style
+        } else {
+            base_style
+        };
+
+        // Apply syntax colors character by character, grouping consecutive same-color chars
+        let mut current_text = String::new();
+        let mut current_color = None;
+
+        for ch in span.text.chars() {
+            let fg_color = syntax_colors.get(char_idx).copied().unwrap_or(base_style.fg.unwrap_or(DEFAULT_FG));
+            char_idx += 1;
+
+            if Some(fg_color) == current_color {
+                current_text.push(ch);
+            } else {
+                if !current_text.is_empty() {
+                    let style = bg_style.fg(current_color.unwrap_or(fg_color));
+                    result.push(Span::styled(std::mem::take(&mut current_text), style));
+                }
+                current_text.push(ch);
+                current_color = Some(fg_color);
+            }
+        }
+
+        if !current_text.is_empty() {
+            let style = bg_style.fg(current_color.unwrap_or(DEFAULT_FG));
+            result.push(Span::styled(current_text, style));
+        }
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntax::reset_highlight_state;
+
+    #[test]
+    fn test_syntax_highlight_content_rust() {
+        reset_highlight_state();
+        let base_style = Style::default().bg(ratatui::style::Color::Rgb(25, 50, 50));
+        let spans = syntax_highlight_content("fn main() {}", Some("test.rs"), base_style);
+
+        assert!(!spans.is_empty());
+        // Should preserve background from base_style
+        for span in &spans {
+            assert_eq!(span.style.bg, Some(ratatui::style::Color::Rgb(25, 50, 50)));
+        }
+    }
+
+    #[test]
+    fn test_syntax_highlight_content_empty() {
+        reset_highlight_state();
+        let base_style = Style::default();
+        let spans = syntax_highlight_content("", Some("test.rs"), base_style);
+
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn test_syntax_highlight_content_no_file_path() {
+        reset_highlight_state();
+        let base_style = Style::default();
+        let spans = syntax_highlight_content("some text", None, base_style);
+
+        // Should still work without file path (plain text)
+        assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn test_syntax_highlight_inline_spans_unchanged() {
+        reset_highlight_state();
+        let inline_spans = vec![
+            InlineSpan {
+                text: "fn test()".to_string(),
+                source: None,
+                is_deletion: false,
+            },
+        ];
+
+        let base_style = Style::default().bg(ratatui::style::Color::Rgb(25, 50, 50));
+        let highlight_style = Style::default().bg(ratatui::style::Color::Rgb(50, 100, 100));
+
+        let spans = syntax_highlight_inline_spans(
+            &inline_spans,
+            "fn test()",
+            Some("test.rs"),
+            base_style,
+            highlight_style,
+        );
+
+        assert!(!spans.is_empty());
+        // Unchanged spans should use base_style background
+        for span in &spans {
+            assert_eq!(span.style.bg, Some(ratatui::style::Color::Rgb(25, 50, 50)));
+        }
+    }
+
+    #[test]
+    fn test_syntax_highlight_inline_spans_with_changes() {
+        reset_highlight_state();
+        let inline_spans = vec![
+            InlineSpan {
+                text: "let ".to_string(),
+                source: None,
+                is_deletion: false,
+            },
+            InlineSpan {
+                text: "x".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: false,
+            },
+            InlineSpan {
+                text: " = 1;".to_string(),
+                source: None,
+                is_deletion: false,
+            },
+        ];
+
+        let base_style = Style::default().bg(ratatui::style::Color::Rgb(25, 50, 50));
+        let highlight_style = Style::default().bg(ratatui::style::Color::Rgb(50, 100, 100));
+
+        let spans = syntax_highlight_inline_spans(
+            &inline_spans,
+            "let x = 1;",
+            Some("test.rs"),
+            base_style,
+            highlight_style,
+        );
+
+        assert!(!spans.is_empty());
+        // Should have mix of base and highlight backgrounds
+        let has_base_bg = spans.iter().any(|s| s.style.bg == Some(ratatui::style::Color::Rgb(25, 50, 50)));
+        let has_highlight_bg = spans.iter().any(|s| s.style.bg == Some(ratatui::style::Color::Rgb(50, 100, 100)));
+        assert!(has_base_bg, "Should have spans with base background");
+        assert!(has_highlight_bg, "Should have spans with highlight background");
+    }
+
+    #[test]
+    fn test_syntax_highlight_inline_spans_skips_deletions() {
+        reset_highlight_state();
+        let inline_spans = vec![
+            InlineSpan {
+                text: "old".to_string(),
+                source: Some(LineSource::DeletedBase),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "new".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: false,
+            },
+        ];
+
+        let base_style = Style::default();
+        let highlight_style = Style::default().bg(ratatui::style::Color::Rgb(50, 100, 100));
+
+        let spans = syntax_highlight_inline_spans(
+            &inline_spans,
+            "new",
+            Some("test.rs"),
+            base_style,
+            highlight_style,
+        );
+
+        // Should only contain "new", not "old"
+        let all_text: String = spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(all_text, "new");
+    }
+
+    #[test]
+    fn test_syntax_highlight_inline_spans_empty_input() {
+        reset_highlight_state();
+        let inline_spans: Vec<InlineSpan> = vec![];
+
+        let base_style = Style::default();
+        let highlight_style = Style::default().bg(ratatui::style::Color::Rgb(50, 100, 100));
+
+        let spans = syntax_highlight_inline_spans(
+            &inline_spans,
+            "",
+            Some("test.rs"),
+            base_style,
+            highlight_style,
+        );
+
+        assert!(spans.is_empty());
+    }
 }
