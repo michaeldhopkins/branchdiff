@@ -1,8 +1,10 @@
 use super::prelude::*;
+use crate::diff::LineSource;
+use crate::ui::colors::{highlight_bg_color, line_bg_color};
 
 pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
-    let modal_width = 52u16;
-    let modal_height = 47u16;
+    let modal_width = 54u16;
+    let modal_height = 48u16;
 
     let x = area.width.saturating_sub(modal_width) / 2;
     let y = area.height.saturating_sub(modal_height) / 2;
@@ -23,7 +25,7 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("    ↓ / ↑       ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Scroll line"),
+            Span::raw("  Scroll up/down"),
         ]),
         Line::from(vec![
             Span::styled("    Ctrl+d / u  ", Style::default().fg(Color::Cyan)),
@@ -81,31 +83,31 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" + C Added (committed)                 ", Style::default().bg(Color::Rgb(25, 50, 50))),
+            Span::styled(" + C Added (committed)                 ", Style::default().bg(line_bg_color(LineSource::Committed))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" + S Added (staged)                    ", Style::default().bg(Color::Rgb(25, 50, 25))),
+            Span::styled(" + S Added (staged)                    ", Style::default().bg(line_bg_color(LineSource::Staged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" +   Added (unstaged)                  ", Style::default().bg(Color::Rgb(60, 60, 18))),
+            Span::styled(" +   Added (unstaged)                  ", Style::default().bg(line_bg_color(LineSource::Unstaged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" - C Deleted (committed)               ", Style::default().bg(Color::Rgb(45, 20, 20))),
+            Span::styled(" - C Deleted (committed)               ", Style::default().bg(line_bg_color(LineSource::DeletedBase))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" - S Deleted (staged)                  ", Style::default().bg(Color::Rgb(55, 25, 25))),
+            Span::styled(" - S Deleted (staged)                  ", Style::default().bg(line_bg_color(LineSource::DeletedCommitted))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" -   Deleted (unstaged)                ", Style::default().bg(Color::Rgb(65, 30, 25))),
+            Span::styled(" -   Deleted (unstaged)                ", Style::default().bg(line_bg_color(LineSource::DeletedStaged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" ±   Canceled (added then removed)     ", Style::default().bg(Color::Rgb(50, 25, 50))),
+            Span::styled(" ±   Canceled (added then removed)     ", Style::default().bg(line_bg_color(LineSource::CanceledCommitted))),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -114,27 +116,27 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" + C Added (committed) char highlight  ", Style::default().bg(Color::Rgb(50, 100, 100))),
+            Span::styled(" + C Added (committed) char highlight  ", Style::default().bg(highlight_bg_color(LineSource::Committed))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" + S Added (staged) char highlight     ", Style::default().bg(Color::Rgb(50, 100, 50))),
+            Span::styled(" + S Added (staged) char highlight     ", Style::default().bg(highlight_bg_color(LineSource::Staged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" +   Added (unstaged) char highlight   ", Style::default().bg(Color::Rgb(130, 130, 35))),
+            Span::styled(" +   Added (unstaged) char highlight   ", Style::default().bg(highlight_bg_color(LineSource::Unstaged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" - C Deleted (committed) char highlight", Style::default().bg(Color::Rgb(90, 40, 40))),
+            Span::styled(" - C Deleted (committed) char highlight", Style::default().bg(highlight_bg_color(LineSource::DeletedBase))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" - S Deleted (staged) char highlight   ", Style::default().bg(Color::Rgb(100, 50, 50))),
+            Span::styled(" - S Deleted (staged) char highlight   ", Style::default().bg(highlight_bg_color(LineSource::DeletedCommitted))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" -   Deleted (unstaged) char highlight ", Style::default().bg(Color::Rgb(115, 55, 45))),
+            Span::styled(" -   Deleted (unstaged) char highlight ", Style::default().bg(highlight_bg_color(LineSource::DeletedStaged))),
         ]),
     ];
 

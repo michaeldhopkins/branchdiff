@@ -17,7 +17,7 @@ pub mod wrapping;
 pub use modals::{draw_help_modal, draw_warning_banner};
 pub use status_bar::{draw_status_bar, status_bar_height};
 
-const PREFIX_CHAR_WIDTH: usize = 2; // prefix char + trailing space
+const PREFIX_CHAR_WIDTH: usize = 4; // prefix char + space + status symbol + trailing space
 
 /// Represents how a logical DiffLine maps to a screen row
 #[derive(Debug, Clone)]
@@ -821,18 +821,23 @@ mod tests {
     // tests above (test_status_bar_height_*) provide coverage of the actual code.
 
     #[test]
-    fn test_highlight_bg_color_deleted_base_is_lighter() {
+    fn test_highlight_bg_color_deletion_brightness_hierarchy() {
         use ratatui::style::Color;
 
         let deleted_base_bg = highlight_bg_color(LineSource::DeletedBase);
         let deleted_committed_bg = highlight_bg_color(LineSource::DeletedCommitted);
+        let deleted_staged_bg = highlight_bg_color(LineSource::DeletedStaged);
 
-        // DeletedBase should have a lighter (less intense) background than DeletedCommitted
-        match (deleted_base_bg, deleted_committed_bg) {
-            (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
-                assert!(r1 < r2, "DeletedBase red should be lighter than DeletedCommitted");
-                assert!(g1 < g2, "DeletedBase green should be lighter than DeletedCommitted");
-                assert!(b1 < b2, "DeletedBase blue should be lighter than DeletedCommitted");
+        // Brightness hierarchy: committed (DeletedBase) < staged (DeletedCommitted) < unstaged (DeletedStaged)
+        // Note: DeletedBase = committed deletion, DeletedCommitted = staged deletion, DeletedStaged = unstaged deletion
+        // Unstaged has a warmer tint (lower blue) so we check overall brightness, not each channel
+        match (deleted_base_bg, deleted_committed_bg, deleted_staged_bg) {
+            (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2), Color::Rgb(r3, g3, b3)) => {
+                let brightness1 = r1 as u32 + g1 as u32 + b1 as u32;
+                let brightness2 = r2 as u32 + g2 as u32 + b2 as u32;
+                let brightness3 = r3 as u32 + g3 as u32 + b3 as u32;
+                assert!(brightness2 > brightness1, "DeletedCommitted should be brighter than DeletedBase");
+                assert!(brightness3 > brightness2, "DeletedStaged should be brighter than DeletedCommitted");
             }
             _ => panic!("Expected RGB colors for deletion backgrounds"),
         }
@@ -1091,5 +1096,27 @@ mod tests {
         // This replaces "hello" with "goodbye" - mixed change
         let result = compute_inline_diff_merged("hello world", "goodbye world", LineSource::Committed);
         assert_eq!(classify_inline_change(&result.spans), InlineChangeType::Mixed);
+    }
+
+    #[test]
+    fn test_status_symbol_returns_correct_symbols() {
+        use super::colors::status_symbol;
+
+        // Committed additions and deletions get "C"
+        assert_eq!(status_symbol(LineSource::Committed), "C");
+        assert_eq!(status_symbol(LineSource::DeletedBase), "C"); // committed deletion
+        assert_eq!(status_symbol(LineSource::CanceledCommitted), "C");
+
+        // Staged additions and deletions get "S"
+        assert_eq!(status_symbol(LineSource::Staged), "S");
+        assert_eq!(status_symbol(LineSource::DeletedCommitted), "S"); // staged deletion
+        assert_eq!(status_symbol(LineSource::CanceledStaged), "S");
+
+        // Unstaged and others get space (no symbol)
+        assert_eq!(status_symbol(LineSource::Unstaged), " ");
+        assert_eq!(status_symbol(LineSource::DeletedStaged), " "); // unstaged deletion
+        assert_eq!(status_symbol(LineSource::Base), " ");
+        assert_eq!(status_symbol(LineSource::FileHeader), " ");
+        assert_eq!(status_symbol(LineSource::Elided), " ");
     }
 }

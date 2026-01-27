@@ -16,7 +16,7 @@ use ratatui::{
 use crate::app::{App, DisplayableItem, FrameContext, Selection};
 use crate::diff::{DiffLine, LineSource};
 
-use super::colors::line_style;
+use super::colors::{line_style, status_symbol};
 use super::selection::{apply_selection_to_span, get_line_selection_range};
 use super::spans::{
     build_deletion_spans_with_highlight, build_insertion_spans_with_highlight, classify_inline_change,
@@ -392,11 +392,12 @@ impl<'a> DiffViewModel<'a> {
                             prefix_width,
                         );
 
+                        let del_prefix_char = format!("- {} ", status_symbol(del_source));
                         let (del_lines, del_row_infos) = wrap_content(
                             del_spans,
                             &old_content,
                             del_prefix_str,
-                            "- ".to_string(),
+                            del_prefix_char,
                             del_style,
                             content_width,
                             prefix_width,
@@ -418,11 +419,12 @@ impl<'a> DiffViewModel<'a> {
                         prefix_width,
                     );
 
+                    let ins_prefix_char = format!("+ {} ", status_symbol(ins_source));
                     let (ins_lines, ins_row_infos) = wrap_content(
                         ins_spans,
                         new_content,
                         prefix_str.to_string(),
-                        "+ ".to_string(),
+                        ins_prefix_char,
                         ins_style,
                         content_width,
                         prefix_width,
@@ -453,11 +455,12 @@ impl<'a> DiffViewModel<'a> {
                         prefix_width,
                     );
 
+                    let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source));
                     let (lines, row_infos) = wrap_content(
                         content_spans,
                         &diff_line.content,
                         prefix_str.to_string(),
-                        "  ".to_string(),
+                        prefix_char,
                         style,
                         content_width,
                         prefix_width,
@@ -488,7 +491,7 @@ impl<'a> DiffViewModel<'a> {
         let content_spans =
             apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
 
-        let prefix_char = format!("{} ", diff_line.prefix);
+        let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source));
         let (lines, row_infos) = wrap_content(
             content_spans,
             &diff_line.content,
@@ -516,7 +519,7 @@ impl<'a> DiffViewModel<'a> {
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) -> usize {
-        let prefix_char = format!("{} ", diff_line.prefix);
+        let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source));
         let content_spans = vec![Span::styled(diff_line.content.clone(), style)];
         let content_spans =
             apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
