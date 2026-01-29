@@ -2558,4 +2558,210 @@ end"##;
             .collect();
         assert_eq!(still_unstaged.len(), 0, "line3 should NOT be Unstaged after staging");
     }
+
+    #[test]
+    fn test_unstaged_import_modification_shows_inline() {
+        // Reproduces the bug: modifying an import line in working tree
+        // should show as modified with inline highlighting, not as gray context
+        let base = r#"use ratatui::{
+    layout::Rect,
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+    Frame,
+};"#;
+
+        let working = r#"use ratatui::{
+    layout::Rect,
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
+};"#;
+
+        let diff = compute_file_diff_v2_with_inline(
+            "test.rs",
+            Some(base),
+            Some(base),
+            Some(base),
+            Some(working),
+        );
+        let lines = content_lines(&diff);
+
+        // Find the modified line
+        let modified_line = lines.iter()
+            .find(|l| l.content.contains("Clear"));
+        assert!(modified_line.is_some(), "Should have a line containing 'Clear'");
+
+        let modified = modified_line.unwrap();
+
+        // Key assertions: the line should have old_content and inline_spans
+        assert!(modified.old_content.is_some(),
+            "Modified import line should have old_content set, but it was None. \
+            Source is {:?}, change_source is {:?}",
+            modified.source, modified.change_source);
+
+        assert!(!modified.inline_spans.is_empty(),
+            "Modified import line should have inline spans showing 'Clear, ' insertion. \
+            Source is {:?}, change_source is {:?}",
+            modified.source, modified.change_source);
+
+        // The change should be marked as Unstaged
+        assert_eq!(modified.change_source, Some(LineSource::Unstaged),
+            "Modification should be marked as Unstaged");
+    }
+
+    #[test]
+    fn test_unstaged_modification_plus_addition() {
+        // More realistic: modification early in file + addition later
+        // This matches the actual bug scenario where line 12 (import modification)
+        // shows as gray but line 158 (addition) shows as yellow
+        let base = r#"line 1
+line 2
+widgets::{Block, Borders, Paragraph},
+line 4
+line 5
+line 6
+line 7
+line 8
+render_widget(paragraph)"#;
+
+        let working = r#"line 1
+line 2
+widgets::{Block, Borders, Clear, Paragraph},
+line 4
+line 5
+line 6
+line 7
+line 8
+render_widget(Clear);
+render_widget(paragraph)"#;
+
+        let diff = compute_file_diff_v2_with_inline(
+            "test.rs",
+            Some(base),
+            Some(base),
+            Some(base),
+            Some(working),
+        );
+        let lines = content_lines(&diff);
+
+        // Check the modification (line 3)
+        let modified_line = lines.iter()
+            .find(|l| l.content.contains("Clear, Paragraph"));
+        assert!(modified_line.is_some(), "Should have modified line with 'Clear, Paragraph'");
+
+        let modified = modified_line.unwrap();
+        assert!(modified.old_content.is_some(),
+            "Modified line should have old_content set. Source: {:?}, change_source: {:?}",
+            modified.source, modified.change_source);
+        assert_eq!(modified.change_source, Some(LineSource::Unstaged),
+            "Modification should be marked as Unstaged");
+
+        // Check the addition (new line)
+        let added_line = lines.iter()
+            .find(|l| l.content == "render_widget(Clear);");
+        assert!(added_line.is_some(), "Should have added line 'render_widget(Clear);'");
+
+        let added = added_line.unwrap();
+        assert_eq!(added.source, LineSource::Unstaged,
+            "Pure addition should have source Unstaged");
+        assert_eq!(added.prefix, '+', "Addition should have + prefix");
+    }
+
+    #[test]
+    fn test_exact_diff_view_scenario() {
+        // Exact reproduction of the diff_view.rs scenario
+        // Line 12: widgets::{Block, Borders, Paragraph}, -> widgets::{Block, Borders, Clear, Paragraph},
+        // Line 158: addition of frame.render_widget(Clear, self.area);
+        let base = r#"//! Diff view rendering with pure data model separation.
+//!
+//! The DiffViewModel provides a pure view model for rendering, enabling
+//! easier unit testing without requiring a full App instance.
+
+use std::collections::HashSet;
+
+use ratatui::{
+    layout::Rect,
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+    Frame,
+};
+
+use crate::app::{App, DisplayableItem, FrameContext, Selection};
+
+// ... 140 lines of code ...
+
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray));
+
+        let paragraph = Paragraph::new(all_lines).block(block);
+        frame.render_widget(paragraph, self.area);"#;
+
+        let working = r#"//! Diff view rendering with pure data model separation.
+//!
+//! The DiffViewModel provides a pure view model for rendering, enabling
+//! easier unit testing without requiring a full App instance.
+
+use std::collections::HashSet;
+
+use ratatui::{
+    layout::Rect,
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Frame,
+};
+
+use crate::app::{App, DisplayableItem, FrameContext, Selection};
+
+// ... 140 lines of code ...
+
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray));
+
+        frame.render_widget(Clear, self.area);
+        let paragraph = Paragraph::new(all_lines).block(block);
+        frame.render_widget(paragraph, self.area);"#;
+
+        let diff = compute_file_diff_v2_with_inline(
+            "diff_view.rs",
+            Some(base),
+            Some(base),
+            Some(base),
+            Some(working),
+        );
+        let lines = content_lines(&diff);
+
+        // Debug: print all lines with their sources
+        for (i, line) in lines.iter().enumerate() {
+            if line.content.contains("Clear") || line.content.contains("widgets") {
+                eprintln!("Line {}: source={:?}, change_source={:?}, old_content={}, content='{}'",
+                    i, line.source, line.change_source, line.old_content.is_some(), line.content);
+            }
+        }
+
+        // Check the import modification (line 12 in real file)
+        let modified_import = lines.iter()
+            .find(|l| l.content.contains("Clear, Paragraph"));
+        assert!(modified_import.is_some(), "Should have modified import line");
+
+        let modified = modified_import.unwrap();
+        assert!(modified.old_content.is_some(),
+            "Modified import should have old_content. Source: {:?}, change_source: {:?}, prefix: '{}'",
+            modified.source, modified.change_source, modified.prefix);
+
+        // Check the addition (line 158 in real file)
+        let added_line = lines.iter()
+            .find(|l| l.content.contains("render_widget(Clear"));
+        assert!(added_line.is_some(), "Should have added render_widget line");
+
+        let added = added_line.unwrap();
+        assert_eq!(added.prefix, '+', "Addition should have + prefix");
+    }
 }

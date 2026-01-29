@@ -34,10 +34,10 @@ impl App {
             .iter()
             .map(|line| {
                 // Lines with modifications are always interesting
-                if line.old_content.is_some() || !line.inline_spans.is_empty() {
-                    return true;
-                }
-                line.source.is_change() || line.source.is_header()
+                line.old_content.is_some()
+                    || !line.inline_spans.is_empty()
+                    || line.source.is_change()
+                    || line.source.is_header()
             })
             .collect();
 
@@ -121,12 +121,16 @@ impl App {
             .collect()
     }
 
-    /// Changes-only mode: filter to just change lines
+    /// Changes-only mode: filter to just change lines (including modified base lines)
     fn compute_changes_only_items(&self) -> Vec<super::DisplayableItem> {
         self.lines
             .iter()
             .enumerate()
-            .filter(|(_, line)| line.source.is_change() || line.source.is_header())
+            .filter(|(_, line)| {
+                line.source.is_change()
+                    || line.source.is_header()
+                    || line.old_content.is_some()  // Include modified base lines
+            })
             .map(|(i, _)| super::DisplayableItem::Line(i))
             .collect()
     }
@@ -352,7 +356,6 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::diff::{DiffLine, LineSource};
     use crate::test_support::TestAppBuilder;
 
