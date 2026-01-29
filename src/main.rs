@@ -34,6 +34,42 @@ use notify::{PollWatcher, RecommendedWatcher};
 use notify_debouncer_mini::{new_debouncer_opt, Config as DebouncerConfig, Debouncer};
 use ratatui::prelude::*;
 
+/// Output mode for the application
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum OutputMode {
+    /// Interactive TUI mode (default)
+    #[default]
+    Tui,
+    /// Print branchdiff format to stdout
+    Print,
+    /// Output git patch format to stdout
+    Diff,
+}
+
+/// Output mode arguments (flattened into Cli to avoid excessive bools)
+#[derive(clap::Args)]
+struct OutputArgs {
+    /// Print diff to stdout and exit (non-interactive mode)
+    #[arg(short = 'p', long = "print", conflicts_with = "diff")]
+    print: bool,
+
+    /// Output git patch format to stdout (for use with git apply)
+    #[arg(short = 'd', long = "diff", conflicts_with = "print")]
+    diff: bool,
+}
+
+impl OutputArgs {
+    fn mode(&self) -> OutputMode {
+        if self.print {
+            OutputMode::Print
+        } else if self.diff {
+            OutputMode::Diff
+        } else {
+            OutputMode::Tui
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "branchdiff")]
 #[command(about = "Terminal UI showing unified diff of current branch vs main/master")]
@@ -47,9 +83,8 @@ struct Cli {
     #[arg(long)]
     no_auto_fetch: bool,
 
-    /// Print diff to stdout and exit (non-interactive mode)
-    #[arg(short = 'p', long = "print")]
-    print: bool,
+    #[command(flatten)]
+    output: OutputArgs,
 
     /// Run stress test for profiling (renders N frames with simulated input)
     #[arg(long, value_name = "FRAMES")]
@@ -84,19 +119,28 @@ fn main() -> Result<()> {
     // Detect git version (for feature gating like merge-tree --write-tree)
     let git_version = git::get_git_version().context("Failed to detect git version")?;
 
-    // Non-interactive mode: print and exit
-    if cli.print {
-        let mut app = app::App::new(repo_root)?;
-        app.collapsed_files.clear();
-        app.view_mode = app::ViewMode::Full;
+    // Non-interactive modes
+    match cli.output.mode() {
+        OutputMode::Print => {
+            let mut app = app::App::new(repo_root)?;
+            app.collapsed_files.clear();
+            app.view_mode = app::ViewMode::Full;
 
-        for line in &mut app.lines {
-            if line.old_content.is_some() {
-                line.ensure_inline_spans();
+            for line in &mut app.lines {
+                if line.old_content.is_some() {
+                    line.ensure_inline_spans();
+                }
             }
+            print::print_diff(&app)?;
+            return Ok(());
         }
-        print::print_diff(&app)?;
-        return Ok(());
+        OutputMode::Diff => {
+            let app = app::App::new(repo_root)?;
+            let patch = branchdiff::patch::generate_patch(&app.lines);
+            print!("{}", patch);
+            return Ok(());
+        }
+        OutputMode::Tui => {}
     }
 
     // Benchmark mode: stress test for profiling

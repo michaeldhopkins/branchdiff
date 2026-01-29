@@ -4,7 +4,7 @@ use crate::ui::colors::{highlight_bg_color, line_bg_color};
 
 pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
     let modal_width = 54u16;
-    let modal_height = 48u16;
+    let modal_height = 49u16;
 
     let x = area.width.saturating_sub(modal_width) / 2;
     let y = area.height.saturating_sub(modal_height) / 2;
@@ -63,6 +63,10 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("    Y           ", Style::default().fg(Color::Cyan)),
             Span::raw("  Copy entire diff"),
+        ]),
+        Line::from(vec![
+            Span::styled("    D           ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Copy git patch format"),
         ]),
         Line::from(vec![
             Span::styled("    q / Esc     ", Style::default().fg(Color::Cyan)),
