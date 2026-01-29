@@ -54,7 +54,7 @@ pub struct RenderOutput {
 impl<'a> DiffViewModel<'a> {
     /// Create view model from App and FrameContext.
     pub fn from_app(app: &'a App, ctx: &'a FrameContext, area: Rect) -> Self {
-        let (start, end) = ctx.visible_range();
+        let (start, end) = ctx.visible_range(app);
         let items = &ctx.items()[start..end];
 
         Self {
