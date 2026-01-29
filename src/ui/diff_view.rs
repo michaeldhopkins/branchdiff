@@ -9,7 +9,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -155,6 +155,7 @@ impl<'a> DiffViewModel<'a> {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray));
 
+        frame.render_widget(Clear, self.area);
         let paragraph = Paragraph::new(all_lines).block(block);
         frame.render_widget(paragraph, self.area);
 
@@ -447,7 +448,9 @@ impl<'a> DiffViewModel<'a> {
                     return all_lines.len() - rows_before;
                 }
                 InlineChangeType::PureDeletion | InlineChangeType::PureAddition => {
-                    let highlight_style = line_style_with_highlight(diff_line.source);
+                    // Use the actual source from spans, not the line's base source
+                    let highlight_source = get_insertion_source(&diff_line.inline_spans);
+                    let highlight_style = line_style_with_highlight(highlight_source);
                     let content_spans = syntax_highlight_inline_spans(
                         &diff_line.inline_spans,
                         &diff_line.content,
@@ -484,7 +487,9 @@ impl<'a> DiffViewModel<'a> {
         }
 
         // Non-wrapped inline spans with syntax highlighting
-        let highlight_style = line_style_with_highlight(diff_line.source);
+        // Use the actual insertion source from spans, not the line's base source
+        let highlight_source = get_insertion_source(&diff_line.inline_spans);
+        let highlight_style = line_style_with_highlight(highlight_source);
         let content_spans = syntax_highlight_inline_spans(
             &diff_line.inline_spans,
             &diff_line.content,
@@ -757,5 +762,185 @@ mod tests {
         let ctx = FrameContext::new(&app);
         let view_model = DiffViewModel::from_app(&app, &ctx, area);
         assert!(!view_model.show_copied_flash);
+    }
+
+    // Tests for inline span highlight source computation
+    mod highlight_source_tests {
+        use super::*;
+        use crate::diff::InlineSpan;
+        use crate::ui::colors::{highlight_bg_color, line_style_with_highlight};
+
+        /// Verifies that get_insertion_source extracts source from changed spans,
+        /// not from the line's base source.
+        #[test]
+        fn test_get_insertion_source_extracts_from_spans() {
+            // Simulate spans for "    widgets::{Block, Borders, Clear, Paragraph},"
+            // where "Clear, " was inserted (source=Unstaged)
+            let spans = vec![
+                InlineSpan { text: "prefix ".to_string(), source: None, is_deletion: false },
+                InlineSpan { text: "inserted".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+                InlineSpan { text: " suffix".to_string(), source: None, is_deletion: false },
+            ];
+
+            let source = get_insertion_source(&spans);
+            assert_eq!(source, LineSource::Unstaged);
+        }
+
+        #[test]
+        fn test_get_insertion_source_with_committed_change() {
+            let spans = vec![
+                InlineSpan { text: "unchanged".to_string(), source: None, is_deletion: false },
+                InlineSpan { text: "committed_text".to_string(), source: Some(LineSource::Committed), is_deletion: false },
+            ];
+
+            let source = get_insertion_source(&spans);
+            assert_eq!(source, LineSource::Committed);
+        }
+
+        #[test]
+        fn test_get_insertion_source_with_staged_change() {
+            let spans = vec![
+                InlineSpan { text: "staged_insertion".to_string(), source: Some(LineSource::Staged), is_deletion: false },
+            ];
+
+            let source = get_insertion_source(&spans);
+            assert_eq!(source, LineSource::Staged);
+        }
+
+        #[test]
+        fn test_get_insertion_source_ignores_deletions() {
+            // Deletions should not be considered as insertion source
+            let spans = vec![
+                InlineSpan { text: "deleted".to_string(), source: Some(LineSource::DeletedBase), is_deletion: true },
+                InlineSpan { text: "inserted".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+            ];
+
+            let source = get_insertion_source(&spans);
+            assert_eq!(source, LineSource::Unstaged);
+        }
+
+        /// Verifies that Base source has no highlight background (the bug symptom)
+        #[test]
+        fn test_base_source_has_no_highlight_background() {
+            let bg = highlight_bg_color(LineSource::Base);
+            assert_eq!(bg, Color::Reset, "Base source should have Reset (no) background");
+        }
+
+        /// Verifies that Unstaged source has a visible highlight background
+        #[test]
+        fn test_unstaged_source_has_visible_highlight() {
+            let bg = highlight_bg_color(LineSource::Unstaged);
+            // Unstaged highlight is yellow-ish: Rgb(130, 130, 35)
+            assert!(matches!(bg, Color::Rgb(130, 130, 35)), "Unstaged should have yellow highlight");
+        }
+
+        /// Test that line_style_with_highlight produces different styles for Base vs Unstaged
+        #[test]
+        fn test_highlight_style_differs_by_source() {
+            let base_style = line_style_with_highlight(LineSource::Base);
+            let unstaged_style = line_style_with_highlight(LineSource::Unstaged);
+
+            // The background colors should be different
+            assert_ne!(base_style.bg, unstaged_style.bg,
+                "Base and Unstaged highlight styles should have different backgrounds");
+
+            // Base should have Reset background
+            assert_eq!(base_style.bg, Some(Color::Reset));
+
+            // Unstaged should have a visible color
+            assert!(matches!(unstaged_style.bg, Some(Color::Rgb(130, 130, 35))));
+        }
+
+        /// Integration test: modified base line with inline spans should use span source for highlight
+        #[test]
+        fn test_modified_base_line_uses_span_source_for_highlight() {
+            // Create a modified base line: source=Base, but has inline spans with Unstaged source
+            let mut line = DiffLine::new(LineSource::Base, "prefix inserted suffix".to_string(), ' ', Some(1));
+            line.old_content = Some("prefix suffix".to_string());
+            line.change_source = Some(LineSource::Unstaged);
+            line.inline_spans = vec![
+                InlineSpan { text: "prefix ".to_string(), source: None, is_deletion: false },
+                InlineSpan { text: "inserted ".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+                InlineSpan { text: "suffix".to_string(), source: None, is_deletion: false },
+            ];
+
+            // The line's source is Base
+            assert_eq!(line.source, LineSource::Base);
+
+            // But the highlight source should come from the spans
+            let highlight_source = get_insertion_source(&line.inline_spans);
+            assert_eq!(highlight_source, LineSource::Unstaged,
+                "Highlight source should be Unstaged (from spans), not Base (from line)");
+
+            // And this should produce a visible highlight style
+            let highlight_style = line_style_with_highlight(highlight_source);
+            assert!(matches!(highlight_style.bg, Some(Color::Rgb(130, 130, 35))),
+                "Highlight style should have visible yellow background");
+        }
+
+        /// Test that syntax_highlight_inline_spans applies highlight_style to changed portions
+        #[test]
+        fn test_syntax_highlight_inline_spans_applies_highlight_to_changes() {
+            // Use distinct words to avoid substring matching issues
+            let inline_spans = vec![
+                InlineSpan { text: "prefix ".to_string(), source: None, is_deletion: false },
+                InlineSpan { text: "INSERTED".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+                InlineSpan { text: " suffix".to_string(), source: None, is_deletion: false },
+            ];
+            let content = "prefix INSERTED suffix";
+            let base_style = Style::default().bg(Color::Reset);
+            let highlight_style = line_style_with_highlight(LineSource::Unstaged);
+
+            let result = syntax_highlight_inline_spans(
+                &inline_spans,
+                content,
+                None, // no syntax highlighting
+                base_style,
+                highlight_style,
+            );
+
+            // Should have spans
+            assert!(!result.is_empty());
+
+            // Find a span that contains the inserted text
+            let inserted_span = result.iter().find(|s| s.content.contains("INSERTED"));
+            assert!(inserted_span.is_some(), "Should have a span containing 'INSERTED'");
+            let inserted_span = inserted_span.unwrap();
+
+            // The inserted portion should have the Unstaged highlight background
+            assert_eq!(inserted_span.style.bg, Some(Color::Rgb(130, 130, 35)),
+                "Inserted portion should have Unstaged highlight background");
+        }
+
+        /// Test the specific bug scenario: import line modification
+        #[test]
+        fn test_import_line_modification_highlight() {
+            // This is the exact bug scenario:
+            // Old: "    widgets::{Block, Borders, Paragraph},"
+            // New: "    widgets::{Block, Borders, Clear, Paragraph},"
+            // "Clear, " is inserted with source=Unstaged
+
+            let inline_spans = vec![
+                InlineSpan { text: "    widgets::{Block, Borders, ".to_string(), source: None, is_deletion: false },
+                InlineSpan { text: "Clear, ".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+                InlineSpan { text: "Paragraph},".to_string(), source: None, is_deletion: false },
+            ];
+
+            // The line source would be Base (it's a modification of an existing base line)
+            let line_source = LineSource::Base;
+
+            // BUG: Using line_source for highlight gives no visible highlight
+            let bug_highlight_style = line_style_with_highlight(line_source);
+            assert_eq!(bug_highlight_style.bg, Some(Color::Reset),
+                "Bug: using line source gives Reset background (invisible)");
+
+            // FIX: Using the span's source gives visible highlight
+            let fix_highlight_source = get_insertion_source(&inline_spans);
+            assert_eq!(fix_highlight_source, LineSource::Unstaged);
+
+            let fix_highlight_style = line_style_with_highlight(fix_highlight_source);
+            assert_eq!(fix_highlight_style.bg, Some(Color::Rgb(130, 130, 35)),
+                "Fix: using span source gives yellow background (visible)");
+        }
     }
 }
