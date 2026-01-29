@@ -245,6 +245,9 @@ fn handle_input(
         AppAction::CopyDiff => {
             let _ = app.copy_diff();
         }
+        AppAction::CopyPatch => {
+            let _ = app.copy_patch();
+        }
         AppAction::CopyOrQuit => {
             if app.has_selection() {
                 let _ = app.copy_selection();
@@ -1034,5 +1037,42 @@ mod tests {
         handle_input(AppAction::UpdateSelection(15, 10), &mut app, &mut refresh_state);
 
         assert!(app.last_click.is_none());
+    }
+
+    #[test]
+    fn test_handle_input_copy_patch_sets_needs_redraw() {
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![base_line("content")])
+            .build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::CopyPatch, &mut app, &mut refresh_state);
+
+        // CopyPatch should trigger redraw (to show "Copied" flash)
+        assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_input_copy_diff_sets_needs_redraw() {
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![base_line("content")])
+            .build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::CopyDiff, &mut app, &mut refresh_state);
+
+        assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_input_copy_path_sets_needs_redraw() {
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![base_line("content")])
+            .build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::CopyPath, &mut app, &mut refresh_state);
+
+        assert!(result.needs_redraw);
     }
 }

@@ -21,6 +21,7 @@ pub enum AppAction {
     Copy,
     CopyPath,
     CopyDiff,
+    CopyPatch,
     CopyOrQuit,
     Resize,
     None,
@@ -85,6 +86,10 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         // Copy entire diff with 'Y' (vim yank all)
         (KeyCode::Char('Y'), KeyModifiers::SHIFT) => AppAction::CopyDiff,
         (KeyCode::Char('Y'), KeyModifiers::NONE) => AppAction::CopyDiff,
+
+        // Copy git patch format with 'D'
+        (KeyCode::Char('D'), KeyModifiers::SHIFT) => AppAction::CopyPatch,
+        (KeyCode::Char('D'), KeyModifiers::NONE) => AppAction::CopyPatch,
 
         _ => AppAction::None,
     }
@@ -301,6 +306,12 @@ mod tests {
     fn test_copy_diff_with_shift_y() {
         let event = key_event(KeyCode::Char('Y'), KeyModifiers::SHIFT);
         assert_eq!(handle_event(event), AppAction::CopyDiff);
+    }
+
+    #[test]
+    fn test_copy_patch_with_shift_d() {
+        let event = key_event(KeyCode::Char('D'), KeyModifiers::SHIFT);
+        assert_eq!(handle_event(event), AppAction::CopyPatch);
     }
 
     // Unknown input test
