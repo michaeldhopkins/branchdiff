@@ -89,6 +89,7 @@ fn main() -> Result<()> {
         let mut app = app::App::new(repo_root)?;
         app.collapsed_files.clear();
         app.view_mode = app::ViewMode::Full;
+
         for line in &mut app.lines {
             if line.old_content.is_some() {
                 line.ensure_inline_spans();
@@ -245,13 +246,19 @@ fn run_benchmark(repo_root: PathBuf, frames: usize) -> Result<()> {
             _ => {}
         }
 
-        if app.needs_inline_spans() {
-            app.ensure_inline_spans_for_visible(visible_height);
+        let items = if app.needs_inline_spans() {
+            let items = app.ensure_inline_spans_for_visible(visible_height);
             app.clear_needs_inline_spans();
-        }
+            Some(items)
+        } else {
+            None
+        };
 
         terminal.draw(|f| {
-            let frame_ctx = FrameContext::new(&app);
+            let frame_ctx = match items {
+                Some(items) => FrameContext::with_items(items, &app),
+                None => FrameContext::new(&app),
+            };
             ui::draw_with_frame(f, &mut app, &frame_ctx)
         })?;
     }
@@ -337,10 +344,10 @@ fn run_app<B: Backend>(
     let status_height = ui::status_bar_height(app, terminal_size.width);
     let content_height = (terminal_size.height - status_height).saturating_sub(2) as usize;
     app.set_viewport_height(content_height);
-    app.ensure_inline_spans_for_visible(content_height);
+    let items = app.ensure_inline_spans_for_visible(content_height);
     app.clear_needs_inline_spans();
     terminal.draw(|f| {
-        let frame_ctx = FrameContext::new(app);
+        let frame_ctx = FrameContext::with_items(items, app);
         ui::draw_with_frame(f, app, &frame_ctx)
     })?;
 
@@ -416,12 +423,19 @@ fn run_app<B: Backend>(
         // Only render when state has changed
         if needs_redraw {
             let visible_height = terminal.size()?.height as usize;
-            if app.needs_inline_spans() {
-                app.ensure_inline_spans_for_visible(visible_height);
+            // Compute items once, reuse for both inline spans and FrameContext
+            let items = if app.needs_inline_spans() {
+                let items = app.ensure_inline_spans_for_visible(visible_height);
                 app.clear_needs_inline_spans();
-            }
+                Some(items)
+            } else {
+                None
+            };
             terminal.draw(|f| {
-                let frame_ctx = FrameContext::new(app);
+                let frame_ctx = match items {
+                    Some(items) => FrameContext::with_items(items, app),
+                    None => FrameContext::new(app),
+                };
                 ui::draw_with_frame(f, app, &frame_ctx)
             })?;
         }
