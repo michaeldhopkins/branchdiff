@@ -7,6 +7,7 @@ pub mod gitignore;
 pub mod input;
 pub mod limits;
 pub mod message;
+pub mod patch;
 pub mod syntax;
 pub mod update;
 pub mod ui;

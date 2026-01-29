@@ -3,6 +3,7 @@ use arboard::Clipboard;
 
 use super::{App, DisplayableItem};
 use crate::diff::LineSource;
+use crate::patch;
 use crate::ui::ScreenRowInfo;
 
 /// Get substring by character positions (not byte positions)
@@ -453,6 +454,22 @@ impl App {
         let mut clipboard = Clipboard::new()
             .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
         clipboard.set_text(text)
+            .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {}", e))?;
+        self.path_copied_at = Some(std::time::Instant::now());
+        Ok(true)
+    }
+
+    /// Copy git patch format to clipboard (for use with `git apply`)
+    pub fn copy_patch(&mut self) -> Result<bool> {
+        let text = patch::generate_patch(&self.lines);
+        if text.is_empty() {
+            return Ok(false);
+        }
+
+        let mut clipboard = Clipboard::new()
+            .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
+        clipboard
+            .set_text(text)
             .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {}", e))?;
         self.path_copied_at = Some(std::time::Instant::now());
         Ok(true)
