@@ -136,8 +136,8 @@ impl FrameContext {
     }
 
     /// Get visible range as (start, end) indices into items (lazily computed)
-    pub fn visible_range(&self) -> (usize, usize) {
-        *self.visible_range.get_or_init(|| self.compute_visible_range())
+    pub fn visible_range(&self, app: &App) -> (usize, usize) {
+        *self.visible_range.get_or_init(|| self.compute_visible_range(app))
     }
 
     /// Iterate over all items
@@ -146,8 +146,8 @@ impl FrameContext {
     }
 
     /// Iterate over visible items (Lines and Elided markers)
-    pub fn iter_visible_items(&self) -> impl Iterator<Item = &DisplayableItem> {
-        let (start, end) = self.visible_range();
+    pub fn iter_visible_items<'a>(&'a self, app: &App) -> impl Iterator<Item = &'a DisplayableItem> {
+        let (start, end) = self.visible_range(app);
         self.items[start..end].iter()
     }
 
@@ -220,16 +220,24 @@ impl FrameContext {
     }
 
     /// Compute the visible range for current scroll position
-    fn compute_visible_range(&self) -> (usize, usize) {
+    fn compute_visible_range(&self, app: &App) -> (usize, usize) {
         if self.items.is_empty() {
             return (0, 0);
         }
 
         let start = self.scroll_offset.min(self.items.len());
+        let wrap_heights = self.get_wrap_heights(app);
 
-        // Use a simple calculation without wrap heights for initial range
-        // This is an approximation; the actual range will be refined in rendering
-        let end = (start + self.viewport_height).min(self.items.len());
+        let mut rows_used = 0;
+        let mut end = start;
+
+        for height in wrap_heights.iter().skip(start) {
+            if rows_used + height > self.viewport_height && end > start {
+                break;
+            }
+            rows_used += height;
+            end += 1;
+        }
 
         (start, end)
     }
@@ -257,12 +265,30 @@ impl FrameContext {
         if self.content_width == 0 {
             return 1;
         }
+
+        if self.is_mixed_inline_change(line) && line.content.len() > self.content_width {
+            let del_len = line.old_content.as_ref().map(|s| s.len()).unwrap_or(0);
+            let ins_len = line.content.len();
+            let del_height = if del_len == 0 { 0 } else { del_len.div_ceil(self.content_width) };
+            let ins_height = ins_len.div_ceil(self.content_width);
+            return del_height + ins_height;
+        }
+
         let content_len = line.content.len();
         if content_len <= self.content_width {
             1
         } else {
             content_len.div_ceil(self.content_width)
         }
+    }
+
+    fn is_mixed_inline_change(&self, line: &DiffLine) -> bool {
+        if line.inline_spans.is_empty() {
+            return false;
+        }
+        let has_deletions = line.inline_spans.iter().any(|s| s.is_deletion);
+        let has_insertions = line.inline_spans.iter().any(|s| !s.is_deletion && s.source.is_some());
+        has_deletions && has_insertions
     }
 }
 
@@ -336,7 +362,7 @@ mod tests {
         app.scroll_offset = 3;
         let ctx = FrameContext::new(&app);
 
-        let (start, end) = ctx.visible_range();
+        let (start, end) = ctx.visible_range(&app);
         assert_eq!(start, 3);
         assert_eq!(end, 8);
     }
@@ -382,30 +408,80 @@ mod tests {
         app.scroll_offset = 2;
         let ctx = FrameContext::new(&app);
 
-        let visible: Vec<_> = ctx.iter_visible_items().collect();
+        let visible: Vec<_> = ctx.iter_visible_items(&app).collect();
         assert_eq!(visible.len(), 3);
     }
 
     #[test]
     fn test_frame_context_uses_viewport_height_at_creation_time() {
-        // This test documents that FrameContext snapshots viewport_height at creation.
-        // If viewport_height is not set correctly BEFORE creating FrameContext,
-        // the visible range will be wrong.
         let lines: Vec<_> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
 
-        // TestAppBuilder defaults viewport_height to 10
         let ctx_with_default = FrameContext::new(&app);
-        let (start, end) = ctx_with_default.visible_range();
+        let (start, end) = ctx_with_default.visible_range(&app);
         assert_eq!(end - start, 10, "With default viewport_height=10, visible range should be 10");
 
-        // Set viewport_height to 40 - now we should see 40 lines
         app.viewport_height = 40;
         let ctx_with_correct = FrameContext::new(&app);
-        let (start, end) = ctx_with_correct.visible_range();
+        let (start, end) = ctx_with_correct.visible_range(&app);
         assert_eq!(end - start, 40, "With viewport_height=40, visible range should be 40");
+    }
 
-        // This demonstrates why the initial render was broken:
-        // viewport_height must be set BEFORE FrameContext::new()
+    #[test]
+    fn test_visible_range_accounts_for_wrapped_lines() {
+        let mut lines: Vec<_> = (0..10).map(|i| base_line(&format!("short{}", i))).collect();
+        lines.push(base_line(&"x".repeat(200)));
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.viewport_height = 5;
+        app.content_width = 50;
+        app.scroll_offset = 8;
+
+        let ctx = FrameContext::new(&app);
+        let (start, end) = ctx.visible_range(&app);
+
+        assert_eq!(start, 8);
+        assert!(end <= 11, "visible range should not exceed total items");
+
+        let wrap_heights = ctx.get_wrap_heights(&app);
+        let visible_rows: usize = wrap_heights[start..end].iter().sum();
+        assert!(visible_rows <= app.viewport_height,
+            "visible rows ({}) should fit in viewport ({})", visible_rows, app.viewport_height);
+    }
+
+    #[test]
+    fn test_visible_range_includes_at_least_one_item_when_taller_than_viewport() {
+        let lines = vec![base_line(&"x".repeat(500))];
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.viewport_height = 3;
+        app.content_width = 50;
+        app.scroll_offset = 0;
+
+        let ctx = FrameContext::new(&app);
+        let (start, end) = ctx.visible_range(&app);
+
+        assert_eq!(start, 0);
+        assert_eq!(end, 1, "should include at least one item even if taller than viewport");
+    }
+
+    #[test]
+    fn test_wrapped_line_height_accounts_for_mixed_inline_changes() {
+        use crate::diff::InlineSpan;
+
+        let mut line = base_line(&"x".repeat(100));
+        line.old_content = Some("y".repeat(80));
+        line.inline_spans = vec![
+            InlineSpan { text: "deleted".to_string(), source: Some(LineSource::Unstaged), is_deletion: true },
+            InlineSpan { text: "inserted".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+        ];
+
+        let mut app = TestAppBuilder::new().with_lines(vec![line]).build();
+        app.content_width = 50;
+
+        let ctx = FrameContext::new(&app);
+        let wrap_heights = ctx.get_wrap_heights(&app);
+
+        assert_eq!(wrap_heights[0], 4, "mixed change: 80/50=2 del rows + 100/50=2 ins rows = 4 total");
     }
 }

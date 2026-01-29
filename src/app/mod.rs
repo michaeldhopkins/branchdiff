@@ -391,10 +391,9 @@ mod tests {
         items.iter().filter_map(|item| item_to_line(app, item)).collect()
     }
 
-    /// Helper to get visible lines using FrameContext
     fn get_visible_lines(app: &App) -> Vec<&DiffLine> {
         let ctx = FrameContext::new(app);
-        ctx.iter_visible_items()
+        ctx.iter_visible_items(app)
             .filter_map(|item| item_to_line(app, item))
             .collect()
     }
