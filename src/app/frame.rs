@@ -73,6 +73,11 @@ impl FrameContext {
     /// Create a new frame context from the current app state
     pub fn new(app: &App) -> Self {
         let items = app.compute_displayable_items();
+        Self::with_items(items, app)
+    }
+
+    /// Create a frame context with pre-computed items (avoids recomputing displayable items)
+    pub fn with_items(items: Vec<DisplayableItem>, app: &App) -> Self {
         Self {
             items,
             viewport_height: app.viewport_height,

@@ -265,37 +265,23 @@ impl App {
         self.needs_inline_spans = true;
     }
 
-    pub fn ensure_inline_spans_for_visible(&mut self, visible_height: usize) {
-        // In context/changes view, the displayed lines map to different original indices
-        // We need to compute inline spans for the actual lines that will be displayed
-        match self.view_mode {
-            ViewMode::Full => {
-                let start = self.scroll_offset;
-                let end = (start + visible_height).min(self.lines.len());
-                for line in &mut self.lines[start..end] {
-                    line.ensure_inline_spans();
-                }
-            }
-            ViewMode::Context => {
-                let (_, index_map) = self.build_context_lines_with_mapping();
-                let start = self.scroll_offset;
-                let end = (start + visible_height).min(index_map.len());
-                for &original_idx in index_map[start..end].iter().flatten() {
-                    if original_idx < self.lines.len() {
-                        self.lines[original_idx].ensure_inline_spans();
-                    }
-                }
-            }
-            ViewMode::ChangesOnly => {
-                // ChangesOnly only shows lines that are already marked as changes,
-                // so we compute inline spans for all lines with old_content
-                for line in &mut self.lines {
-                    if line.old_content.is_some() {
-                        line.ensure_inline_spans();
-                    }
-                }
+    /// Compute inline spans for visible lines and return the displayable items.
+    /// Returns the items so they can be reused by FrameContext (avoiding double computation).
+    pub fn ensure_inline_spans_for_visible(&mut self, visible_height: usize) -> Vec<DisplayableItem> {
+        // Use the SAME items that will be rendered (including collapsed file filtering)
+        let items = self.compute_displayable_items();
+        let start = self.scroll_offset.min(items.len());
+        let end = (start + visible_height).min(items.len());
+
+        for item in &items[start..end] {
+            if let DisplayableItem::Line(idx) = item
+                && *idx < self.lines.len()
+            {
+                self.lines[*idx].ensure_inline_spans();
             }
         }
+
+        items
     }
 
     pub fn update_single_file(&mut self, file_path: &str, new_diff: Option<FileDiff>) {
@@ -626,6 +612,32 @@ mod tests {
         assert_eq!(displayed[0].source, LineSource::FileHeader);
         assert_eq!(displayed[1].source, LineSource::Committed);
         assert_eq!(displayed[2].source, LineSource::Unstaged);
+    }
+
+    #[test]
+    fn test_changes_only_includes_modified_base_lines() {
+        // Modified base lines have source=Base but old_content set
+        // They should be included in ChangesOnly mode
+        let mut modified_line = DiffLine::new(LineSource::Base, "new content".to_string(), ' ', Some(1));
+        modified_line.old_content = Some("old content".to_string());
+        modified_line.change_source = Some(LineSource::Unstaged);
+
+        let lines = vec![
+            DiffLine::file_header("test.rs"),
+            base_line("plain context"),  // Should NOT appear (plain Base)
+            modified_line,               // Should appear (Base with old_content)
+            DiffLine::new(LineSource::Committed, "committed".to_string(), '+', Some(3)),
+        ];
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.view_mode = ViewMode::ChangesOnly;
+        let items = app.compute_displayable_items();
+        let displayed = collect_lines(&app, &items);
+
+        assert_eq!(displayed.len(), 3, "Should have header + modified base + committed");
+        assert_eq!(displayed[0].source, LineSource::FileHeader);
+        assert_eq!(displayed[1].source, LineSource::Base);  // Modified base line
+        assert!(displayed[1].old_content.is_some(), "Modified base line should have old_content");
+        assert_eq!(displayed[2].source, LineSource::Committed);
     }
 
     #[test]
