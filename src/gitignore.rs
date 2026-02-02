@@ -1,44 +1,111 @@
 //! Gitignore-aware file filtering for the file watcher.
+//!
+//! Supports nested .gitignore files with correct directory scoping.
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use std::path::Path;
+use ignore::WalkBuilder;
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 /// Manages gitignore state for filtering file change events.
 ///
-/// Rebuilds automatically when .gitignore files change.
+/// Supports hierarchical gitignore files - each .gitignore only applies
+/// to its directory and descendants. Patterns are checked from deepest
+/// (highest precedence) to shallowest (lowest precedence).
 pub struct GitignoreFilter {
-    matcher: Gitignore,
+    /// Per-directory matchers, keyed by directory path relative to repo_root.
+    /// Empty PathBuf ("") represents the repo root.
+    matchers: HashMap<PathBuf, Gitignore>,
+
+    /// Global gitignore matcher (~/.config/git/ignore or core.excludesFile)
+    global_matcher: Gitignore,
+
+    /// .git/info/exclude matcher
+    exclude_matcher: Gitignore,
+
     repo_root: Box<Path>,
 }
 
 impl GitignoreFilter {
     /// Build a new filter from the repository root.
     ///
-    /// Loads patterns from:
-    /// - .gitignore (root and nested)
+    /// Discovers and loads patterns from:
+    /// - All .gitignore files (root and nested)
     /// - .git/info/exclude
+    /// - Global gitignore (~/.config/git/ignore)
     pub fn new(repo_root: &Path) -> Self {
-        let matcher = Self::build_matcher(repo_root);
+        let matchers = Self::build_matchers(repo_root);
+        let exclude_matcher = Self::build_exclude_matcher(repo_root);
+        let global_matcher = Self::build_global_matcher();
+
         Self {
-            matcher,
+            matchers,
+            global_matcher,
+            exclude_matcher,
             repo_root: repo_root.into(),
         }
     }
 
-    /// Rebuild the matcher (call when .gitignore changes).
+    /// Rebuild all matchers (call when any .gitignore changes).
     pub fn rebuild(&mut self) {
-        self.matcher = Self::build_matcher(&self.repo_root);
+        self.matchers = Self::build_matchers(&self.repo_root);
+        self.exclude_matcher = Self::build_exclude_matcher(&self.repo_root);
+        // Global matcher doesn't need rebuild - it's outside the repo
     }
 
     /// Check if a path should be ignored.
+    ///
+    /// Checks matchers in order of precedence:
+    /// 1. Nested .gitignore files (deepest first)
+    /// 2. .git/info/exclude
+    /// 3. Global gitignore
     pub fn is_ignored(&self, path: &Path) -> bool {
         let relative = path.strip_prefix(&*self.repo_root).unwrap_or(path);
         let is_dir = path.is_dir();
 
-        // Use matched_path_or_any_parents to handle directory patterns like "target/"
-        // which should also match files inside the directory
+        // Collect all parent directories from deepest to shallowest
+        let mut dirs_to_check: Vec<&Path> = Vec::new();
+        let mut current = relative;
+        while let Some(parent) = current.parent() {
+            dirs_to_check.push(parent);
+            current = parent;
+        }
+
+        // Check from deepest (highest precedence) to shallowest
+        for dir in &dirs_to_check {
+            if let Some(matcher) = self.matchers.get(*dir) {
+                // Make path relative to this matcher's directory
+                let rel_to_matcher = if dir.as_os_str().is_empty() {
+                    relative
+                } else {
+                    relative.strip_prefix(dir).unwrap_or(relative)
+                };
+
+                // Use matched_path_or_any_parents to handle directory patterns like "target/"
+                // which should also match files inside the directory
+                match matcher.matched_path_or_any_parents(rel_to_matcher, is_dir) {
+                    ignore::Match::Ignore(_) => return true,
+                    ignore::Match::Whitelist(_) => return false, // Negation pattern
+                    ignore::Match::None => continue,
+                }
+            }
+        }
+
+        // Check .git/info/exclude (lower precedence than .gitignore files)
+        match self
+            .exclude_matcher
+            .matched_path_or_any_parents(relative, is_dir)
+        {
+            ignore::Match::Ignore(_) => return true,
+            ignore::Match::Whitelist(_) => return false,
+            ignore::Match::None => {}
+        }
+
+        // Check global gitignore (lowest precedence)
         matches!(
-            self.matcher.matched_path_or_any_parents(relative, is_dir),
+            self.global_matcher
+                .matched_path_or_any_parents(relative, is_dir),
             ignore::Match::Ignore(_)
         )
     }
@@ -49,22 +116,65 @@ impl GitignoreFilter {
         matches!(file_name, Some(".gitignore")) || path.ends_with(".git/info/exclude")
     }
 
-    fn build_matcher(repo_root: &Path) -> Gitignore {
-        let mut builder = GitignoreBuilder::new(repo_root);
+    /// Discover all .gitignore files and build per-directory matchers.
+    fn build_matchers(repo_root: &Path) -> HashMap<PathBuf, Gitignore> {
+        let mut matchers = HashMap::new();
 
-        // Add .git/info/exclude if it exists
+        // Use WalkBuilder to discover .gitignore files while respecting existing ignores
+        for entry in WalkBuilder::new(repo_root)
+            .hidden(false) // Don't skip hidden files (we want .gitignore)
+            .git_ignore(true) // Respect gitignore during traversal
+            .git_global(true)
+            .git_exclude(true)
+            .filter_entry(|e| e.file_name() != ".git")
+            .build()
+            .flatten()
+        {
+            let path = entry.path();
+            if path.file_name() == Some(OsStr::new(".gitignore"))
+                && let Some((dir, matcher)) = Self::build_matcher_for_gitignore(path, repo_root)
+            {
+                matchers.insert(dir, matcher);
+            }
+        }
+
+        matchers
+    }
+
+    /// Build a matcher for a single .gitignore file.
+    /// Returns the relative directory path and the matcher.
+    fn build_matcher_for_gitignore(
+        gitignore_path: &Path,
+        repo_root: &Path,
+    ) -> Option<(PathBuf, Gitignore)> {
+        let abs_dir = gitignore_path.parent()?;
+        let rel_dir = abs_dir.strip_prefix(repo_root).unwrap_or(Path::new(""));
+
+        // Build matcher with the gitignore's directory as root
+        let mut builder = GitignoreBuilder::new(abs_dir);
+        let _ = builder.add(gitignore_path);
+
+        let matcher = builder.build().unwrap_or_else(|_| Gitignore::empty());
+        Some((rel_dir.to_path_buf(), matcher))
+    }
+
+    /// Build matcher for .git/info/exclude
+    fn build_exclude_matcher(repo_root: &Path) -> Gitignore {
         let exclude_path = repo_root.join(".git/info/exclude");
         if exclude_path.exists() {
+            let mut builder = GitignoreBuilder::new(repo_root);
             let _ = builder.add(&exclude_path);
+            builder.build().unwrap_or_else(|_| Gitignore::empty())
+        } else {
+            Gitignore::empty()
         }
+    }
 
-        // Add root .gitignore
-        let root_gitignore = repo_root.join(".gitignore");
-        if root_gitignore.exists() {
-            let _ = builder.add(&root_gitignore);
-        }
-
-        builder.build().unwrap_or_else(|_| Gitignore::empty())
+    /// Build global gitignore matcher (~/.config/git/ignore or core.excludesFile)
+    fn build_global_matcher() -> Gitignore {
+        let builder = GitignoreBuilder::new(PathBuf::new());
+        let (gitignore, _err) = builder.build_global();
+        gitignore
     }
 }
 
@@ -193,5 +303,131 @@ mod tests {
 
         assert!(!filter.is_ignored(&path.join("any_file.txt")));
         assert!(!filter.is_ignored(&path.join("node_modules/pkg.js")));
+    }
+
+    // --- New tests for nested .gitignore support ---
+
+    #[test]
+    fn test_nested_gitignore_scoping() {
+        let temp = create_test_repo();
+        let path = temp.path();
+
+        // Root ignores *.log
+        fs::write(path.join(".gitignore"), "*.log\n").unwrap();
+
+        // subdir ignores *.txt (should only apply to subdir/)
+        fs::create_dir_all(path.join("subdir")).unwrap();
+        fs::write(path.join("subdir/.gitignore"), "*.txt\n").unwrap();
+
+        let filter = GitignoreFilter::new(path);
+
+        // Root patterns apply everywhere
+        assert!(filter.is_ignored(&path.join("test.log")));
+        assert!(filter.is_ignored(&path.join("subdir/test.log")));
+
+        // Subdir patterns only apply to subdir
+        assert!(
+            !filter.is_ignored(&path.join("test.txt")),
+            "Root .txt should NOT be ignored"
+        );
+        assert!(
+            filter.is_ignored(&path.join("subdir/test.txt")),
+            "subdir .txt SHOULD be ignored"
+        );
+    }
+
+    #[test]
+    fn test_nested_gitignore_negation() {
+        let temp = create_test_repo();
+        let path = temp.path();
+
+        // Root ignores all *.log
+        fs::write(path.join(".gitignore"), "*.log\n").unwrap();
+
+        // subdir un-ignores important.log
+        fs::create_dir_all(path.join("subdir")).unwrap();
+        fs::write(path.join("subdir/.gitignore"), "!important.log\n").unwrap();
+
+        let filter = GitignoreFilter::new(path);
+
+        assert!(filter.is_ignored(&path.join("test.log")));
+        assert!(filter.is_ignored(&path.join("subdir/test.log")));
+        assert!(
+            !filter.is_ignored(&path.join("subdir/important.log")),
+            "Nested negation should un-ignore important.log"
+        );
+    }
+
+    #[test]
+    fn test_deeply_nested_gitignore() {
+        let temp = create_test_repo();
+        let path = temp.path();
+
+        fs::create_dir_all(path.join("a/b/c")).unwrap();
+        fs::write(path.join("a/.gitignore"), "*.a\n").unwrap();
+        fs::write(path.join("a/b/.gitignore"), "*.b\n").unwrap();
+        fs::write(path.join("a/b/c/.gitignore"), "*.c\n").unwrap();
+
+        let filter = GitignoreFilter::new(path);
+
+        // *.a pattern only applies at a/ and below
+        assert!(!filter.is_ignored(&path.join("test.a")));
+        assert!(filter.is_ignored(&path.join("a/test.a")));
+        assert!(filter.is_ignored(&path.join("a/b/test.a")));
+        assert!(filter.is_ignored(&path.join("a/b/c/test.a")));
+
+        // *.b pattern only applies at a/b/ and below
+        assert!(!filter.is_ignored(&path.join("test.b")));
+        assert!(!filter.is_ignored(&path.join("a/test.b")));
+        assert!(filter.is_ignored(&path.join("a/b/test.b")));
+        assert!(filter.is_ignored(&path.join("a/b/c/test.b")));
+
+        // *.c pattern only applies at a/b/c/
+        assert!(!filter.is_ignored(&path.join("test.c")));
+        assert!(!filter.is_ignored(&path.join("a/test.c")));
+        assert!(!filter.is_ignored(&path.join("a/b/test.c")));
+        assert!(filter.is_ignored(&path.join("a/b/c/test.c")));
+    }
+
+    #[test]
+    fn test_nested_gitignore_rebuild() {
+        let temp = create_test_repo();
+        let path = temp.path();
+
+        fs::create_dir_all(path.join("subdir")).unwrap();
+        fs::write(path.join(".gitignore"), "").unwrap();
+
+        let mut filter = GitignoreFilter::new(path);
+
+        // Initially nothing is ignored
+        assert!(!filter.is_ignored(&path.join("subdir/test.txt")));
+
+        // Add nested gitignore
+        fs::write(path.join("subdir/.gitignore"), "*.txt\n").unwrap();
+        filter.rebuild();
+
+        // Now subdir .txt files should be ignored
+        assert!(filter.is_ignored(&path.join("subdir/test.txt")));
+    }
+
+    #[test]
+    fn test_nested_gitignore_directory_pattern() {
+        let temp = create_test_repo();
+        let path = temp.path();
+
+        // subdir/.gitignore ignores build/
+        fs::create_dir_all(path.join("subdir/build/output")).unwrap();
+        fs::write(path.join("subdir/.gitignore"), "build/\n").unwrap();
+
+        let filter = GitignoreFilter::new(path);
+
+        // Root build/ should NOT be ignored (pattern is in subdir/)
+        assert!(!filter.is_ignored(&path.join("build")));
+        assert!(!filter.is_ignored(&path.join("build/output/file")));
+
+        // subdir/build/ SHOULD be ignored
+        assert!(filter.is_ignored(&path.join("subdir/build")));
+        assert!(filter.is_ignored(&path.join("subdir/build/output")));
+        assert!(filter.is_ignored(&path.join("subdir/build/output/file.txt")));
     }
 }
