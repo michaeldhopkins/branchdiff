@@ -3,7 +3,7 @@ use ratatui::text::Span;
 
 use crate::diff::{InlineSpan, LineSource};
 use crate::syntax::highlight_line;
-use super::colors::{line_style, line_style_with_highlight, DEFAULT_FG};
+use super::colors::{line_style, line_style_with_highlight, ensure_contrast, DEFAULT_FG};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InlineChangeType {
@@ -25,7 +25,7 @@ pub fn classify_inline_change(spans: &[InlineSpan]) -> InlineChangeType {
     }
 }
 
-/// Fragmented = multiple scattered change regions separated by unchanged text.
+/// Fragmented = multiple scattered change regions separated by some unchanged text.
 /// e.g., "c[b]ommercial_renewal[d]" has 2 change regions (fragmented)
 /// vs "do_thing(data[, params])" has 1 change region (not fragmented)
 pub fn is_fragmented(spans: &[InlineSpan]) -> bool {
@@ -202,6 +202,7 @@ pub fn build_deletion_spans_with_highlight(
 ) -> Vec<Span<'static>> {
     let base_style = line_style(del_source);
     let highlight_style = line_style_with_highlight(del_source);
+    let highlight_bg = highlight_style.bg.unwrap_or(ratatui::style::Color::Reset);
 
     // Get syntax colors for the old content
     let syntax_segments = highlight_line(old_content, file_path);
@@ -223,18 +224,25 @@ pub fn build_deletion_spans_with_highlight(
             continue;
         }
 
-        let bg_style = if span.is_deletion {
+        let is_highlighted = span.is_deletion;
+        let bg_style = if is_highlighted {
             highlight_style
         } else {
             base_style
         };
 
-        // Apply syntax colors character by character
+        // Apply syntax colors character by character, ensuring contrast for highlights
         let mut current_text = String::new();
         let mut current_color = None;
 
         for ch in span.text.chars() {
-            let fg_color = syntax_colors.get(char_idx).copied().unwrap_or(DEFAULT_FG);
+            let syntax_fg = syntax_colors.get(char_idx).copied().unwrap_or(DEFAULT_FG);
+            // For highlighted spans, ensure the syntax color has sufficient contrast
+            let fg_color = if is_highlighted {
+                ensure_contrast(syntax_fg, highlight_bg)
+            } else {
+                syntax_fg
+            };
             char_idx += 1;
 
             if Some(fg_color) == current_color {
@@ -267,6 +275,7 @@ pub fn build_insertion_spans_with_highlight(
 ) -> Vec<Span<'static>> {
     let base_style = line_style(ins_source);
     let highlight_style = line_style_with_highlight(ins_source);
+    let highlight_bg = highlight_style.bg.unwrap_or(ratatui::style::Color::Reset);
 
     // Get syntax colors for the new content
     let syntax_segments = highlight_line(new_content, file_path);
@@ -287,18 +296,25 @@ pub fn build_insertion_spans_with_highlight(
             continue;
         }
 
-        let bg_style = if span.source.is_some() {
+        let is_highlighted = span.source.is_some();
+        let bg_style = if is_highlighted {
             highlight_style
         } else {
             base_style
         };
 
-        // Apply syntax colors character by character
+        // Apply syntax colors character by character, ensuring contrast for highlights
         let mut current_text = String::new();
         let mut current_color = None;
 
         for ch in span.text.chars() {
-            let fg_color = syntax_colors.get(char_idx).copied().unwrap_or(DEFAULT_FG);
+            let syntax_fg = syntax_colors.get(char_idx).copied().unwrap_or(DEFAULT_FG);
+            // For highlighted spans, ensure the syntax color has sufficient contrast
+            let fg_color = if is_highlighted {
+                ensure_contrast(syntax_fg, highlight_bg)
+            } else {
+                syntax_fg
+            };
             char_idx += 1;
 
             if Some(fg_color) == current_color {
@@ -351,6 +367,7 @@ pub fn syntax_highlight_inline_spans(
     highlight_style: Style,
 ) -> Vec<Span<'static>> {
     let syntax_segments = highlight_line(content, file_path);
+    let highlight_bg = highlight_style.bg.unwrap_or(ratatui::style::Color::Reset);
 
     // Build a character-indexed color map from syntax highlighting
     let mut syntax_colors: Vec<ratatui::style::Color> = Vec::with_capacity(content.len());
@@ -370,18 +387,25 @@ pub fn syntax_highlight_inline_spans(
             continue;
         }
 
-        let bg_style = if span.source.is_some() {
+        let is_highlighted = span.source.is_some();
+        let bg_style = if is_highlighted {
             highlight_style
         } else {
             base_style
         };
 
-        // Apply syntax colors character by character, grouping consecutive same-color chars
+        // Apply syntax colors character by character, ensuring contrast for highlights
         let mut current_text = String::new();
         let mut current_color = None;
 
         for ch in span.text.chars() {
-            let fg_color = syntax_colors.get(char_idx).copied().unwrap_or(base_style.fg.unwrap_or(DEFAULT_FG));
+            let syntax_fg = syntax_colors.get(char_idx).copied().unwrap_or(base_style.fg.unwrap_or(DEFAULT_FG));
+            // For highlighted spans, ensure the syntax color has sufficient contrast
+            let fg_color = if is_highlighted {
+                ensure_contrast(syntax_fg, highlight_bg)
+            } else {
+                syntax_fg
+            };
             char_idx += 1;
 
             if Some(fg_color) == current_color {
