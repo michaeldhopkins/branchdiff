@@ -17,7 +17,8 @@ pub mod wrapping;
 pub use modals::{draw_help_modal, draw_warning_banner};
 pub use status_bar::{draw_status_bar, status_bar_height};
 
-const PREFIX_CHAR_WIDTH: usize = 4; // prefix char + space + status symbol + trailing space
+/// Width of the prefix after line numbers: prefix char + space + status symbol + trailing space
+pub const PREFIX_CHAR_WIDTH: usize = 4;
 
 /// Represents how a logical DiffLine maps to a screen row
 #[derive(Debug, Clone)]
