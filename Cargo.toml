@@ -28,7 +28,6 @@ syntect = { version = "5", default-features = false, features = ["default-fancy"
 libc = "0.2"
 
 [dev-dependencies]
-insta = "1"
 proptest = "1.5"
 assert_cmd = "2"
 predicates = "3"
