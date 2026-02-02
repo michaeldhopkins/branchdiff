@@ -1,3 +1,5 @@
+use unicode_width::UnicodeWidthStr;
+
 use crate::diff::{DiffLine, LineSource};
 
 use super::{App, DisplayableItem, FrameContext};
@@ -208,11 +210,11 @@ impl App {
         if self.content_width == 0 {
             return 1;
         }
-        let content_len = line.content.len();
-        if content_len <= self.content_width {
+        let content_width = line.content.width();
+        if content_width <= self.content_width {
             1
         } else {
-            content_len.div_ceil(self.content_width)
+            content_width.div_ceil(self.content_width)
         }
     }
 

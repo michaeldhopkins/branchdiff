@@ -6,6 +6,8 @@
 
 use std::cell::OnceCell;
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::diff::{DiffLine, LineSource};
 
 use super::App;
@@ -266,19 +268,19 @@ impl FrameContext {
             return 1;
         }
 
-        if self.is_mixed_inline_change(line) && line.content.len() > self.content_width {
-            let del_len = line.old_content.as_ref().map(|s| s.len()).unwrap_or(0);
-            let ins_len = line.content.len();
-            let del_height = if del_len == 0 { 0 } else { del_len.div_ceil(self.content_width) };
-            let ins_height = ins_len.div_ceil(self.content_width);
+        if self.is_mixed_inline_change(line) && line.content.width() > self.content_width {
+            let del_width = line.old_content.as_ref().map(|s| s.width()).unwrap_or(0);
+            let ins_width = line.content.width();
+            let del_height = if del_width == 0 { 0 } else { del_width.div_ceil(self.content_width) };
+            let ins_height = ins_width.div_ceil(self.content_width);
             return del_height + ins_height;
         }
 
-        let content_len = line.content.len();
-        if content_len <= self.content_width {
+        let content_width = line.content.width();
+        if content_width <= self.content_width {
             1
         } else {
-            content_len.div_ceil(self.content_width)
+            content_width.div_ceil(self.content_width)
         }
     }
 
