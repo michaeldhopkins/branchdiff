@@ -89,3 +89,151 @@ pub fn apply_selection_to_span(
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{Position, Selection};
+    use ratatui::style::Style;
+
+    fn selection(start_row: usize, start_col: usize, end_row: usize, end_col: usize) -> Selection {
+        Selection {
+            start: Position { row: start_row, col: start_col },
+            end: Position { row: end_row, col: end_col },
+            active: true,
+        }
+    }
+
+    // ===== get_line_selection_range tests =====
+
+    #[test]
+    fn line_selection_returns_none_when_no_selection() {
+        assert_eq!(get_line_selection_range(&None, 5), None);
+    }
+
+    #[test]
+    fn line_selection_returns_none_when_line_before_selection() {
+        let sel = selection(5, 0, 10, 0);
+        assert_eq!(get_line_selection_range(&Some(sel), 3), None);
+    }
+
+    #[test]
+    fn line_selection_returns_none_when_line_after_selection() {
+        let sel = selection(5, 0, 10, 0);
+        assert_eq!(get_line_selection_range(&Some(sel), 15), None);
+    }
+
+    #[test]
+    fn line_selection_single_line_returns_exact_columns() {
+        let sel = selection(5, 3, 5, 10);
+        assert_eq!(get_line_selection_range(&Some(sel), 5), Some((3, 10)));
+    }
+
+    #[test]
+    fn line_selection_normalizes_backwards_selection() {
+        // Selection dragged backwards: end is before start
+        let sel = selection(5, 10, 5, 3);
+        assert_eq!(get_line_selection_range(&Some(sel), 5), Some((3, 10)));
+    }
+
+    #[test]
+    fn line_selection_first_line_of_multiline() {
+        let sel = selection(5, 8, 10, 4);
+        // First line: from start.col to end of line
+        assert_eq!(get_line_selection_range(&Some(sel), 5), Some((8, usize::MAX)));
+    }
+
+    #[test]
+    fn line_selection_last_line_of_multiline() {
+        let sel = selection(5, 8, 10, 4);
+        // Last line: from beginning to end.col
+        assert_eq!(get_line_selection_range(&Some(sel), 10), Some((0, 4)));
+    }
+
+    #[test]
+    fn line_selection_middle_line_of_multiline() {
+        let sel = selection(5, 8, 10, 4);
+        // Middle lines: entire line selected
+        assert_eq!(get_line_selection_range(&Some(sel), 7), Some((0, usize::MAX)));
+    }
+
+    // ===== apply_selection_to_span tests =====
+
+    #[test]
+    fn span_no_overlap_before_selection() {
+        let span = Span::styled("hello", Style::default());
+        // Span at offset 0-5, selection at 10-15
+        let result = apply_selection_to_span(span.clone(), 0, 10, 15);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "hello");
+    }
+
+    #[test]
+    fn span_no_overlap_after_selection() {
+        let span = Span::styled("hello", Style::default());
+        // Span at offset 20-25, selection at 10-15
+        let result = apply_selection_to_span(span.clone(), 20, 10, 15);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "hello");
+    }
+
+    #[test]
+    fn span_fully_inside_selection() {
+        let span = Span::styled("hello", Style::default());
+        // Span at offset 10-15, selection at 5-20 (fully contains span)
+        let result = apply_selection_to_span(span, 10, 5, 20);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "hello");
+        assert_eq!(result[0].style.bg, Some(SELECTION_BG_COLOR));
+    }
+
+    #[test]
+    fn span_selection_at_start() {
+        let span = Span::styled("hello", Style::default());
+        // Span at offset 0, selection covers first 2 chars
+        let result = apply_selection_to_span(span, 0, 0, 2);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content, "he");
+        assert_eq!(result[0].style.bg, Some(SELECTION_BG_COLOR));
+        assert_eq!(result[1].content, "llo");
+        assert_eq!(result[1].style.bg, None);
+    }
+
+    #[test]
+    fn span_selection_at_end() {
+        let span = Span::styled("hello", Style::default());
+        // Span at offset 0, selection covers last 2 chars
+        let result = apply_selection_to_span(span, 0, 3, 10);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content, "hel");
+        assert_eq!(result[0].style.bg, None);
+        assert_eq!(result[1].content, "lo");
+        assert_eq!(result[1].style.bg, Some(SELECTION_BG_COLOR));
+    }
+
+    #[test]
+    fn span_selection_in_middle() {
+        let span = Span::styled("hello", Style::default());
+        // Span at offset 0, selection covers middle chars
+        let result = apply_selection_to_span(span, 0, 1, 4);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].content, "h");
+        assert_eq!(result[0].style.bg, None);
+        assert_eq!(result[1].content, "ell");
+        assert_eq!(result[1].style.bg, Some(SELECTION_BG_COLOR));
+        assert_eq!(result[2].content, "o");
+        assert_eq!(result[2].style.bg, None);
+    }
+
+    #[test]
+    fn span_with_char_offset() {
+        let span = Span::styled("world", Style::default());
+        // Span starts at offset 10, selection is 12-14 (chars 2-4 of span)
+        let result = apply_selection_to_span(span, 10, 12, 14);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].content, "wo");
+        assert_eq!(result[1].content, "rl");
+        assert_eq!(result[1].style.bg, Some(SELECTION_BG_COLOR));
+        assert_eq!(result[2].content, "d");
+    }
+}
