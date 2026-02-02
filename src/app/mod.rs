@@ -375,6 +375,43 @@ impl App {
     pub fn clear_needs_inline_spans(&mut self) {
         self.needs_inline_spans = false;
     }
+
+    /// Estimate content_width from terminal dimensions.
+    ///
+    /// This should be called BEFORE creating a FrameContext to ensure
+    /// visible_range calculations use an accurate content_width for
+    /// line wrapping estimates. The actual content_width is refined
+    /// during rendering, but this estimate prevents the initial render
+    /// from showing too few lines.
+    pub fn estimate_content_width(&mut self, terminal_width: u16) {
+        use crate::ui::PREFIX_CHAR_WIDTH;
+
+        // Find max line number to estimate line_num_width
+        let max_line_num = self
+            .lines
+            .iter()
+            .filter_map(|line| line.line_number)
+            .max()
+            .unwrap_or(0);
+
+        let line_num_width = if max_line_num > 0 {
+            max_line_num.to_string().len() + 1
+        } else {
+            0
+        };
+
+        // Calculate available width (terminal - borders)
+        let available_width = (terminal_width as usize).saturating_sub(2);
+
+        // Calculate prefix width (line numbers + space + prefix char)
+        let prefix_width = if line_num_width > 0 {
+            line_num_width + 1
+        } else {
+            0
+        } + PREFIX_CHAR_WIDTH;
+
+        self.content_width = available_width.saturating_sub(prefix_width);
+    }
 }
 
 #[cfg(test)]
@@ -1640,5 +1677,72 @@ mod tests {
         let app = TestAppBuilder::new().build();
         let output = app.format_diff_for_copy();
         assert!(output.is_empty());
+    }
+
+    // === Tests for estimate_content_width ===
+
+    #[test]
+    fn test_estimate_content_width_basic() {
+        use crate::ui::PREFIX_CHAR_WIDTH;
+
+        // Create lines with known line numbers
+        let mut lines = vec![base_line("content")];
+        lines[0].line_number = Some(100); // 3 digits + 1 space = 4 chars for line num
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+
+        // Terminal width 120
+        // - 2 for borders
+        // - line_num_width (4) + 1 space = 5
+        // - PREFIX_CHAR_WIDTH (4)
+        // = 120 - 2 - 5 - 4 = 109
+        app.estimate_content_width(120);
+
+        assert_eq!(
+            app.content_width, 109,
+            "content_width should be terminal_width (120) - borders (2) - line_num_width+space (5) - prefix ({})",
+            PREFIX_CHAR_WIDTH
+        );
+    }
+
+    #[test]
+    fn test_estimate_content_width_no_line_numbers() {
+        use crate::ui::PREFIX_CHAR_WIDTH;
+
+        // Lines without line numbers
+        let lines = vec![base_line("content")];
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+
+        // Terminal width 100
+        // - 2 for borders
+        // - 0 for line numbers (none present)
+        // - PREFIX_CHAR_WIDTH (4)
+        // = 100 - 2 - 0 - 4 = 94
+        app.estimate_content_width(100);
+
+        assert_eq!(
+            app.content_width, 94,
+            "content_width without line numbers should be terminal_width - borders - prefix ({})",
+            PREFIX_CHAR_WIDTH
+        );
+    }
+
+    #[test]
+    fn test_estimate_content_width_large_line_numbers() {
+        use crate::ui::PREFIX_CHAR_WIDTH;
+
+        let mut lines = vec![base_line("content")];
+        lines[0].line_number = Some(12345); // 5 digits + 1 space = 6 chars
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+
+        // Terminal width 150
+        // - 2 for borders
+        // - line_num_width (6) + 1 space = 7
+        // - PREFIX_CHAR_WIDTH (4)
+        // = 150 - 2 - 7 - 4 = 137
+        app.estimate_content_width(150);
+
+        assert_eq!(app.content_width, 137);
     }
 }
