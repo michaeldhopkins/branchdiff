@@ -101,6 +101,7 @@ impl TestAppBuilder {
             view_mode: self.view_mode,
             selection: None,
             word_selection_anchor: None,
+            line_selection_anchor: None,
             content_offset: (1, 1),
             line_num_width: 0,
             content_width: 80,

@@ -205,30 +205,47 @@ fn handle_input(
         AppAction::ToggleHelp => app.toggle_help(),
         AppAction::CycleViewMode => app.cycle_view_mode(),
         AppAction::StartSelection(x, y) => {
-            const DOUBLE_CLICK_MS: u128 = 500;
+            const MULTI_CLICK_MS: u128 = 500;
             const POSITION_TOLERANCE: u16 = 2;
 
-            let is_double_click = if let Some((last_time, last_x, last_y)) = app.last_click {
-                let elapsed = last_time.elapsed().as_millis();
-                let x_diff = x.abs_diff(last_x);
-                let y_diff = y.abs_diff(last_y);
-                elapsed < DOUBLE_CLICK_MS
-                    && x_diff <= POSITION_TOLERANCE
-                    && y_diff <= POSITION_TOLERANCE
-            } else {
-                false
-            };
+            let click_count =
+                if let Some((last_time, last_x, last_y, count)) = app.last_click {
+                    let elapsed = last_time.elapsed().as_millis();
+                    let close_enough = x.abs_diff(last_x) <= POSITION_TOLERANCE
+                        && y.abs_diff(last_y) <= POSITION_TOLERANCE;
 
-            app.last_click = Some((Instant::now(), x, y));
+                    if elapsed < MULTI_CLICK_MS && close_enough {
+                        count + 1
+                    } else {
+                        1
+                    }
+                } else {
+                    1
+                };
 
-            if is_double_click {
-                if app.get_file_header_at(x, y).is_none() {
-                    app.select_word_at(x, y);
+            app.last_click = Some((Instant::now(), x, y, click_count));
+
+            match click_count {
+                2 => {
+                    // Double-click: select word
+                    if app.get_file_header_at(x, y).is_none() {
+                        app.select_word_at(x, y);
+                    }
                 }
-            } else if let Some(file_path) = app.get_file_header_at(x, y) {
-                app.toggle_file_collapsed(&file_path);
-            } else {
-                app.start_selection(x, y);
+                3 => {
+                    // Triple-click: select line
+                    if app.get_file_header_at(x, y).is_none() {
+                        app.select_line_at(x, y);
+                    }
+                }
+                _ => {
+                    // Single click (or 4+, which resets to single-click behavior)
+                    if let Some(file_path) = app.get_file_header_at(x, y) {
+                        app.toggle_file_collapsed(&file_path);
+                    } else {
+                        app.start_selection(x, y);
+                    }
+                }
             }
         }
         AppAction::UpdateSelection(x, y) => {
@@ -973,6 +990,7 @@ mod tests {
     fn test_double_click_selects_word() {
         use crate::ui::ScreenRowInfo;
 
+        // With line_num_width=3, prefix_len = 3 + 1 + 4 = 8
         let mut app = TestAppBuilder::new().build();
         app.line_num_width = 3;
         app.content_offset = (1, 1);
@@ -986,19 +1004,56 @@ mod tests {
         let mut refresh_state = RefreshState::Idle;
 
         // First click - starts selection
-        handle_input(AppAction::StartSelection(13, 1), &mut app, &mut refresh_state);
+        // Click on 'w' in "world" - content col 6, screen col = 6 + prefix(8) + offset(1) = 15
+        handle_input(AppAction::StartSelection(15, 1), &mut app, &mut refresh_state);
         assert!(app.last_click.is_some());
         // Should have started a point selection
         assert!(app.selection.is_some());
 
         // Second click at same position (simulate double-click by keeping last_click recent)
         // last_click is already set from first click, and time elapsed is negligible
-        handle_input(AppAction::StartSelection(13, 1), &mut app, &mut refresh_state);
+        handle_input(AppAction::StartSelection(15, 1), &mut app, &mut refresh_state);
 
         // Should have selected the word "world"
         let sel = app.selection.as_ref().expect("Should have selection");
-        assert_eq!(sel.start.col, 12); // "world" starts at content col 6 + prefix 6
-        assert_eq!(sel.end.col, 17); // "world" ends at content col 11 + prefix 6
+        assert_eq!(sel.start.col, 14); // "world" starts at content col 6 + prefix 8
+        assert_eq!(sel.end.col, 19); // "world" ends at content col 11 + prefix 8
+    }
+
+    #[test]
+    fn test_triple_click_selects_line() {
+        use crate::ui::ScreenRowInfo;
+
+        // With line_num_width=3, prefix_len = 3 + 1 + 4 = 8
+        let mut app = TestAppBuilder::new().build();
+        app.line_num_width = 3;
+        app.content_offset = (1, 1);
+        app.row_map = vec![ScreenRowInfo {
+            content: "hello world".to_string(),
+            is_file_header: false,
+            file_path: None,
+            is_continuation: false,
+        }];
+
+        let mut refresh_state = RefreshState::Idle;
+
+        // First click - screen_x = 0 + 8 + 1 = 9
+        handle_input(AppAction::StartSelection(10, 1), &mut app, &mut refresh_state);
+        // Second click (double-click)
+        handle_input(AppAction::StartSelection(10, 1), &mut app, &mut refresh_state);
+        // Third click (triple-click)
+        handle_input(AppAction::StartSelection(10, 1), &mut app, &mut refresh_state);
+
+        // Should have selected the entire line
+        let sel = app.selection.as_ref().expect("Should have selection");
+        assert_eq!(sel.start.row, 0);
+        assert_eq!(sel.end.row, 0);
+        // Line selection starts at prefix_len = 8
+        assert_eq!(sel.start.col, 8);
+        // Line selection ends at content length + prefix_len (11 + 8 = 19)
+        assert_eq!(sel.end.col, 19);
+        // Line selection anchor should be set
+        assert!(app.line_selection_anchor.is_some());
     }
 
     #[test]
@@ -1029,7 +1084,7 @@ mod tests {
     #[test]
     fn test_drag_clears_last_click() {
         let mut app = TestAppBuilder::new().build();
-        app.last_click = Some((Instant::now(), 10, 10));
+        app.last_click = Some((Instant::now(), 10, 10, 1));
 
         let mut refresh_state = RefreshState::Idle;
 
