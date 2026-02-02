@@ -82,6 +82,7 @@ mod tests {
     use super::*;
     use super::spans::{coalesce_spans, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight, classify_inline_change, InlineChangeType};
     use super::colors::{highlight_bg_color, line_style, line_style_with_highlight};
+    use ratatui::style::Color;
     use super::status_bar::truncate_with_ellipsis;
     use crate::diff::{InlineSpan, LineSource, compute_inline_diff_merged};
 
@@ -1119,5 +1120,113 @@ mod tests {
         assert_eq!(status_symbol(LineSource::Base), " ");
         assert_eq!(status_symbol(LineSource::FileHeader), " ");
         assert_eq!(status_symbol(LineSource::Elided), " ");
+    }
+
+    #[test]
+    fn test_ensure_contrast_adjusts_low_contrast_colors() {
+        use super::colors::{ensure_contrast, highlight_bg_color};
+
+        // Yellow background (Unstaged highlight) - Rgb(130, 130, 35)
+        let yellow_bg = highlight_bg_color(LineSource::Unstaged);
+
+        // Yellow foreground on yellow background should be adjusted to dark
+        let yellow_fg = Color::Rgb(200, 200, 50);  // Bright yellow-ish (low contrast)
+        let adjusted = ensure_contrast(yellow_fg, yellow_bg);
+        assert_eq!(adjusted, Color::Rgb(30, 30, 30), "Low contrast yellow should become dark");
+
+        // Gray fg on yellow background (low contrast) should be adjusted
+        let gray_fg = Color::Rgb(150, 150, 80);
+        let adjusted = ensure_contrast(gray_fg, yellow_bg);
+        assert_eq!(adjusted, Color::Rgb(30, 30, 30), "Low contrast gray should become dark on yellow");
+
+        // Very light fg on a very dark background should be preserved (good contrast)
+        let dark_bg = Color::Rgb(20, 20, 20);
+        let light_fg = Color::Rgb(220, 220, 220);
+        let preserved = ensure_contrast(light_fg, dark_bg);
+        assert_eq!(preserved, light_fg, "Good contrast light fg should be preserved");
+
+        // Very dark fg on very light background should be preserved (good contrast)
+        let light_bg = Color::Rgb(240, 240, 240);
+        let dark_fg = Color::Rgb(20, 20, 20);
+        let preserved = ensure_contrast(dark_fg, light_bg);
+        assert_eq!(preserved, dark_fg, "Good contrast dark fg should be preserved");
+    }
+
+    #[test]
+    fn test_build_insertion_spans_unstaged_uses_dark_foreground() {
+        // Test that unstaged insertion spans have dark foreground for contrast
+        let spans = vec![
+            make_span("unchanged ", None, false),
+            make_span("inserted", Some(LineSource::Unstaged), false),
+        ];
+
+        let result = build_insertion_spans_with_highlight(&spans, LineSource::Unstaged, "unchanged inserted", None);
+
+        // The inserted span should have dark foreground
+        let inserted_span = &result[1];
+        assert_eq!(
+            inserted_span.style.fg,
+            Some(Color::Rgb(30, 30, 30)),
+            "Unstaged inserted span should have dark foreground, got {:?}",
+            inserted_span.style.fg
+        );
+    }
+
+    #[test]
+    fn test_build_insertion_spans_unstaged_with_syntax_highlighting() {
+        // Test with a Rust file path to trigger syntax highlighting
+        // This simulates a comment line like "// some comment"
+        let spans = vec![
+            make_span("// unchanged ", None, false),
+            make_span("inserted", Some(LineSource::Unstaged), false),
+        ];
+
+        let result = build_insertion_spans_with_highlight(
+            &spans,
+            LineSource::Unstaged,
+            "// unchanged inserted",
+            Some("test.rs"),  // Rust file triggers syntax highlighting
+        );
+
+        // Find the span that contains "inserted" - it should have dark foreground
+        let inserted_span = result.iter().find(|s| s.content.contains("inserted"));
+        assert!(inserted_span.is_some(), "Should have a span containing 'inserted'");
+        let inserted_span = inserted_span.unwrap();
+
+        assert_eq!(
+            inserted_span.style.fg,
+            Some(Color::Rgb(30, 30, 30)),
+            "Unstaged inserted span with syntax highlighting should have dark foreground, got {:?}",
+            inserted_span.style.fg
+        );
+    }
+
+    #[test]
+    fn test_build_deletion_spans_applies_contrast_check() {
+        // Test that deletion spans apply contrast checking
+        // DeletedStaged has a reddish background Rgb(115, 55, 45) that works
+        // better with light foreground, so light should be preserved/chosen
+        let spans = vec![
+            make_span("unchanged ", None, false),
+            make_span("deleted", Some(LineSource::DeletedStaged), true),
+        ];
+
+        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedStaged, "unchanged deleted", None);
+
+        // The deleted span should have light foreground (reddish bg works with light text)
+        let deleted_span = &result[1];
+        assert_eq!(
+            deleted_span.style.fg,
+            Some(Color::Rgb(220, 220, 220)),
+            "DeletedStaged span should have light foreground for contrast with reddish bg, got {:?}",
+            deleted_span.style.fg
+        );
+
+        // Also verify the highlight background is applied
+        assert_eq!(
+            deleted_span.style.bg,
+            Some(Color::Rgb(115, 55, 45)),
+            "DeletedStaged span should have the correct highlight background"
+        );
     }
 }
