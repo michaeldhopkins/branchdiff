@@ -157,11 +157,18 @@ pub fn compute_refresh(
         return Err(anyhow::anyhow!("refresh cancelled"));
     }
 
-    let changed_files = git::get_all_changed_files(repo_path, &merge_base)
-        .context("Failed to get changed files")?;
+    // Run changed files and binary detection in parallel - they both only depend on merge_base
+    let (changed_files_result, binary_files) = std::thread::scope(|s| {
+        let changed_handle = s.spawn(|| git::get_all_changed_files(repo_path, &merge_base));
+        let binary_handle = s.spawn(|| git::get_binary_files(repo_path, &merge_base));
 
-    // Batch binary detection - single git call instead of one per file
-    let binary_files = git::get_binary_files(repo_path, &merge_base);
+        (
+            changed_handle.join().expect("changed files thread panicked"),
+            binary_handle.join().expect("binary files thread panicked"),
+        )
+    });
+
+    let changed_files = changed_files_result.context("Failed to get changed files")?;
 
     let results: Vec<FileProcessResult> = if changed_files.len() >= PARALLEL_THRESHOLD {
         // Use dedicated thread pool to limit concurrent git subprocess spawning
@@ -551,5 +558,56 @@ mod tests {
             Some(crate::diff::LineSource::Unstaged),
             "Should mark as unstaged modification"
         );
+    }
+
+    #[test]
+    fn test_refresh_with_mixed_text_and_binary() {
+        let temp_dir = create_test_repo();
+        let repo_path = temp_dir.path();
+
+        // Create both text and binary files to verify parallel operations complete
+        std::fs::write(repo_path.join("text.txt"), "text content\n").unwrap();
+        std::fs::write(repo_path.join("binary.bin"), &[0u8, 1, 2, 255, 254, 253]).unwrap();
+
+        // Stage the binary file so git diff can detect it as binary
+        Command::new("git")
+            .args(["add", "binary.bin"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to stage binary file");
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+
+        // Text file should be in files list (binary files are excluded from FileDiff)
+        assert_eq!(
+            refresh.files.len(),
+            1,
+            "Should have exactly 1 FileDiff (text only, binary excluded)"
+        );
+
+        // Both should appear in lines output - text content and binary marker
+        assert!(
+            refresh.lines.iter().any(|l| l.content.contains("text content")),
+            "Should have text file content in lines"
+        );
+        assert!(
+            refresh.lines.iter().any(|l| l.content == "[binary file]"),
+            "Should have binary file marker in lines"
+        );
+
+        // Verify file headers present for both files
+        let file_headers: Vec<_> = refresh
+            .lines
+            .iter()
+            .filter(|l| l.source == crate::diff::LineSource::FileHeader)
+            .collect();
+        assert_eq!(file_headers.len(), 2, "Should have 2 file headers (text + binary)");
+
+        // Metrics tracks non-binary files only
+        assert_eq!(refresh.metrics.file_count, 1);
     }
 }
