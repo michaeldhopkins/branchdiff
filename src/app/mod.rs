@@ -90,6 +90,9 @@ pub struct App {
     /// Anchor for word-based selection (row, word_start_col, word_end_col in screen coords)
     /// When set, dragging extends selection by whole words
     pub word_selection_anchor: Option<(usize, usize, usize)>,
+    /// Anchor for line-based selection (start_row, end_row)
+    /// When set, dragging extends selection by whole lines
+    pub line_selection_anchor: Option<(usize, usize)>,
     /// Content area offset (x, y) for coordinate mapping
     pub content_offset: (u16, u16),
     /// Width of line number column (for extracting content without line numbers)
@@ -110,8 +113,8 @@ pub struct App {
     pub needs_inline_spans: bool,
     /// Timestamp when path was last copied (for flash feedback)
     pub path_copied_at: Option<std::time::Instant>,
-    /// Last click position and time (for double-click detection)
-    pub last_click: Option<(std::time::Instant, u16, u16)>,
+    /// Last click position, time, and count (for double/triple-click detection)
+    pub last_click: Option<(std::time::Instant, u16, u16, u8)>,
     /// Gitignore filter for file change events
     pub gitignore_filter: GitignoreFilter,
 }
@@ -135,6 +138,7 @@ impl App {
             view_mode: ViewMode::Full,
             selection: None,
             word_selection_anchor: None,
+            line_selection_anchor: None,
             content_offset: (1, 1),
             line_num_width: 4,
             content_width: 120,
@@ -176,6 +180,7 @@ impl App {
             view_mode: ViewMode::Context,
             selection: None,
             word_selection_anchor: None,
+            line_selection_anchor: None,
             content_offset: (1, 1),
             line_num_width: 0,
             content_width: 80,
