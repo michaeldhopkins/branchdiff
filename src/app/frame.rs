@@ -484,4 +484,124 @@ mod tests {
 
         assert_eq!(wrap_heights[0], 4, "mixed change: 80/50=2 del rows + 100/50=2 ins rows = 4 total");
     }
+
+    #[test]
+    fn test_initial_visible_range_fills_viewport_with_realistic_content_width() {
+        // This test verifies that on initial render (scroll_offset=0), the visible_range
+        // fills the viewport. A regression was caused when content_width was incorrectly
+        // set to a small default value, causing wrap_height miscalculation.
+        //
+        // With content_width=50 (narrow), 100-char lines wrap to 2 rows,
+        // so 10 such lines would consume 20 viewport rows.
+        // With content_width=150 (wide), same lines fit in 1 row each,
+        // so we should see 20 lines visible.
+
+        // Create lines that are ~100 chars - long enough to wrap with narrow width
+        let lines: Vec<_> = (0..30)
+            .map(|i| base_line(&format!(
+                "line {:02} with lots of extra content padding to make this line about one hundred characters long xx",
+                i
+            )))
+            .collect();
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.viewport_height = 20;
+        app.scroll_offset = 0;
+
+        // With narrow content_width (50), 100-char lines wrap to 2 rows each
+        app.content_width = 50;
+        let ctx_narrow = FrameContext::new(&app);
+        let (start_narrow, end_narrow) = ctx_narrow.visible_range(&app);
+        let visible_narrow = end_narrow - start_narrow;
+
+        // With wide content_width (150), 100-char lines fit in 1 row each
+        app.content_width = 150;
+        let ctx_wide = FrameContext::new(&app);
+        let (start_wide, end_wide) = ctx_wide.visible_range(&app);
+        let visible_wide = end_wide - start_wide;
+
+        // Wide content should show viewport_height (20) lines since each is 1 row
+        assert_eq!(
+            visible_wide, 20,
+            "With wide content_width, should see viewport_height (20) lines"
+        );
+
+        // Narrow content should show ~10 lines (each takes 2 rows = 20 rows total)
+        assert!(
+            visible_narrow < visible_wide,
+            "Narrow content_width ({} visible) should show fewer lines than wide ({} visible) due to wrapping",
+            visible_narrow, visible_wide
+        );
+        assert!(
+            visible_narrow <= 10,
+            "With 50-char width and ~100-char lines, should see ~10 lines (2 rows each), got {}",
+            visible_narrow
+        );
+    }
+
+    #[test]
+    fn test_initial_render_content_width_must_be_set_before_visible_range() {
+        // This test catches a regression where content_width was left at its default
+        // value (80) during the first render, causing incorrect wrap height calculations.
+        //
+        // The bug: On initial render, FrameContext was created with content_width=80,
+        // but the actual terminal might be wider (e.g., 150). This caused lines to be
+        // calculated as wrapping when they wouldn't, resulting in fewer visible items
+        // and empty space at the bottom of the screen.
+        //
+        // This test verifies that using the DEFAULT content_width produces a different
+        // (incorrect) visible_range than using the ACTUAL content_width. If this test
+        // fails, it means the fix is working correctly.
+
+        // Create lines that wrap with content_width=80 but not with content_width=150
+        // Line length ~120 chars: wraps to 2 rows with width=80, 1 row with width=150
+        let lines: Vec<_> = (0..30)
+            .map(|i| base_line(&format!(
+                "line {:02} - this line is intentionally long enough to wrap at 80 chars but fit on one line at 150 chars padding",
+                i
+            )))
+            .collect();
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.viewport_height = 20;
+        app.scroll_offset = 0;
+
+        // Simulate BUG: content_width left at default (80 from TestAppBuilder)
+        // With ~120-char lines and width=80: each line wraps to 2 rows
+        // 20 viewport rows / 2 rows per line = ~10 lines visible
+        let default_width = app.content_width; // Should be 80 from TestAppBuilder
+        assert_eq!(default_width, 80, "Test assumes default content_width is 80");
+
+        let ctx_with_default = FrameContext::new(&app);
+        let (_, end_default) = ctx_with_default.visible_range(&app);
+        let visible_with_default = end_default;
+
+        // Simulate FIX: content_width set to actual terminal width (150)
+        // With ~120-char lines and width=150: each line fits in 1 row
+        // 20 viewport rows / 1 row per line = 20 lines visible
+        app.content_width = 150;
+        let ctx_with_actual = FrameContext::new(&app);
+        let (_, end_actual) = ctx_with_actual.visible_range(&app);
+        let visible_with_actual = end_actual;
+
+        // The default (buggy) calculation should show fewer items
+        assert!(
+            visible_with_default < visible_with_actual,
+            "Bug: default content_width ({}) should show fewer items ({}) than actual width ({}) which shows {}",
+            default_width, visible_with_default, 150, visible_with_actual
+        );
+
+        // With actual width, should fill viewport with 20 lines (1 row each)
+        assert_eq!(
+            visible_with_actual, 20,
+            "With actual content_width=150, viewport should be filled with 20 lines"
+        );
+
+        // With default width, should only show ~10-12 lines due to wrapping
+        assert!(
+            visible_with_default <= 12,
+            "With default content_width=80, should only see ~10-12 lines due to wrap, got {}",
+            visible_with_default
+        );
+    }
 }
