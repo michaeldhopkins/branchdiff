@@ -110,6 +110,10 @@ impl DiffLine {
         self
     }
 
+    pub fn is_change(&self) -> bool {
+        self.source.is_change() || self.change_source.is_some_and(|cs| cs.is_change())
+    }
+
     pub fn ensure_inline_spans(&mut self) {
         if self.inline_spans.is_empty()
             && let Some(ref old) = self.old_content
