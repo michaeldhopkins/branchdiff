@@ -636,6 +636,21 @@ mod tests {
     }
 
     #[test]
+    fn test_changed_line_count_includes_modified_base_lines() {
+        let mut modified_line = DiffLine::new(LineSource::Base, "new content".to_string(), ' ', Some(1));
+        modified_line.old_content = Some("old content".to_string());
+        modified_line.change_source = Some(LineSource::Unstaged);
+
+        let lines = vec![
+            DiffLine::file_header("test.rs"),
+            base_line("plain context"),
+            modified_line,
+        ];
+        let app = TestAppBuilder::new().with_lines(lines).build();
+        assert_eq!(app.changed_line_count(), 1, "modified base line should be counted as changed");
+    }
+
+    #[test]
     fn test_changes_only_view_filters_base_lines() {
         let lines = vec![
             DiffLine::file_header("test.rs"),
@@ -1729,8 +1744,6 @@ mod tests {
 
     #[test]
     fn test_estimate_content_width_large_line_numbers() {
-        use crate::ui::PREFIX_CHAR_WIDTH;
-
         let mut lines = vec![base_line("content")];
         lines[0].line_number = Some(12345); // 5 digits + 1 space = 6 chars
 
