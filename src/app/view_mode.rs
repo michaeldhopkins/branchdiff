@@ -6,7 +6,7 @@ impl App {
     pub fn changed_line_count(&self) -> usize {
         self.lines
             .iter()
-            .filter(|line| line.source.is_change())
+            .filter(|line| line.is_change())
             .count()
     }
 
