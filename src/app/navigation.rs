@@ -1,6 +1,5 @@
-use unicode_width::UnicodeWidthStr;
-
 use crate::diff::{DiffLine, LineSource};
+use crate::ui::wrapping::content_display_width;
 
 use super::{App, DisplayableItem, FrameContext};
 
@@ -205,16 +204,17 @@ impl App {
         }
     }
 
-    /// Calculate how many screen rows a line will take when wrapped
+    /// Calculate how many screen rows a line will take when wrapped.
+    /// Must match `wrap_content`'s sanitization (tabs → 4 spaces, control chars → space).
     pub(super) fn wrapped_line_height(&self, line: &DiffLine) -> usize {
         if self.content_width == 0 {
             return 1;
         }
-        let content_width = line.content.width();
-        if content_width <= self.content_width {
+        let width = content_display_width(&line.content);
+        if width <= self.content_width {
             1
         } else {
-            content_width.div_ceil(self.content_width)
+            width.div_ceil(self.content_width)
         }
     }
 

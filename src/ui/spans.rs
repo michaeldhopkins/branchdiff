@@ -175,7 +175,8 @@ pub fn coalesce_spans(spans: &[InlineSpan]) -> Vec<InlineSpan> {
 }
 
 pub fn inline_display_width(spans: &[InlineSpan]) -> usize {
-    coalesce_spans(spans).iter().map(|s| s.text.len()).sum()
+    use crate::ui::wrapping::content_display_width;
+    coalesce_spans(spans).iter().map(|s| content_display_width(&s.text)).sum()
 }
 
 pub fn get_deletion_source(spans: &[InlineSpan]) -> LineSource {

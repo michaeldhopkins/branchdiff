@@ -6,9 +6,8 @@
 
 use std::cell::OnceCell;
 
-use unicode_width::UnicodeWidthStr;
-
 use crate::diff::{DiffLine, LineSource};
+use crate::ui::wrapping::content_display_width;
 
 use super::App;
 
@@ -262,25 +261,26 @@ impl FrameContext {
         }).collect()
     }
 
-    /// Calculate how many screen rows a line will take when wrapped
+    /// Calculate how many screen rows a line will take when wrapped.
+    /// Must match `wrap_content`'s sanitization (tabs → 4 spaces, control chars → space).
     fn wrapped_line_height(&self, line: &DiffLine) -> usize {
         if self.content_width == 0 {
             return 1;
         }
 
-        if self.is_mixed_inline_change(line) && line.content.width() > self.content_width {
-            let del_width = line.old_content.as_ref().map(|s| s.width()).unwrap_or(0);
-            let ins_width = line.content.width();
+        if self.is_mixed_inline_change(line) && content_display_width(&line.content) > self.content_width {
+            let del_width = line.old_content.as_ref().map(|s| content_display_width(s)).unwrap_or(0);
+            let ins_width = content_display_width(&line.content);
             let del_height = if del_width == 0 { 0 } else { del_width.div_ceil(self.content_width) };
             let ins_height = ins_width.div_ceil(self.content_width);
             return del_height + ins_height;
         }
 
-        let content_width = line.content.width();
-        if content_width <= self.content_width {
+        let width = content_display_width(&line.content);
+        if width <= self.content_width {
             1
         } else {
-            content_width.div_ceil(self.content_width)
+            width.div_ceil(self.content_width)
         }
     }
 
