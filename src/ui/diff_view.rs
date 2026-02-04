@@ -943,4 +943,182 @@ mod tests {
                 "Fix: using span source gives yellow background (visible)");
         }
     }
+
+    /// Verify that Block border characters are intact in the rendered buffer.
+    fn verify_diff_area_borders(
+        buffer: &ratatui::buffer::Buffer,
+        width: u16,
+        diff_height: u16,
+    ) {
+        assert_eq!(buffer[(0, 0)].symbol(), "┌", "Top-left corner");
+        assert_eq!(buffer[(width - 1, 0)].symbol(), "┐", "Top-right corner");
+
+        for y in 1..diff_height.saturating_sub(1) {
+            let left = buffer[(0, y)].symbol();
+            let right = buffer[(width - 1, y)].symbol();
+            assert_eq!(left, "│", "Row {} left border: expected │, got {:?}", y, left);
+            assert_eq!(
+                right, "│",
+                "Row {} right border: expected │, got {:?}",
+                y, right
+            );
+        }
+
+        if diff_height > 1 {
+            assert_eq!(
+                buffer[(0, diff_height - 1)].symbol(),
+                "└",
+                "Bottom-left corner"
+            );
+            assert_eq!(
+                buffer[(width - 1, diff_height - 1)].symbol(),
+                "┘",
+                "Bottom-right corner"
+            );
+        }
+    }
+
+    /// Renders the full diff view through ratatui's TestBackend and verifies
+    /// that wrapped ASCII lines don't overwrite border characters.
+    #[test]
+    fn test_wrapped_ascii_lines_preserve_borders() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let width: u16 = 80;
+        let height: u16 = 24;
+
+        let long_content = "abcdefghij".repeat(20); // 200 ASCII chars — must wrap
+        let mut lines = vec![DiffLine::file_header("test.swift")];
+        for i in 1..=15 {
+            let (source, prefix) = match i % 4 {
+                0 => (LineSource::Base, ' '),
+                1 => (LineSource::Committed, '+'),
+                2 => (LineSource::Unstaged, '+'),
+                _ => (LineSource::Staged, '+'),
+            };
+            let mut line = DiffLine::new(source, long_content.clone(), prefix, Some(i));
+            line.file_path = Some("test.swift".to_string());
+            lines.push(line);
+        }
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(width);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // First render
+        {
+            let frame = terminal
+                .draw(|f| {
+                    let ctx = FrameContext::new(&app);
+                    crate::ui::draw_with_frame(f, &mut app, &ctx);
+                })
+                .unwrap();
+
+            let status_h = crate::ui::status_bar_height(&app, width);
+            let diff_h = height - status_h;
+            verify_diff_area_borders(frame.buffer, width, diff_h);
+        }
+
+        // Scroll down and re-render
+        app.scroll_offset = 10;
+        {
+            let frame = terminal
+                .draw(|f| {
+                    let ctx = FrameContext::new(&app);
+                    crate::ui::draw_with_frame(f, &mut app, &ctx);
+                })
+                .unwrap();
+
+            let status_h = crate::ui::status_bar_height(&app, width);
+            let diff_h = height - status_h;
+            verify_diff_area_borders(frame.buffer, width, diff_h);
+        }
+    }
+
+    /// Same test at narrower terminal width (40 cols) to stress wrapping
+    #[test]
+    fn test_wrapped_ascii_lines_preserve_borders_narrow_terminal() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let width: u16 = 40;
+        let height: u16 = 30;
+
+        let long_content = "the_quick_brown_fox_jumps_over_the_lazy_dog_".repeat(5);
+        let mut lines = vec![DiffLine::file_header("narrow.rs")];
+        for i in 1..=20 {
+            let mut line = DiffLine::new(
+                LineSource::Committed,
+                long_content.clone(),
+                '+',
+                Some(i),
+            );
+            line.file_path = Some("narrow.rs".to_string());
+            lines.push(line);
+        }
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(width);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // Render multiple frames with different scroll positions
+        for scroll in [0, 5, 15, 30] {
+            app.scroll_offset = scroll;
+            let frame = terminal
+                .draw(|f| {
+                    let ctx = FrameContext::new(&app);
+                    crate::ui::draw_with_frame(f, &mut app, &ctx);
+                })
+                .unwrap();
+
+            let status_h = crate::ui::status_bar_height(&app, width);
+            let diff_h = height - status_h;
+            verify_diff_area_borders(frame.buffer, width, diff_h);
+        }
+    }
+
+    /// Test with canceled lines (± prefix) which have multi-byte prefix char
+    #[test]
+    fn test_wrapped_canceled_lines_preserve_borders() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let width: u16 = 80;
+        let height: u16 = 24;
+
+        let long_content = "canceled_content_".repeat(15);
+        let mut lines = vec![DiffLine::file_header("cancel.rs")];
+        for i in 1..=10 {
+            let mut line = DiffLine::new(
+                LineSource::CanceledCommitted,
+                long_content.clone(),
+                '±',
+                Some(i),
+            );
+            line.file_path = Some("cancel.rs".to_string());
+            lines.push(line);
+        }
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(width);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let frame = terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(&app);
+                crate::ui::draw_with_frame(f, &mut app, &ctx);
+            })
+            .unwrap();
+
+        let status_h = crate::ui::status_bar_height(&app, width);
+        let diff_h = height - status_h;
+        verify_diff_area_borders(frame.buffer, width, diff_h);
+    }
 }
