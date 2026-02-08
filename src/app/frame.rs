@@ -268,6 +268,11 @@ impl FrameContext {
             return 1;
         }
 
+        // Image markers take dynamic height based on viewport
+        if line.is_image_marker() {
+            return crate::ui::image_view::calculate_image_height(self.viewport_height as u16) as usize;
+        }
+
         if self.is_mixed_inline_change(line) && content_display_width(&line.content) > self.content_width {
             let del_width = line.old_content.as_ref().map(|s| content_display_width(s)).unwrap_or(0);
             let ins_width = content_display_width(&line.content);
