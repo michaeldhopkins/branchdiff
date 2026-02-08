@@ -114,11 +114,21 @@ fn render_image_panel(
                 frame.render_stateful_widget(image_widget, centered, protocol);
 
                 // Check for encoding errors and fall back to placeholder if needed
-                if let Some(Err(_)) = protocol.last_encoding_result() {
-                    render_image_placeholder_box(frame, image_area, cached);
+                match protocol.last_encoding_result() {
+                    Some(Err(_)) => {
+                        // Encoding failed - show placeholder
+                        render_image_placeholder_box(frame, image_area, cached);
+                    }
+                    None => {
+                        // Encoding not started/completed yet - show placeholder
+                        render_image_placeholder_box(frame, image_area, cached);
+                    }
+                    Some(Ok(_)) => {
+                        // Successfully encoded - image should be visible
+                    }
                 }
             } else {
-                // Fallback: render placeholder box
+                // No protocol - render placeholder box
                 render_image_placeholder_box(frame, image_area, cached);
             }
 
@@ -193,7 +203,16 @@ fn render_compact_placeholder(frame: &mut Frame, area: Rect, file_path: &str) {
 pub fn calculate_image_height(terminal_height: u16) -> u16 {
     // Use about 60% of terminal height for images, with reasonable bounds
     let ideal = (terminal_height as f32 * 0.6) as u16;
-    ideal.clamp(MIN_IMAGE_HEIGHT + 4, terminal_height.saturating_sub(6))
+    let min_height = MIN_IMAGE_HEIGHT + 4; // 8 rows minimum
+    let max_height = terminal_height.saturating_sub(6);
+
+    // Handle very small terminals where max < min
+    if max_height < min_height {
+        // Use half the terminal or minimum viable, whichever is larger
+        return terminal_height.saturating_div(2).max(MIN_IMAGE_HEIGHT);
+    }
+
+    ideal.clamp(min_height, max_height)
 }
 
 #[cfg(test)]
