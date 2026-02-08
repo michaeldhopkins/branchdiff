@@ -54,12 +54,13 @@ pub fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Vec<Optio
         new_idx = after.end as usize;
     }
 
-    // Lines after all hunks are equal
-    while new_idx < new_lines.len() {
+    // Lines after all hunks are equal - but only if both sides have remaining lines
+    while new_idx < new_lines.len() && old_idx < old_lines.len() {
         result[new_idx] = Some(old_idx);
         old_idx += 1;
         new_idx += 1;
     }
+    // Any remaining new_lines beyond old_lines.len() are insertions (already None)
 
     result
 }
@@ -171,6 +172,63 @@ pub fn survives_chain(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_provenance_map_new_has_more_lines_than_old() {
+        // Regression test: ensure we don't produce out-of-bounds indices
+        // when new_lines has more lines than old_lines after all hunks
+        let old_lines = &["line1", "line2"];
+        let new_lines = &["line1", "line2", "line3", "line4", "line5"];
+
+        let provenance = build_provenance_map(old_lines, new_lines);
+
+        // Should have 5 entries (one per new line)
+        assert_eq!(provenance.len(), 5);
+
+        // First two lines came from old
+        assert_eq!(provenance[0], Some(0));
+        assert_eq!(provenance[1], Some(1));
+
+        // Lines 3-5 are insertions (not present in old)
+        assert_eq!(provenance[2], None);
+        assert_eq!(provenance[3], None);
+        assert_eq!(provenance[4], None);
+
+        // All indices in the provenance should be valid for old_lines
+        for prov in &provenance {
+            if let Some(idx) = prov {
+                assert!(
+                    *idx < old_lines.len(),
+                    "provenance index {} is out of bounds for old_lines (len {})",
+                    idx,
+                    old_lines.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_provenance_map_old_has_more_lines_than_new() {
+        // The inverse case: old has more lines than new
+        let old_lines = &["line1", "line2", "line3", "line4", "line5"];
+        let new_lines = &["line1", "line2"];
+
+        let provenance = build_provenance_map(old_lines, new_lines);
+
+        // Should have 2 entries (one per new line)
+        assert_eq!(provenance.len(), 2);
+
+        // Both lines came from old
+        assert_eq!(provenance[0], Some(0));
+        assert_eq!(provenance[1], Some(1));
+
+        // All indices should be valid
+        for prov in &provenance {
+            if let Some(idx) = prov {
+                assert!(*idx < old_lines.len());
+            }
+        }
+    }
 
     #[test]
     fn test_survives_in_found() {
