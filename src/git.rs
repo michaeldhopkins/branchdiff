@@ -228,6 +228,49 @@ pub fn get_working_tree_file(repo_path: &Path, file_path: &str) -> Result<Option
     }
 }
 
+/// Get file content as raw bytes at a specific ref (for binary files like images)
+/// Use `:path` for staged content (index)
+pub fn get_file_bytes_at_ref(
+    repo_path: &Path,
+    file_path: &str,
+    git_ref: &str,
+) -> Result<Option<Vec<u8>>> {
+    let ref_path = if git_ref.is_empty() {
+        // Empty ref means index (staged)
+        format!(":{}", file_path)
+    } else {
+        format!("{}:{}", git_ref, file_path)
+    };
+
+    let output = run_git_with_retry(|| {
+        let mut cmd = Command::new("git");
+        cmd.args(["show", &ref_path]).current_dir(repo_path);
+        cmd
+    })
+    .context("Failed to run git show")?;
+
+    if !output.status.success() {
+        // File doesn't exist at this ref
+        return Ok(None);
+    }
+
+    Ok(Some(output.stdout))
+}
+
+/// Get working tree file content as raw bytes (for binary files like images)
+pub fn get_working_tree_bytes(repo_path: &Path, file_path: &str) -> Result<Option<Vec<u8>>> {
+    let full_path = repo_path.join(file_path);
+    if !full_path.exists() {
+        return Ok(None);
+    }
+
+    match std::fs::read(&full_path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// A file that has changes
 #[derive(Debug, Clone)]
 pub struct ChangedFile {

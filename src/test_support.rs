@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::app::{App, ViewMode};
 use crate::diff::{DiffLine, FileDiff, LineSource};
 use crate::gitignore::GitignoreFilter;
+use crate::image_diff::ImageCache;
 
 /// Builder for creating test App instances with sensible defaults.
 ///
@@ -114,6 +115,7 @@ impl TestAppBuilder {
             path_copied_at: None,
             last_click: None,
             file_links: HashMap::new(),
+            image_cache: ImageCache::new(),
         }
     }
 }

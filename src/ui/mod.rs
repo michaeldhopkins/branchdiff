@@ -7,6 +7,7 @@ use crate::app::{App, FrameContext};
 
 pub mod colors;
 pub mod diff_view;
+pub mod image_view;
 pub mod modals;
 pub mod selection;
 pub mod spans;
