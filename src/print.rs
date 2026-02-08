@@ -202,6 +202,7 @@ mod tests {
         use branchdiff::app::{App, ViewMode};
         use branchdiff::diff::FileDiff;
         use branchdiff::gitignore::GitignoreFilter;
+        use branchdiff::image_diff::ImageCache;
 
         let repo_path = PathBuf::from("/tmp/test");
         let app = App {
@@ -242,6 +243,7 @@ mod tests {
             path_copied_at: None,
             last_click: None,
             file_links: HashMap::new(),
+            image_cache: ImageCache::new(),
         };
 
         let result = print_diff(&app);
