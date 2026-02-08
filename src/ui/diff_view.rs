@@ -402,13 +402,12 @@ impl<'a> DiffViewModel<'a> {
             .as_ref()
             .and_then(|path| self.image_cache.peek(path));
 
-        // If we have image data and protocols are ready, reserve space for rendering
-        let has_renderable_image = image_info.is_some_and(|state| {
-            state.before.as_ref().is_some_and(|img| img.protocol.is_some())
-                || state.after.as_ref().is_some_and(|img| img.protocol.is_some())
+        // If we have image data, reserve space for rendering (protocols created lazily during render)
+        let has_image_data = image_info.is_some_and(|state| {
+            state.before.is_some() || state.after.is_some()
         });
 
-        if has_renderable_image
+        if has_image_data
             && let Some(ref path) = diff_line.file_path
         {
             // Calculate dynamic height based on viewport size
@@ -1317,6 +1316,58 @@ mod tests {
             buffer_content.contains("loading"),
             "Should show 'loading...' when image not in cache"
         );
+    }
+
+    #[test]
+    fn test_image_positions_populated_without_protocols() {
+        use crate::image_diff::{CachedImage, ImageDiffState};
+        use image::DynamicImage;
+
+        // Create an image marker line
+        let lines = vec![
+            DiffLine::file_header("test.png"),
+            DiffLine::image_marker("test.png"),
+        ];
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(80);
+
+        // Add image data to cache WITHOUT protocols (simulating picker not available during load)
+        let cached_image = CachedImage {
+            display_image: DynamicImage::new_rgb8(100, 100),
+            original_width: 100,
+            original_height: 100,
+            file_size: 1024,
+            format_name: "PNG".to_string(),
+            protocol: None, // No protocol - this is the key condition
+        };
+        let state = ImageDiffState {
+            before: Some(cached_image),
+            after: None,
+        };
+        app.image_cache.insert("test.png".to_string(), state);
+
+        // Render and check that image_positions is populated
+        let ctx = FrameContext::new(&app);
+        let area = Rect::new(0, 0, 80, 40);
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let output = view_model.render(f);
+                // Verify image_positions was populated even without protocols
+                assert!(
+                    !output.image_positions.is_empty(),
+                    "image_positions should be populated when image data exists, even without protocols"
+                );
+                assert_eq!(output.image_positions[0].file_path, "test.png");
+            })
+            .unwrap();
     }
 
     #[test]
