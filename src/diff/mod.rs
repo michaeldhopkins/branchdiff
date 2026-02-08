@@ -168,6 +168,25 @@ impl DiffLine {
         }
     }
 
+    /// Create an image marker line (UI layer will render actual image)
+    pub fn image_marker(path: &str) -> Self {
+        Self {
+            source: LineSource::Base,
+            content: "[image]".to_string(),
+            prefix: ' ',
+            line_number: None,
+            file_path: Some(path.to_string()),
+            inline_spans: Vec::new(),
+            old_content: None,
+            change_source: None,
+        }
+    }
+
+    /// Check if this line is an image marker (for UI rendering)
+    pub fn is_image_marker(&self) -> bool {
+        self.content == "[image]" && self.file_path.is_some()
+    }
+
     pub fn elided(count: usize) -> Self {
         Self {
             source: LineSource::Elided,
