@@ -314,8 +314,17 @@ impl App {
         // Load new images that aren't in the cache
         for path in image_paths {
             if !self.image_cache.contains(&path)
-                && let Some(state) = load_image_diff(&self.repo_path, &path, merge_base)
+                && let Some(mut state) = load_image_diff(&self.repo_path, &path, merge_base)
             {
+                // Pre-create protocols for rendering if picker is available
+                if let Some(ref picker) = self.image_picker {
+                    if let Some(ref mut before) = state.before {
+                        before.ensure_protocol(picker);
+                    }
+                    if let Some(ref mut after) = state.after {
+                        after.ensure_protocol(picker);
+                    }
+                }
                 self.image_cache.insert(path, state);
             }
         }
