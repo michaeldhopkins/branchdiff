@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 
 use crate::diff::{compute_file_diff_v2, DiffLine, FileDiff, LineSource};
+use crate::file_links::compute_file_links;
 use crate::git;
 use crate::limits::DiffMetrics;
 
@@ -39,6 +40,7 @@ pub struct RefreshResult {
     pub merge_base: String,
     pub current_branch: Option<String>,
     pub metrics: DiffMetrics,
+    pub file_links: HashMap<String, String>,
 }
 
 enum FileProcessResult {
@@ -218,12 +220,21 @@ pub fn compute_refresh(
         file_count: files.len(),
     };
 
+    // Compute file links (app ↔ spec pairs)
+    let file_paths: Vec<&str> = files
+        .iter()
+        .filter_map(|f| f.lines.first())
+        .filter_map(|l| l.file_path.as_deref())
+        .collect();
+    let file_links = compute_file_links(&file_paths);
+
     Ok(RefreshResult {
         files,
         lines,
         merge_base,
         current_branch,
         metrics,
+        file_links,
     })
 }
 
@@ -609,5 +620,79 @@ mod tests {
 
         // Metrics tracks non-binary files only
         assert_eq!(refresh.metrics.file_count, 1);
+    }
+
+    #[test]
+    fn test_refresh_computes_file_links_for_matching_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to init git repo");
+
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set git email");
+
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set git name");
+
+        // Create impl and test files
+        std::fs::write(repo_path.join("handler.go"), "package main\n").unwrap();
+        std::fs::write(repo_path.join("handler_test.go"), "package main\n").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to add files");
+
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to commit");
+
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to rename branch");
+
+        // Modify both files
+        std::fs::write(repo_path.join("handler.go"), "package main\nfunc Handler() {}\n").unwrap();
+        std::fs::write(
+            repo_path.join("handler_test.go"),
+            "package main\nfunc TestHandler() {}\n",
+        )
+        .unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+
+        assert_eq!(refresh.files.len(), 2, "Should have 2 modified files");
+
+        // Verify file_links contains the bidirectional mapping
+        assert_eq!(
+            refresh.file_links.get("handler.go"),
+            Some(&"handler_test.go".to_string()),
+            "handler.go should link to handler_test.go"
+        );
+        assert_eq!(
+            refresh.file_links.get("handler_test.go"),
+            Some(&"handler.go".to_string()),
+            "handler_test.go should link to handler.go"
+        );
     }
 }

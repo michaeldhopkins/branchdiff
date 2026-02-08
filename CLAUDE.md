@@ -5,3 +5,8 @@ Always run `cargo clippy -- -D warnings` before committing to match CI. Clippy w
 Run `cargo llvm-cov` to check test coverage after adding or modifying functionality.
 
 Run `cargo audit` after adding or updating dependencies to check for security vulnerabilities.
+
+When adding user-facing features (keybindings, commands, UI elements):
+- Update README.md with feature description and keybindings
+- Update the help menu in src/ui/help.rs
+- Test the feature manually before committing

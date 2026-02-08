@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod diff;
+pub mod file_links;
 pub mod git;
 pub mod gitignore;
 pub mod input;

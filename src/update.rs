@@ -575,6 +575,7 @@ mod tests {
             merge_base: "def456".to_string(),
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
         });
 
         let config = UpdateConfig::default();
@@ -866,6 +867,7 @@ mod tests {
             merge_base: "abc".to_string(),
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
         });
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config);
