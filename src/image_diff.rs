@@ -545,4 +545,84 @@ mod tests {
 
         assert_eq!(cached.metadata_string(), "1920x1080 PNG, 2.0 MB");
     }
+
+    #[test]
+    fn test_image_cache_peek_does_not_update_access_order() {
+        let mut cache = ImageCache::new();
+
+        // Insert two images
+        cache.insert(
+            "first.png".to_string(),
+            ImageDiffState {
+                before: None,
+                after: None,
+            },
+        );
+        cache.insert(
+            "second.png".to_string(),
+            ImageDiffState {
+                before: None,
+                after: None,
+            },
+        );
+
+        // Peek at first (should NOT move it to back of access order)
+        assert!(cache.peek("first.png").is_some());
+
+        // Fill cache to capacity to trigger eviction
+        for i in 0..MAX_CACHED_IMAGES {
+            cache.insert(
+                format!("filler{}.png", i),
+                ImageDiffState {
+                    before: None,
+                    after: None,
+                },
+            );
+        }
+
+        // "first.png" should be evicted since peek didn't update access order
+        assert!(!cache.contains("first.png"));
+    }
+
+    #[test]
+    fn test_image_cache_get_updates_access_order() {
+        let mut cache = ImageCache::new();
+
+        // Insert two images
+        cache.insert(
+            "first.png".to_string(),
+            ImageDiffState {
+                before: None,
+                after: None,
+            },
+        );
+        cache.insert(
+            "second.png".to_string(),
+            ImageDiffState {
+                before: None,
+                after: None,
+            },
+        );
+
+        // Get first (should move it to back of access order)
+        // Order is now: [second, first]
+        assert!(cache.get("first.png").is_some());
+
+        // Fill cache to trigger exactly one eviction (second.png, since it's oldest)
+        // 2 initial + 9 fillers = 11 insertions, triggering 1 eviction to stay at 10
+        for i in 0..(MAX_CACHED_IMAGES - 1) {
+            cache.insert(
+                format!("filler{}.png", i),
+                ImageDiffState {
+                    before: None,
+                    after: None,
+                },
+            );
+        }
+
+        // "first.png" should still exist since get() updated access order
+        // (second.png was evicted instead)
+        assert!(cache.contains("first.png"));
+        assert!(!cache.contains("second.png"));
+    }
 }
