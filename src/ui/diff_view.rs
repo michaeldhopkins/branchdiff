@@ -1149,6 +1149,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_diff_view_model_includes_image_cache() {
+        let app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs")])
+            .build();
+        let ctx = FrameContext::new(&app);
+        let area = Rect::new(0, 0, 80, 24);
+
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+
+        // Verify image_cache is included and accessible
+        assert!(view_model.image_cache.is_empty());
+    }
+
+    #[test]
+    fn test_image_marker_rendering_without_cache_data() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // Create an image marker line
+        let lines = vec![
+            DiffLine::file_header("test.png"),
+            DiffLine::image_marker("test.png"),
+        ];
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(80);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let frame = terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(&app);
+                crate::ui::draw_with_frame(f, &mut app, &ctx);
+            })
+            .unwrap();
+
+        // Check that the buffer contains the loading placeholder
+        let buffer_content: String = (0..frame.buffer.area.height)
+            .flat_map(|y| (0..frame.buffer.area.width).map(move |x| frame.buffer[(x, y)].symbol()))
+            .collect();
+
+        assert!(
+            buffer_content.contains("loading"),
+            "Should show 'loading...' when image not in cache"
+        );
+    }
+
     /// Test with canceled lines (± prefix) which have multi-byte prefix char
     #[test]
     fn test_wrapped_canceled_lines_preserve_borders() {
