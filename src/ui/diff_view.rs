@@ -46,12 +46,25 @@ pub struct DiffViewModel<'a> {
     pub image_cache: &'a ImageCache,
 }
 
+/// Position where an image should be rendered after text render
+#[derive(Debug, Clone)]
+pub struct ImageRenderPosition {
+    /// File path to identify the image in the cache
+    pub file_path: String,
+    /// Screen row where image rendering starts (relative to content area)
+    pub start_row: u16,
+    /// Height in rows for the image display
+    pub height: u16,
+}
+
 /// Output from rendering (data App needs to store).
 pub struct RenderOutput {
     pub row_map: Vec<ScreenRowInfo>,
     pub content_offset: (u16, u16),
     pub line_num_width: usize,
     pub content_width: usize,
+    /// Positions where images should be rendered (after text rendering)
+    pub image_positions: Vec<ImageRenderPosition>,
 }
 
 impl<'a> DiffViewModel<'a> {
@@ -106,6 +119,7 @@ impl<'a> DiffViewModel<'a> {
 
         let mut all_lines: Vec<Line> = Vec::new();
         let mut all_row_infos: Vec<ScreenRowInfo> = Vec::new();
+        let mut image_positions: Vec<ImageRenderPosition> = Vec::new();
         let mut screen_row_idx = 0;
 
         for item in self.items {
@@ -128,6 +142,7 @@ impl<'a> DiffViewModel<'a> {
                         screen_row_idx,
                         &mut all_lines,
                         &mut all_row_infos,
+                        &mut image_positions,
                     );
                     screen_row_idx += rows_added;
                 }
@@ -168,6 +183,7 @@ impl<'a> DiffViewModel<'a> {
             content_offset: (content_offset_x, content_offset_y),
             line_num_width,
             content_width,
+            image_positions,
         }
     }
 
@@ -228,6 +244,7 @@ impl<'a> DiffViewModel<'a> {
         screen_row_idx: usize,
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
+        image_positions: &mut Vec<ImageRenderPosition>,
     ) -> usize {
         let style = line_style(diff_line.source);
 
@@ -266,8 +283,10 @@ impl<'a> DiffViewModel<'a> {
             return self.render_image_marker(
                 diff_line,
                 &prefix_str,
+                screen_row_idx,
                 all_lines,
                 all_row_infos,
+                image_positions,
             );
         }
 
@@ -372,9 +391,51 @@ impl<'a> DiffViewModel<'a> {
         &self,
         diff_line: &DiffLine,
         prefix_str: &str,
+        screen_row_idx: usize,
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
+        image_positions: &mut Vec<ImageRenderPosition>,
     ) -> usize {
+        // Check if we have loaded image data in the cache
+        let image_info = diff_line
+            .file_path
+            .as_ref()
+            .and_then(|path| self.image_cache.peek(path));
+
+        // If we have image data and protocols are ready, reserve space for rendering
+        let has_renderable_image = image_info.is_some_and(|state| {
+            state.before.as_ref().is_some_and(|img| img.protocol.is_some())
+                || state.after.as_ref().is_some_and(|img| img.protocol.is_some())
+        });
+
+        if has_renderable_image
+            && let Some(ref path) = diff_line.file_path
+        {
+            // Calculate dynamic height based on viewport size
+            let image_height = crate::ui::image_view::calculate_image_height(self.area.height);
+
+            // Record position for image rendering (saturate to u16::MAX for safety)
+            image_positions.push(ImageRenderPosition {
+                file_path: path.clone(),
+                start_row: screen_row_idx.min(u16::MAX as usize) as u16,
+                height: image_height,
+            });
+
+            // Add blank lines as placeholders for the image area
+            for i in 0..image_height {
+                all_lines.push(Line::from(vec![]));
+                all_row_infos.push(ScreenRowInfo {
+                    content: String::new(),
+                    is_file_header: false,
+                    file_path: diff_line.file_path.clone(),
+                    is_continuation: i > 0,
+                });
+            }
+
+            return image_height as usize;
+        }
+
+        // Fallback: render text placeholder (no image available or protocols not ready)
         let mut spans = Vec::new();
         if !prefix_str.is_empty() {
             spans.push(Span::styled(
@@ -382,12 +443,6 @@ impl<'a> DiffViewModel<'a> {
                 Style::default().fg(Color::DarkGray),
             ));
         }
-
-        // Check if we have loaded image data in the cache
-        let image_info = diff_line
-            .file_path
-            .as_ref()
-            .and_then(|path| self.image_cache.peek(path));
 
         let display_text = match image_info {
             Some(state) => {
@@ -669,7 +724,72 @@ pub fn draw_diff_view_with_frame(
         output.line_num_width,
         output.content_width,
     );
-    app.set_row_map(output.row_map);
+    app.set_row_map(output.row_map.clone());
+
+    // Render images at recorded positions (requires mutable image_cache access)
+    if !output.image_positions.is_empty() {
+        render_images_at_positions(
+            frame,
+            &mut app.image_cache,
+            app.image_picker.as_ref(),
+            &output.image_positions,
+            output.content_offset,
+            area,
+        );
+    }
+}
+
+/// Render images at the positions recorded during text rendering.
+fn render_images_at_positions(
+    frame: &mut Frame,
+    image_cache: &mut crate::image_diff::ImageCache,
+    picker: Option<&ratatui_image::picker::Picker>,
+    positions: &[ImageRenderPosition],
+    content_offset: (u16, u16),
+    area: Rect,
+) {
+    use crate::ui::image_view::render_image_diff;
+
+    for pos in positions {
+        // Calculate the render area for this image
+        let image_y = content_offset.1 + pos.start_row;
+        let viewport_bottom = area.y + area.height;
+
+        // Skip if image starts entirely below the visible region
+        if image_y >= viewport_bottom {
+            continue;
+        }
+
+        // Clamp height to available space (prevents rendering past viewport)
+        let available_height = viewport_bottom.saturating_sub(image_y);
+        let clamped_height = pos.height.min(available_height);
+        if clamped_height == 0 {
+            continue;
+        }
+
+        let image_area = Rect::new(
+            area.x + 1, // Inside border
+            image_y,
+            area.width.saturating_sub(2), // Inside borders
+            clamped_height,
+        );
+
+        // Get mutable access to image state
+        if let Some(state) = image_cache.get_mut(&pos.file_path) {
+            // Ensure protocols are created if we have a picker
+            if let Some(picker) = picker {
+                if let Some(ref mut before) = state.before {
+                    before.ensure_protocol(picker);
+                }
+                if let Some(ref mut after) = state.after {
+                    after.ensure_protocol(picker);
+                }
+            }
+
+            // Render the image diff
+            render_image_diff(frame, image_area, state, &pos.file_path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -791,6 +911,7 @@ mod tests {
             content_offset: (1, 2),
             line_num_width: 4,
             content_width: 76,
+            image_positions: Vec::new(),
         };
 
         assert_eq!(output.row_map.len(), 1);
@@ -1196,6 +1317,123 @@ mod tests {
             buffer_content.contains("loading"),
             "Should show 'loading...' when image not in cache"
         );
+    }
+
+    #[test]
+    fn test_image_render_position_fields() {
+        let pos = ImageRenderPosition {
+            file_path: "test/image.png".to_string(),
+            start_row: 42,
+            height: 12,
+        };
+
+        assert_eq!(pos.file_path, "test/image.png");
+        assert_eq!(pos.start_row, 42);
+        assert_eq!(pos.height, 12);
+    }
+
+    #[test]
+    fn test_image_render_position_large_row_saturates() {
+        // Test that large row values are handled (the actual saturation happens
+        // in render_image_marker, but we verify the struct can hold max values)
+        let pos = ImageRenderPosition {
+            file_path: "large.png".to_string(),
+            start_row: u16::MAX,
+            height: 12,
+        };
+
+        assert_eq!(pos.start_row, u16::MAX);
+    }
+
+    #[test]
+    fn test_render_output_includes_image_positions() {
+        let output = RenderOutput {
+            row_map: Vec::new(),
+            content_offset: (0, 0),
+            line_num_width: 0,
+            content_width: 80,
+            image_positions: vec![
+                ImageRenderPosition {
+                    file_path: "a.png".to_string(),
+                    start_row: 5,
+                    height: 12,
+                },
+                ImageRenderPosition {
+                    file_path: "b.png".to_string(),
+                    start_row: 20,
+                    height: 12,
+                },
+            ],
+        };
+
+        assert_eq!(output.image_positions.len(), 2);
+        assert_eq!(output.image_positions[0].file_path, "a.png");
+        assert_eq!(output.image_positions[1].start_row, 20);
+    }
+
+    #[test]
+    fn test_dynamic_image_height_calculation() {
+        use crate::ui::image_view::calculate_image_height;
+
+        // Small terminal (24 rows) - should get reasonable minimum
+        let small_height = calculate_image_height(24);
+        assert!(small_height >= 8, "Small terminal should have at least 8 rows for images");
+        assert!(small_height <= 18, "Small terminal shouldn't use too much space");
+
+        // Medium terminal (40 rows)
+        let medium_height = calculate_image_height(40);
+        assert!(medium_height > small_height, "Larger terminal should have more image space");
+
+        // Large terminal (80 rows)
+        let large_height = calculate_image_height(80);
+        assert!(large_height > medium_height, "Even larger terminal should have more image space");
+        assert!(large_height <= 74, "Should leave space for other UI elements");
+    }
+
+    #[test]
+    fn test_image_clipping_calculation() {
+        // Test the clipping logic used in render_images_at_positions
+        // Simulating: viewport_bottom = 100, image_y = 95, pos.height = 12
+        let viewport_bottom: u16 = 100;
+        let image_y: u16 = 95;
+        let pos_height: u16 = 12;
+
+        let available_height = viewport_bottom.saturating_sub(image_y);
+        let clamped_height = pos_height.min(available_height);
+
+        // Image extends from 95 to 107, but viewport ends at 100
+        // So available is 5 rows, not 12
+        assert_eq!(available_height, 5);
+        assert_eq!(clamped_height, 5);
+    }
+
+    #[test]
+    fn test_image_entirely_below_viewport_skipped() {
+        // Test the skip logic: image_y >= viewport_bottom should skip
+        let viewport_bottom: u16 = 100;
+        let image_y: u16 = 100; // Exactly at bottom
+
+        let should_skip = image_y >= viewport_bottom;
+        assert!(should_skip, "Image at viewport bottom should be skipped");
+
+        let image_y_below: u16 = 150;
+        let should_skip_below = image_y_below >= viewport_bottom;
+        assert!(should_skip_below, "Image below viewport should be skipped");
+    }
+
+    #[test]
+    fn test_image_clipping_zero_available_height() {
+        // Edge case: image starts exactly at viewport edge
+        let viewport_bottom: u16 = 100;
+        let image_y: u16 = 100;
+        let pos_height: u16 = 12;
+
+        let available_height = viewport_bottom.saturating_sub(image_y);
+        assert_eq!(available_height, 0);
+
+        // This should result in skipping (clamped_height == 0)
+        let clamped_height = pos_height.min(available_height);
+        assert_eq!(clamped_height, 0);
     }
 
     /// Test with canceled lines (± prefix) which have multi-byte prefix char
