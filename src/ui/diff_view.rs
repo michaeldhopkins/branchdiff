@@ -15,6 +15,7 @@ use ratatui::{
 
 use crate::app::{App, DisplayableItem, FrameContext, Selection};
 use crate::diff::{DiffLine, LineSource};
+use crate::image_diff::ImageCache;
 
 use super::colors::{line_style, status_symbol};
 use super::selection::{apply_selection_to_span, get_line_selection_range};
@@ -41,6 +42,8 @@ pub struct DiffViewModel<'a> {
     pub area: Rect,
     /// Whether to show the "copied" flash in the title.
     pub show_copied_flash: bool,
+    /// Image cache for loaded image data.
+    pub image_cache: &'a ImageCache,
 }
 
 /// Output from rendering (data App needs to store).
@@ -64,6 +67,7 @@ impl<'a> DiffViewModel<'a> {
             collapsed_files: &app.collapsed_files,
             area,
             show_copied_flash: app.should_show_copied_flash(),
+            image_cache: &app.image_cache,
         }
     }
 
@@ -378,12 +382,33 @@ impl<'a> DiffViewModel<'a> {
                 Style::default().fg(Color::DarkGray),
             ));
         }
-        // Distinctive styling for image placeholders
+
+        // Check if we have loaded image data in the cache
+        let image_info = diff_line
+            .file_path
+            .as_ref()
+            .and_then(|path| self.image_cache.peek(path));
+
+        let display_text = match image_info {
+            Some(state) => {
+                // Show metadata for before/after images
+                let before_info = state
+                    .before
+                    .as_ref()
+                    .map(|img| img.metadata_string())
+                    .unwrap_or_else(|| "(new)".to_string());
+                let after_info = state
+                    .after
+                    .as_ref()
+                    .map(|img| img.metadata_string())
+                    .unwrap_or_else(|| "(deleted)".to_string());
+                format!("[image: {} -> {}]", before_info, after_info)
+            }
+            None => "[image file - loading...]".to_string(),
+        };
+
         spans.push(Span::styled("  ", Style::default()));
-        spans.push(Span::styled(
-            "[image file - rendering not yet implemented]",
-            Style::default().fg(Color::Cyan),
-        ));
+        spans.push(Span::styled(display_text, Style::default().fg(Color::Cyan)));
 
         all_lines.push(Line::from(spans));
         all_row_infos.push(ScreenRowInfo {
