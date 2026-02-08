@@ -1,12 +1,7 @@
 //! Image diff rendering for the TUI.
 //!
-//! This module handles the side-by-side display of before/after images.
-//!
-//! NOTE: This module contains placeholder rendering infrastructure. Actual
-//! terminal image display via ratatui-image (Kitty/Sixel/iTerm2 protocols)
-//! is not yet integrated. Currently, image files show "[image file]" text
-//! markers. The `render_image_diff` function is prepared for future integration
-//! but is not yet wired into the main rendering pipeline.
+//! This module handles the side-by-side display of before/after images
+//! using ratatui-image's protocol detection for Kitty/Sixel/iTerm2/halfblocks.
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -14,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use ratatui_image::StatefulImage;
 
 use crate::image_diff::{center_in_area, fit_dimensions, CachedImage, ImageDiffState};
 
@@ -29,7 +25,7 @@ const MIN_IMAGE_HEIGHT: u16 = 4;
 pub fn render_image_diff(
     frame: &mut Frame,
     area: Rect,
-    state: &ImageDiffState,
+    state: &mut ImageDiffState,
     file_path: &str,
 ) -> u16 {
     // Calculate available height for image content
@@ -51,7 +47,7 @@ pub fn render_image_diff(
     render_image_panel(
         frame,
         chunks[0],
-        state.before.as_ref(),
+        state.before.as_mut(),
         "Before (base)",
         true, // is_before
     );
@@ -60,7 +56,7 @@ pub fn render_image_diff(
     render_image_panel(
         frame,
         chunks[1],
-        state.after.as_ref(),
+        state.after.as_mut(),
         "After (working)",
         false, // is_before
     );
@@ -68,11 +64,11 @@ pub fn render_image_diff(
     area.height
 }
 
-/// Render a single image panel with border, label, and metadata
+/// Render a single image panel with border, label, and actual image content
 fn render_image_panel(
     frame: &mut Frame,
     area: Rect,
-    image: Option<&CachedImage>,
+    image: Option<&mut CachedImage>,
     label: &str,
     is_before: bool,
 ) {
@@ -92,22 +88,39 @@ fn render_image_panel(
 
     match image {
         Some(cached) => {
-            // Calculate where to render the image
-            let (_img_w, _img_h) = fit_dimensions(
+            // Calculate display dimensions
+            let (display_w, display_h) = fit_dimensions(
                 cached.original_width,
                 cached.original_height,
                 inner.width,
                 inner.height.saturating_sub(METADATA_HEIGHT),
             );
 
-            // Render image placeholder (actual ratatui-image rendering would go here)
+            // Calculate image area (above metadata)
             let image_area = Rect::new(
                 inner.x,
                 inner.y,
                 inner.width,
                 inner.height.saturating_sub(METADATA_HEIGHT),
             );
-            render_image_placeholder(frame, image_area, cached);
+
+            // Render actual image using StatefulImage if protocol is available
+            if let Some(ref mut protocol) = cached.protocol {
+                // Center the image within the available area
+                let centered = center_in_area(display_w, display_h, image_area);
+
+                // Create and render the StatefulImage widget
+                let image_widget = StatefulImage::new();
+                frame.render_stateful_widget(image_widget, centered, protocol);
+
+                // Check for encoding errors and fall back to placeholder if needed
+                if let Some(Err(_)) = protocol.last_encoding_result() {
+                    render_image_placeholder_box(frame, image_area, cached);
+                }
+            } else {
+                // Fallback: render placeholder box
+                render_image_placeholder_box(frame, image_area, cached);
+            }
 
             // Render metadata below image
             let metadata_area = Rect::new(
@@ -136,11 +149,8 @@ fn render_image_panel(
     }
 }
 
-/// Render an image placeholder (before actual ratatui-image integration)
-///
-/// This will be replaced with actual image rendering using ratatui-image's
-/// StatefulImage widget once we integrate the image protocol handling.
-fn render_image_placeholder(frame: &mut Frame, area: Rect, cached: &CachedImage) {
+/// Render a placeholder box when protocol is not available
+fn render_image_placeholder_box(frame: &mut Frame, area: Rect, cached: &CachedImage) {
     let (display_w, display_h) = fit_dimensions(
         cached.original_width,
         cached.original_height,
@@ -150,7 +160,6 @@ fn render_image_placeholder(frame: &mut Frame, area: Rect, cached: &CachedImage)
 
     let centered = center_in_area(display_w, display_h, area);
 
-    // For now, render a box with dimensions info
     let placeholder = format!(
         "{}x{} {}",
         cached.original_width, cached.original_height, cached.format_name
