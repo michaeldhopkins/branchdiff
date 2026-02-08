@@ -155,11 +155,18 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Initialize image protocol picker (detects Kitty/Sixel/iTerm2/halfblocks support)
+    // Must be done after terminal setup since it queries via control sequences
+    let image_picker = ratatui_image::picker::Picker::from_query_stdio().ok();
+
     // Get platform-specific watch limit (None on macOS/Windows, Some on Linux)
     let watch_limit = limits::get_watch_limit();
 
     // Create app and load initial state
     let mut app = App::new(repo_root.clone())?;
+    if let Some(picker) = image_picker {
+        app.set_image_picker(picker);
+    }
 
     // Setup file watcher with appropriate backend
     // WSL's inotify is unreliable, so use polling there

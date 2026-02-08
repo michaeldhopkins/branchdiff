@@ -48,6 +48,8 @@ const AUTO_COLLAPSE_PATTERNS: &[&str] = &[
 
 use anyhow::Result;
 
+use ratatui_image::picker::Picker;
+
 use crate::diff::{DiffLine, FileDiff};
 use crate::git;
 use crate::gitignore::GitignoreFilter;
@@ -122,6 +124,8 @@ pub struct App {
     pub file_links: HashMap<String, String>,
     /// Cache of loaded images for image diff display
     pub image_cache: ImageCache,
+    /// Image protocol picker for terminal image rendering (None if terminal doesn't support)
+    pub image_picker: Option<Picker>,
 }
 
 impl App {
@@ -157,6 +161,7 @@ impl App {
             last_click: None,
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
+            image_picker: None,
         }
     }
 
@@ -202,10 +207,16 @@ impl App {
             gitignore_filter,
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
+            image_picker: None,
         };
 
         app.refresh()?;
         Ok(app)
+    }
+
+    /// Set the image picker for terminal image rendering
+    pub fn set_image_picker(&mut self, picker: Picker) {
+        self.image_picker = Some(picker);
     }
 
     /// Toggle the collapse state of a file
@@ -270,7 +281,7 @@ impl App {
 
     pub fn apply_refresh_result(&mut self, result: RefreshResult) {
         self.error = None;
-        self.merge_base = result.merge_base;
+        self.merge_base = result.merge_base.clone();
         self.current_branch = result.current_branch;
         self.files = result.files;
         self.lines = result.lines;
@@ -278,6 +289,36 @@ impl App {
         self.auto_collapse_files();
         self.clamp_scroll();
         self.needs_inline_spans = true;
+
+        // Load images for any image markers
+        self.load_images_for_markers(&result.merge_base);
+    }
+
+    /// Load images for any image marker lines into the cache.
+    fn load_images_for_markers(&mut self, merge_base: &str) {
+        use crate::image_diff::load_image_diff;
+        use std::collections::HashSet;
+
+        // Collect image paths from markers
+        let image_paths: Vec<String> = self
+            .lines
+            .iter()
+            .filter(|line| line.is_image_marker())
+            .filter_map(|line| line.file_path.clone())
+            .collect();
+
+        // Evict stale images from cache
+        let current_paths: HashSet<&str> = image_paths.iter().map(|s| s.as_str()).collect();
+        self.image_cache.evict_stale(&current_paths);
+
+        // Load new images that aren't in the cache
+        for path in image_paths {
+            if !self.image_cache.contains(&path)
+                && let Some(state) = load_image_diff(&self.repo_path, &path, merge_base)
+            {
+                self.image_cache.insert(path, state);
+            }
+        }
     }
 
     /// Compute inline spans for visible lines and return the displayable items.
