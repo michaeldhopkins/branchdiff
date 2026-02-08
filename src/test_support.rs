@@ -3,7 +3,7 @@
 //! This module provides a builder pattern for creating test App instances,
 //! eliminating duplication across test modules.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::app::{App, ViewMode};
@@ -113,6 +113,7 @@ impl TestAppBuilder {
             needs_inline_spans: true,
             path_copied_at: None,
             last_click: None,
+            file_links: HashMap::new(),
         }
     }
 }
