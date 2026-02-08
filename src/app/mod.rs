@@ -10,7 +10,7 @@ pub use frame::{DisplayableItem, FrameContext};
 pub use refresh::{compute_refresh, compute_single_file_diff, RefreshResult};
 pub use selection::{Position, Selection};
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -117,6 +117,8 @@ pub struct App {
     pub last_click: Option<(std::time::Instant, u16, u16, u8)>,
     /// Gitignore filter for file change events
     pub gitignore_filter: GitignoreFilter,
+    /// Bidirectional map: path → related path (app ↔ spec file links)
+    pub file_links: HashMap<String, String>,
 }
 
 impl App {
@@ -150,6 +152,7 @@ impl App {
             needs_inline_spans: true,
             path_copied_at: None,
             last_click: None,
+            file_links: HashMap::new(),
         }
     }
 
@@ -193,6 +196,7 @@ impl App {
             path_copied_at: None,
             last_click: None,
             gitignore_filter,
+            file_links: HashMap::new(),
         };
 
         app.refresh()?;
@@ -265,6 +269,7 @@ impl App {
         self.current_branch = result.current_branch;
         self.files = result.files;
         self.lines = result.lines;
+        self.file_links = result.file_links;
         self.auto_collapse_files();
         self.clamp_scroll();
         self.needs_inline_spans = true;
@@ -374,6 +379,16 @@ impl App {
     /// Clear the needs_inline_spans flag after computation
     pub fn clear_needs_inline_spans(&mut self) {
         self.needs_inline_spans = false;
+    }
+
+    /// Get the related file (app ↔ spec) for a given path.
+    pub fn related_file(&self, path: &str) -> Option<&str> {
+        self.file_links.get(path).map(|s| s.as_str())
+    }
+
+    /// Check if a file has a related file in the diff.
+    pub fn has_related_file(&self, path: &str) -> bool {
+        self.file_links.contains_key(path)
     }
 
     /// Estimate content_width from terminal dimensions.
@@ -1358,6 +1373,7 @@ mod tests {
             merge_base: "newbase123".to_string(),
             current_branch: Some("new-branch".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
         };
 
         app.apply_refresh_result(result);
@@ -1568,6 +1584,7 @@ mod tests {
             merge_base: "abc".to_string(),
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
         };
         app.apply_refresh_result(result);
         assert!(app.needs_inline_spans(), "apply_refresh_result should mark dirty");
@@ -1757,5 +1774,32 @@ mod tests {
         app.estimate_content_width(150);
 
         assert_eq!(app.content_width, 137);
+    }
+
+    // === Tests for file_links query methods ===
+
+    #[test]
+    fn test_related_file_returns_linked_path() {
+        let mut app = TestAppBuilder::new().build();
+        app.file_links.insert("handler.go".to_string(), "handler_test.go".to_string());
+        app.file_links.insert("handler_test.go".to_string(), "handler.go".to_string());
+
+        assert_eq!(app.related_file("handler.go"), Some("handler_test.go"));
+        assert_eq!(app.related_file("handler_test.go"), Some("handler.go"));
+    }
+
+    #[test]
+    fn test_related_file_returns_none_for_unlinked() {
+        let app = TestAppBuilder::new().build();
+        assert_eq!(app.related_file("handler.go"), None);
+    }
+
+    #[test]
+    fn test_has_related_file() {
+        let mut app = TestAppBuilder::new().build();
+        app.file_links.insert("handler.go".to_string(), "handler_test.go".to_string());
+
+        assert!(app.has_related_file("handler.go"));
+        assert!(!app.has_related_file("other.go"));
     }
 }

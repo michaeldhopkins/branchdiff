@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_print_diff_produces_output() {
-        use std::collections::HashSet;
+        use std::collections::{HashMap, HashSet};
         use std::path::PathBuf;
         use branchdiff::app::{App, ViewMode};
         use branchdiff::diff::FileDiff;
@@ -241,6 +241,7 @@ mod tests {
             needs_inline_spans: true,
             path_copied_at: None,
             last_click: None,
+            file_links: HashMap::new(),
         };
 
         let result = print_diff(&app);
