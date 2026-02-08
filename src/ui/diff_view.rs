@@ -257,6 +257,16 @@ impl<'a> DiffViewModel<'a> {
             );
         }
 
+        // Image marker (placeholder for actual image rendering)
+        if diff_line.is_image_marker() {
+            return self.render_image_marker(
+                diff_line,
+                &prefix_str,
+                all_lines,
+                all_row_infos,
+            );
+        }
+
         // Lines with inline spans
         if !diff_line.inline_spans.is_empty() {
             return self.render_inline_spans(
@@ -341,6 +351,38 @@ impl<'a> DiffViewModel<'a> {
         spans.push(Span::styled(
             format!("┈┈ ⋮ {} ⋮ ┈┈", diff_line.content),
             style,
+        ));
+
+        all_lines.push(Line::from(spans));
+        all_row_infos.push(ScreenRowInfo {
+            content: diff_line.content.clone(),
+            is_file_header: false,
+            file_path: diff_line.file_path.clone(),
+            is_continuation: false,
+        });
+
+        1
+    }
+
+    fn render_image_marker(
+        &self,
+        diff_line: &DiffLine,
+        prefix_str: &str,
+        all_lines: &mut Vec<Line<'static>>,
+        all_row_infos: &mut Vec<ScreenRowInfo>,
+    ) -> usize {
+        let mut spans = Vec::new();
+        if !prefix_str.is_empty() {
+            spans.push(Span::styled(
+                prefix_str.to_string(),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        // Distinctive styling for image placeholders
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled(
+            "[image file - rendering not yet implemented]",
+            Style::default().fg(Color::Cyan),
         ));
 
         all_lines.push(Line::from(spans));

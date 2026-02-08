@@ -51,6 +51,7 @@ use anyhow::Result;
 use crate::diff::{DiffLine, FileDiff};
 use crate::git;
 use crate::gitignore::GitignoreFilter;
+use crate::image_diff::ImageCache;
 use crate::ui::ScreenRowInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -119,6 +120,8 @@ pub struct App {
     pub gitignore_filter: GitignoreFilter,
     /// Bidirectional map: path → related path (app ↔ spec file links)
     pub file_links: HashMap<String, String>,
+    /// Cache of loaded images for image diff display
+    pub image_cache: ImageCache,
 }
 
 impl App {
@@ -153,6 +156,7 @@ impl App {
             path_copied_at: None,
             last_click: None,
             file_links: HashMap::new(),
+            image_cache: ImageCache::new(),
         }
     }
 
@@ -197,6 +201,7 @@ impl App {
             last_click: None,
             gitignore_filter,
             file_links: HashMap::new(),
+            image_cache: ImageCache::new(),
         };
 
         app.refresh()?;

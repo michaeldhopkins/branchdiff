@@ -10,6 +10,7 @@ use rayon::ThreadPoolBuilder;
 use crate::diff::{compute_file_diff_v2, DiffLine, FileDiff, LineSource};
 use crate::file_links::compute_file_links;
 use crate::git;
+use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
 
 const PARALLEL_THRESHOLD: usize = 4;
@@ -46,6 +47,7 @@ pub struct RefreshResult {
 enum FileProcessResult {
     Diff(FileDiff),
     Binary { path: String },
+    Image { path: String },
 }
 
 struct FileContents {
@@ -106,7 +108,15 @@ fn process_single_file(
     binary_files: &HashSet<String>,
 ) -> FileProcessResult {
     if binary_files.contains(file_path) {
-        return FileProcessResult::Binary { path: file_path.to_string() };
+        // Check if it's an image file (we'll render these specially)
+        if is_image_file(file_path) {
+            return FileProcessResult::Image {
+                path: file_path.to_string(),
+            };
+        }
+        return FileProcessResult::Binary {
+            path: file_path.to_string(),
+        };
     }
 
     let contents = FileContents::fetch(repo_path, file_path, old_path, merge_base);
@@ -209,6 +219,11 @@ pub fn compute_refresh(
                     ' ',
                     None,
                 ));
+            }
+            FileProcessResult::Image { path } => {
+                // For now, show as "[image]" marker - actual rendering happens in UI layer
+                lines.push(DiffLine::file_header(&path));
+                lines.push(DiffLine::image_marker(&path));
             }
         }
     }
@@ -694,5 +709,96 @@ mod tests {
             Some(&"handler.go".to_string()),
             "handler_test.go should link to handler.go"
         );
+    }
+
+    #[test]
+    fn test_image_file_produces_image_marker() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Initialize git repo
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to init git repo");
+
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set git email");
+
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set git name");
+
+        // Create a minimal valid PNG file (1x1 red pixel)
+        // PNG signature + IHDR + IDAT + IEND
+        let png_bytes: Vec<u8> = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, // depth, type, crc
+            0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, // IDAT chunk
+            0x08, 0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, 0x00, // compressed data
+            0x05, 0xFE, 0x02, 0xFE, 0xA3, 0x56, 0x5A, 0x09, // crc
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, // IEND chunk
+            0xAE, 0x42, 0x60, 0x82, // crc
+        ];
+
+        std::fs::write(repo_path.join("image.png"), &png_bytes).unwrap();
+        std::fs::write(repo_path.join("readme.txt"), "initial\n").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to add files");
+
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to commit");
+
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to rename branch");
+
+        // Modify the PNG file (different content so it shows as changed)
+        let modified_png: Vec<u8> = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+            0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54,
+            0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, // different pixel data
+            0x02, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D, 0xB4,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+            0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(repo_path.join("image.png"), &modified_png).unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+
+        // Find the image marker line
+        let image_marker = refresh.lines.iter().find(|line| line.is_image_marker());
+        assert!(
+            image_marker.is_some(),
+            "Should have an image marker line for image.png"
+        );
+
+        let marker = image_marker.unwrap();
+        assert_eq!(marker.file_path, Some("image.png".to_string()));
+        assert_eq!(marker.content, "[image]");
     }
 }
