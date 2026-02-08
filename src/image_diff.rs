@@ -9,6 +9,7 @@
 use anyhow::{Context, Result};
 use image::{DynamicImage, ImageFormat};
 use ratatui::layout::Rect;
+use ratatui_image::protocol::StatefulProtocol;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
@@ -58,6 +59,8 @@ pub struct CachedImage {
     pub file_size: u64,
     /// Image format name (e.g., "PNG", "JPEG", "SVG")
     pub format_name: String,
+    /// Protocol state for terminal image rendering (lazily initialized)
+    pub protocol: Option<StatefulProtocol>,
 }
 
 impl CachedImage {
@@ -68,6 +71,19 @@ impl CachedImage {
             "{}x{} {}, {}",
             self.original_width, self.original_height, self.format_name, size
         )
+    }
+
+    /// Ensure the protocol is initialized for rendering.
+    /// Returns a mutable reference to the protocol.
+    pub fn ensure_protocol(
+        &mut self,
+        picker: &ratatui_image::picker::Picker,
+    ) -> &mut StatefulProtocol {
+        if self.protocol.is_none() {
+            let protocol = picker.new_resize_protocol(self.display_image.clone());
+            self.protocol = Some(protocol);
+        }
+        self.protocol.as_mut().unwrap()
     }
 }
 
@@ -120,6 +136,11 @@ impl ImageCache {
         } else {
             None
         }
+    }
+
+    /// Peek at an image without updating access order (for read-only access)
+    pub fn peek(&self, path: &str) -> Option<&ImageDiffState> {
+        self.images.get(path)
     }
 
     /// Check if path is in cache
@@ -190,6 +211,7 @@ pub fn load_and_cache(bytes: &[u8], format_name: &str) -> Result<CachedImage> {
         original_height: oh,
         file_size,
         format_name: format_name.to_string(),
+        protocol: None,
     })
 }
 
@@ -223,6 +245,7 @@ pub fn rasterize_svg(svg_bytes: &[u8], max_dimension: u32) -> Result<CachedImage
         original_height: size.height() as u32,
         file_size,
         format_name: "SVG".to_string(),
+        protocol: None,
     })
 }
 
@@ -273,6 +296,60 @@ pub fn format_name_from_path(path: &str) -> String {
         .and_then(|e| e.to_str())
         .map(|e| e.to_uppercase())
         .unwrap_or_else(|| "Unknown".to_string())
+}
+
+/// Load image diff state for a file (before and after versions).
+///
+/// Fetches image bytes from:
+/// - Before: merge-base ref (base version)
+/// - After: working tree (current version)
+///
+/// Returns None if both versions fail to load.
+pub fn load_image_diff(
+    repo_path: &std::path::Path,
+    file_path: &str,
+    merge_base: &str,
+) -> Option<ImageDiffState> {
+    use crate::git;
+
+    let format_name = format_name_from_path(file_path);
+
+    // Load before image (from merge-base)
+    let before = git::get_file_bytes_at_ref(repo_path, file_path, merge_base)
+        .ok()
+        .flatten()
+        .and_then(|bytes| {
+            if is_lfs_pointer(&bytes) {
+                return None;
+            }
+            if is_svg(file_path) {
+                rasterize_svg(&bytes, MAX_CACHE_DIMENSION).ok()
+            } else {
+                load_and_cache(&bytes, &format_name).ok()
+            }
+        });
+
+    // Load after image (from working tree)
+    let after = git::get_working_tree_bytes(repo_path, file_path)
+        .ok()
+        .flatten()
+        .and_then(|bytes| {
+            if is_lfs_pointer(&bytes) {
+                return None;
+            }
+            if is_svg(file_path) {
+                rasterize_svg(&bytes, MAX_CACHE_DIMENSION).ok()
+            } else {
+                load_and_cache(&bytes, &format_name).ok()
+            }
+        });
+
+    // Return None if both fail (nothing to show)
+    if before.is_none() && after.is_none() {
+        return None;
+    }
+
+    Some(ImageDiffState { before, after })
 }
 
 #[cfg(test)]
@@ -463,6 +540,7 @@ mod tests {
             original_height: 1080,
             file_size: 2 * 1024 * 1024,
             format_name: "PNG".to_string(),
+            protocol: None,
         };
 
         assert_eq!(cached.metadata_string(), "1920x1080 PNG, 2.0 MB");

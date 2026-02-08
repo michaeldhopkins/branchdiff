@@ -244,6 +244,7 @@ mod tests {
             last_click: None,
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
+            image_picker: None,
         };
 
         let result = print_diff(&app);
