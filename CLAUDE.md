@@ -15,3 +15,33 @@ Constants and magic numbers:
 - If a literal value is used more than once, extract it to a named constant
 - Place shared constants in a central location (e.g., `src/image_diff.rs` for image-related constants)
 - Clippy does not catch duplicate magic numbers - this requires manual vigilance
+
+## Versioning (Semver)
+
+This project uses semantic versioning. Bump the version in `Cargo.toml` with each commit:
+
+**PATCH bump (0.x.Y → 0.x.Y+1)** for:
+- Bug fixes
+- Performance improvements (no new features)
+- Internal refactoring
+- Documentation updates
+- Dependency updates (non-breaking)
+- Test additions
+
+**MINOR bump (0.X.y → 0.X+1.0)** for:
+- New user-facing features (keybindings, commands, view modes)
+- New CLI flags or arguments
+- New output formats
+- Visual enhancements that add capability
+
+**MAJOR bump (X.y.z → X+1.0.0)** for:
+- Breaking changes to CLI arguments (removing/renaming flags)
+- Breaking changes to output format (for `-p` print mode)
+- Removing keybindings or features users depend on
+
+For this TUI app with CLI mode, "breaking change" means:
+- Scripts using `-p` print mode would break
+- Users' muscle memory for keybindings would be invalidated
+- Documented behavior changes incompatibly
+
+Commits prefixed with `feat:` should bump minor. Commits prefixed with `fix:` should bump patch. Commits prefixed with `chore:`, `refactor:`, `test:`, `docs:`, `perf:`, `build:` should bump patch (or nothing if purely internal).
