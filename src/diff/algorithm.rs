@@ -639,8 +639,11 @@ mod tests {
         // When a line is modified in a commit and the change is similar enough,
         // the algorithm merges it into an inline diff rather than showing
         // separate delete/add lines.
-        let base = "old line";
-        let head = "new line"; // Changed in commit
+        //
+        // Use strings with long shared suffix to ensure they're well above the
+        // is_meaningful threshold (>= 5 unchanged chars) regardless of tuning.
+        let base = "old_function_name()";
+        let head = "new_function_name()"; // Changed in commit - shares "_function_name()" (16 chars)
 
         let diff = compute_four_way_diff(DiffInput {
             path: "test.rs",
@@ -654,10 +657,10 @@ mod tests {
         // The result should show the current content with old_content attached
         // for inline diff rendering
         let modified_line = diff.lines.iter()
-            .find(|l| l.content == "new line")
+            .find(|l| l.content == "new_function_name()")
             .expect("Should have the current content");
 
-        assert_eq!(modified_line.old_content, Some("old line".to_string()),
+        assert_eq!(modified_line.old_content, Some("old_function_name()".to_string()),
             "Should have old content for inline diff");
         assert_eq!(modified_line.change_source, Some(LineSource::Committed),
             "Should indicate change came from commit");

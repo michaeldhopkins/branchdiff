@@ -83,6 +83,9 @@ pub fn line_bg_color(source: LineSource) -> Color {
 }
 
 /// Stronger background for inline character-level highlights
+// TODO: Some highlight colors (e.g., Committed at Rgb(50,100,100)) achieve only
+// ~2.4 contrast ratio with the default fg, below WCAG AA (3.0). Consider adjusting
+// the palette for better accessibility.
 pub fn highlight_bg_color(source: LineSource) -> Color {
     match source {
         LineSource::Committed => Color::Rgb(50, 100, 100),
