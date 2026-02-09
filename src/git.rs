@@ -53,9 +53,14 @@ pub fn get_git_version() -> Result<GitVersion> {
 }
 
 /// Check if a git error is transient (retryable).
-/// Currently handles index.lock contention which occurs when another git process is running.
+/// Handles lock file contention which occurs when another git process is running.
+///
+/// We check for ".lock" in the error message because git lock filenames (like "index.lock",
+/// "HEAD.lock", "config.lock") are not localized - they're always in English regardless
+/// of the user's locale. The surrounding error text may be localized, but the filename isn't.
 fn is_transient_error(stderr: &str) -> bool {
-    stderr.contains("index.lock") || stderr.contains("Unable to create") && stderr.contains(".lock")
+    // Lock filenames are not localized, so this is safe across locales
+    stderr.contains(".lock")
 }
 
 /// Run a git command with retry logic for transient errors.
@@ -388,14 +393,20 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
         && let Ok(transitions) = get_diff_transitions(repo_path, merge_base, "HEAD")
     {
         for t in transitions {
-            if let Some(path) = t.to.clone().or(t.from.clone()) {
-                // For renames, store old_path; for other changes, old_path is None
-                let old_path = if t.from.as_ref() != t.to.as_ref() {
-                    t.from.clone()
-                } else {
-                    None
-                };
-                files.insert(path, old_path);
+            // Prefer t.to (destination path), fall back to t.from (for deletions)
+            // Consume the Options directly to avoid cloning
+            match (t.to, t.from) {
+                (Some(to), Some(from)) if to != from => {
+                    // Rename: use 'to' as path, 'from' as old_path
+                    files.insert(to, Some(from));
+                }
+                (Some(to), _) => {
+                    files.insert(to, None);
+                }
+                (None, Some(from)) => {
+                    files.insert(from, None);
+                }
+                (None, None) => {}
             }
         }
     }
