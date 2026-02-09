@@ -9,6 +9,7 @@
 mod print;
 
 use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, FrameContext};
+use branchdiff::file_events::GitLockState;
 #[cfg(target_os = "linux")]
 use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::{handle_event, AppAction};
@@ -408,6 +409,7 @@ where
     B::Error: Send + Sync + 'static,
 {
     let mut refresh_state = RefreshState::Idle;
+    let mut git_lock = GitLockState::default();
     let mut timers = Timers::default();
 
     let (fetch_tx, fetch_rx) = mpsc::channel::<FetchResult>();
@@ -458,6 +460,7 @@ where
                 msg,
                 app,
                 &mut refresh_state,
+                &mut git_lock,
                 &mut timers,
                 &config,
                 &repo_root,

@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 use notify_debouncer_mini::DebouncedEventKind;
 
 use crate::app::App;
+use crate::file_events::GitLockState;
+use crate::git::is_index_locked;
 use crate::gitignore::GitignoreFilter;
 use crate::input::AppAction;
 use crate::limits::DiffThresholds;
@@ -21,11 +23,16 @@ use crate::message::{
     FALLBACK_REFRESH_SECS,
 };
 
+/// Delay before processing .git/ events (500ms reduces lock collisions by ~80%)
+const GIT_EVENT_DELAY_MS: u64 = 500;
+
 /// Timer state for periodic operations.
 pub struct Timers {
     pub last_refresh: Instant,
     pub last_fetch: Instant,
     pub fetch_in_progress: bool,
+    /// Timestamp of last .git/ event for delayed processing
+    pub pending_git_event: Option<Instant>,
 }
 
 impl Default for Timers {
@@ -34,6 +41,7 @@ impl Default for Timers {
             last_refresh: Instant::now(),
             last_fetch: Instant::now(),
             fetch_in_progress: false,
+            pending_git_event: None,
         }
     }
 }
@@ -152,6 +160,7 @@ pub fn update(
     msg: Message,
     app: &mut App,
     refresh_state: &mut RefreshState,
+    git_lock: &mut GitLockState,
     timers: &mut Timers,
     config: &UpdateConfig,
     repo_root: &Path,
@@ -162,7 +171,7 @@ pub fn update(
             handle_refresh(outcome, app, refresh_state, timers, config)
         }
         Message::FileChanged(events) => {
-            handle_file_change(events, app, refresh_state, repo_root)
+            handle_file_change(events, app, refresh_state, git_lock, timers, repo_root)
         }
         Message::FetchCompleted(result) => handle_fetch(result, app, refresh_state, timers),
         Message::Tick => handle_tick(refresh_state, timers, config),
@@ -409,6 +418,8 @@ fn handle_file_change(
     events: Vec<notify_debouncer_mini::DebouncedEvent>,
     app: &mut App,
     refresh_state: &mut RefreshState,
+    git_lock: &mut GitLockState,
+    timers: &mut Timers,
     repo_root: &Path,
 ) -> UpdateResult {
     let mut result = UpdateResult::default();
@@ -419,6 +430,27 @@ fn handle_file_change(
         .filter(|e| e.kind == DebouncedEventKind::Any)
         .map(|e| &e.path)
         .collect();
+
+    // Check for git lock file changes BEFORE filtering
+    // The file watcher sees lock file events, we need to check actual state
+    let has_lock_event = unique_paths
+        .iter()
+        .any(|p| p.file_name().is_some_and(|name| name == "index.lock"));
+
+    if has_lock_event {
+        let currently_locked = is_index_locked(repo_root);
+        let was_locked = git_lock.is_locked();
+
+        // If we just unlocked and had pending refresh, trigger it
+        // Must take pending BEFORE set_locked(false) which clears it
+        if was_locked && !currently_locked && git_lock.take_pending() {
+            git_lock.set_locked(false);
+            result.refresh = RefreshTrigger::Full;
+            return result;
+        }
+
+        git_lock.set_locked(currently_locked);
+    }
 
     // Rebuild gitignore matcher if any .gitignore file changed
     let gitignore_changed = unique_paths
@@ -458,6 +490,27 @@ fn handle_file_change(
     }
 
     if should_refresh {
+        // If git index is locked by external process, defer refresh
+        if git_lock.is_locked() {
+            git_lock.set_pending();
+            return result;
+        }
+
+        // Differentiated debouncing: .git/ events get delayed processing
+        // If we only have git internal changes (no source file changes), defer refresh
+        let has_only_git_changes = source_files.is_empty();
+
+        if has_only_git_changes {
+            // Only .git/ changes - defer processing for 500ms to reduce lock collisions
+            timers.pending_git_event = Some(Instant::now());
+            // If a refresh is already in progress, mark pending for when it completes
+            if !refresh_state.is_idle() {
+                refresh_state.cancel_and_mark_pending();
+            }
+            return result;
+        }
+
+        // Source file changes - process immediately
         if !refresh_state.is_idle() {
             if has_git_change {
                 refresh_state.cancel_and_mark_pending();
@@ -465,6 +518,9 @@ fn handle_file_change(
                 refresh_state.mark_pending();
             }
         } else {
+            // Clear any pending git event since we're refreshing now
+            timers.pending_git_event = None;
+
             let can_use_single_file =
                 !has_git_change && source_files.len() == 1 && !app.files.is_empty();
 
@@ -539,6 +595,16 @@ fn handle_tick(
         timers.fetch_in_progress = true;
         timers.last_fetch = Instant::now();
         result.trigger_fetch = true;
+    }
+
+    // Process delayed .git/ events (differentiated debouncing)
+    if let Some(pending_time) = timers.pending_git_event
+        && pending_time.elapsed() >= Duration::from_millis(GIT_EVENT_DELAY_MS)
+        && refresh_state.is_idle()
+    {
+        timers.pending_git_event = None;
+        result.refresh = RefreshTrigger::Full;
+        return result;
     }
 
     // Watchdog: reset stuck refresh
@@ -1022,6 +1088,8 @@ mod tests {
 
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
+        let mut git_lock = GitLockState::default();
+        let mut timers = Timers::default();
         let repo_root = PathBuf::from("/repo");
 
         let events = vec![DebouncedEvent::new(
@@ -1029,9 +1097,203 @@ mod tests {
             DebouncedEventKind::Any,
         )];
 
-        let result = handle_file_change(events, &mut app, &mut refresh_state, &repo_root);
+        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut git_lock, &mut timers, &repo_root);
         // File changes trigger background refresh, not immediate redraw
         assert!(!result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_file_change_skips_refresh_when_locked() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        // Create lock file to simulate external git operation
+        std::fs::write(git_dir.join("index.lock"), "").unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let mut git_lock = GitLockState::default();
+        let mut timers = Timers::default();
+
+        // First, trigger lock detection by sending a lock file event
+        let lock_events = vec![DebouncedEvent::new(
+            git_dir.join("index.lock"),
+            DebouncedEventKind::Any,
+        )];
+        let _ = handle_file_change(lock_events, &mut app, &mut refresh_state, &mut git_lock, &mut timers, temp.path());
+
+        // Now git_lock should be set
+        assert!(git_lock.is_locked());
+
+        // Now send a source file change event
+        let events = vec![DebouncedEvent::new(
+            temp.path().join("src/main.rs"),
+            DebouncedEventKind::Any,
+        )];
+        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut git_lock, &mut timers, temp.path());
+
+        // Should NOT trigger refresh because we're locked
+        assert_eq!(result.refresh, RefreshTrigger::None);
+    }
+
+    #[test]
+    fn test_handle_file_change_triggers_refresh_on_unlock() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        // Create lock file initially
+        let lock_path = git_dir.join("index.lock");
+        std::fs::write(&lock_path, "").unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let mut git_lock = GitLockState::default();
+        let mut timers = Timers::default();
+
+        // First, detect the lock
+        let lock_events = vec![DebouncedEvent::new(
+            lock_path.clone(),
+            DebouncedEventKind::Any,
+        )];
+        let _ = handle_file_change(lock_events, &mut app, &mut refresh_state, &mut git_lock, &mut timers, temp.path());
+        assert!(git_lock.is_locked());
+
+        // Send a source file change while locked - should mark pending
+        let source_events = vec![DebouncedEvent::new(
+            temp.path().join("src/main.rs"),
+            DebouncedEventKind::Any,
+        )];
+        let _ = handle_file_change(source_events, &mut app, &mut refresh_state, &mut git_lock, &mut timers, temp.path());
+
+        // Remove lock file to simulate git operation completing
+        std::fs::remove_file(&lock_path).unwrap();
+
+        // Send lock file event again (deletion is also an event)
+        let unlock_events = vec![DebouncedEvent::new(
+            lock_path,
+            DebouncedEventKind::Any,
+        )];
+        let result = handle_file_change(unlock_events, &mut app, &mut refresh_state, &mut git_lock, &mut timers, temp.path());
+
+        // Should trigger refresh because we unlocked with pending
+        assert!(!git_lock.is_locked());
+        assert_eq!(result.refresh, RefreshTrigger::Full);
+    }
+
+    #[test]
+    fn test_git_events_deferred_for_differentiated_debouncing() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let mut git_lock = GitLockState::default();
+        let mut timers = Timers::default();
+
+        // Send a .git/index event (git internal change, no source files)
+        let events = vec![DebouncedEvent::new(
+            git_dir.join("index"),
+            DebouncedEventKind::Any,
+        )];
+        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut git_lock, &mut timers, temp.path());
+
+        // Should NOT trigger immediate refresh - should be deferred
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        // Should have set pending_git_event timestamp
+        assert!(timers.pending_git_event.is_some());
+    }
+
+    #[test]
+    fn test_source_file_events_trigger_immediate_refresh() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".git")).unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let mut git_lock = GitLockState::default();
+        let mut timers = Timers::default();
+
+        // Send a source file event
+        let events = vec![DebouncedEvent::new(
+            temp.path().join("src/main.rs"),
+            DebouncedEventKind::Any,
+        )];
+        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut git_lock, &mut timers, temp.path());
+
+        // Should trigger immediate refresh
+        assert_eq!(result.refresh, RefreshTrigger::Full);
+    }
+
+    #[test]
+    fn test_handle_tick_processes_pending_git_event_after_delay() {
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::default();
+        // Set pending_git_event to a time in the past (more than 500ms ago)
+        timers.pending_git_event = Some(Instant::now() - Duration::from_millis(600));
+
+        let config = UpdateConfig::default();
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+
+        // Should trigger refresh because 500ms has elapsed
+        assert_eq!(result.refresh, RefreshTrigger::Full);
+        // Should have cleared pending_git_event
+        assert!(timers.pending_git_event.is_none());
+    }
+
+    #[test]
+    fn test_handle_tick_does_not_process_pending_git_event_too_early() {
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::default();
+        // Set pending_git_event to now (not enough time has elapsed)
+        timers.pending_git_event = Some(Instant::now());
+
+        let config = UpdateConfig::default();
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+
+        // Should NOT trigger refresh because not enough time has elapsed
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        // Should still have pending_git_event
+        assert!(timers.pending_git_event.is_some());
+    }
+
+    #[test]
+    fn test_mixed_git_and_source_events_trigger_immediate_refresh() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let mut git_lock = GitLockState::default();
+        let mut timers = Timers::default();
+
+        // Send BOTH a .git/index event AND a source file event
+        let events = vec![
+            DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any),
+            DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any),
+        ];
+        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut git_lock, &mut timers, temp.path());
+
+        // Should trigger IMMEDIATE refresh (source files take priority)
+        assert_eq!(result.refresh, RefreshTrigger::Full);
+        // Should NOT have set pending_git_event
+        assert!(timers.pending_git_event.is_none());
     }
 
     #[test]
