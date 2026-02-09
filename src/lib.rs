@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod diff;
+pub mod file_events;
 pub mod file_links;
 pub mod git;
 pub mod image_diff;

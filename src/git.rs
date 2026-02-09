@@ -63,6 +63,15 @@ fn is_transient_error(stderr: &str) -> bool {
     stderr.contains(".lock")
 }
 
+/// Check if an external process holds the git index lock.
+///
+/// Returns true if `.git/index.lock` exists, indicating another git process
+/// (like `git rebase`, `git commit`, etc.) is currently running.
+/// When locked, branchdiff should defer refresh to avoid lock collisions.
+pub fn is_index_locked(repo_path: &Path) -> bool {
+    repo_path.join(".git/index.lock").exists()
+}
+
 /// Run a git command with retry logic for transient errors.
 /// Uses exponential backoff: 100ms, 200ms, 400ms between retries.
 ///
@@ -1439,5 +1448,33 @@ mod tests {
         let renamed = &changed[0];
         assert_eq!(renamed.path, "subdir/renamed.txt");
         assert_eq!(renamed.old_path, Some("subdir/file.txt".to_string()));
+    }
+
+    // ---- is_index_locked tests ----
+
+    #[test]
+    fn test_is_index_locked_no_lock() {
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        fs::create_dir_all(&git_dir).unwrap();
+
+        assert!(!is_index_locked(temp.path()));
+    }
+
+    #[test]
+    fn test_is_index_locked_with_lock() {
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(git_dir.join("index.lock"), "").unwrap();
+
+        assert!(is_index_locked(temp.path()));
+    }
+
+    #[test]
+    fn test_is_index_locked_no_git_dir() {
+        let temp = TempDir::new().unwrap();
+        // No .git directory at all
+        assert!(!is_index_locked(temp.path()));
     }
 }
