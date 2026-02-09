@@ -1,7 +1,6 @@
 mod print;
 
 use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, FrameContext};
-use branchdiff::image_diff::{FONT_HEIGHT_PX, FONT_WIDTH_PX};
 #[cfg(target_os = "linux")]
 use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::{handle_event, AppAction};
@@ -156,16 +155,13 @@ fn main() -> Result<()> {
         || std::env::var("TMUX").is_ok()
         || std::env::var("STY").is_ok();
 
-    let font_size = (FONT_WIDTH_PX as u16, FONT_HEIGHT_PX as u16);
     let image_picker = if in_multiplexer {
         // Force halfblocks protocol for terminal multiplexers
-        let mut picker = ratatui_image::picker::Picker::from_fontsize(font_size);
-        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
-        picker
+        ratatui_image::picker::Picker::halfblocks()
     } else {
         // Query terminal capabilities to detect Kitty/Sixel/iTerm2 support
         ratatui_image::picker::Picker::from_query_stdio()
-            .unwrap_or_else(|_| ratatui_image::picker::Picker::from_fontsize(font_size))
+            .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks())
     };
 
     // Setup terminal
@@ -397,7 +393,10 @@ fn run_app<B: Backend>(
     config: UpdateConfig,
     git_version: git::GitVersion,
     watch_limit: Option<usize>,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     let mut refresh_state = RefreshState::Idle;
     let mut timers = Timers::default();
 
