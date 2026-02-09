@@ -7,7 +7,7 @@
 use std::cell::OnceCell;
 
 use crate::diff::{DiffLine, LineSource};
-use crate::ui::wrapping::content_display_width;
+use crate::ui::wrapping::{wrapped_line_height, ImageDimensions};
 
 use super::App;
 
@@ -254,7 +254,7 @@ impl FrameContext {
             match item {
                 DisplayableItem::Line(idx) => {
                     let line = &app.lines[*idx];
-                    self.wrapped_line_height(line)
+                    self.wrapped_line_height(line, app)
                 }
                 DisplayableItem::Elided(_) => 1, // Elided markers are always 1 row
             }
@@ -262,40 +262,34 @@ impl FrameContext {
     }
 
     /// Calculate how many screen rows a line will take when wrapped.
-    /// Must match `wrap_content`'s sanitization (tabs → 4 spaces, control chars → space).
-    fn wrapped_line_height(&self, line: &DiffLine) -> usize {
-        if self.content_width == 0 {
-            return 1;
-        }
-
-        // Image markers take dynamic height based on viewport
-        if line.is_image_marker() {
-            return crate::ui::image_view::calculate_image_height(self.viewport_height as u16) as usize;
-        }
-
-        if self.is_mixed_inline_change(line) && content_display_width(&line.content) > self.content_width {
-            let del_width = line.old_content.as_ref().map(|s| content_display_width(s)).unwrap_or(0);
-            let ins_width = content_display_width(&line.content);
-            let del_height = if del_width == 0 { 0 } else { del_width.div_ceil(self.content_width) };
-            let ins_height = ins_width.div_ceil(self.content_width);
-            return del_height + ins_height;
-        }
-
-        let width = content_display_width(&line.content);
-        if width <= self.content_width {
-            1
+    /// Delegates to the shared `wrapped_line_height` function in `ui::wrapping`.
+    fn wrapped_line_height(&self, line: &DiffLine, app: &App) -> usize {
+        // Get image dimensions from cache if this is an image marker
+        let image_dims: Option<ImageDimensions> = if line.is_image_marker() {
+            line.file_path.as_ref().and_then(|path| {
+                app.image_cache.peek(path).map(|state| {
+                    let before = state
+                        .before
+                        .as_ref()
+                        .map(|img| (img.original_width, img.original_height));
+                    let after = state
+                        .after
+                        .as_ref()
+                        .map(|img| (img.original_width, img.original_height));
+                    (before, after)
+                })
+            })
         } else {
-            width.div_ceil(self.content_width)
-        }
-    }
+            None
+        };
 
-    fn is_mixed_inline_change(&self, line: &DiffLine) -> bool {
-        if line.inline_spans.is_empty() {
-            return false;
-        }
-        let has_deletions = line.inline_spans.iter().any(|s| s.is_deletion);
-        let has_insertions = line.inline_spans.iter().any(|s| !s.is_deletion && s.source.is_some());
-        has_deletions && has_insertions
+        wrapped_line_height(
+            line,
+            self.content_width,
+            image_dims,
+            app.panel_width,
+            app.font_size,
+        )
     }
 }
 
@@ -609,6 +603,91 @@ mod tests {
             visible_with_default <= 12,
             "With default content_width=80, should only see ~10-12 lines due to wrap, got {}",
             visible_with_default
+        );
+    }
+
+    #[test]
+    fn test_frame_context_uses_image_cache_for_height() {
+        use crate::image_diff::{CachedImage, ImageDiffState};
+        use image::DynamicImage;
+
+        // Create 3 image files to match the bug scenario
+        let lines = vec![
+            DiffLine::file_header("image1.png"),
+            DiffLine::image_marker("image1.png"),
+            DiffLine::file_header("image2.png"),
+            DiffLine::image_marker("image2.png"),
+            DiffLine::file_header("image3.png"),
+            DiffLine::image_marker("image3.png"),
+        ];
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.viewport_height = 60;  // Large enough for all items
+        app.content_width = 80;
+        app.panel_width = 100;
+
+        // Add image data to cache for all 3 images (192x192)
+        for i in 1..=3 {
+            let cached_image = CachedImage {
+                display_image: DynamicImage::new_rgb8(192, 192),
+                original_width: 192,
+                original_height: 192,
+                file_size: 1024,
+                format_name: "PNG".to_string(),
+                protocol: None,
+            };
+            app.image_cache.insert(
+                format!("image{}.png", i),
+                ImageDiffState {
+                    before: Some(cached_image),
+                    after: None,
+                },
+            );
+        }
+
+        let ctx = FrameContext::new(&app);
+
+        // Get the wrap heights via FrameContext
+        let wrap_heights = ctx.get_wrap_heights(&app);
+
+        // File headers should be 1 row each
+        assert_eq!(wrap_heights[0], 1, "File header should be 1 row");
+        assert_eq!(wrap_heights[2], 1, "File header should be 1 row");
+        assert_eq!(wrap_heights[4], 1, "File header should be 1 row");
+
+        // Image markers should use cache dimensions, not fallback
+        // With 192x192 image, 8x16 font, panel_width=100:
+        // Available width per panel: (100-4)/2 = 48 cells
+        // Image in cells: 192/8 = 24 cells wide, 192/16 = 12 cells tall
+        // No scaling needed (24 < 48), height = 12 + 4 (borders) = 16
+        let expected_image_height = crate::ui::image_view::calculate_image_height_for_images(
+            Some((192, 192)),
+            None,
+            100,
+            (8, 16),
+        ) as usize;
+
+        assert_eq!(
+            wrap_heights[1], expected_image_height,
+            "Image 1 should use cache dimensions, not fallback"
+        );
+        assert_eq!(
+            wrap_heights[3], expected_image_height,
+            "Image 2 should use cache dimensions, not fallback"
+        );
+        assert_eq!(
+            wrap_heights[5], expected_image_height,
+            "Image 3 should use cache dimensions, not fallback"
+        );
+
+        // Verify visible range includes all 3 files at scroll_offset=0
+        // Total rows: 3 headers (3) + 3 images (3 * 16 = 48) = 51 rows
+        // With viewport_height=60, all 6 items should be visible
+        let (start, end) = ctx.visible_range(&app);
+        assert_eq!(start, 0);
+        assert_eq!(
+            end, 6,
+            "All 6 items (3 headers + 3 images) should be visible with 60-row viewport"
         );
     }
 }

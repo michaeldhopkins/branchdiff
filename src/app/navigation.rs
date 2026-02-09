@@ -1,5 +1,5 @@
 use crate::diff::{DiffLine, LineSource};
-use crate::ui::wrapping::content_display_width;
+use crate::ui::wrapping::{wrapped_line_height, ImageDimensions};
 
 use super::{App, DisplayableItem, FrameContext};
 
@@ -205,47 +205,34 @@ impl App {
     }
 
     /// Calculate how many screen rows a line will take when wrapped.
-    /// Must match `wrap_content`'s sanitization (tabs → 4 spaces, control chars → space).
+    /// Delegates to the shared `wrapped_line_height` function in `ui::wrapping`.
     pub(super) fn wrapped_line_height(&self, line: &DiffLine) -> usize {
-        if self.content_width == 0 {
-            return 1;
-        }
-
-        // Image markers take dynamic height based on actual image dimensions
-        if line.is_image_marker() {
-            // Look up actual image dimensions from cache
-            if let Some(ref path) = line.file_path
-                && let Some(state) = self.image_cache.peek(path)
-            {
-                let before_dims = state
-                    .before
-                    .as_ref()
-                    .map(|img| (img.original_width, img.original_height));
-                let after_dims = state
-                    .after
-                    .as_ref()
-                    .map(|img| (img.original_width, img.original_height));
-
-                // Use dimension-based height if we have image data
-                if before_dims.is_some() || after_dims.is_some() {
-                    return crate::ui::image_view::calculate_image_height_for_images(
-                        before_dims,
-                        after_dims,
-                        self.panel_width,
-                        self.font_size,
-                    ) as usize;
-                }
-            }
-            // Fallback: minimal height for images not yet loaded
-            return 1;
-        }
-
-        let width = content_display_width(&line.content);
-        if width <= self.content_width {
-            1
+        // Get image dimensions from cache if this is an image marker
+        let image_dims: Option<ImageDimensions> = if line.is_image_marker() {
+            line.file_path.as_ref().and_then(|path| {
+                self.image_cache.peek(path).map(|state| {
+                    let before = state
+                        .before
+                        .as_ref()
+                        .map(|img| (img.original_width, img.original_height));
+                    let after = state
+                        .after
+                        .as_ref()
+                        .map(|img| (img.original_width, img.original_height));
+                    (before, after)
+                })
+            })
         } else {
-            width.div_ceil(self.content_width)
-        }
+            None
+        };
+
+        wrapped_line_height(
+            line,
+            self.content_width,
+            image_dims,
+            self.panel_width,
+            self.font_size,
+        )
     }
 
     pub fn scroll_percentage(&self) -> u16 {
