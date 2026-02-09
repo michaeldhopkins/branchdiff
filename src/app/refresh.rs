@@ -212,18 +212,29 @@ pub fn compute_refresh(
                 files.push(file_diff);
             }
             FileProcessResult::Binary { path } => {
-                lines.push(DiffLine::file_header(&path));
-                lines.push(DiffLine::new(
+                let header = DiffLine::file_header(&path);
+                let marker = DiffLine::new(
                     LineSource::Base,
                     "[binary file]".to_string(),
                     ' ',
                     None,
-                ));
+                );
+                lines.push(header.clone());
+                lines.push(marker.clone());
+                // Add to files for status bar count
+                files.push(FileDiff {
+                    lines: vec![header, marker],
+                });
             }
             FileProcessResult::Image { path } => {
-                // For now, show as "[image]" marker - actual rendering happens in UI layer
-                lines.push(DiffLine::file_header(&path));
-                lines.push(DiffLine::image_marker(&path));
+                let header = DiffLine::file_header(&path);
+                let marker = DiffLine::image_marker(&path);
+                lines.push(header.clone());
+                lines.push(marker.clone());
+                // Add to files for status bar count
+                files.push(FileDiff {
+                    lines: vec![header, marker],
+                });
             }
         }
     }
@@ -608,11 +619,11 @@ mod tests {
         assert!(result.is_ok());
         let refresh = result.unwrap();
 
-        // Text file should be in files list (binary files are excluded from FileDiff)
+        // Both text and binary files should be in files list for accurate count
         assert_eq!(
             refresh.files.len(),
-            1,
-            "Should have exactly 1 FileDiff (text only, binary excluded)"
+            2,
+            "Should have 2 FileDiffs (text and binary)"
         );
 
         // Both should appear in lines output - text content and binary marker
@@ -633,8 +644,8 @@ mod tests {
             .collect();
         assert_eq!(file_headers.len(), 2, "Should have 2 file headers (text + binary)");
 
-        // Metrics tracks non-binary files only
-        assert_eq!(refresh.metrics.file_count, 1);
+        // Metrics tracks all files including binary
+        assert_eq!(refresh.metrics.file_count, 2);
     }
 
     #[test]
@@ -800,5 +811,89 @@ mod tests {
         let marker = image_marker.unwrap();
         assert_eq!(marker.file_path, Some("image.png".to_string()));
         assert_eq!(marker.content, "[image]");
+
+        // Image files should be included in the file count
+        let image_file_in_files = refresh.files.iter().any(|f| {
+            f.lines
+                .first()
+                .is_some_and(|l| l.file_path.as_deref() == Some("image.png"))
+        });
+        assert!(
+            image_file_in_files,
+            "Image file should be included in files for status bar count"
+        );
+    }
+
+    #[test]
+    fn test_image_and_binary_files_counted_in_metrics() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Initialize git repo
+        Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to init");
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set email");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to set name");
+
+        // Create a text file, commit it
+        std::fs::write(repo_path.join("text.txt"), "initial\n").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to add");
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to commit");
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(repo_path)
+            .output()
+            .expect("failed to rename branch");
+
+        // Add modifications: text change + new image
+        std::fs::write(repo_path.join("text.txt"), "modified\n").unwrap();
+        let png_bytes: Vec<u8> = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
+            0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54,
+            0x08, 0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, 0x00,
+            0x05, 0xFE, 0x02, 0xFE, 0xA3, 0x56, 0x5A, 0x09,
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+            0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(repo_path.join("image.png"), &png_bytes).unwrap();
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let result = compute_refresh(repo_path, "main", &cancel_flag);
+
+        assert!(result.is_ok());
+        let refresh = result.unwrap();
+
+        // Should have 2 files: text + image
+        assert_eq!(
+            refresh.files.len(),
+            2,
+            "Should count both text and image files"
+        );
+        assert_eq!(
+            refresh.metrics.file_count, 2,
+            "Metrics should count both text and image files"
+        );
     }
 }
