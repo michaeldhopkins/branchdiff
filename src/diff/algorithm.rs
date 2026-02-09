@@ -11,6 +11,35 @@ use super::output::{build_working_line_output, determine_deletion_source};
 use super::provenance::{build_modification_map, build_provenance_map};
 use super::{DiffLine, FileDiff, LineSource};
 
+/// Input for computing a 4-way diff.
+///
+/// Named fields make call sites readable:
+/// ```ignore
+/// compute_four_way_diff(DiffInput {
+///     path: "file.rs",
+///     base: Some(base_content),
+///     head: Some(head_content),
+///     index: Some(index_content),
+///     working: Some(working_content),
+///     old_path: None,
+/// })
+/// ```
+#[derive(Debug, Default)]
+pub struct DiffInput<'a> {
+    /// Path to the file being diffed
+    pub path: &'a str,
+    /// Content at merge-base (common ancestor with main/master)
+    pub base: Option<&'a str>,
+    /// Content at HEAD (committed on branch)
+    pub head: Option<&'a str>,
+    /// Content in index (staged)
+    pub index: Option<&'a str>,
+    /// Content in working tree
+    pub working: Option<&'a str>,
+    /// Original path if file was renamed
+    pub old_path: Option<&'a str>,
+}
+
 fn build_deletion_diff(path: &str, content: &str, source: LineSource) -> FileDiff {
     let mut lines = vec![DiffLine::deleted_file_header(path)];
     for (i, line) in content.lines().enumerate() {
@@ -21,35 +50,29 @@ fn build_deletion_diff(path: &str, content: &str, source: LineSource) -> FileDif
     FileDiff { lines }
 }
 
-fn check_file_deletion(
-    path: &str,
-    base_content: Option<&str>,
-    head_content: Option<&str>,
-    index_content: Option<&str>,
-    working_content: Option<&str>,
-) -> Option<FileDiff> {
+fn check_file_deletion(input: &DiffInput<'_>) -> Option<FileDiff> {
     // Unstaged deletion: file exists in index but not working tree
-    if working_content.is_none()
-        && let Some(content) = index_content
+    if input.working.is_none()
+        && let Some(content) = input.index
     {
-        return Some(build_deletion_diff(path, content, LineSource::DeletedStaged));
+        return Some(build_deletion_diff(input.path, content, LineSource::DeletedStaged));
     }
 
     // Staged deletion: file exists in HEAD but not in index or working
-    if index_content.is_none()
-        && working_content.is_none()
-        && let Some(content) = head_content
+    if input.index.is_none()
+        && input.working.is_none()
+        && let Some(content) = input.head
     {
-        return Some(build_deletion_diff(path, content, LineSource::DeletedCommitted));
+        return Some(build_deletion_diff(input.path, content, LineSource::DeletedCommitted));
     }
 
     // Committed deletion: file exists in base but not in HEAD/index/working
-    if head_content.is_none()
-        && index_content.is_none()
-        && working_content.is_none()
-        && let Some(content) = base_content
+    if input.head.is_none()
+        && input.index.is_none()
+        && input.working.is_none()
+        && let Some(content) = input.base
     {
-        return Some(build_deletion_diff(path, content, LineSource::DeletedBase));
+        return Some(build_deletion_diff(input.path, content, LineSource::DeletedBase));
     }
 
     None
@@ -58,28 +81,22 @@ fn check_file_deletion(
 /// Compute 4-way diff: base→head→index→working.
 /// Uses provenance maps (not content similarity) to determine line sources.
 /// Inline diffs only created from explicit modification maps.
-pub fn compute_four_way_diff(
-    path: &str,
-    base_content: Option<&str>,
-    head_content: Option<&str>,
-    index_content: Option<&str>,
-    working_content: Option<&str>,
-    old_path: Option<&str>,
-) -> FileDiff {
-    if let Some(deletion_diff) = check_file_deletion(path, base_content, head_content, index_content, working_content) {
+pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
+    if let Some(deletion_diff) = check_file_deletion(&input) {
         return deletion_diff;
     }
 
-    let header = match old_path {
+    let path = input.path;
+    let header = match input.old_path {
         Some(old) => DiffLine::renamed_file_header(old, path),
         None => DiffLine::file_header(path),
     };
     let mut lines = vec![header];
 
-    let base = base_content.unwrap_or("");
-    let head = head_content.unwrap_or(base);
-    let index = index_content.unwrap_or(head);
-    let working = working_content.unwrap_or(index);
+    let base = input.base.unwrap_or("");
+    let head = input.head.unwrap_or(base);
+    let index = input.index.unwrap_or(head);
+    let working = input.working.unwrap_or(index);
 
     let base_lines: Vec<&str> = base.lines().collect();
     let head_lines: Vec<&str> = head.lines().collect();

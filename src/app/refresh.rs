@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 
-use crate::diff::{compute_four_way_diff, DiffLine, FileDiff, LineSource};
+use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff, LineSource};
 use crate::file_links::compute_file_links;
 use crate::git;
 use crate::image_diff::is_image_file;
@@ -120,14 +120,14 @@ fn process_single_file(
     }
 
     let contents = FileContents::fetch(repo_path, file_path, old_path, merge_base);
-    let file_diff = compute_four_way_diff(
-        file_path,
-        contents.base.as_deref(),
-        contents.head.as_deref(),
-        contents.index.as_deref(),
-        contents.working.as_deref(),
+    let file_diff = compute_four_way_diff(DiffInput {
+        path: file_path,
+        base: contents.base.as_deref(),
+        head: contents.head.as_deref(),
+        index: contents.index.as_deref(),
+        working: contents.working.as_deref(),
         old_path,
-    );
+    });
 
     FileProcessResult::Diff(file_diff)
 }
@@ -147,14 +147,14 @@ pub fn compute_single_file_diff(
         return None;
     }
 
-    Some(compute_four_way_diff(
-        file_path,
-        contents.base.as_deref(),
-        contents.head.as_deref(),
-        contents.index.as_deref(),
-        contents.working.as_deref(),
-        None, // Single file refresh doesn't track renames
-    ))
+    Some(compute_four_way_diff(DiffInput {
+        path: file_path,
+        base: contents.base.as_deref(),
+        head: contents.head.as_deref(),
+        index: contents.index.as_deref(),
+        working: contents.working.as_deref(),
+        old_path: None, // Single file refresh doesn't track renames
+    }))
 }
 
 pub fn compute_refresh(
