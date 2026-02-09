@@ -202,7 +202,7 @@ mod tests {
         use branchdiff::app::{App, ViewMode};
         use branchdiff::diff::FileDiff;
         use branchdiff::gitignore::GitignoreFilter;
-        use branchdiff::image_diff::ImageCache;
+        use branchdiff::image_diff::{ImageCache, FONT_WIDTH_PX, FONT_HEIGHT_PX};
 
         let repo_path = PathBuf::from("/tmp/test");
         let app = App {
@@ -234,6 +234,7 @@ mod tests {
             content_offset: (1, 1),
             line_num_width: 0,
             content_width: 80,
+            panel_width: 80,
             conflict_warning: None,
             performance_warning: None,
             row_map: Vec::new(),
@@ -245,6 +246,7 @@ mod tests {
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
             image_picker: None,
+            font_size: (FONT_WIDTH_PX as u16, FONT_HEIGHT_PX as u16),
         };
 
         let result = print_diff(&app);

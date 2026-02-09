@@ -106,6 +106,7 @@ impl TestAppBuilder {
             content_offset: (1, 1),
             line_num_width: 0,
             content_width: 80,
+            panel_width: 80,
             conflict_warning: None,
             performance_warning: None,
             row_map: Vec::new(),
@@ -117,6 +118,7 @@ impl TestAppBuilder {
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
             image_picker: None,
+            font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
         }
     }
 }
