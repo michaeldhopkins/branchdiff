@@ -1,3 +1,11 @@
+## Pre-Commit Checklist
+
+Before every commit, verify:
+1. [ ] `cargo clippy -- -D warnings` passes
+2. [ ] `cargo test` passes
+3. [ ] Version bumped in `Cargo.toml` (patch for fixes, minor for features)
+4. [ ] `cargo install --path .` run after version bump
+
 After building or making changes, always run `cargo install --path .` to install the binary.
 
 Always run `cargo clippy -- -D warnings` before committing to match CI. Clippy warnings should never be allowed to go unaddressed. Using `#[allow(...)]` to suppress warnings is not acceptable - actually fix the underlying issue.
