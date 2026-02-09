@@ -6,6 +6,19 @@ Run `cargo llvm-cov` to check test coverage after adding or modifying functional
 
 Run `cargo audit` after adding or updating dependencies to check for security vulnerabilities.
 
+## Testing Requirements
+
+**Every code change requires tests.** This is non-negotiable.
+
+- New functions/methods: Add unit tests covering the happy path and at least one edge case
+- Bug fixes: Write a failing test that reproduces the bug first, then fix it
+- UI changes: Test the formatting/layout logic with unit tests
+- Refactors: Ensure existing tests still pass; add tests if coverage gaps are found
+
+If a change seems hard to test, that's a signal the code needs refactoring. Extract pure functions, separate logic from rendering, or introduce seams for dependency injection. Never skip tests because "it's too tangled" - untangle it first.
+
+Run `cargo test` before every commit. A change without corresponding tests is incomplete.
+
 When adding user-facing features (keybindings, commands, UI elements):
 - Update README.md with feature description and keybindings
 - Update the help menu in src/ui/help.rs

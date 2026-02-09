@@ -794,7 +794,8 @@ mod tests {
         let app = create_status_bar_test_app(Some("feat"), "main", 1);
 
         let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
-        let branch_info = "feat vs main";
+        // repo_path is "/tmp/test" so repo name is "test"
+        let branch_info = "test | feat vs main";
 
         let stats = format!(
             "{} file{} | +{} -{}{} | {}%",
