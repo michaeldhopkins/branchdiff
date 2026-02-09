@@ -123,10 +123,17 @@ fn main() -> Result<()> {
         .canonicalize()
         .context("Failed to resolve repository path")?;
 
-    let repo_root = git::get_repo_root(&repo_path).context("Not a git repository")?;
-
-    // Detect git version (for feature gating like merge-tree --write-tree)
-    let git_version = git::get_git_version().context("Failed to detect git version")?;
+    // Try to find git repo - for non-TUI modes, fail immediately if not found
+    let repo_root = match git::get_repo_root(&repo_path) {
+        Ok(root) => root,
+        Err(_) => {
+            if cli.output.mode() != OutputMode::Tui {
+                anyhow::bail!("Not a git repository");
+            }
+            // TUI mode: wait for git init
+            return run_waiting_for_git(&repo_path, !cli.no_auto_fetch);
+        }
+    };
 
     // Non-interactive modes
     match cli.output.mode() {
@@ -157,22 +164,106 @@ fn main() -> Result<()> {
         return run_benchmark(repo_root, frames);
     }
 
-    // Initialize image protocol picker BEFORE raw mode (protocol detection works better in cooked mode)
-    // Terminal multiplexers (Zellij, tmux, screen) don't support image protocols well,
-    // so force halfblocks when running inside them to avoid CPU spikes and rendering issues
+    // Run the TUI app
+    run_main_app(repo_root, !cli.no_auto_fetch)
+}
+
+/// Run in "waiting for git init" mode until git is detected.
+///
+/// Displays a message and periodically checks if `git init` was run.
+/// When detected, transitions to normal app operation.
+fn run_waiting_for_git(path: &Path, auto_fetch: bool) -> Result<()> {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::widgets::{Block, Borders, Paragraph};
+    use ratatui::layout::Alignment;
+
+    // Setup terminal
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let check_interval = Duration::from_secs(1);
+    let mut last_check = Instant::now();
+
+    loop {
+        // Draw waiting message
+        terminal.draw(|f| {
+            let area = f.area();
+            let message = Paragraph::new("Not a git repository.\n\nWaiting for git init...")
+                .alignment(Alignment::Center)
+                .block(Block::default().borders(Borders::NONE));
+
+            // Center vertically
+            let y = area.height / 2;
+            let centered_area = ratatui::layout::Rect {
+                x: 0,
+                y: y.saturating_sub(2),
+                width: area.width,
+                height: 4,
+            };
+            f.render_widget(message, centered_area);
+        })?;
+
+        // Check for input
+        if event::poll(Duration::from_millis(100))?
+            && let crossterm::event::Event::Key(KeyEvent { code, modifiers, .. }) = event::read()?
+        {
+            match (code, modifiers) {
+                (KeyCode::Char('q'), _)
+                | (KeyCode::Char('c'), KeyModifiers::CONTROL)
+                | (KeyCode::Esc, _) => {
+                    // Restore terminal and exit
+                    disable_raw_mode()?;
+                    execute!(
+                        terminal.backend_mut(),
+                        LeaveAlternateScreen,
+                        DisableMouseCapture
+                    )?;
+                    terminal.show_cursor()?;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        // Check for git init every second
+        if last_check.elapsed() >= check_interval {
+            last_check = Instant::now();
+            if let Ok(repo_root) = git::get_repo_root(path) {
+                // Git was initialized! Restore terminal and run main app
+                disable_raw_mode()?;
+                execute!(
+                    terminal.backend_mut(),
+                    LeaveAlternateScreen,
+                    DisableMouseCapture
+                )?;
+                terminal.show_cursor()?;
+
+                // Call run_main_app with the detected repo
+                return run_main_app(repo_root, auto_fetch);
+            }
+        }
+    }
+}
+
+/// Main app logic, extracted for reuse after git init detection.
+fn run_main_app(repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
+    // Detect git version
+    let git_version = git::get_git_version().context("Failed to detect git version")?;
+
+    // Initialize image protocol picker
     let in_multiplexer = std::env::var("ZELLIJ").is_ok()
         || std::env::var("TMUX").is_ok()
         || std::env::var("STY").is_ok();
 
     let mut image_picker = if in_multiplexer {
-        // Force halfblocks protocol for terminal multiplexers
         ratatui_image::picker::Picker::halfblocks()
     } else {
-        // Query terminal capabilities to detect Kitty/Sixel/iTerm2 support
         ratatui_image::picker::Picker::from_query_stdio()
             .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks())
     };
-    // Composite transparent pixels against dark background (matches terminal)
     image_picker.set_background_color(image::Rgba([30, 30, 30, 255]));
 
     // Setup terminal
@@ -182,15 +273,14 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Get platform-specific watch limit (None on macOS/Windows, Some on Linux)
+    // Get watch limit
     let watch_limit = limits::get_watch_limit();
 
-    // Create app and load initial state
+    // Create app
     let mut app = App::new(repo_root.clone())?;
     app.set_image_picker(image_picker);
 
-    // Setup file watcher with appropriate backend
-    // WSL's inotify is unreliable, so use polling there
+    // Setup file watcher
     let (file_tx, file_rx) = mpsc::channel();
     let debouncer_config = DebouncerConfig::default()
         .with_timeout(Duration::from_millis(100))
@@ -209,8 +299,6 @@ fn main() -> Result<()> {
 
     let watcher_metrics = setup_watcher(debouncer.watcher(), &repo_root, watch_limit)?;
 
-    // Check for watch-related warnings (Linux only - macOS/Windows use recursive watching)
-    // Also determines if we need fallback periodic refresh
     let needs_fallback_refresh = limits::check_watch_warning(&watcher_metrics, watch_limit).is_some();
     if needs_fallback_refresh {
         app.performance_warning = Some(format!(
@@ -219,12 +307,10 @@ fn main() -> Result<()> {
         ));
     }
 
-    // Setup refresh channel for background git operations
     let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshOutcome>();
 
-    // Main loop
     let config = UpdateConfig {
-        auto_fetch: !cli.no_auto_fetch,
+        auto_fetch,
         needs_fallback_refresh,
         ..Default::default()
     };
