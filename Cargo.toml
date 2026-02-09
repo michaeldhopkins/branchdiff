@@ -1,6 +1,6 @@
 [package]
 name = "branchdiff"
-version = "0.45.2"
+version = "0.46.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Terminal UI showing unified diff of current branch vs main/master"
@@ -24,6 +24,7 @@ rayon = "1.10"
 ignore = "0.4"
 tempfile = "3"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
 unicode-width = "0.2"
 
 # Image diff support

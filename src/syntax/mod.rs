@@ -8,6 +8,7 @@ use ratatui::style::Color;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Theme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
+use two_face::syntax as extra_syntax;
 
 use crate::ui::colors::DEFAULT_FG;
 
@@ -40,7 +41,8 @@ impl SyntaxHighlighter {
     /// Get the global syntax highlighter instance
     pub fn global() -> &'static SyntaxHighlighter {
         HIGHLIGHTER.get_or_init(|| {
-            let syntax_set = SyntaxSet::load_defaults_newlines();
+            // Use two-face's extended syntax set (includes Swift, TypeScript, Kotlin, etc.)
+            let syntax_set = extra_syntax::extra_newlines();
             let theme = theme::branchdiff_theme();
             SyntaxHighlighter { syntax_set, theme }
         })
@@ -222,5 +224,25 @@ mod tests {
         // Should have Python keyword coloring
         let def_segment = py_segments.iter().find(|s| s.text == "def");
         assert!(def_segment.is_some());
+    }
+
+    #[test]
+    fn test_highlight_swift() {
+        reset_highlight_state();
+        let segments = highlight_line("func hello() -> String {", Some("test.swift"));
+        assert!(!segments.is_empty());
+        // Should have "func" as keyword
+        let func_segment = segments.iter().find(|s| s.text == "func");
+        assert!(func_segment.is_some(), "Swift 'func' keyword should be highlighted");
+    }
+
+    #[test]
+    fn test_highlight_typescript() {
+        reset_highlight_state();
+        let segments = highlight_line("const x: number = 42;", Some("test.ts"));
+        assert!(!segments.is_empty());
+        // Should have "const" as keyword
+        let const_segment = segments.iter().find(|s| s.text == "const");
+        assert!(const_segment.is_some(), "TypeScript 'const' keyword should be highlighted");
     }
 }
