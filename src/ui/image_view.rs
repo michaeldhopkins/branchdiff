@@ -9,7 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-use ratatui_image::StatefulImage;
+use ratatui_image::{Resize, StatefulImage};
 
 use crate::image_diff::{
     center_in_area, fit_dimensions, CachedImage, ImageDiffState, MAX_IMAGE_HEIGHT_ROWS,
@@ -90,29 +90,35 @@ fn render_image_panel(
 
     match image {
         Some(cached) => {
+            // Determine if we have room for metadata (need at least MIN_IMAGE_HEIGHT + METADATA_HEIGHT)
+            let has_metadata_space = inner.height > METADATA_HEIGHT + MIN_IMAGE_HEIGHT;
+
+            let image_area_height = if has_metadata_space {
+                inner.height.saturating_sub(METADATA_HEIGHT)
+            } else {
+                inner.height // Use full space for image when limited
+            };
+
             // Calculate display dimensions
             let (display_w, display_h) = fit_dimensions(
                 cached.original_width,
                 cached.original_height,
                 inner.width,
-                inner.height.saturating_sub(METADATA_HEIGHT),
+                image_area_height,
             );
 
-            // Calculate image area (above metadata)
-            let image_area = Rect::new(
-                inner.x,
-                inner.y,
-                inner.width,
-                inner.height.saturating_sub(METADATA_HEIGHT),
-            );
+            // Calculate image area
+            let image_area = Rect::new(inner.x, inner.y, inner.width, image_area_height);
 
             // Render actual image using StatefulImage if protocol is available
             if let Some(ref mut protocol) = cached.protocol {
                 // Center the image within the available area
                 let centered = center_in_area(display_w, display_h, image_area);
 
-                // Create and render the StatefulImage widget
-                let image_widget = StatefulImage::new();
+                // Create and render the StatefulImage widget with Resize::Crop
+                // This clips (rather than scales) when space is limited, enabling
+                // partial image rendering at viewport boundaries.
+                let image_widget = StatefulImage::new().resize(Resize::Crop(None));
                 frame.render_stateful_widget(image_widget, centered, protocol);
 
                 // Only show placeholder if encoding explicitly failed
@@ -125,17 +131,19 @@ fn render_image_panel(
                 render_image_placeholder_box(frame, image_area, cached);
             }
 
-            // Render metadata below image
-            let metadata_area = Rect::new(
-                inner.x,
-                inner.y + inner.height.saturating_sub(METADATA_HEIGHT),
-                inner.width,
-                METADATA_HEIGHT,
-            );
-            let metadata = Paragraph::new(cached.metadata_string())
-                .style(Style::default().fg(Color::DarkGray))
-                .alignment(Alignment::Center);
-            frame.render_widget(metadata, metadata_area);
+            // Render metadata below image only if there's space
+            if has_metadata_space {
+                let metadata_area = Rect::new(
+                    inner.x,
+                    inner.y + image_area_height,
+                    inner.width,
+                    METADATA_HEIGHT,
+                );
+                let metadata = Paragraph::new(cached.metadata_string())
+                    .style(Style::default().fg(Color::DarkGray))
+                    .alignment(Alignment::Center);
+                frame.render_widget(metadata, metadata_area);
+            }
         }
         None => {
             // No image - show placeholder
@@ -419,5 +427,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_metadata_hidden_when_insufficient_space() {
+        // This tests the conditional metadata rendering logic.
+        // When inner.height <= METADATA_HEIGHT + MIN_IMAGE_HEIGHT (1 + 4 = 5),
+        // metadata should be hidden to give all space to the image.
+        //
+        // We can't easily test the render function directly without a terminal,
+        // but we verify the constants are sensible.
+        assert_eq!(METADATA_HEIGHT, 1, "metadata line should be exactly 1 row");
+        assert_eq!(MIN_IMAGE_HEIGHT, 4, "minimum image height should be 4 rows");
+
+        // With 5 rows of inner space, metadata would leave only 4 rows for image,
+        // which equals MIN_IMAGE_HEIGHT. The condition is:
+        // has_metadata_space = inner.height > METADATA_HEIGHT + MIN_IMAGE_HEIGHT
+        // With inner.height = 5: 5 > 1 + 4 = false, so metadata is hidden
+        let inner_height = 5u16;
+        let has_metadata_space = inner_height > METADATA_HEIGHT + MIN_IMAGE_HEIGHT;
+        assert!(!has_metadata_space, "5 rows should hide metadata");
+
+        // With 6 rows, there's room for both
+        let inner_height = 6u16;
+        let has_metadata_space = inner_height > METADATA_HEIGHT + MIN_IMAGE_HEIGHT;
+        assert!(has_metadata_space, "6 rows should show metadata");
     }
 }
