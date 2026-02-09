@@ -106,7 +106,7 @@ impl App {
 
     /// Compute displayable items as indices (more efficient than cloning lines)
     pub fn compute_displayable_items(&self) -> Vec<super::DisplayableItem> {
-        let items = match self.view_mode {
+        let items = match self.view.view_mode {
             ViewMode::Full => self.compute_full_items(),
             ViewMode::Context => self.compute_context_items(),
             ViewMode::ChangesOnly => self.compute_changes_only_items(),
@@ -175,7 +175,7 @@ impl App {
     fn filter_collapsed_items(&self, items: Vec<super::DisplayableItem>) -> Vec<super::DisplayableItem> {
         use super::DisplayableItem;
 
-        if self.collapsed_files.is_empty() {
+        if self.view.collapsed_files.is_empty() {
             return items;
         }
 
@@ -199,7 +199,7 @@ impl App {
 
                     // Hide lines from collapsed files
                     let should_show = if let Some(path) = file_path {
-                        !self.collapsed_files.contains(path)
+                        !self.view.collapsed_files.contains(path)
                     } else {
                         true
                     };
@@ -211,7 +211,7 @@ impl App {
                 DisplayableItem::Elided(_) => {
                     // Elided markers don't have file_path, use current_file
                     let should_show = if let Some(ref path) = current_file {
-                        !self.collapsed_files.contains(path)
+                        !self.view.collapsed_files.contains(path)
                     } else {
                         true
                     };
@@ -228,19 +228,19 @@ impl App {
 
     pub fn cycle_view_mode(&mut self) {
         if self.lines.is_empty() {
-            self.view_mode = match self.view_mode {
+            self.view.view_mode = match self.view.view_mode {
                 ViewMode::Full => ViewMode::Context,
                 ViewMode::Context => ViewMode::ChangesOnly,
                 ViewMode::ChangesOnly => ViewMode::Full,
             };
-            self.needs_inline_spans = true;
+            self.view.needs_inline_spans = true;
             return;
         }
 
-        let middle_offset = self.viewport_height / 2;
+        let middle_offset = self.view.viewport_height / 2;
         let anchor_original_idx = self.get_original_index_at_offset(middle_offset);
 
-        self.view_mode = match self.view_mode {
+        self.view.view_mode = match self.view.view_mode {
             ViewMode::Full => ViewMode::Context,
             ViewMode::Context => ViewMode::ChangesOnly,
             ViewMode::ChangesOnly => ViewMode::Full,
@@ -248,17 +248,17 @@ impl App {
 
         if let Some(anchor_idx) = anchor_original_idx {
             let new_position = self.find_position_for_original_index(anchor_idx);
-            self.scroll_offset = new_position.saturating_sub(middle_offset);
+            self.view.scroll_offset = new_position.saturating_sub(middle_offset);
         }
 
         self.clamp_scroll();
-        self.needs_inline_spans = true;
+        self.view.needs_inline_spans = true;
     }
 
     fn get_original_index_at_offset(&self, offset: usize) -> Option<usize> {
-        let target_pos = self.scroll_offset + offset;
+        let target_pos = self.view.scroll_offset + offset;
 
-        match self.view_mode {
+        match self.view.view_mode {
             ViewMode::Full => {
                 if target_pos < self.lines.len() {
                     Some(target_pos)
@@ -306,7 +306,7 @@ impl App {
     }
 
     pub fn find_position_for_original_index(&self, original_idx: usize) -> usize {
-        match self.view_mode {
+        match self.view.view_mode {
             ViewMode::Full => original_idx.min(self.lines.len().saturating_sub(1)),
             ViewMode::Context => {
                 let (_, index_map) = self.build_context_lines_with_mapping();

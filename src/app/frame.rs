@@ -81,9 +81,9 @@ impl FrameContext {
     pub fn with_items(items: Vec<DisplayableItem>, app: &App) -> Self {
         Self {
             items,
-            viewport_height: app.viewport_height,
-            scroll_offset: app.scroll_offset,
-            content_width: app.content_width,
+            viewport_height: app.view.viewport_height,
+            scroll_offset: app.view.scroll_offset,
+            content_width: app.view.content_width,
             max_scroll: OnceCell::new(),
             wrap_heights: OnceCell::new(),
             visible_range: OnceCell::new(),
@@ -288,7 +288,7 @@ impl FrameContext {
             line,
             self.content_width,
             image_dims,
-            app.panel_width,
+            app.view.panel_width,
             app.font_size,
         )
     }
@@ -342,7 +342,7 @@ mod tests {
     fn test_frame_context_max_scroll_fits_viewport() {
         let lines: Vec<_> = (0..5).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
         let ctx = FrameContext::new(&app);
         assert_eq!(ctx.max_scroll(&app), 0);
     }
@@ -351,7 +351,7 @@ mod tests {
     fn test_frame_context_max_scroll_scrollable() {
         let lines: Vec<_> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
         let ctx = FrameContext::new(&app);
         assert_eq!(ctx.max_scroll(&app), 10);
     }
@@ -360,8 +360,8 @@ mod tests {
     fn test_frame_context_visible_range() {
         let lines: Vec<_> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 5;
-        app.scroll_offset = 3;
+        app.view.viewport_height = 5;
+        app.view.scroll_offset = 3;
         let ctx = FrameContext::new(&app);
 
         let (start, end) = ctx.visible_range(&app);
@@ -406,8 +406,8 @@ mod tests {
     fn test_frame_context_iter_visible_items() {
         let lines: Vec<_> = (0..10).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 3;
-        app.scroll_offset = 2;
+        app.view.viewport_height = 3;
+        app.view.scroll_offset = 2;
         let ctx = FrameContext::new(&app);
 
         let visible: Vec<_> = ctx.iter_visible_items(&app).collect();
@@ -423,7 +423,7 @@ mod tests {
         let (start, end) = ctx_with_default.visible_range(&app);
         assert_eq!(end - start, 10, "With default viewport_height=10, visible range should be 10");
 
-        app.viewport_height = 40;
+        app.view.viewport_height = 40;
         let ctx_with_correct = FrameContext::new(&app);
         let (start, end) = ctx_with_correct.visible_range(&app);
         assert_eq!(end - start, 40, "With viewport_height=40, visible range should be 40");
@@ -435,9 +435,9 @@ mod tests {
         lines.push(base_line(&"x".repeat(200)));
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 5;
-        app.content_width = 50;
-        app.scroll_offset = 8;
+        app.view.viewport_height = 5;
+        app.view.content_width = 50;
+        app.view.scroll_offset = 8;
 
         let ctx = FrameContext::new(&app);
         let (start, end) = ctx.visible_range(&app);
@@ -449,8 +449,8 @@ mod tests {
         // This allows partial rendering of tall items at the viewport bottom.
         let wrap_heights = ctx.get_wrap_heights(&app);
         let rows_before_last: usize = wrap_heights[start..end.saturating_sub(1)].iter().sum();
-        assert!(rows_before_last < app.viewport_height,
-            "rows before last item ({}) should start within viewport ({})", rows_before_last, app.viewport_height);
+        assert!(rows_before_last < app.view.viewport_height,
+            "rows before last item ({}) should start within viewport ({})", rows_before_last, app.view.viewport_height);
     }
 
     #[test]
@@ -458,9 +458,9 @@ mod tests {
         let lines = vec![base_line(&"x".repeat(500))];
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 3;
-        app.content_width = 50;
-        app.scroll_offset = 0;
+        app.view.viewport_height = 3;
+        app.view.content_width = 50;
+        app.view.scroll_offset = 0;
 
         let ctx = FrameContext::new(&app);
         let (start, end) = ctx.visible_range(&app);
@@ -477,9 +477,9 @@ mod tests {
         lines.push(base_line(&"x".repeat(200))); // ~4 rows at width 50
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 6; // Can fit 5 short + 1 row of tall
-        app.content_width = 50;
-        app.scroll_offset = 0;
+        app.view.viewport_height = 6; // Can fit 5 short + 1 row of tall
+        app.view.content_width = 50;
+        app.view.scroll_offset = 0;
 
         let ctx = FrameContext::new(&app);
         let (start, end) = ctx.visible_range(&app);
@@ -491,9 +491,9 @@ mod tests {
         // The total rows exceed viewport, proving we include a partial item
         let wrap_heights = ctx.get_wrap_heights(&app);
         let total_rows: usize = wrap_heights[start..end].iter().sum();
-        assert!(total_rows > app.viewport_height,
+        assert!(total_rows > app.view.viewport_height,
             "total rows ({}) should exceed viewport ({}) due to partial item",
-            total_rows, app.viewport_height);
+            total_rows, app.view.viewport_height);
     }
 
     #[test]
@@ -509,9 +509,9 @@ mod tests {
         ];
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 5; // Only room for header (1) + text (1) + 3 rows of image
-        app.content_width = 80;
-        app.panel_width = 100;
+        app.view.viewport_height = 5; // Only room for header (1) + text (1) + 3 rows of image
+        app.view.content_width = 80;
+        app.view.panel_width = 100;
 
         // Add image to cache - 192x192 results in ~16 row height
         let cached_image = CachedImage {
@@ -536,9 +536,9 @@ mod tests {
         // Verify the image marker has significant height (>5 rows)
         let image_height = wrap_heights[2];
         assert!(
-            image_height > app.viewport_height,
+            image_height > app.view.viewport_height,
             "image height ({}) should exceed viewport ({}) for this test to be meaningful",
-            image_height, app.viewport_height
+            image_height, app.view.viewport_height
         );
 
         let (start, end) = ctx.visible_range(&app);
@@ -551,9 +551,9 @@ mod tests {
         // Total rows exceed viewport, proving partial image is included
         let total_rows: usize = wrap_heights[start..end].iter().sum();
         assert!(
-            total_rows > app.viewport_height,
+            total_rows > app.view.viewport_height,
             "total rows ({}) should exceed viewport ({}) due to partial image",
-            total_rows, app.viewport_height
+            total_rows, app.view.viewport_height
         );
     }
 
@@ -569,7 +569,7 @@ mod tests {
         ];
 
         let mut app = TestAppBuilder::new().with_lines(vec![line]).build();
-        app.content_width = 50;
+        app.view.content_width = 50;
 
         let ctx = FrameContext::new(&app);
         let wrap_heights = ctx.get_wrap_heights(&app);
@@ -597,17 +597,17 @@ mod tests {
             .collect();
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 20;
-        app.scroll_offset = 0;
+        app.view.viewport_height = 20;
+        app.view.scroll_offset = 0;
 
         // With narrow content_width (50), 100-char lines wrap to 2 rows each
-        app.content_width = 50;
+        app.view.content_width = 50;
         let ctx_narrow = FrameContext::new(&app);
         let (start_narrow, end_narrow) = ctx_narrow.visible_range(&app);
         let visible_narrow = end_narrow - start_narrow;
 
         // With wide content_width (150), 100-char lines fit in 1 row each
-        app.content_width = 150;
+        app.view.content_width = 150;
         let ctx_wide = FrameContext::new(&app);
         let (start_wide, end_wide) = ctx_wide.visible_range(&app);
         let visible_wide = end_wide - start_wide;
@@ -655,13 +655,13 @@ mod tests {
             .collect();
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 20;
-        app.scroll_offset = 0;
+        app.view.viewport_height = 20;
+        app.view.scroll_offset = 0;
 
         // Simulate BUG: content_width left at default (80 from TestAppBuilder)
         // With ~120-char lines and width=80: each line wraps to 2 rows
         // 20 viewport rows / 2 rows per line = ~10 lines visible
-        let default_width = app.content_width; // Should be 80 from TestAppBuilder
+        let default_width = app.view.content_width; // Should be 80 from TestAppBuilder
         assert_eq!(default_width, 80, "Test assumes default content_width is 80");
 
         let ctx_with_default = FrameContext::new(&app);
@@ -671,7 +671,7 @@ mod tests {
         // Simulate FIX: content_width set to actual terminal width (150)
         // With ~120-char lines and width=150: each line fits in 1 row
         // 20 viewport rows / 1 row per line = 20 lines visible
-        app.content_width = 150;
+        app.view.content_width = 150;
         let ctx_with_actual = FrameContext::new(&app);
         let (_, end_actual) = ctx_with_actual.visible_range(&app);
         let visible_with_actual = end_actual;
@@ -713,9 +713,9 @@ mod tests {
         ];
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 60;  // Large enough for all items
-        app.content_width = 80;
-        app.panel_width = 100;
+        app.view.viewport_height = 60;  // Large enough for all items
+        app.view.content_width = 80;
+        app.view.panel_width = 100;
 
         // Add image data to cache for all 3 images (192x192)
         for i in 1..=3 {

@@ -175,7 +175,7 @@ const POSITION_TOLERANCE: u16 = 2;
 
 /// Determine click count for multi-click detection (double/triple click).
 fn detect_click_count(app: &App, x: u16, y: u16) -> u8 {
-    if let Some((last_time, last_x, last_y, count)) = app.last_click {
+    if let Some((last_time, last_x, last_y, count)) = app.view.last_click {
         let elapsed = last_time.elapsed().as_millis();
         let close_enough =
             x.abs_diff(last_x) <= POSITION_TOLERANCE && y.abs_diff(last_y) <= POSITION_TOLERANCE;
@@ -298,12 +298,12 @@ fn handle_input(
         // Selection actions
         AppAction::StartSelection(x, y) => {
             let click_count = detect_click_count(app, *x, *y);
-            app.last_click = Some((Instant::now(), *x, *y, click_count));
+            app.view.last_click = Some((Instant::now(), *x, *y, click_count));
             handle_click(app, *x, *y, click_count);
         }
         AppAction::UpdateSelection(x, y) => {
             app.update_selection(*x, *y);
-            app.last_click = None; // Clear to prevent false double-clicks during drag
+            app.view.last_click = None; // Clear to prevent false double-clicks during drag
         }
         AppAction::EndSelection => app.end_selection(),
 
@@ -580,7 +580,7 @@ mod tests {
         let mut refresh_state = RefreshState::Idle;
 
         handle_input(AppAction::ScrollDown(5), &mut app, &mut refresh_state);
-        assert_eq!(app.scroll_offset, 5);
+        assert_eq!(app.view.scroll_offset, 5);
     }
 
     #[test]
@@ -1040,9 +1040,9 @@ mod tests {
 
         // With line_num_width=3, prefix_len = 3 + 1 + 4 = 8
         let mut app = TestAppBuilder::new().build();
-        app.line_num_width = 3;
-        app.content_offset = (1, 1);
-        app.row_map = vec![ScreenRowInfo {
+        app.view.line_num_width = 3;
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![ScreenRowInfo {
             content: "hello world".to_string(),
             is_file_header: false,
             file_path: None,
@@ -1054,16 +1054,16 @@ mod tests {
         // First click - starts selection
         // Click on 'w' in "world" - content col 6, screen col = 6 + prefix(8) + offset(1) = 15
         handle_input(AppAction::StartSelection(15, 1), &mut app, &mut refresh_state);
-        assert!(app.last_click.is_some());
+        assert!(app.view.last_click.is_some());
         // Should have started a point selection
-        assert!(app.selection.is_some());
+        assert!(app.view.selection.is_some());
 
         // Second click at same position (simulate double-click by keeping last_click recent)
         // last_click is already set from first click, and time elapsed is negligible
         handle_input(AppAction::StartSelection(15, 1), &mut app, &mut refresh_state);
 
         // Should have selected the word "world"
-        let sel = app.selection.as_ref().expect("Should have selection");
+        let sel = app.view.selection.as_ref().expect("Should have selection");
         assert_eq!(sel.start.col, 14); // "world" starts at content col 6 + prefix 8
         assert_eq!(sel.end.col, 19); // "world" ends at content col 11 + prefix 8
     }
@@ -1074,9 +1074,9 @@ mod tests {
 
         // With line_num_width=3, prefix_len = 3 + 1 + 4 = 8
         let mut app = TestAppBuilder::new().build();
-        app.line_num_width = 3;
-        app.content_offset = (1, 1);
-        app.row_map = vec![ScreenRowInfo {
+        app.view.line_num_width = 3;
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![ScreenRowInfo {
             content: "hello world".to_string(),
             is_file_header: false,
             file_path: None,
@@ -1093,7 +1093,7 @@ mod tests {
         handle_input(AppAction::StartSelection(10, 1), &mut app, &mut refresh_state);
 
         // Should have selected the entire line
-        let sel = app.selection.as_ref().expect("Should have selection");
+        let sel = app.view.selection.as_ref().expect("Should have selection");
         assert_eq!(sel.start.row, 0);
         assert_eq!(sel.end.row, 0);
         // Line selection starts at prefix_len = 8
@@ -1101,7 +1101,7 @@ mod tests {
         // Line selection ends at content length + prefix_len (11 + 8 = 19)
         assert_eq!(sel.end.col, 19);
         // Line selection anchor should be set
-        assert!(app.line_selection_anchor.is_some());
+        assert!(app.view.line_selection_anchor.is_some());
     }
 
     #[test]
@@ -1109,9 +1109,9 @@ mod tests {
         use crate::ui::ScreenRowInfo;
 
         let mut app = TestAppBuilder::new().build();
-        app.line_num_width = 3;
-        app.content_offset = (1, 1);
-        app.row_map = vec![ScreenRowInfo {
+        app.view.line_num_width = 3;
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![ScreenRowInfo {
             content: "hello world".to_string(),
             is_file_header: false,
             file_path: None,
@@ -1124,7 +1124,7 @@ mod tests {
         handle_input(AppAction::StartSelection(13, 1), &mut app, &mut refresh_state);
 
         // Should have a point selection, not a word selection
-        let sel = app.selection.as_ref().expect("Should have selection");
+        let sel = app.view.selection.as_ref().expect("Should have selection");
         // Point selection has start == end (or very close)
         assert_eq!(sel.start.col, sel.end.col);
     }
@@ -1132,14 +1132,14 @@ mod tests {
     #[test]
     fn test_drag_clears_last_click() {
         let mut app = TestAppBuilder::new().build();
-        app.last_click = Some((Instant::now(), 10, 10, 1));
+        app.view.last_click = Some((Instant::now(), 10, 10, 1));
 
         let mut refresh_state = RefreshState::Idle;
 
         // Drag action should clear last_click
         handle_input(AppAction::UpdateSelection(15, 10), &mut app, &mut refresh_state);
 
-        assert!(app.last_click.is_none());
+        assert!(app.view.last_click.is_none());
     }
 
     #[test]

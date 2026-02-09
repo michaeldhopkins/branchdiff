@@ -197,9 +197,9 @@ mod tests {
 
     #[test]
     fn test_print_diff_produces_output() {
-        use std::collections::{HashMap, HashSet};
+        use std::collections::HashMap;
         use std::path::PathBuf;
-        use branchdiff::app::{App, ViewMode};
+        use branchdiff::app::{App, ViewMode, ViewState};
         use branchdiff::diff::FileDiff;
         use branchdiff::gitignore::GitignoreFilter;
         use branchdiff::image_diff::{ImageCache, FONT_WIDTH_PX, FONT_HEIGHT_PX};
@@ -223,30 +223,32 @@ mod tests {
                 DiffLine::new(LineSource::Base, "unchanged".to_string(), ' ', Some(1)),
                 DiffLine::new(LineSource::Committed, "added".to_string(), '+', Some(2)),
             ],
-            scroll_offset: 0,
-            viewport_height: 20,
             error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            word_selection_anchor: None,
-            line_selection_anchor: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            panel_width: 80,
             conflict_warning: None,
             performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-            last_click: None,
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
             image_picker: None,
             font_size: (FONT_WIDTH_PX as u16, FONT_HEIGHT_PX as u16),
+            view: ViewState {
+                scroll_offset: 0,
+                viewport_height: 20,
+                view_mode: ViewMode::Full,
+                content_offset: (1, 1),
+                line_num_width: 0,
+                content_width: 80,
+                panel_width: 80,
+                show_help: false,
+                selection: None,
+                word_selection_anchor: None,
+                line_selection_anchor: None,
+                row_map: Vec::new(),
+                collapsed_files: Default::default(),
+                manually_toggled: Default::default(),
+                needs_inline_spans: true,
+                path_copied_at: None,
+                last_click: None,
+            },
         };
 
         let result = print_diff(&app);
