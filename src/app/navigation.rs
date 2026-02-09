@@ -8,23 +8,23 @@ impl App {
     /// Call this after modifying scroll_offset to trigger re-computation
     /// of inline spans and clear any text selection.
     fn invalidate_view(&mut self) {
-        self.needs_inline_spans = true;
+        self.view.needs_inline_spans = true;
         self.clear_selection();
     }
 
     pub fn scroll_up(&mut self, n: usize) {
-        let old_offset = self.scroll_offset;
-        self.scroll_offset = self.scroll_offset.saturating_sub(n);
-        if self.scroll_offset != old_offset {
+        let old_offset = self.view.scroll_offset;
+        self.view.scroll_offset = self.view.scroll_offset.saturating_sub(n);
+        if self.view.scroll_offset != old_offset {
             self.invalidate_view();
         }
     }
 
     pub fn scroll_down(&mut self, n: usize) {
-        let old_offset = self.scroll_offset;
-        self.scroll_offset = self.scroll_offset.saturating_add(n);
+        let old_offset = self.view.scroll_offset;
+        self.view.scroll_offset = self.view.scroll_offset.saturating_add(n);
         self.clamp_scroll();
-        if self.scroll_offset != old_offset {
+        if self.view.scroll_offset != old_offset {
             self.invalidate_view();
         }
     }
@@ -35,11 +35,11 @@ impl App {
             return;
         }
 
-        for (i, item) in items.iter().enumerate().skip(self.scroll_offset + 1) {
+        for (i, item) in items.iter().enumerate().skip(self.view.scroll_offset + 1) {
             if let DisplayableItem::Line(idx) = item
                 && self.lines[*idx].source == LineSource::FileHeader
             {
-                self.scroll_offset = i;
+                self.view.scroll_offset = i;
                 self.invalidate_view();
                 return;
             }
@@ -52,34 +52,34 @@ impl App {
             return;
         }
 
-        if let Some(pos) = ctx.find_next_file_header(self, self.scroll_offset) {
-            self.scroll_offset = pos;
+        if let Some(pos) = ctx.find_next_file_header(self, self.view.scroll_offset) {
+            self.view.scroll_offset = pos;
             self.invalidate_view();
         }
     }
 
     pub fn prev_file(&mut self) {
         let items = self.compute_displayable_items();
-        if items.is_empty() || self.scroll_offset == 0 {
+        if items.is_empty() || self.view.scroll_offset == 0 {
             return;
         }
 
-        let current_is_header = match items.get(self.scroll_offset) {
+        let current_is_header = match items.get(self.view.scroll_offset) {
             Some(DisplayableItem::Line(idx)) => self.lines[*idx].source == LineSource::FileHeader,
             _ => false,
         };
 
         let search_start = if current_is_header {
-            self.scroll_offset.saturating_sub(1)
+            self.view.scroll_offset.saturating_sub(1)
         } else {
-            self.scroll_offset
+            self.view.scroll_offset
         };
 
         for i in (0..=search_start).rev() {
             if let DisplayableItem::Line(idx) = items[i]
                 && self.lines[idx].source == LineSource::FileHeader
             {
-                self.scroll_offset = i;
+                self.view.scroll_offset = i;
                 self.invalidate_view();
                 return;
             }
@@ -88,47 +88,47 @@ impl App {
 
     /// Navigate to previous file using pre-computed FrameContext
     pub fn prev_file_with_frame(&mut self, ctx: &FrameContext) {
-        if ctx.item_count() == 0 || self.scroll_offset == 0 {
+        if ctx.item_count() == 0 || self.view.scroll_offset == 0 {
             return;
         }
 
-        if let Some(pos) = ctx.find_prev_file_header(self, self.scroll_offset) {
-            self.scroll_offset = pos;
+        if let Some(pos) = ctx.find_prev_file_header(self, self.view.scroll_offset) {
+            self.view.scroll_offset = pos;
             self.invalidate_view();
         }
     }
 
     pub fn page_up(&mut self) {
-        let page_size = self.viewport_height.saturating_sub(2);
+        let page_size = self.view.viewport_height.saturating_sub(2);
         self.scroll_up(page_size);
     }
 
     pub fn page_down(&mut self) {
-        let page_size = self.viewport_height.saturating_sub(2);
+        let page_size = self.view.viewport_height.saturating_sub(2);
         self.scroll_down(page_size);
     }
 
     pub fn go_to_top(&mut self) {
-        if self.scroll_offset != 0 {
-            self.scroll_offset = 0;
+        if self.view.scroll_offset != 0 {
+            self.view.scroll_offset = 0;
             self.invalidate_view();
         }
     }
 
     pub fn go_to_bottom(&mut self) {
-        let old_offset = self.scroll_offset;
+        let old_offset = self.view.scroll_offset;
         let items = self.compute_displayable_items();
-        self.scroll_offset = self.max_scroll_for_items(&items);
-        if self.scroll_offset != old_offset {
+        self.view.scroll_offset = self.max_scroll_for_items(&items);
+        if self.view.scroll_offset != old_offset {
             self.invalidate_view();
         }
     }
 
     /// Go to bottom using pre-computed FrameContext
     pub fn go_to_bottom_with_frame(&mut self, ctx: &FrameContext) {
-        let old_offset = self.scroll_offset;
-        self.scroll_offset = ctx.max_scroll(self);
-        if self.scroll_offset != old_offset {
+        let old_offset = self.view.scroll_offset;
+        self.view.scroll_offset = ctx.max_scroll(self);
+        if self.view.scroll_offset != old_offset {
             self.invalidate_view();
         }
     }
@@ -147,7 +147,7 @@ impl App {
             })
             .sum();
 
-        if total_rows <= self.viewport_height {
+        if total_rows <= self.view.viewport_height {
             return 0;
         }
 
@@ -160,7 +160,7 @@ impl App {
                 DisplayableItem::Line(idx) => self.wrapped_line_height(&self.lines[*idx]),
                 DisplayableItem::Elided(_) => 1,
             };
-            if rows_from_end + height > self.viewport_height {
+            if rows_from_end + height > self.view.viewport_height {
                 break;
             }
             rows_from_end += height;
@@ -172,9 +172,9 @@ impl App {
 
     /// Set viewport height (called during rendering)
     pub fn set_viewport_height(&mut self, height: usize) {
-        if self.viewport_height != height {
-            self.viewport_height = height;
-            self.needs_inline_spans = true;
+        if self.view.viewport_height != height {
+            self.view.viewport_height = height;
+            self.view.needs_inline_spans = true;
             self.clamp_scroll();
         }
     }
@@ -183,22 +183,22 @@ impl App {
     pub(super) fn clamp_scroll(&mut self) {
         let items = self.compute_displayable_items();
         let max_scroll = self.max_scroll_for_items(&items);
-        self.scroll_offset = self.scroll_offset.min(max_scroll);
+        self.view.scroll_offset = self.view.scroll_offset.min(max_scroll);
     }
 
     /// Clamp scroll offset using pre-computed FrameContext
     pub fn clamp_scroll_with_frame(&mut self, ctx: &FrameContext) {
         let max_scroll = ctx.max_scroll(self);
-        self.scroll_offset = self.scroll_offset.min(max_scroll);
+        self.view.scroll_offset = self.view.scroll_offset.min(max_scroll);
     }
 
     /// Scroll down using pre-computed FrameContext
     pub fn scroll_down_with_frame(&mut self, n: usize, ctx: &FrameContext) {
-        let old_offset = self.scroll_offset;
-        self.scroll_offset = self.scroll_offset.saturating_add(n);
+        let old_offset = self.view.scroll_offset;
+        self.view.scroll_offset = self.view.scroll_offset.saturating_add(n);
         self.clamp_scroll_with_frame(ctx);
-        if self.scroll_offset != old_offset {
-            self.needs_inline_spans = true;
+        if self.view.scroll_offset != old_offset {
+            self.view.needs_inline_spans = true;
             self.clear_selection();
         }
     }
@@ -227,9 +227,9 @@ impl App {
 
         wrapped_line_height(
             line,
-            self.content_width,
+            self.view.content_width,
             image_dims,
-            self.panel_width,
+            self.view.panel_width,
             self.font_size,
         )
     }
@@ -246,10 +246,10 @@ impl App {
 
     /// Common scroll percentage calculation
     fn compute_scroll_percentage(&self, item_count: usize, max_scroll: usize) -> u16 {
-        if item_count == 0 || item_count <= self.viewport_height || max_scroll == 0 {
+        if item_count == 0 || item_count <= self.view.viewport_height || max_scroll == 0 {
             100
         } else {
-            let pct = ((self.scroll_offset as f64 / max_scroll as f64) * 100.0) as u16;
+            let pct = ((self.view.scroll_offset as f64 / max_scroll as f64) * 100.0) as u16;
             pct.min(100)
         }
     }
@@ -270,11 +270,11 @@ mod tests {
             base_line("line3"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.scroll_offset = 0;
+        app.view.scroll_offset = 0;
 
         app.next_file();
 
-        assert_eq!(app.scroll_offset, 3);
+        assert_eq!(app.view.scroll_offset, 3);
     }
 
     #[test]
@@ -287,11 +287,11 @@ mod tests {
             base_line("line3"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.scroll_offset = 1;
+        app.view.scroll_offset = 1;
 
         app.next_file();
 
-        assert_eq!(app.scroll_offset, 3);
+        assert_eq!(app.view.scroll_offset, 3);
     }
 
     #[test]
@@ -301,11 +301,11 @@ mod tests {
             base_line("line1"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.scroll_offset = 0;
+        app.view.scroll_offset = 0;
 
         app.next_file();
 
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.view.scroll_offset, 0);
     }
 
     #[test]
@@ -318,11 +318,11 @@ mod tests {
             base_line("line3"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.scroll_offset = 4;
+        app.view.scroll_offset = 4;
 
         app.prev_file();
 
-        assert_eq!(app.scroll_offset, 3);
+        assert_eq!(app.view.scroll_offset, 3);
     }
 
     #[test]
@@ -335,11 +335,11 @@ mod tests {
             base_line("line3"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.scroll_offset = 3;
+        app.view.scroll_offset = 3;
 
         app.prev_file();
 
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.view.scroll_offset, 0);
     }
 
     #[test]
@@ -349,33 +349,33 @@ mod tests {
             base_line("line1"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.scroll_offset = 0;
+        app.view.scroll_offset = 0;
 
         app.prev_file();
 
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.view.scroll_offset, 0);
     }
 
     #[test]
     fn test_next_file_empty_lines() {
         let mut app = TestAppBuilder::new().build();
         app.next_file();
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.view.scroll_offset, 0);
     }
 
     #[test]
     fn test_prev_file_empty_lines() {
         let mut app = TestAppBuilder::new().build();
         app.prev_file();
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.view.scroll_offset, 0);
     }
 
     #[test]
     fn test_scroll_percentage_at_top_returns_zero() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line {}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
-        app.scroll_offset = 0;
+        app.view.viewport_height = 10;
+        app.view.scroll_offset = 0;
 
         assert_eq!(app.scroll_percentage(), 0);
     }
@@ -384,8 +384,8 @@ mod tests {
     fn test_scroll_percentage_at_bottom_returns_100() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line {}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
-        app.scroll_offset = 40; // 50 lines - 10 viewport = 40 max scroll
+        app.view.viewport_height = 10;
+        app.view.scroll_offset = 40; // 50 lines - 10 viewport = 40 max scroll
 
         assert_eq!(app.scroll_percentage(), 100);
     }
@@ -394,8 +394,8 @@ mod tests {
     fn test_scroll_percentage_capped_at_100() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line {}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
-        app.scroll_offset = 100; // Beyond max scroll
+        app.view.viewport_height = 10;
+        app.view.scroll_offset = 100; // Beyond max scroll
 
         assert!(app.scroll_percentage() <= 100);
     }
@@ -422,7 +422,7 @@ mod tests {
             .map(|i| base_line(&format!("line {}", i)))
             .collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
 
         let items = app.compute_displayable_items();
         let max_scroll = app.max_scroll_for_items(&items);
@@ -436,12 +436,12 @@ mod tests {
             .map(|i| base_line(&format!("line {}", i)))
             .collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
-        app.scroll_offset = 100; // Way past end
+        app.view.viewport_height = 10;
+        app.view.scroll_offset = 100; // Way past end
 
         app.clamp_scroll();
 
-        assert_eq!(app.scroll_offset, 10); // Clamped to max
+        assert_eq!(app.view.scroll_offset, 10); // Clamped to max
     }
 
     #[test]
@@ -454,9 +454,9 @@ mod tests {
             DiffLine::image_marker("test.png"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 40;
-        app.content_width = 80;
-        app.panel_width = 100;
+        app.view.viewport_height = 40;
+        app.view.content_width = 80;
+        app.view.panel_width = 100;
 
         // Add image data to cache with known dimensions
         let cached_image = CachedImage {
@@ -519,9 +519,9 @@ mod tests {
             DiffLine::image_marker("image3.png"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 15;
-        app.content_width = 80;
-        app.panel_width = 100;
+        app.view.viewport_height = 15;
+        app.view.content_width = 80;
+        app.view.panel_width = 100;
 
         // Add image data for all three images
         for i in 1..=3 {
