@@ -6,18 +6,17 @@
 //! - index (staged)
 //! - working (working tree)
 
+mod algorithm;
+mod cancellation;
 mod inline;
+mod line_builder;
 mod output;
 mod provenance;
 
+pub use algorithm::compute_four_way_diff;
 pub use inline::InlineSpan;
 
 pub(crate) use inline::compute_inline_diff_merged;
-
-use std::collections::HashMap;
-
-use output::{build_working_line_output, determine_deletion_source};
-use provenance::{build_modification_map, build_provenance_map, find_sources, survives_chain, survives_in};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineSource {
@@ -129,584 +128,23 @@ impl DiffLine {
         self
     }
 
-    pub fn file_header(path: &str) -> Self {
-        Self {
-            source: LineSource::FileHeader,
-            content: path.to_string(),
-            prefix: ' ',
-            line_number: None,
-            file_path: Some(path.to_string()),
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-        }
-    }
-
-    pub fn deleted_file_header(path: &str) -> Self {
-        Self {
-            source: LineSource::FileHeader,
-            content: format!("{} (deleted)", path),
-            prefix: ' ',
-            line_number: None,
-            file_path: Some(path.to_string()),
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-        }
-    }
-
-    pub fn renamed_file_header(old_path: &str, new_path: &str) -> Self {
-        Self {
-            source: LineSource::FileHeader,
-            content: format!("{} → {}", old_path, new_path),
-            prefix: ' ',
-            line_number: None,
-            file_path: Some(new_path.to_string()),
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-        }
-    }
-
-    /// Create an image marker line (UI layer will render actual image)
-    pub fn image_marker(path: &str) -> Self {
-        Self {
-            source: LineSource::Base,
-            content: "[image]".to_string(),
-            prefix: ' ',
-            line_number: None,
-            file_path: Some(path.to_string()),
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-        }
-    }
-
     /// Check if this line is an image marker (for UI rendering)
     pub fn is_image_marker(&self) -> bool {
         self.content == "[image]" && self.file_path.is_some()
     }
-
-    pub fn elided(count: usize) -> Self {
-        Self {
-            source: LineSource::Elided,
-            content: format!("{} lines", count),
-            prefix: ' ',
-            line_number: None,
-            file_path: None,
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-        }
-    }
 }
+// Builder methods (file_header, deleted_file_header, renamed_file_header,
+// image_marker, elided) are in line_builder.rs
+
+// Cancellation detection functions (index_line_in_working, collect_canceled_*,
+// find_insertion_position, insert_canceled_lines) are in cancellation.rs
+
+// Algorithm functions (build_deletion_diff, check_file_deletion, compute_four_way_diff)
+// are in algorithm.rs
 
 #[derive(Debug)]
 pub struct FileDiff {
     pub lines: Vec<DiffLine>,
-}
-
-
-fn index_line_in_working(
-    index_idx: usize,
-    working_from_index: &[Option<usize>],
-    index_working_mods: &HashMap<usize, (usize, &str)>,
-) -> bool {
-    if survives_in(working_from_index, index_idx) {
-        return true;
-    }
-    index_working_mods
-        .values()
-        .any(|(src_idx, _)| *src_idx == index_idx)
-}
-
-fn collect_canceled_simple(
-    head_lines: &[&str],
-    index_lines: &[&str],
-    head_from_base: &[Option<usize>],
-    index_from_head: &[Option<usize>],
-    working_from_index: &[Option<usize>],
-    path: &str,
-) -> Vec<DiffLine> {
-    let mut result = Vec::new();
-
-    // Canceled committed: lines added in head but not in working
-    for (head_idx, head_line) in head_lines.iter().enumerate() {
-        if head_from_base.get(head_idx).copied().flatten().is_some() {
-            continue;
-        }
-        if !survives_chain(head_idx, index_from_head, working_from_index) {
-            result.push(
-                DiffLine::new(
-                    LineSource::CanceledCommitted,
-                    head_line.trim_end().to_string(),
-                    '±',
-                    None,
-                )
-                .with_file_path(path),
-            );
-        }
-    }
-
-    // Canceled staged: lines added in index but not in working
-    for (index_idx, index_line) in index_lines.iter().enumerate() {
-        if index_from_head.get(index_idx).copied().flatten().is_some() {
-            continue;
-        }
-        if !survives_in(working_from_index, index_idx) {
-            result.push(
-                DiffLine::new(
-                    LineSource::CanceledStaged,
-                    index_line.trim_end().to_string(),
-                    '±',
-                    None,
-                )
-                .with_file_path(path),
-            );
-        }
-    }
-
-    result
-}
-
-fn collect_canceled_committed(
-    head_lines: &[&str],
-    head_from_base: &[Option<usize>],
-    index_from_head: &[Option<usize>],
-    working_from_index: &[Option<usize>],
-    head_index_mods: &HashMap<usize, (usize, &str)>,
-    index_working_mods: &HashMap<usize, (usize, &str)>,
-) -> Vec<(usize, String)> {
-    let mut result = Vec::new();
-
-    for (head_idx, head_line) in head_lines.iter().enumerate() {
-        if head_from_base.get(head_idx).copied().flatten().is_some() {
-            continue;
-        }
-
-        // Check via direct provenance
-        let in_working_via_provenance = find_sources(index_from_head, head_idx)
-            .any(|index_idx| index_line_in_working(index_idx, working_from_index, index_working_mods));
-
-        // Check via modification maps
-        let in_working_via_mods = head_index_mods.iter().any(|(index_idx, (src_head_idx, _))| {
-            *src_head_idx == head_idx
-                && index_line_in_working(*index_idx, working_from_index, index_working_mods)
-        });
-
-        if !in_working_via_provenance && !in_working_via_mods {
-            result.push((head_idx, head_line.trim_end().to_string()));
-        }
-    }
-
-    result
-}
-
-fn collect_canceled_staged(
-    index_lines: &[&str],
-    index_from_head: &[Option<usize>],
-    working_from_index: &[Option<usize>],
-    index_working_mods: &HashMap<usize, (usize, &str)>,
-) -> Vec<(usize, String)> {
-    let mut result = Vec::new();
-
-    for (index_idx, index_line) in index_lines.iter().enumerate() {
-        if index_from_head.get(index_idx).copied().flatten().is_some() {
-            continue;
-        }
-
-        if !index_line_in_working(index_idx, working_from_index, index_working_mods) {
-            result.push((index_idx, index_line.trim_end().to_string()));
-        }
-    }
-
-    result
-}
-
-fn find_insertion_position(positions: &[Option<usize>], target_idx: usize) -> usize {
-    for (i, &pos) in positions.iter().enumerate().rev() {
-        if let Some(p) = pos
-            && p < target_idx
-        {
-            return i + 1;
-        }
-    }
-    positions.len()
-}
-
-fn insert_canceled_lines(
-    lines: &mut Vec<DiffLine>,
-    canceled: Vec<(usize, String)>,
-    source: LineSource,
-    path: &str,
-    positions: &mut Vec<Option<usize>>,
-) {
-    for (idx, content) in canceled.into_iter().rev() {
-        let insert_pos = find_insertion_position(positions, idx);
-        let canceled_line = DiffLine::new(source, content, '±', None).with_file_path(path);
-        lines.insert(insert_pos, canceled_line);
-        positions.insert(insert_pos, Some(idx));
-    }
-}
-
-fn build_deletion_diff(path: &str, content: &str, source: LineSource) -> FileDiff {
-    let mut lines = vec![DiffLine::deleted_file_header(path)];
-    for (i, line) in content.lines().enumerate() {
-        lines.push(
-            DiffLine::new(source, line.to_string(), '-', Some(i + 1)).with_file_path(path),
-        );
-    }
-    FileDiff { lines }
-}
-
-fn check_file_deletion(
-    path: &str,
-    base_content: Option<&str>,
-    head_content: Option<&str>,
-    index_content: Option<&str>,
-    working_content: Option<&str>,
-) -> Option<FileDiff> {
-    // Unstaged deletion: file exists in index but not working tree
-    if working_content.is_none()
-        && let Some(content) = index_content
-    {
-        return Some(build_deletion_diff(path, content, LineSource::DeletedStaged));
-    }
-
-    // Staged deletion: file exists in HEAD but not in index or working
-    if index_content.is_none()
-        && working_content.is_none()
-        && let Some(content) = head_content
-    {
-        return Some(build_deletion_diff(path, content, LineSource::DeletedCommitted));
-    }
-
-    // Committed deletion: file exists in base but not in HEAD/index/working
-    if head_content.is_none()
-        && index_content.is_none()
-        && working_content.is_none()
-        && let Some(content) = base_content
-    {
-        return Some(build_deletion_diff(path, content, LineSource::DeletedBase));
-    }
-
-    None
-}
-
-/// Compute 4-way diff: base→head→index→working.
-/// Uses provenance maps (not content similarity) to determine line sources.
-/// Inline diffs only created from explicit modification maps.
-pub fn compute_file_diff_v2(
-    path: &str,
-    base_content: Option<&str>,
-    head_content: Option<&str>,
-    index_content: Option<&str>,
-    working_content: Option<&str>,
-    old_path: Option<&str>,
-) -> FileDiff {
-    if let Some(deletion_diff) = check_file_deletion(path, base_content, head_content, index_content, working_content) {
-        return deletion_diff;
-    }
-
-    let header = match old_path {
-        Some(old) => DiffLine::renamed_file_header(old, path),
-        None => DiffLine::file_header(path),
-    };
-    let mut lines = vec![header];
-
-    let base = base_content.unwrap_or("");
-    let head = head_content.unwrap_or(base);
-    let index = index_content.unwrap_or(head);
-    let working = working_content.unwrap_or(index);
-
-    let base_lines: Vec<&str> = base.lines().collect();
-    let head_lines: Vec<&str> = head.lines().collect();
-    let index_lines: Vec<&str> = index.lines().collect();
-    let working_lines: Vec<&str> = working.lines().collect();
-
-    // If base == working, only show "canceled" lines (added then removed)
-    if base == working {
-        let head_from_base = build_provenance_map(&base_lines, &head_lines);
-        let index_from_head = build_provenance_map(&head_lines, &index_lines);
-        let working_from_index = build_provenance_map(&index_lines, &working_lines);
-
-        lines.extend(collect_canceled_simple(
-            &head_lines,
-            &index_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
-            path,
-        ));
-
-        return FileDiff { lines };
-    }
-
-    // Build provenance maps: provenance[new_idx] = Some(old_idx) if line came from old
-    let head_from_base = build_provenance_map(&base_lines, &head_lines);
-    let index_from_head = build_provenance_map(&head_lines, &index_lines);
-    let working_from_index = build_provenance_map(&index_lines, &working_lines);
-
-    // Build modification maps for adjacent delete-insert pairs with meaningful similarity
-    let base_head_mods = build_modification_map(&base_lines, &head_lines, LineSource::Committed);
-    let head_index_mods = build_modification_map(&head_lines, &index_lines, LineSource::Staged);
-    let index_working_mods = build_modification_map(&index_lines, &working_lines, LineSource::Unstaged);
-
-    // Build reverse provenance: base_to_working[base_idx] = Some(working_idx) if still present
-    let mut base_to_working: Vec<Option<usize>> = vec![None; base_lines.len()];
-
-    for working_idx in 0..working_lines.len() {
-        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
-            && let Some(head_idx) = index_from_head.get(index_idx).copied().flatten()
-            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
-        {
-            base_to_working[base_idx] = Some(working_idx);
-        }
-    }
-
-    // Modified base lines should not show as deletions - they're merged into inline diffs
-    for (head_idx, (base_idx, _)) in &base_head_mods {
-        for working_idx in 0..working_lines.len() {
-            if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
-                && let Some(h_idx) = index_from_head.get(index_idx).copied().flatten()
-                && h_idx == *head_idx
-            {
-                base_to_working[*base_idx] = Some(working_idx);
-                break;
-            }
-        }
-    }
-
-    for (index_idx, (head_idx, _)) in &head_index_mods {
-        if let Some(base_idx) = head_from_base.get(*head_idx).copied().flatten() {
-            for working_idx in 0..working_lines.len() {
-                if working_from_index.get(working_idx).copied().flatten() == Some(*index_idx) {
-                    base_to_working[base_idx] = Some(working_idx);
-                    break;
-                }
-            }
-        }
-    }
-
-    for (working_idx, (index_idx, _)) in &index_working_mods {
-        if let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten()
-            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
-        {
-            base_to_working[base_idx] = Some(*working_idx);
-        }
-    }
-
-    let trace_source = |working_idx: usize| -> LineSource {
-        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten() {
-            if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
-                if head_from_base.get(head_idx).copied().flatten().is_some() {
-                    LineSource::Base
-                } else {
-                    LineSource::Committed
-                }
-            } else {
-                LineSource::Staged
-            }
-        } else {
-            LineSource::Unstaged
-        }
-    };
-
-    let trace_index_source = |index_idx: usize| -> LineSource {
-        if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
-            if head_from_base.get(head_idx).copied().flatten().is_some() {
-                LineSource::Base
-            } else {
-                LineSource::Committed
-            }
-        } else {
-            LineSource::Staged
-        }
-    };
-
-    let trace_head_source = |head_idx: usize| -> LineSource {
-        if head_from_base.get(head_idx).copied().flatten().is_some() {
-            LineSource::Base
-        } else {
-            LineSource::Committed
-        }
-    };
-
-    // Find base position for a working line (via provenance or modification maps)
-    let get_working_base_pos = |working_idx: usize| -> Option<usize> {
-        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
-            && let Some(head_idx) = index_from_head.get(index_idx).copied().flatten()
-            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
-        {
-            return Some(base_idx);
-        }
-
-        if let Some((index_idx, _)) = index_working_mods.get(&working_idx)
-            && let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten()
-            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
-        {
-            return Some(base_idx);
-        }
-
-        None
-    };
-
-    // Find head position for a working line (via provenance or modification maps)
-    let get_working_head_idx = |working_idx: usize| -> Option<usize> {
-        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
-            && let Some(head_idx) = index_from_head.get(index_idx).copied().flatten()
-        {
-            return Some(head_idx);
-        }
-
-        if let Some((index_idx, _)) = index_working_mods.get(&working_idx)
-            && let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten()
-        {
-            return Some(head_idx);
-        }
-
-        None
-    };
-
-    let mut line_num = 1usize;
-    let mut next_base_deletion = 0usize;
-    let mut output_head_positions: Vec<Option<usize>> = Vec::new();
-
-    for working_idx in 0..working_lines.len() {
-        let working_content = working_lines[working_idx].trim_end();
-        let working_base_pos = get_working_base_pos(working_idx);
-
-        // Deletion boundary: output deletions before working lines from later base positions.
-        // For insertions, look ahead to find the next base position.
-        let deletion_boundary = if let Some(pos) = working_base_pos {
-            Some(pos)
-        } else {
-            let mut next_base = None;
-            for future_idx in (working_idx + 1)..working_lines.len() {
-                if let Some(pos) = get_working_base_pos(future_idx) {
-                    next_base = Some(pos);
-                    break;
-                }
-            }
-            next_base
-        };
-
-        if let Some(boundary) = deletion_boundary {
-            while next_base_deletion < boundary {
-                if base_to_working[next_base_deletion].is_none() {
-                    let base_content = base_lines[next_base_deletion].trim_end();
-                    let delete_source = determine_deletion_source(
-                        next_base_deletion,
-                        &base_lines,
-                        &head_lines,
-                        &index_lines,
-                        &head_from_base,
-                        &index_from_head,
-                    );
-
-                    lines.push(DiffLine::new(
-                        delete_source,
-                        base_content.to_string(),
-                        '-',
-                        None,
-                    ).with_file_path(path));
-                    let head_idx_for_deletion = head_from_base.iter()
-                        .position(|&h| h == Some(next_base_deletion));
-                    output_head_positions.push(head_idx_for_deletion);
-                }
-                next_base_deletion += 1;
-            }
-        }
-
-        let source = trace_source(working_idx);
-        let working_head_idx = get_working_head_idx(working_idx);
-        output_head_positions.push(working_head_idx);
-        let output_line = build_working_line_output(
-            working_idx,
-            working_content,
-            source,
-            line_num,
-            path,
-            &working_from_index,
-            &index_from_head,
-            &head_from_base,
-            &index_working_mods,
-            &base_head_mods,
-            &head_index_mods,
-            &index_lines,
-            &head_lines,
-            &trace_index_source,
-            &trace_head_source,
-        );
-
-        lines.push(output_line);
-        line_num += 1;
-
-        if let Some(base_pos) = working_base_pos {
-            next_base_deletion = next_base_deletion.max(base_pos + 1);
-        }
-    }
-
-    while next_base_deletion < base_lines.len() {
-        if base_to_working[next_base_deletion].is_none() {
-            let base_content = base_lines[next_base_deletion].trim_end();
-            let delete_source = determine_deletion_source(
-                next_base_deletion,
-                &base_lines,
-                &head_lines,
-                &index_lines,
-                &head_from_base,
-                &index_from_head,
-            );
-            lines.push(DiffLine::new(
-                delete_source,
-                base_content.to_string(),
-                '-',
-                None,
-            ).with_file_path(path));
-            let head_idx_for_deletion = head_from_base.iter()
-                .position(|&h| h == Some(next_base_deletion));
-            output_head_positions.push(head_idx_for_deletion);
-        }
-        next_base_deletion += 1;
-    }
-
-    // Collect and insert canceled lines (added in commits/staging but removed in working)
-    let canceled_committed = collect_canceled_committed(
-        &head_lines,
-        &head_from_base,
-        &index_from_head,
-        &working_from_index,
-        &head_index_mods,
-        &index_working_mods,
-    );
-    insert_canceled_lines(
-        &mut lines,
-        canceled_committed,
-        LineSource::CanceledCommitted,
-        path,
-        &mut output_head_positions,
-    );
-
-    let canceled_staged = collect_canceled_staged(
-        &index_lines,
-        &index_from_head,
-        &working_from_index,
-        &index_working_mods,
-    );
-    let mut output_index_positions: Vec<Option<usize>> = lines
-        .iter()
-        .map(|line| index_lines.iter().position(|h| h.trim_end() == line.content))
-        .collect();
-    insert_canceled_lines(
-        &mut lines,
-        canceled_staged,
-        LineSource::CanceledStaged,
-        path,
-        &mut output_index_positions,
-    );
-
-    FileDiff { lines }
 }
 
 #[cfg(test)]
@@ -772,14 +210,14 @@ mod tests {
         assert!(!LineSource::Elided.is_header());
     }
 
-    fn compute_file_diff_v2_with_inline(
+    fn compute_diff_with_inline(
         path: &str,
         base: Option<&str>,
         head: Option<&str>,
         index: Option<&str>,
         working: Option<&str>,
     ) -> FileDiff {
-        let mut diff = compute_file_diff_v2(path, base, head, index, working, None);
+        let mut diff = compute_four_way_diff(path, base, head, index, working, None);
         for line in &mut diff.lines {
             line.ensure_inline_spans();
         }
@@ -793,24 +231,18 @@ mod tests {
     #[test]
     fn test_no_changes() {
         let content = "line1\nline2\nline3";
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(content), Some(content), Some(content), Some(content));
+        let diff = compute_diff_with_inline("test.txt", Some(content), Some(content), Some(content), Some(content));
 
         assert_eq!(diff.lines.len(), 1);
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
     }
 
-    #[test]
-    fn test_renamed_file_header() {
-        let header = DiffLine::renamed_file_header("old/path.rs", "new/path.rs");
-        assert_eq!(header.source, LineSource::FileHeader);
-        assert_eq!(header.content, "old/path.rs → new/path.rs");
-        assert_eq!(header.file_path, Some("new/path.rs".to_string()));
-    }
+    // test_renamed_file_header moved to line_builder.rs
 
     #[test]
     fn test_compute_file_diff_with_rename() {
         let content = "line1\nline2";
-        let diff = compute_file_diff_v2(
+        let diff = compute_four_way_diff(
             "new/path.rs",
             Some(content),
             Some(content),
@@ -829,7 +261,7 @@ mod tests {
         let original = "line 1\nline 2\nline 3\nline 4\nline 5";
         let modified = "line 1\nline 2 modified\nline 3\nline 4\nline 5";
 
-        let diff = compute_file_diff_v2(
+        let diff = compute_four_way_diff(
             "renamed.txt",
             Some(original), // base: original content
             Some(original), // head: same as base (rename not committed)
@@ -875,7 +307,7 @@ mod tests {
         let original = "line 1\nline 2\nline 3";
         let modified = "line 1\nline 2 modified\nline 3";
 
-        let diff = compute_file_diff_v2(
+        let diff = compute_four_way_diff(
             "renamed.txt",
             Some(original), // base: original at old path
             Some(modified), // head: modified (rename+change committed)
@@ -915,7 +347,7 @@ mod tests {
         let original = "line 1\nline 2\nline 3";
         let modified = "line 1\nline 2 modified\nline 3";
 
-        let diff = compute_file_diff_v2(
+        let diff = compute_four_way_diff(
             "renamed.txt",
             Some(original), // base: original at old path
             Some(original), // head: still at old path (not committed)
@@ -953,7 +385,7 @@ mod tests {
         // Pure rename: same content everywhere, just different path
         let content = "line 1\nline 2\nline 3";
 
-        let diff = compute_file_diff_v2(
+        let diff = compute_four_way_diff(
             "renamed.txt",
             Some(content),
             Some(content),
@@ -985,7 +417,7 @@ mod tests {
         let base = "line1\nline2";
         let head = "line1\nline2\nline3";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
 
         let committed_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::Committed)
@@ -1001,7 +433,7 @@ mod tests {
         let head = "line1\nline2\ncommitted_line";
         let working = "line1\nline2";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
 
         let canceled_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::CanceledCommitted)
@@ -1018,7 +450,7 @@ mod tests {
         let index = "line1\nline2\nstaged_line";
         let working = "line1\nline2";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(index), Some(working));
 
         let canceled_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::CanceledStaged)
@@ -1035,7 +467,7 @@ mod tests {
         let head = "line1\nline2\nversion1";
         let working = "line1\nline2\nversion2";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
 
         let canceled_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::CanceledCommitted)
@@ -1050,7 +482,7 @@ mod tests {
         let index = "line1\nline2\nversion1";
         let working = "line1\nline2\nversion2";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(index), Some(working));
 
         let canceled_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::CanceledStaged)
@@ -1064,7 +496,7 @@ mod tests {
         let content = "line1\nline2";
         let working = "line1\nline2\nline3";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(content), Some(content), Some(content), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(content), Some(content), Some(content), Some(working));
 
         let unstaged_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::Unstaged)
@@ -1079,7 +511,7 @@ mod tests {
         let base = "line1\nline2";
         let index = "line1\nline2\nline3";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(index), Some(index));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(index), Some(index));
 
         let staged_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::Staged)
@@ -1093,7 +525,7 @@ mod tests {
     fn test_new_file() {
         let working = "line1\nline2";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", None, None, None, Some(working));
+        let diff = compute_diff_with_inline("test.txt", None, None, None, Some(working));
 
         let unstaged_lines: Vec<_> = diff.lines.iter()
             .filter(|l| l.source == LineSource::Unstaged)
@@ -1107,7 +539,7 @@ mod tests {
     fn test_deleted_file_staged_deletion() {
         let base = "line1\nline2";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), None, None);
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), None, None);
 
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
         assert_eq!(diff.lines[0].content, "test.txt (deleted)");
@@ -1126,7 +558,7 @@ mod tests {
     fn test_deleted_file_unstaged_deletion() {
         let content = "line1\nline2\nline3";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(content), Some(content), Some(content), None);
+        let diff = compute_diff_with_inline("test.txt", Some(content), Some(content), Some(content), None);
 
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
         assert_eq!(diff.lines[0].content, "test.txt (deleted)");
@@ -1146,7 +578,7 @@ mod tests {
     fn test_deleted_file_committed_deletion() {
         let base = "old content\nmore old content";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), None, None, None);
+        let diff = compute_diff_with_inline("test.txt", Some(base), None, None, None);
 
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
         assert_eq!(diff.lines[0].content, "test.txt (deleted)");
@@ -1166,7 +598,7 @@ mod tests {
         let base = "line1\nold content\nline3";
         let working = "line1\nnew content\nline3";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1181,7 +613,7 @@ mod tests {
         let base = "before\nprocess_data(input)\nafter";
         let working = "before\nprocess_data(input, options)\nafter";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let contents: Vec<_> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -1196,7 +628,7 @@ mod tests {
         let base = "line1\nprocess_item(data1)\nline3\nprocess_item(data2)\nline5";
         let working = "line1\nprocess_item(data1, options)\nline3\nprocess_item(data2, options)\nline5";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1211,7 +643,7 @@ mod tests {
         let base = "line1\nfunction getData()\nline3";
         let head = "line1\nfunction getData(params)\nline3";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1274,7 +706,7 @@ layout {
     }
 }"#;
 
-        let diff = compute_file_diff_v2_with_inline("workon.kdl", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("workon.kdl", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         // The "keybinds" lines should be Committed additions
@@ -1324,7 +756,7 @@ layout {
         let base = "line1\nfunction getData()\nline3";
         let index = "line1\nfunction getData(params)\nline3";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(index), Some(index));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(index), Some(index));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1342,7 +774,7 @@ layout {
         let base = "line1\nline2\nline3\nline4\nline5";
         let working = "line1\nline2\nmodified\nline4\nline5";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let pure_context: Vec<_> = lines.iter()
@@ -1358,7 +790,7 @@ layout {
         let base = "line1\nto_delete\nline3";
         let working = "line1\nline3";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1378,7 +810,7 @@ layout {
         let base = "line1\nline2";
         let working = "line1\nnew_line\nline2";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let with_numbers: Vec<_> = lines.iter()
@@ -1399,7 +831,7 @@ layout {
         let head = "line1\ncommitted line\n";
         let working = "line1\ncommitted line # with comment\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1424,7 +856,7 @@ layout {
         let index = "line1\nstaged line\n";
         let working = "line1\nstaged line modified\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1447,7 +879,7 @@ layout {
         let base = "do_thing(data)\n";
         let head = "do_thing(data, params)\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1467,7 +899,7 @@ layout {
         let index = "staged version\n";
         let working = "working version\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1485,7 +917,7 @@ layout {
         let base = "line1\n";
         let head = "line1\ncommitted line\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let added: Vec<_> = lines.iter().filter(|l| l.prefix == '+').collect();
@@ -1501,7 +933,7 @@ layout {
         let head = "line1\n";
         let index = "line1\nstaged line\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(index));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(index));
         let lines = content_lines(&diff);
 
         let added: Vec<_> = lines.iter().filter(|l| l.prefix == '+').collect();
@@ -1580,7 +1012,7 @@ layout {
         let base = "abcdefgh\n";
         let working = "xyz12345\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1597,7 +1029,7 @@ layout {
         let base = "context\nalpha: aaa,\nbeta: bbb,\ngamma: ccc,\nend";
         let working = "context\nxray: xxx,\nyankee: yyy,\nzulu: zzz,\nend";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1618,7 +1050,7 @@ layout {
         let base = "before\ndescribed_class.new(bond).execute\nafter";
         let working = "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1648,7 +1080,7 @@ layout {
         let base = "before\ndescribed_class.new(bond).execute\nafter";
         let head = "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1683,7 +1115,7 @@ layout {
         let base = "before\ndescribed_class.new(bond).execute\nafter";
         let head = "before\n\ndescribed_class.new(bond).execute # comment\n\nafter";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1709,7 +1141,7 @@ layout {
         let index = "before\ndescribed_class.new(bond).execute\nafter";
         let working = "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1740,7 +1172,7 @@ layout {
         let index = "before\noriginal_code()\nafter";
         let working = "before\noriginal_code() # added comment\nafter";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1772,7 +1204,7 @@ layout {
         let index = head;
         let working = "context 'first' do\n  it 'test' do\n  end\n  it 'new test' do\n  end # added comment\nend\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1824,7 +1256,7 @@ context 'new' do
 end
 ";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1881,7 +1313,7 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let execute_lines: Vec<_> = lines.iter()
@@ -1925,7 +1357,7 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let new_test_lines: Vec<_> = lines.iter()
@@ -1983,7 +1415,7 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let new_context_idx = lines.iter().position(|l| l.content.contains("context 'new'"));
@@ -2046,7 +1478,7 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let third_context_idx = lines.iter().position(|l| l.content.contains("context 'third new'"));
@@ -2078,7 +1510,7 @@ end
         let base = "do_thing(data)\n";
         let working = "do_thing(data, parameters)\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -2102,7 +1534,7 @@ end
         let base = "line1\n";
         let working = "line1\nnew line\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let added: Vec<_> = lines.iter().filter(|l| l.prefix == '+').collect();
@@ -2115,7 +1547,7 @@ end
         let base = "line1\nto_delete\nline3\n";
         let working = "line1\nline3\n";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -2134,7 +1566,7 @@ end
             expiration_date: "2025-08-30",
 "#;
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let effective_lines: Vec<_> = lines.iter()
@@ -2166,7 +1598,7 @@ end
         let base = "line1\nline2\nline3\nto_delete\nline5";
         let working = "line1\nline2\nNEW_LINE\nline3\nline5";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -2187,7 +1619,7 @@ end
         let base = "def principal_mailing_address\n  commercial_renewal.principal_mailing_address\nend";
         let working = "def principal_mailing_address\n  \"new content\"\nend";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -2220,7 +1652,7 @@ end
         let base = "def foo\n  body_line\nend";
         let working = "def foo\n  \"new body\"\nend";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -2245,7 +1677,7 @@ end
         let base = "def principal_mailing_address\n  commercial_renewal.principal_mailing_address\nend";
         let working = "def pribond_descripal_mailtiong_address\n  \"new content\"\nend";
 
-        let diff = compute_file_diff_v2_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -2304,7 +1736,7 @@ def from_domino?
 end
 ";
 
-        let diff = compute_file_diff_v2_with_inline("principal.rb", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline("principal.rb", Some(base), Some(head), Some(index), Some(working));
         let lines = content_lines(&diff);
 
         let abeyance_pos = lines.iter().position(|l| l.content.contains("abeyance_required")).unwrap();
@@ -2339,7 +1771,7 @@ end
         let base = "def foo\nend\nend";
         let working = "def foo\nnew_line\nend\nend";
 
-        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(base), Some(base), Some(working));
+        let diff = compute_diff_with_inline("test.rb", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 4);
@@ -2362,7 +1794,7 @@ end
         let base = "def foo\nend\nend";
         let head = "def foo\nnew_line\nend\nend";
 
-        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
         assert_eq!(lines.len(), 4);
 
@@ -2385,7 +1817,7 @@ end
         let base = "class Foo\n  def bar\n  end\nend";
         let head = "class Foo\n  def bar\n    new_line\n  end\nend";
 
-        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 5);
@@ -2405,7 +1837,7 @@ end
         let base = "do\n  body\nend\nend";
         let head = "do\n  body\n  new_end\nend\nend";
 
-        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 5);
@@ -2432,7 +1864,7 @@ end
         let base = "do\n  body\nend";
         let head = "do\n  body\nend\n  extra";
 
-        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 4);
@@ -2456,7 +1888,7 @@ end
         let base = "line1\nline2\nend\nend\nend";
         let head = "line1\nline2\nnew_line\nend\nend\nend";
 
-        let diff = compute_file_diff_v2_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 6);
@@ -2507,7 +1939,7 @@ end"##;
   end
 end"##;
 
-        let diff = compute_file_diff_v2_with_inline("spec.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff = compute_diff_with_inline("spec.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         // Expected:
@@ -2546,7 +1978,7 @@ end"##;
         let modified = "line1\nline2\nline3";
 
         // Before staging: change is only in working tree
-        let diff_before = compute_file_diff_v2(
+        let diff_before = compute_four_way_diff(
             "test.txt",
             Some(base),
             Some(base),
@@ -2561,7 +1993,7 @@ end"##;
         assert_eq!(unstaged_lines.len(), 1, "line3 should be Unstaged before staging");
 
         // After staging: change is in index and working tree
-        let diff_after = compute_file_diff_v2(
+        let diff_after = compute_four_way_diff(
             "test.txt",
             Some(base),
             Some(base),
@@ -2602,7 +2034,7 @@ end"##;
     Frame,
 };"#;
 
-        let diff = compute_file_diff_v2_with_inline(
+        let diff = compute_diff_with_inline(
             "test.rs",
             Some(base),
             Some(base),
@@ -2660,7 +2092,7 @@ line 8
 render_widget(Clear);
 render_widget(paragraph)"#;
 
-        let diff = compute_file_diff_v2_with_inline(
+        let diff = compute_diff_with_inline(
             "test.rs",
             Some(base),
             Some(base),
@@ -2752,7 +2184,7 @@ use crate::app::{App, DisplayableItem, FrameContext, Selection};
         let paragraph = Paragraph::new(all_lines).block(block);
         frame.render_widget(paragraph, self.area);"#;
 
-        let diff = compute_file_diff_v2_with_inline(
+        let diff = compute_diff_with_inline(
             "diff_view.rs",
             Some(base),
             Some(base),
