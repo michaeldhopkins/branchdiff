@@ -59,7 +59,7 @@ impl Default for ViewState {
         Self {
             scroll_offset: 0,
             viewport_height: 0,
-            view_mode: ViewMode::Full,
+            view_mode: ViewMode::default(),
             content_offset: (0, 0),
             line_num_width: 0,
             content_width: 0,
@@ -90,8 +90,8 @@ mod tests {
         assert_eq!(state.scroll_offset, 0);
         assert_eq!(state.viewport_height, 0);
 
-        // Full view mode by default
-        assert_eq!(state.view_mode, ViewMode::Full);
+        // Context view mode by default (shows changes with surrounding context)
+        assert_eq!(state.view_mode, ViewMode::Context);
 
         // No help on startup
         assert!(!state.show_help);
