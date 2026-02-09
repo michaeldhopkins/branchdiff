@@ -81,8 +81,8 @@ impl<'a> DiffViewModel<'a> {
         Self {
             items,
             lines: &app.lines,
-            selection: &app.selection,
-            collapsed_files: &app.collapsed_files,
+            selection: &app.view.selection,
+            collapsed_files: &app.view.collapsed_files,
             area,
             show_copied_flash: app.should_show_copied_flash(),
             image_cache: &app.image_cache,
@@ -886,7 +886,7 @@ mod tests {
             .with_viewport_height(4)
             .build();
         // Scroll down so first.rs header is above viewport but content is still visible
-        app.scroll_offset = 2;
+        app.view.scroll_offset = 2;
 
         let ctx = FrameContext::new(&app);
         let area = Rect::new(0, 0, 80, 24);
@@ -904,7 +904,7 @@ mod tests {
         let mut app = TestAppBuilder::new()
             .with_lines(vec![DiffLine::file_header("test.rs")])
             .build();
-        app.collapsed_files.insert("test.rs".to_string());
+        app.view.collapsed_files.insert("test.rs".to_string());
 
         let ctx = FrameContext::new(&app);
         let area = Rect::new(0, 0, 80, 24);
@@ -921,7 +921,7 @@ mod tests {
         let mut app = TestAppBuilder::new()
             .with_lines(vec![base_line("selectable content")])
             .build();
-        app.selection = Some(Selection {
+        app.view.selection = Some(Selection {
             start: Position { row: 0, col: 5 },
             end: Position { row: 0, col: 15 },
             active: false,
@@ -977,13 +977,13 @@ mod tests {
         assert!(!view_model.show_copied_flash);
 
         // After setting path_copied_at to now, flash should be active
-        app.path_copied_at = Some(std::time::Instant::now());
+        app.view.path_copied_at = Some(std::time::Instant::now());
         let ctx = FrameContext::new(&app);
         let view_model = DiffViewModel::from_app(&app, &ctx, area);
         assert!(view_model.show_copied_flash);
 
         // After 800ms+ elapsed, flash should be inactive
-        app.path_copied_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(900));
+        app.view.path_copied_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(900));
         let ctx = FrameContext::new(&app);
         let view_model = DiffViewModel::from_app(&app, &ctx, area);
         assert!(!view_model.show_copied_flash);
@@ -1248,7 +1248,7 @@ mod tests {
         }
 
         // Scroll down and re-render
-        app.scroll_offset = 10;
+        app.view.scroll_offset = 10;
         {
             let frame = terminal
                 .draw(|f| {
@@ -1293,7 +1293,7 @@ mod tests {
 
         // Render multiple frames with different scroll positions
         for scroll in [0, 5, 15, 30] {
-            app.scroll_offset = scroll;
+            app.view.scroll_offset = scroll;
             let frame = terminal
                 .draw(|f| {
                     let ctx = FrameContext::new(&app);
@@ -1369,7 +1369,7 @@ mod tests {
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.estimate_content_width(80);
-        app.viewport_height = 40; // Match the terminal size used for rendering
+        app.view.viewport_height = 40; // Match the terminal size used for rendering
 
         // Add image data to cache WITHOUT protocols (simulating picker not available during load)
         let cached_image = CachedImage {
@@ -1781,8 +1781,8 @@ mod tests {
 
         // Render at different scroll positions
         for scroll in [0, 5, 10, 20] {
-            app.scroll_offset = scroll;
-            app.viewport_height = 30; // Fixed viewport
+            app.view.scroll_offset = scroll;
+            app.view.viewport_height = 30; // Fixed viewport
 
             let ctx = FrameContext::new(&app);
             let area = Rect::new(0, 0, 100, 30);
