@@ -1351,6 +1351,7 @@ mod tests {
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.estimate_content_width(80);
+        app.viewport_height = 40; // Match the terminal size used for rendering
 
         // Add image data to cache WITHOUT protocols (simulating picker not available during load)
         let cached_image = CachedImage {

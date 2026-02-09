@@ -5,6 +5,88 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use super::ScreenRowInfo;
+use crate::diff::DiffLine;
+
+/// Image dimensions for height calculation.
+///
+/// Tuple of (before_dims, after_dims) where each is `Some((width, height))` in pixels
+/// if the image exists in the cache, or `None` if not loaded yet.
+///
+/// Used by `wrapped_line_height` to calculate the display height for image diff markers.
+pub type ImageDimensions = (Option<(u32, u32)>, Option<(u32, u32)>);
+
+/// Calculate how many screen rows a line will take when wrapped.
+///
+/// This is the single source of truth for line height calculation, used by both
+/// `App` (for navigation) and `FrameContext` (for visible range calculation).
+///
+/// For image markers, `image_dims` should contain the cached dimensions if available.
+/// For text lines, handles mixed inline changes (deletions + insertions on same line).
+pub fn wrapped_line_height(
+    line: &DiffLine,
+    content_width: usize,
+    image_dims: Option<ImageDimensions>,
+    panel_width: u16,
+    font_size: (u16, u16),
+) -> usize {
+    if content_width == 0 {
+        return 1;
+    }
+
+    // Image markers use dimension-based height
+    if line.is_image_marker() {
+        if let Some((before, after)) = image_dims
+            && (before.is_some() || after.is_some())
+        {
+            return crate::ui::image_view::calculate_image_height_for_images(
+                before,
+                after,
+                panel_width,
+                font_size,
+            ) as usize;
+        }
+        // Fallback: minimal height for images not yet loaded
+        return 1;
+    }
+
+    // Mixed inline changes (deletions + insertions) may render on separate rows
+    if has_mixed_inline_changes(line) && content_display_width(&line.content) > content_width {
+        let del_width = line
+            .old_content
+            .as_ref()
+            .map(|s| content_display_width(s))
+            .unwrap_or(0);
+        let ins_width = content_display_width(&line.content);
+        let del_height = if del_width == 0 {
+            0
+        } else {
+            del_width.div_ceil(content_width)
+        };
+        let ins_height = ins_width.div_ceil(content_width);
+        return del_height + ins_height;
+    }
+
+    // Standard text wrapping
+    let width = content_display_width(&line.content);
+    if width <= content_width {
+        1
+    } else {
+        width.div_ceil(content_width)
+    }
+}
+
+/// Check if a line has both deletions and insertions in its inline spans.
+fn has_mixed_inline_changes(line: &DiffLine) -> bool {
+    if line.inline_spans.is_empty() {
+        return false;
+    }
+    let has_deletions = line.inline_spans.iter().any(|s| s.is_deletion);
+    let has_insertions = line
+        .inline_spans
+        .iter()
+        .any(|s| !s.is_deletion && s.source.is_some());
+    has_deletions && has_insertions
+}
 
 /// Compute the display width of content accounting for tab expansion and
 /// control character replacement. Must match `sanitize_for_display` behavior
@@ -515,5 +597,114 @@ mod tests {
                 input
             );
         }
+    }
+
+    // Tests for wrapped_line_height function
+
+    #[test]
+    fn test_wrapped_line_height_short_line() {
+        use crate::diff::LineSource;
+
+        let line = DiffLine::new(LineSource::Base, "short line".to_string(), ' ', None);
+        let height = wrapped_line_height(&line, 80, None, 100, (8, 16));
+        assert_eq!(height, 1);
+    }
+
+    #[test]
+    fn test_wrapped_line_height_long_line() {
+        use crate::diff::LineSource;
+
+        let line = DiffLine::new(LineSource::Base, "x".repeat(150), ' ', None);
+        let height = wrapped_line_height(&line, 80, None, 100, (8, 16));
+        assert_eq!(height, 2); // 150 chars / 80 = 2 rows (rounded up)
+    }
+
+    #[test]
+    fn test_wrapped_line_height_image_with_dimensions() {
+        let line = DiffLine::image_marker("test.png");
+
+        // 192x192 image with 8x16 font, panel_width=100
+        let dims: ImageDimensions = (Some((192, 192)), None);
+        let height = wrapped_line_height(&line, 80, Some(dims), 100, (8, 16));
+
+        // Should use calculate_image_height_for_images, not fallback
+        let expected = crate::ui::image_view::calculate_image_height_for_images(
+            Some((192, 192)),
+            None,
+            100,
+            (8, 16),
+        ) as usize;
+        assert_eq!(height, expected);
+        assert!(height > 1, "Image with dimensions should be taller than 1 row");
+    }
+
+    #[test]
+    fn test_wrapped_line_height_image_without_dimensions() {
+        let line = DiffLine::image_marker("test.png");
+
+        // No dimensions - should use fallback height of 1
+        let height = wrapped_line_height(&line, 80, None, 100, (8, 16));
+        assert_eq!(height, 1);
+    }
+
+    #[test]
+    fn test_wrapped_line_height_image_with_empty_dimensions_tuple() {
+        let line = DiffLine::image_marker("test.png");
+
+        // Cache exists but has no actual dimensions (both None)
+        let dims: ImageDimensions = (None, None);
+        let height = wrapped_line_height(&line, 80, Some(dims), 100, (8, 16));
+
+        assert_eq!(height, 1, "Image with no actual dimensions should fallback to 1");
+    }
+
+    #[test]
+    fn test_wrapped_line_height_image_with_both_dimensions() {
+        let line = DiffLine::image_marker("test.png");
+
+        // Both before and after images
+        let dims: ImageDimensions = (Some((100, 100)), Some((200, 200)));
+        let height = wrapped_line_height(&line, 80, Some(dims), 100, (8, 16));
+
+        let expected = crate::ui::image_view::calculate_image_height_for_images(
+            Some((100, 100)),
+            Some((200, 200)),
+            100,
+            (8, 16),
+        ) as usize;
+        assert_eq!(height, expected);
+    }
+
+    #[test]
+    fn test_wrapped_line_height_zero_content_width() {
+        use crate::diff::LineSource;
+
+        let line = DiffLine::new(LineSource::Base, "x".repeat(100), ' ', None);
+        let height = wrapped_line_height(&line, 0, None, 100, (8, 16));
+        assert_eq!(height, 1, "Zero content width should return 1");
+    }
+
+    #[test]
+    fn test_wrapped_line_height_mixed_inline_changes() {
+        use crate::diff::{InlineSpan, LineSource};
+
+        let mut line = DiffLine::new(LineSource::Unstaged, "x".repeat(100), '+', None);
+        line.old_content = Some("y".repeat(80));
+        line.inline_spans = vec![
+            InlineSpan {
+                text: "deleted".to_string(),
+                source: Some(LineSource::Unstaged),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "inserted".to_string(),
+                source: Some(LineSource::Unstaged),
+                is_deletion: false,
+            },
+        ];
+
+        let height = wrapped_line_height(&line, 50, None, 100, (8, 16));
+        // del_height = 80/50 = 2, ins_height = 100/50 = 2, total = 4
+        assert_eq!(height, 4);
     }
 }
