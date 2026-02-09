@@ -13,7 +13,7 @@ mod line_builder;
 mod output;
 mod provenance;
 
-pub use algorithm::compute_four_way_diff;
+pub use algorithm::{compute_four_way_diff, DiffInput};
 pub use inline::InlineSpan;
 
 pub(crate) use inline::compute_inline_diff_merged;
@@ -217,7 +217,14 @@ mod tests {
         index: Option<&str>,
         working: Option<&str>,
     ) -> FileDiff {
-        let mut diff = compute_four_way_diff(path, base, head, index, working, None);
+        let mut diff = compute_four_way_diff(DiffInput {
+            path,
+            base,
+            head,
+            index,
+            working,
+            old_path: None,
+        });
         for line in &mut diff.lines {
             line.ensure_inline_spans();
         }
@@ -242,14 +249,14 @@ mod tests {
     #[test]
     fn test_compute_file_diff_with_rename() {
         let content = "line1\nline2";
-        let diff = compute_four_way_diff(
-            "new/path.rs",
-            Some(content),
-            Some(content),
-            Some(content),
-            Some(content),
-            Some("old/path.rs"),
-        );
+        let diff = compute_four_way_diff(DiffInput {
+            path: "new/path.rs",
+            base: Some(content),
+            head: Some(content),
+            index: Some(content),
+            working: Some(content),
+            old_path: Some("old/path.rs"),
+        });
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
         assert_eq!(diff.lines[0].content, "old/path.rs → new/path.rs");
     }
@@ -261,14 +268,14 @@ mod tests {
         let original = "line 1\nline 2\nline 3\nline 4\nline 5";
         let modified = "line 1\nline 2 modified\nline 3\nline 4\nline 5";
 
-        let diff = compute_four_way_diff(
-            "renamed.txt",
-            Some(original), // base: original content
-            Some(original), // head: same as base (rename not committed)
-            Some(original), // index: same as head (rename not staged)
-            Some(modified), // working: modified content
-            Some("original.txt"),
-        );
+        let diff = compute_four_way_diff(DiffInput {
+            path: "renamed.txt",
+            base: Some(original),    // original content
+            head: Some(original),    // same as base (rename not committed)
+            index: Some(original),   // same as head (rename not staged)
+            working: Some(modified), // modified content
+            old_path: Some("original.txt"),
+        });
 
         // Modifications have source=Base but change_source=Unstaged and old_content set
         let modified_lines: Vec<_> = diff
@@ -307,14 +314,14 @@ mod tests {
         let original = "line 1\nline 2\nline 3";
         let modified = "line 1\nline 2 modified\nline 3";
 
-        let diff = compute_four_way_diff(
-            "renamed.txt",
-            Some(original), // base: original at old path
-            Some(modified), // head: modified (rename+change committed)
-            Some(modified), // index: same as head
-            Some(modified), // working: same as head
-            Some("original.txt"),
-        );
+        let diff = compute_four_way_diff(DiffInput {
+            path: "renamed.txt",
+            base: Some(original),    // original at old path
+            head: Some(modified),    // modified (rename+change committed)
+            index: Some(modified),   // same as head
+            working: Some(modified), // same as head
+            old_path: Some("original.txt"),
+        });
 
         // Should show modification as Committed (happened in commit)
         let modified_lines: Vec<_> = diff
@@ -347,14 +354,14 @@ mod tests {
         let original = "line 1\nline 2\nline 3";
         let modified = "line 1\nline 2 modified\nline 3";
 
-        let diff = compute_four_way_diff(
-            "renamed.txt",
-            Some(original), // base: original at old path
-            Some(original), // head: still at old path (not committed)
-            Some(modified), // index: modified (rename+change staged)
-            Some(modified), // working: same as index
-            Some("original.txt"),
-        );
+        let diff = compute_four_way_diff(DiffInput {
+            path: "renamed.txt",
+            base: Some(original),    // original at old path
+            head: Some(original),    // still at old path (not committed)
+            index: Some(modified),   // modified (rename+change staged)
+            working: Some(modified), // same as index
+            old_path: Some("original.txt"),
+        });
 
         // Should show modification as Staged
         let modified_lines: Vec<_> = diff
@@ -385,14 +392,14 @@ mod tests {
         // Pure rename: same content everywhere, just different path
         let content = "line 1\nline 2\nline 3";
 
-        let diff = compute_four_way_diff(
-            "renamed.txt",
-            Some(content),
-            Some(content),
-            Some(content),
-            Some(content),
-            Some("original.txt"),
-        );
+        let diff = compute_four_way_diff(DiffInput {
+            path: "renamed.txt",
+            base: Some(content),
+            head: Some(content),
+            index: Some(content),
+            working: Some(content),
+            old_path: Some("original.txt"),
+        });
 
         // Should have header and unchanged lines only
         let modified_lines: Vec<_> = diff
@@ -1978,14 +1985,14 @@ end"##;
         let modified = "line1\nline2\nline3";
 
         // Before staging: change is only in working tree
-        let diff_before = compute_four_way_diff(
-            "test.txt",
-            Some(base),
-            Some(base),
-            Some(base),      // index same as base
-            Some(modified),  // working has the change
-            None,
-        );
+        let diff_before = compute_four_way_diff(DiffInput {
+            path: "test.txt",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),      // index same as base
+            working: Some(modified), // working has the change
+            old_path: None,
+        });
 
         let unstaged_lines: Vec<_> = diff_before.lines.iter()
             .filter(|l| l.source == LineSource::Unstaged && l.content == "line3")
@@ -1993,14 +2000,14 @@ end"##;
         assert_eq!(unstaged_lines.len(), 1, "line3 should be Unstaged before staging");
 
         // After staging: change is in index and working tree
-        let diff_after = compute_four_way_diff(
-            "test.txt",
-            Some(base),
-            Some(base),
-            Some(modified),  // index now has the change
-            Some(modified),  // working same as index
-            None,
-        );
+        let diff_after = compute_four_way_diff(DiffInput {
+            path: "test.txt",
+            base: Some(base),
+            head: Some(base),
+            index: Some(modified),   // index now has the change
+            working: Some(modified), // working same as index
+            old_path: None,
+        });
 
         let staged_lines: Vec<_> = diff_after.lines.iter()
             .filter(|l| l.source == LineSource::Staged && l.content == "line3")
