@@ -233,7 +233,8 @@ impl FrameContext {
         let mut end = start;
 
         for height in wrap_heights.iter().skip(start) {
-            if rows_used + height > self.viewport_height && end > start {
+            // Include items whose first row is visible, even if they extend beyond viewport
+            if rows_used >= self.viewport_height && end > start {
                 break;
             }
             rows_used += height;
@@ -444,10 +445,12 @@ mod tests {
         assert_eq!(start, 8);
         assert!(end <= 11, "visible range should not exceed total items");
 
+        // Visible range includes items whose first row is visible, even if they extend beyond.
+        // This allows partial rendering of tall items at the viewport bottom.
         let wrap_heights = ctx.get_wrap_heights(&app);
-        let visible_rows: usize = wrap_heights[start..end].iter().sum();
-        assert!(visible_rows <= app.viewport_height,
-            "visible rows ({}) should fit in viewport ({})", visible_rows, app.viewport_height);
+        let rows_before_last: usize = wrap_heights[start..end.saturating_sub(1)].iter().sum();
+        assert!(rows_before_last < app.viewport_height,
+            "rows before last item ({}) should start within viewport ({})", rows_before_last, app.viewport_height);
     }
 
     #[test]
@@ -464,6 +467,94 @@ mod tests {
 
         assert_eq!(start, 0);
         assert_eq!(end, 1, "should include at least one item even if taller than viewport");
+    }
+
+    #[test]
+    fn test_visible_range_includes_partial_items_at_viewport_bottom() {
+        // Create lines where the last visible item will only partially fit
+        // 5 short lines (1 row each) + 1 tall line (4 rows)
+        let mut lines: Vec<_> = (0..5).map(|i| base_line(&format!("short{}", i))).collect();
+        lines.push(base_line(&"x".repeat(200))); // ~4 rows at width 50
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.viewport_height = 6; // Can fit 5 short + 1 row of tall
+        app.content_width = 50;
+        app.scroll_offset = 0;
+
+        let ctx = FrameContext::new(&app);
+        let (start, end) = ctx.visible_range(&app);
+
+        // Should include all 6 items: the tall item's first row starts within viewport
+        assert_eq!(start, 0);
+        assert_eq!(end, 6, "should include partial item at viewport bottom");
+
+        // The total rows exceed viewport, proving we include a partial item
+        let wrap_heights = ctx.get_wrap_heights(&app);
+        let total_rows: usize = wrap_heights[start..end].iter().sum();
+        assert!(total_rows > app.viewport_height,
+            "total rows ({}) should exceed viewport ({}) due to partial item",
+            total_rows, app.viewport_height);
+    }
+
+    #[test]
+    fn test_visible_range_includes_partial_image_at_viewport_bottom() {
+        use crate::image_diff::{CachedImage, ImageDiffState};
+        use image::DynamicImage;
+
+        // Create content: 2 short text lines + 1 image marker (16 rows tall)
+        let lines = vec![
+            DiffLine::file_header("test.png"),
+            base_line("short line 1"),
+            DiffLine::image_marker("test.png"),
+        ];
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.viewport_height = 5; // Only room for header (1) + text (1) + 3 rows of image
+        app.content_width = 80;
+        app.panel_width = 100;
+
+        // Add image to cache - 192x192 results in ~16 row height
+        let cached_image = CachedImage {
+            display_image: DynamicImage::new_rgb8(192, 192),
+            original_width: 192,
+            original_height: 192,
+            file_size: 1024,
+            format_name: "PNG".to_string(),
+            protocol: None,
+        };
+        app.image_cache.insert(
+            "test.png".to_string(),
+            ImageDiffState {
+                before: Some(cached_image),
+                after: None,
+            },
+        );
+
+        let ctx = FrameContext::new(&app);
+        let wrap_heights = ctx.get_wrap_heights(&app);
+
+        // Verify the image marker has significant height (>5 rows)
+        let image_height = wrap_heights[2];
+        assert!(
+            image_height > app.viewport_height,
+            "image height ({}) should exceed viewport ({}) for this test to be meaningful",
+            image_height, app.viewport_height
+        );
+
+        let (start, end) = ctx.visible_range(&app);
+
+        // Should include all 3 items: header + text line + image marker
+        // The image's first row starts at row 2 (within viewport of 5)
+        assert_eq!(start, 0);
+        assert_eq!(end, 3, "should include partial image marker at viewport bottom");
+
+        // Total rows exceed viewport, proving partial image is included
+        let total_rows: usize = wrap_heights[start..end].iter().sum();
+        assert!(
+            total_rows > app.viewport_height,
+            "total rows ({}) should exceed viewport ({}) due to partial image",
+            total_rows, app.viewport_height
+        );
     }
 
     #[test]
