@@ -195,3 +195,341 @@ pub fn compute_inline_diff_merged(
 
     InlineDiffResult { spans, is_meaningful }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === InlineSpan creation and properties ===
+
+    #[test]
+    fn test_inline_span_unchanged() {
+        let span = InlineSpan {
+            text: "unchanged".to_string(),
+            source: None,
+            is_deletion: false,
+        };
+        assert_eq!(span.text, "unchanged");
+        assert!(span.source.is_none());
+        assert!(!span.is_deletion);
+    }
+
+    #[test]
+    fn test_inline_span_deletion() {
+        let span = InlineSpan {
+            text: "deleted".to_string(),
+            source: Some(LineSource::DeletedBase),
+            is_deletion: true,
+        };
+        assert_eq!(span.text, "deleted");
+        assert_eq!(span.source, Some(LineSource::DeletedBase));
+        assert!(span.is_deletion);
+    }
+
+    #[test]
+    fn test_inline_span_insertion() {
+        let span = InlineSpan {
+            text: "inserted".to_string(),
+            source: Some(LineSource::Committed),
+            is_deletion: false,
+        };
+        assert_eq!(span.text, "inserted");
+        assert_eq!(span.source, Some(LineSource::Committed));
+        assert!(!span.is_deletion);
+    }
+
+    // === Deletion source mapping ===
+
+    #[test]
+    fn test_deletion_source_for_committed_change() {
+        let result = compute_inline_diff_merged("old content", "new content", LineSource::Committed);
+
+        // Deleted spans should have DeletedBase source
+        let deletion_spans: Vec<_> = result.spans.iter()
+            .filter(|s| s.is_deletion)
+            .collect();
+        for span in deletion_spans {
+            assert_eq!(span.source, Some(LineSource::DeletedBase));
+        }
+    }
+
+    #[test]
+    fn test_deletion_source_for_staged_change() {
+        let result = compute_inline_diff_merged("old content", "new content", LineSource::Staged);
+
+        let deletion_spans: Vec<_> = result.spans.iter()
+            .filter(|s| s.is_deletion)
+            .collect();
+        for span in deletion_spans {
+            assert_eq!(span.source, Some(LineSource::DeletedCommitted));
+        }
+    }
+
+    #[test]
+    fn test_deletion_source_for_unstaged_change() {
+        let result = compute_inline_diff_merged("old content", "new content", LineSource::Unstaged);
+
+        let deletion_spans: Vec<_> = result.spans.iter()
+            .filter(|s| s.is_deletion)
+            .collect();
+        for span in deletion_spans {
+            assert_eq!(span.source, Some(LineSource::DeletedStaged));
+        }
+    }
+
+    // === is_meaningful determination ===
+
+    #[test]
+    fn test_meaningful_when_long_unchanged_segment() {
+        // "hello world" -> "hello earth" shares "hello " (6 chars) which is >= 5
+        let result = compute_inline_diff_merged("hello world", "hello earth", LineSource::Committed);
+        assert!(result.is_meaningful, "Should be meaningful with 6-char unchanged prefix");
+    }
+
+    #[test]
+    fn test_meaningful_suffix_preservation() {
+        // "do_thing(data)" -> "do_thing(data, params)" shares "do_thing(data" + ")"
+        let result = compute_inline_diff_merged(
+            "do_thing(data)",
+            "do_thing(data, params)",
+            LineSource::Committed,
+        );
+        assert!(result.is_meaningful, "Should be meaningful - prefix/suffix unchanged");
+    }
+
+    #[test]
+    fn test_not_meaningful_too_short_unchanged() {
+        // "abc" -> "xyz" - no meaningful unchanged segment
+        let result = compute_inline_diff_merged("abc", "xyz", LineSource::Committed);
+        assert!(!result.is_meaningful, "Should not be meaningful - no shared content");
+    }
+
+    #[test]
+    fn test_not_meaningful_only_short_matches() {
+        // Lines that share only small fragments shouldn't be meaningful
+        let result = compute_inline_diff_merged("end", "let", LineSource::Committed);
+        assert!(!result.is_meaningful, "Should not be meaningful - only 1 char match");
+    }
+
+    #[test]
+    fn test_not_meaningful_too_fragmented() {
+        // Many scattered unchanged segments indicate coincidental matches
+        let result = compute_inline_diff_merged(
+            "for i in (x..y).rev() {",
+            "// the range span note",
+            LineSource::Committed,
+        );
+        // This creates scattered matches like "r", " ", etc.
+        assert!(!result.is_meaningful, "Should not be meaningful - too fragmented");
+    }
+
+    #[test]
+    fn test_leading_whitespace_not_counted_for_meaningfulness() {
+        // Two lines that only share leading whitespace shouldn't be meaningful
+        let result = compute_inline_diff_merged(
+            "            }",
+            "            .map(|x| x)",
+            LineSource::Committed,
+        );
+        // The 12 spaces of indentation shouldn't make this meaningful
+        assert!(!result.is_meaningful, "Leading whitespace alone shouldn't make diff meaningful");
+    }
+
+    // === Span structure verification ===
+
+    #[test]
+    fn test_identical_lines_single_unchanged_span() {
+        let result = compute_inline_diff_merged("same line", "same line", LineSource::Committed);
+
+        assert_eq!(result.spans.len(), 1);
+        assert_eq!(result.spans[0].text, "same line");
+        assert!(result.spans[0].source.is_none());
+        assert!(!result.spans[0].is_deletion);
+    }
+
+    #[test]
+    fn test_empty_lines() {
+        let result = compute_inline_diff_merged("", "", LineSource::Committed);
+
+        // Empty lines should produce no spans
+        assert!(result.spans.is_empty());
+        assert!(!result.is_meaningful);
+    }
+
+    #[test]
+    fn test_simple_replacement_structure() {
+        // "commercial_renewal" -> "bond" with ".name" preserved
+        let result = compute_inline_diff_merged(
+            "commercial_renewal.name",
+            "bond.name",
+            LineSource::Committed,
+        );
+
+        // Should have deletion spans, insertion spans, and unchanged spans
+        let has_deletions = result.spans.iter().any(|s| s.is_deletion);
+        let has_insertions = result.spans.iter().any(|s| s.source == Some(LineSource::Committed));
+        let has_unchanged = result.spans.iter().any(|s| s.source.is_none());
+
+        assert!(has_deletions, "Should have deletion spans");
+        assert!(has_insertions, "Should have insertion spans");
+        assert!(has_unchanged, "Should have unchanged spans");
+
+        // The unchanged portion should contain ".name"
+        let unchanged: String = result.spans.iter()
+            .filter(|s| s.source.is_none())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(unchanged.contains(".name"), "Should preserve '.name' as unchanged");
+
+        // Deleted content should include material from "commercial_renewal"
+        let deleted: String = result.spans.iter()
+            .filter(|s| s.is_deletion)
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(!deleted.is_empty(), "Should have deleted content");
+    }
+
+    #[test]
+    fn test_prefix_change() {
+        // Change only the prefix
+        let result = compute_inline_diff_merged(
+            "old_function_name()",
+            "new_function_name()",
+            LineSource::Committed,
+        );
+
+        // "old" -> "new" deletion/insertion, then "_function_name()" unchanged
+        assert!(result.is_meaningful, "Should be meaningful - long unchanged suffix");
+
+        let unchanged: String = result.spans.iter()
+            .filter(|s| s.source.is_none())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(unchanged.contains("_function_name()"));
+    }
+
+    #[test]
+    fn test_suffix_change() {
+        // Change only the suffix
+        let result = compute_inline_diff_merged(
+            "function_name_old()",
+            "function_name_new()",
+            LineSource::Committed,
+        );
+
+        assert!(result.is_meaningful, "Should be meaningful - long unchanged prefix");
+
+        let unchanged: String = result.spans.iter()
+            .filter(|s| s.source.is_none())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(unchanged.contains("function_name_"));
+    }
+
+    #[test]
+    fn test_middle_insertion() {
+        // Insert in the middle
+        let result = compute_inline_diff_merged(
+            "hello world",
+            "hello beautiful world",
+            LineSource::Staged,
+        );
+
+        // Should have "hello ", insertion "beautiful ", "world"
+        let unchanged_texts: Vec<_> = result.spans.iter()
+            .filter(|s| s.source.is_none())
+            .map(|s| s.text.as_str())
+            .collect();
+
+        let inserted_texts: Vec<_> = result.spans.iter()
+            .filter(|s| s.source == Some(LineSource::Staged))
+            .map(|s| s.text.as_str())
+            .collect();
+
+        assert!(unchanged_texts.contains(&"hello "));
+        assert!(unchanged_texts.contains(&"world"));
+        assert!(inserted_texts.iter().any(|t| t.contains("beautiful")));
+    }
+
+    #[test]
+    fn test_complete_replacement_not_meaningful() {
+        // Completely different lines
+        let result = compute_inline_diff_merged(
+            "func foo() { return 42; }",
+            "struct Bar { x: i32, y: i32 }",
+            LineSource::Committed,
+        );
+
+        assert!(!result.is_meaningful, "Completely different lines should not be meaningful");
+    }
+
+    // === Edge cases ===
+
+    #[test]
+    fn test_single_char_difference() {
+        let result = compute_inline_diff_merged("test_a", "test_b", LineSource::Committed);
+
+        // "test_" unchanged (5 chars - exactly at threshold)
+        assert!(result.is_meaningful, "5 char unchanged segment should be meaningful");
+    }
+
+    #[test]
+    fn test_whitespace_only_change() {
+        let result = compute_inline_diff_merged(
+            "let x = 1;",
+            "let  x  =  1;",
+            LineSource::Unstaged,
+        );
+
+        // Should show whitespace changes
+        let has_insertion = result.spans.iter().any(|s| s.source.is_some() && !s.is_deletion);
+        assert!(has_insertion, "Should detect whitespace insertions");
+    }
+
+    #[test]
+    fn test_unicode_content() {
+        let result = compute_inline_diff_merged(
+            "hello こんにちは world",
+            "hello 你好 world",
+            LineSource::Committed,
+        );
+
+        // Should handle unicode properly
+        let unchanged: String = result.spans.iter()
+            .filter(|s| s.source.is_none())
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(unchanged.contains("hello "));
+        assert!(unchanged.contains(" world"));
+    }
+
+    #[test]
+    fn test_deletion_before_insertion_ordering() {
+        // Verify deleted content appears before inserted content in span order
+        let result = compute_inline_diff_merged("old", "new", LineSource::Committed);
+
+        // Find positions
+        let deletion_pos = result.spans.iter().position(|s| s.is_deletion);
+        let insertion_pos = result.spans.iter().position(|s| !s.is_deletion && s.source.is_some());
+
+        if let (Some(del), Some(ins)) = (deletion_pos, insertion_pos) {
+            assert!(del < ins, "Deletion should come before insertion");
+        }
+    }
+
+    #[test]
+    fn test_multiple_changes_in_line() {
+        let result = compute_inline_diff_merged(
+            "let x = foo(a, b);",
+            "let y = bar(c, d);",
+            LineSource::Committed,
+        );
+
+        // Multiple changes: x->y, foo->bar, a,b->c,d
+        // But shared: "let ", " = ", "(", ", ", ");"
+        let unchanged_count = result.spans.iter()
+            .filter(|s| s.source.is_none())
+            .count();
+        assert!(unchanged_count >= 2, "Should have multiple unchanged segments");
+    }
+}
