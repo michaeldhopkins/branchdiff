@@ -15,3 +15,6 @@ too-many-lines-threshold = 275
 
 # Max function arguments - set above current max (15) to catch growth
 too-many-arguments-threshold = 16
+
+# Allow .unwrap() in test code
+allow-unwrap-in-tests = true

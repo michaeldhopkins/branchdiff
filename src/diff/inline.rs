@@ -66,52 +66,76 @@ pub fn compute_inline_diff_merged(
     let mut pending_deleted = String::new();
     let mut pending_inserted = String::new();
 
+    // Helper to flush pending unchanged content, updating metrics
+    let flush_unchanged = |pending: &mut String,
+                               spans: &mut Vec<InlineSpan>,
+                               seen_non_whitespace: &mut bool,
+                               max_unchanged_segment: &mut usize,
+                               num_unchanged_segments: &mut usize| {
+        if pending.is_empty() {
+            return;
+        }
+        let has_non_ws = pending.chars().any(|c| !c.is_whitespace());
+        if *seen_non_whitespace || has_non_ws {
+            let segment_len = pending.chars().count();
+            *max_unchanged_segment = (*max_unchanged_segment).max(segment_len);
+            *num_unchanged_segments += 1;
+        }
+        if has_non_ws {
+            *seen_non_whitespace = true;
+        }
+        spans.push(InlineSpan {
+            text: std::mem::take(pending),
+            source: None,
+            is_deletion: false,
+        });
+    };
+
+    // Helper to flush pending changed content (deleted or inserted)
+    let flush_changed = |pending: &mut String,
+                         spans: &mut Vec<InlineSpan>,
+                         seen_non_whitespace: &mut bool,
+                         source: LineSource,
+                         is_deletion: bool| {
+        if pending.is_empty() {
+            return;
+        }
+        if pending.chars().any(|c| !c.is_whitespace()) {
+            *seen_non_whitespace = true;
+        }
+        spans.push(InlineSpan {
+            text: std::mem::take(pending),
+            source: Some(source),
+            is_deletion,
+        });
+    };
+
     for change in diff.iter_all_changes() {
         let text = change.value();
         match change.tag() {
             ChangeTag::Equal => {
                 if !pending_deleted.is_empty() || !pending_inserted.is_empty() {
-                    if !pending_unchanged.is_empty() {
-                        // Only count this segment if we've seen non-whitespace,
-                        // OR if this segment itself contains non-whitespace
-                        let has_non_ws = pending_unchanged.chars().any(|c| !c.is_whitespace());
-                        if seen_non_whitespace || has_non_ws {
-                            let segment_len = pending_unchanged.chars().count();
-                            max_unchanged_segment = max_unchanged_segment.max(segment_len);
-                            num_unchanged_segments += 1;
-                        }
-                        if has_non_ws {
-                            seen_non_whitespace = true;
-                        }
-                        spans.push(InlineSpan {
-                            text: pending_unchanged.clone(),
-                            source: None,
-                            is_deletion: false
-                        });
-                        pending_unchanged.clear();
-                    }
-                    if !pending_deleted.is_empty() {
-                        if pending_deleted.chars().any(|c| !c.is_whitespace()) {
-                            seen_non_whitespace = true;
-                        }
-                        spans.push(InlineSpan {
-                            text: pending_deleted.clone(),
-                            source: Some(deletion_source),
-                            is_deletion: true
-                        });
-                        pending_deleted.clear();
-                    }
-                    if !pending_inserted.is_empty() {
-                        if pending_inserted.chars().any(|c| !c.is_whitespace()) {
-                            seen_non_whitespace = true;
-                        }
-                        spans.push(InlineSpan {
-                            text: pending_inserted.clone(),
-                            source: Some(change_source),
-                            is_deletion: false
-                        });
-                        pending_inserted.clear();
-                    }
+                    flush_unchanged(
+                        &mut pending_unchanged,
+                        &mut spans,
+                        &mut seen_non_whitespace,
+                        &mut max_unchanged_segment,
+                        &mut num_unchanged_segments,
+                    );
+                    flush_changed(
+                        &mut pending_deleted,
+                        &mut spans,
+                        &mut seen_non_whitespace,
+                        deletion_source,
+                        true,
+                    );
+                    flush_changed(
+                        &mut pending_inserted,
+                        &mut spans,
+                        &mut seen_non_whitespace,
+                        change_source,
+                        false,
+                    );
                 }
                 pending_unchanged.push_str(text);
             }
@@ -125,33 +149,27 @@ pub fn compute_inline_diff_merged(
     }
 
     // Flush any remaining content
-    if !pending_unchanged.is_empty() {
-        let has_non_ws = pending_unchanged.chars().any(|c| !c.is_whitespace());
-        if seen_non_whitespace || has_non_ws {
-            let segment_len = pending_unchanged.chars().count();
-            max_unchanged_segment = max_unchanged_segment.max(segment_len);
-            num_unchanged_segments += 1;
-        }
-        spans.push(InlineSpan {
-            text: pending_unchanged,
-            source: None,
-            is_deletion: false
-        });
-    }
-    if !pending_deleted.is_empty() {
-        spans.push(InlineSpan {
-            text: pending_deleted,
-            source: Some(deletion_source),
-            is_deletion: true
-        });
-    }
-    if !pending_inserted.is_empty() {
-        spans.push(InlineSpan {
-            text: pending_inserted,
-            source: Some(change_source),
-            is_deletion: false
-        });
-    }
+    flush_unchanged(
+        &mut pending_unchanged,
+        &mut spans,
+        &mut seen_non_whitespace,
+        &mut max_unchanged_segment,
+        &mut num_unchanged_segments,
+    );
+    flush_changed(
+        &mut pending_deleted,
+        &mut spans,
+        &mut seen_non_whitespace,
+        deletion_source,
+        true,
+    );
+    flush_changed(
+        &mut pending_inserted,
+        &mut spans,
+        &mut seen_non_whitespace,
+        change_source,
+        false,
+    );
 
     // Determine if inline diff is meaningful:
     // We need:

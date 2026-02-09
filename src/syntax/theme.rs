@@ -55,9 +55,12 @@ pub fn branchdiff_theme() -> Theme {
 }
 
 fn theme_item(scope: &str, r: u8, g: u8, b: u8) -> ThemeItem {
+    // Use expect() for programmer error - these are hardcoded scope selectors that
+    // should always be valid. If one fails, it's a bug in the theme definition.
+    let scope_selectors = ScopeSelectors::from_str(scope)
+        .expect("hardcoded scope selector should be valid");
     ThemeItem {
-        scope: ScopeSelectors::from_str(scope)
-            .unwrap_or_else(|e| panic!("Invalid scope selector '{scope}': {e}")),
+        scope: scope_selectors,
         style: StyleModifier {
             foreground: Some(Color { r, g, b, a: 255 }),
             ..Default::default()

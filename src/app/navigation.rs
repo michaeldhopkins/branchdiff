@@ -4,12 +4,19 @@ use crate::ui::wrapping::{wrapped_line_height, ImageDimensions};
 use super::{App, DisplayableItem, FrameContext};
 
 impl App {
+    /// Invalidate cached view state after navigation changes.
+    /// Call this after modifying scroll_offset to trigger re-computation
+    /// of inline spans and clear any text selection.
+    fn invalidate_view(&mut self) {
+        self.needs_inline_spans = true;
+        self.clear_selection();
+    }
+
     pub fn scroll_up(&mut self, n: usize) {
         let old_offset = self.scroll_offset;
         self.scroll_offset = self.scroll_offset.saturating_sub(n);
         if self.scroll_offset != old_offset {
-            self.needs_inline_spans = true;
-            self.clear_selection();
+            self.invalidate_view();
         }
     }
 
@@ -18,8 +25,7 @@ impl App {
         self.scroll_offset = self.scroll_offset.saturating_add(n);
         self.clamp_scroll();
         if self.scroll_offset != old_offset {
-            self.needs_inline_spans = true;
-            self.clear_selection();
+            self.invalidate_view();
         }
     }
 
@@ -34,8 +40,7 @@ impl App {
                 && self.lines[*idx].source == LineSource::FileHeader
             {
                 self.scroll_offset = i;
-                self.needs_inline_spans = true;
-                self.clear_selection();
+                self.invalidate_view();
                 return;
             }
         }
@@ -49,8 +54,7 @@ impl App {
 
         if let Some(pos) = ctx.find_next_file_header(self, self.scroll_offset) {
             self.scroll_offset = pos;
-            self.needs_inline_spans = true;
-            self.clear_selection();
+            self.invalidate_view();
         }
     }
 
@@ -76,8 +80,7 @@ impl App {
                 && self.lines[idx].source == LineSource::FileHeader
             {
                 self.scroll_offset = i;
-                self.needs_inline_spans = true;
-                self.clear_selection();
+                self.invalidate_view();
                 return;
             }
         }
@@ -91,8 +94,7 @@ impl App {
 
         if let Some(pos) = ctx.find_prev_file_header(self, self.scroll_offset) {
             self.scroll_offset = pos;
-            self.needs_inline_spans = true;
-            self.clear_selection();
+            self.invalidate_view();
         }
     }
 
@@ -109,8 +111,7 @@ impl App {
     pub fn go_to_top(&mut self) {
         if self.scroll_offset != 0 {
             self.scroll_offset = 0;
-            self.needs_inline_spans = true;
-            self.clear_selection();
+            self.invalidate_view();
         }
     }
 
@@ -119,8 +120,7 @@ impl App {
         let items = self.compute_displayable_items();
         self.scroll_offset = self.max_scroll_for_items(&items);
         if self.scroll_offset != old_offset {
-            self.needs_inline_spans = true;
-            self.clear_selection();
+            self.invalidate_view();
         }
     }
 
@@ -129,8 +129,7 @@ impl App {
         let old_offset = self.scroll_offset;
         self.scroll_offset = ctx.max_scroll(self);
         if self.scroll_offset != old_offset {
-            self.needs_inline_spans = true;
-            self.clear_selection();
+            self.invalidate_view();
         }
     }
 
@@ -237,29 +236,19 @@ impl App {
 
     pub fn scroll_percentage(&self) -> u16 {
         let items = self.compute_displayable_items();
-        let item_count = items.len();
-        if item_count == 0 || item_count <= self.viewport_height {
-            100
-        } else {
-            let max_scroll = self.max_scroll_for_items(&items);
-            if max_scroll == 0 {
-                return 100;
-            }
-            let pct = ((self.scroll_offset as f64 / max_scroll as f64) * 100.0) as u16;
-            pct.min(100)
-        }
+        self.compute_scroll_percentage(items.len(), self.max_scroll_for_items(&items))
     }
 
     /// Compute scroll percentage using pre-computed FrameContext
     pub fn scroll_percentage_with_frame(&self, ctx: &FrameContext) -> u16 {
-        let item_count = ctx.item_count();
-        if item_count == 0 || item_count <= self.viewport_height {
+        self.compute_scroll_percentage(ctx.item_count(), ctx.max_scroll(self))
+    }
+
+    /// Common scroll percentage calculation
+    fn compute_scroll_percentage(&self, item_count: usize, max_scroll: usize) -> u16 {
+        if item_count == 0 || item_count <= self.viewport_height || max_scroll == 0 {
             100
         } else {
-            let max_scroll = ctx.max_scroll(self);
-            if max_scroll == 0 {
-                return 100;
-            }
             let pct = ((self.scroll_offset as f64 / max_scroll as f64) * 100.0) as u16;
             pct.min(100)
         }
