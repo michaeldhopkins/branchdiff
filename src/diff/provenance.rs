@@ -11,7 +11,7 @@ use super::LineSource;
 ///
 /// The histogram algorithm anchors on low-occurrence lines, producing better structural
 /// alignment for files with repetitive patterns (HTML, XML, etc.).
-pub fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Vec<Option<usize>> {
+pub(super) fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Vec<Option<usize>> {
     if old_lines.is_empty() {
         return vec![None; new_lines.len()];
     }
@@ -70,7 +70,7 @@ pub fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Vec<Optio
 ///
 /// For each hunk (change region), matches deleted lines with inserted lines
 /// based on content similarity for inline diff highlighting.
-pub fn build_modification_map<'a>(
+pub(super) fn build_modification_map<'a>(
     old_lines: &[&'a str],
     new_lines: &[&'a str],
     _change_source: LineSource,
@@ -138,12 +138,12 @@ pub fn build_modification_map<'a>(
 }
 
 /// Check if `target_idx` appears anywhere in `provenance` (i.e., survives to the next stage)
-pub fn survives_in(provenance: &[Option<usize>], target_idx: usize) -> bool {
+pub(super) fn survives_in(provenance: &[Option<usize>], target_idx: usize) -> bool {
     provenance.contains(&Some(target_idx))
 }
 
 /// Find all indices in `provenance` that point to `target_idx`
-pub fn find_sources(
+pub(super) fn find_sources(
     provenance: &[Option<usize>],
     target_idx: usize,
 ) -> impl Iterator<Item = usize> + '_ {
@@ -160,7 +160,7 @@ pub fn find_sources(
 }
 
 /// Check if `source_idx` survives through an intermediate stage to the final stage (chained lookup)
-pub fn survives_chain(
+pub(super) fn survives_chain(
     source_idx: usize,
     intermediate_from_source: &[Option<usize>],
     final_from_intermediate: &[Option<usize>],

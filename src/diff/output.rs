@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use super::{DiffLine, LineSource};
 
 /// Determine where a base line was deleted (in commit, staging, or working)
-pub fn determine_deletion_source(
+pub(super) fn determine_deletion_source(
     base_idx: usize,
     _base_lines: &[&str],
     _head_lines: &[&str],
@@ -34,7 +34,7 @@ pub fn determine_deletion_source(
 }
 
 /// Build the output line for a working line, handling modifications
-pub fn build_working_line_output<F1, F2>(
+pub(super) fn build_working_line_output<F1, F2>(
     working_idx: usize,
     working_content: &str,
     source: LineSource,
@@ -109,5 +109,367 @@ where
         LineSource::Base => default_line(),
 
         _ => default_line(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === Tests for determine_deletion_source ===
+
+    #[test]
+    fn test_deletion_source_deleted_in_commit() {
+        // Base line doesn't exist in head (deleted during commit)
+        let base_lines = &["line0", "line1", "line2"];
+        let head_lines = &["line0", "line2"]; // line1 deleted
+        let index_lines = &["line0", "line2"];
+
+        // head_from_base: head[0]=base[0], head[1]=base[2] (line1 not in head)
+        let head_from_base = vec![Some(0), Some(2)];
+        let index_from_head = vec![Some(0), Some(1)];
+
+        let source = determine_deletion_source(
+            1, // base_idx for "line1"
+            base_lines,
+            head_lines,
+            index_lines,
+            &head_from_base,
+            &index_from_head,
+        );
+
+        assert_eq!(source, LineSource::DeletedBase);
+    }
+
+    #[test]
+    fn test_deletion_source_deleted_in_staging() {
+        // Base line exists in head but not in index (deleted during staging)
+        let base_lines = &["line0", "line1", "line2"];
+        let head_lines = &["line0", "line1", "line2"];
+        let index_lines = &["line0", "line2"]; // line1 deleted from index
+
+        // head_from_base: all lines map 1:1
+        let head_from_base = vec![Some(0), Some(1), Some(2)];
+        // index_from_head: index[0]=head[0], index[1]=head[2] (head[1] not in index)
+        let index_from_head = vec![Some(0), Some(2)];
+
+        let source = determine_deletion_source(
+            1, // base_idx for "line1"
+            base_lines,
+            head_lines,
+            index_lines,
+            &head_from_base,
+            &index_from_head,
+        );
+
+        assert_eq!(source, LineSource::DeletedCommitted);
+    }
+
+    #[test]
+    fn test_deletion_source_deleted_in_working() {
+        // Base line exists in head and index but not in working (deleted in working tree)
+        let base_lines = &["line0", "line1", "line2"];
+        let head_lines = &["line0", "line1", "line2"];
+        let index_lines = &["line0", "line1", "line2"];
+
+        // All lines map 1:1 through head and index
+        let head_from_base = vec![Some(0), Some(1), Some(2)];
+        let index_from_head = vec![Some(0), Some(1), Some(2)];
+
+        let source = determine_deletion_source(
+            1, // base_idx for "line1" - exists in head and index
+            base_lines,
+            head_lines,
+            index_lines,
+            &head_from_base,
+            &index_from_head,
+        );
+
+        assert_eq!(source, LineSource::DeletedStaged);
+    }
+
+    #[test]
+    fn test_deletion_source_first_line() {
+        // Test deletion of first line
+        let base_lines = &["first", "second"];
+        let head_lines = &["second"]; // first deleted
+
+        let head_from_base = vec![Some(1)]; // only "second" remains
+        let index_from_head = vec![Some(0)];
+
+        let source = determine_deletion_source(
+            0, // first line deleted
+            base_lines,
+            head_lines,
+            &["second"],
+            &head_from_base,
+            &index_from_head,
+        );
+
+        assert_eq!(source, LineSource::DeletedBase);
+    }
+
+    #[test]
+    fn test_deletion_source_last_line() {
+        // Test deletion of last line
+        let base_lines = &["first", "last"];
+        let head_lines = &["first"]; // last deleted
+
+        let head_from_base = vec![Some(0)]; // only "first" remains
+        let index_from_head = vec![Some(0)];
+
+        let source = determine_deletion_source(
+            1, // last line deleted
+            base_lines,
+            head_lines,
+            &["first"],
+            &head_from_base,
+            &index_from_head,
+        );
+
+        assert_eq!(source, LineSource::DeletedBase);
+    }
+
+    // === Tests for build_working_line_output ===
+
+    #[test]
+    fn test_build_output_base_line() {
+        let working_from_index = vec![Some(0)];
+        let index_from_head = vec![Some(0)];
+        let head_from_base = vec![Some(0)];
+        let index_working_mods = HashMap::new();
+        let base_head_mods = HashMap::new();
+        let head_index_mods = HashMap::new();
+
+        let line = build_working_line_output(
+            0,
+            "content",
+            LineSource::Base,
+            1,
+            "test.rs",
+            &working_from_index,
+            &index_from_head,
+            &head_from_base,
+            &index_working_mods,
+            &base_head_mods,
+            &head_index_mods,
+            &["content"],
+            &["content"],
+            &|_| LineSource::Base,
+            &|_| LineSource::Base,
+        );
+
+        assert_eq!(line.source, LineSource::Base);
+        assert_eq!(line.content, "content");
+        assert_eq!(line.prefix, ' ');
+        assert_eq!(line.line_number, Some(1));
+        assert_eq!(line.file_path, Some("test.rs".to_string()));
+    }
+
+    #[test]
+    fn test_build_output_unstaged_addition() {
+        let working_from_index: Vec<Option<usize>> = vec![None]; // not from index
+        let index_from_head = vec![];
+        let head_from_base = vec![];
+        let index_working_mods = HashMap::new();
+        let base_head_mods = HashMap::new();
+        let head_index_mods = HashMap::new();
+
+        let line = build_working_line_output(
+            0,
+            "new line",
+            LineSource::Unstaged,
+            5,
+            "test.rs",
+            &working_from_index,
+            &index_from_head,
+            &head_from_base,
+            &index_working_mods,
+            &base_head_mods,
+            &head_index_mods,
+            &[],
+            &[],
+            &|_| LineSource::Base,
+            &|_| LineSource::Base,
+        );
+
+        assert_eq!(line.source, LineSource::Unstaged);
+        assert_eq!(line.content, "new line");
+        assert_eq!(line.prefix, '+');
+        assert_eq!(line.line_number, Some(5));
+    }
+
+    #[test]
+    fn test_build_output_unstaged_modification() {
+        let working_from_index = vec![Some(0)];
+        let index_from_head = vec![Some(0)];
+        let head_from_base = vec![Some(0)];
+
+        // Working line 0 is a modification of index line 0
+        let mut index_working_mods = HashMap::new();
+        index_working_mods.insert(0usize, (0usize, "old content"));
+
+        let base_head_mods = HashMap::new();
+        let head_index_mods = HashMap::new();
+
+        let line = build_working_line_output(
+            0,
+            "new content",
+            LineSource::Unstaged,
+            1,
+            "test.rs",
+            &working_from_index,
+            &index_from_head,
+            &head_from_base,
+            &index_working_mods,
+            &base_head_mods,
+            &head_index_mods,
+            &["old content"],
+            &["old content"],
+            &|_| LineSource::Base,
+            &|_| LineSource::Base,
+        );
+
+        // Modification should have Base source with old_content and change_source
+        assert_eq!(line.source, LineSource::Base);
+        assert_eq!(line.content, "new content");
+        assert_eq!(line.prefix, ' ');
+        assert_eq!(line.old_content, Some("old content".to_string()));
+        assert_eq!(line.change_source, Some(LineSource::Unstaged));
+    }
+
+    #[test]
+    fn test_build_output_committed_addition() {
+        let working_from_index = vec![Some(0)];
+        let index_from_head = vec![Some(0)];
+        let head_from_base: Vec<Option<usize>> = vec![None]; // not from base
+
+        let index_working_mods = HashMap::new();
+        let base_head_mods = HashMap::new();
+        let head_index_mods = HashMap::new();
+
+        let line = build_working_line_output(
+            0,
+            "committed line",
+            LineSource::Committed,
+            1,
+            "test.rs",
+            &working_from_index,
+            &index_from_head,
+            &head_from_base,
+            &index_working_mods,
+            &base_head_mods,
+            &head_index_mods,
+            &["committed line"],
+            &["committed line"],
+            &|_| LineSource::Committed,
+            &|_| LineSource::Committed,
+        );
+
+        assert_eq!(line.source, LineSource::Committed);
+        assert_eq!(line.content, "committed line");
+        assert_eq!(line.prefix, '+');
+    }
+
+    #[test]
+    fn test_build_output_committed_modification() {
+        let working_from_index = vec![Some(0)];
+        let index_from_head = vec![Some(0)];
+        let head_from_base = vec![Some(0)];
+
+        let index_working_mods = HashMap::new();
+        // Head line 0 is a modification of base line 0
+        let mut base_head_mods = HashMap::new();
+        base_head_mods.insert(0usize, (0usize, "base content"));
+        let head_index_mods = HashMap::new();
+
+        let line = build_working_line_output(
+            0,
+            "modified in commit",
+            LineSource::Committed,
+            1,
+            "test.rs",
+            &working_from_index,
+            &index_from_head,
+            &head_from_base,
+            &index_working_mods,
+            &base_head_mods,
+            &head_index_mods,
+            &["modified in commit"],
+            &["modified in commit"],
+            &|_| LineSource::Base,
+            &|_| LineSource::Base,
+        );
+
+        assert_eq!(line.source, LineSource::Base);
+        assert_eq!(line.old_content, Some("base content".to_string()));
+        assert_eq!(line.change_source, Some(LineSource::Committed));
+    }
+
+    #[test]
+    fn test_build_output_staged_addition() {
+        let working_from_index = vec![Some(0)];
+        let index_from_head: Vec<Option<usize>> = vec![None]; // not from head
+        let head_from_base = vec![];
+
+        let index_working_mods = HashMap::new();
+        let base_head_mods = HashMap::new();
+        let head_index_mods = HashMap::new();
+
+        let line = build_working_line_output(
+            0,
+            "staged line",
+            LineSource::Staged,
+            1,
+            "test.rs",
+            &working_from_index,
+            &index_from_head,
+            &head_from_base,
+            &index_working_mods,
+            &base_head_mods,
+            &head_index_mods,
+            &["staged line"],
+            &[],
+            &|_| LineSource::Staged,
+            &|_| LineSource::Base,
+        );
+
+        assert_eq!(line.source, LineSource::Staged);
+        assert_eq!(line.prefix, '+');
+    }
+
+    #[test]
+    fn test_build_output_staged_modification() {
+        let working_from_index = vec![Some(0)];
+        let index_from_head = vec![Some(0)];
+        let head_from_base = vec![Some(0)];
+
+        let index_working_mods = HashMap::new();
+        let base_head_mods = HashMap::new();
+        // Index line 0 is a modification of head line 0
+        let mut head_index_mods = HashMap::new();
+        head_index_mods.insert(0usize, (0usize, "head content"));
+
+        let line = build_working_line_output(
+            0,
+            "modified in staging",
+            LineSource::Staged,
+            1,
+            "test.rs",
+            &working_from_index,
+            &index_from_head,
+            &head_from_base,
+            &index_working_mods,
+            &base_head_mods,
+            &head_index_mods,
+            &["modified in staging"],
+            &["head content"],
+            &|_| LineSource::Committed,
+            &|idx| if idx == 0 { LineSource::Base } else { LineSource::Committed },
+        );
+
+        assert_eq!(line.source, LineSource::Base);
+        assert_eq!(line.old_content, Some("head content".to_string()));
+        assert_eq!(line.change_source, Some(LineSource::Staged));
     }
 }
