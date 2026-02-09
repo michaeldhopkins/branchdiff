@@ -16,9 +16,13 @@ Constants and magic numbers:
 - Place shared constants in a central location (e.g., `src/image_diff.rs` for image-related constants)
 - Clippy does not catch duplicate magic numbers - this requires manual vigilance
 
+## Committing
+
+Before committing, bump the version in `Cargo.toml` according to semver rules below. Every commit that changes behavior or fixes bugs requires a version bump. Run `cargo install --path .` after bumping to update `Cargo.lock`.
+
 ## Versioning (Semver)
 
-This project uses semantic versioning. Bump the version in `Cargo.toml` with each commit:
+This project uses semantic versioning:
 
 **PATCH bump (0.x.Y → 0.x.Y+1)** for:
 - Bug fixes
