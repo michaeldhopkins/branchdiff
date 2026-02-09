@@ -10,3 +10,8 @@ When adding user-facing features (keybindings, commands, UI elements):
 - Update README.md with feature description and keybindings
 - Update the help menu in src/ui/help.rs
 - Test the feature manually before committing
+
+Constants and magic numbers:
+- If a literal value is used more than once, extract it to a named constant
+- Place shared constants in a central location (e.g., `src/image_diff.rs` for image-related constants)
+- Clippy does not catch duplicate magic numbers - this requires manual vigilance

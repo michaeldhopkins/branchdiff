@@ -19,6 +19,18 @@ pub const MAX_CACHE_DIMENSION: u32 = 1024;
 /// Maximum number of images to keep in cache
 pub const MAX_CACHED_IMAGES: usize = 10;
 
+/// Terminal font width in pixels (used for image sizing calculations).
+/// Most monospace terminal fonts are 8 pixels wide per character cell.
+pub const FONT_WIDTH_PX: u8 = 8;
+
+/// Terminal font height in pixels (used for image sizing calculations).
+/// Most monospace terminal fonts are 16 pixels tall per character cell.
+pub const FONT_HEIGHT_PX: u8 = 16;
+
+/// Maximum height in terminal rows for an image diff panel.
+/// Prevents very tall images from consuming excessive vertical space.
+pub const MAX_IMAGE_HEIGHT_ROWS: u16 = 40;
+
 /// Check if a file is a supported image format.
 /// Uses the `image` crate's format detection - no hardcoded extension list.
 pub fn is_image_file(path: &str) -> bool {
@@ -250,23 +262,29 @@ pub fn rasterize_svg(svg_bytes: &[u8], max_dimension: u32) -> Result<CachedImage
 }
 
 /// Calculate display dimensions maintaining aspect ratio.
-/// Terminal cells are approximately 2:1 (height:width in pixels).
+/// Converts image pixel dimensions to terminal cell dimensions using font metrics,
+/// then scales to fit the available space without upscaling.
 pub fn fit_dimensions(img_width: u32, img_height: u32, max_w: u16, max_h: u16) -> (u16, u16) {
     // Handle zero inputs gracefully
     if img_width == 0 || img_height == 0 || max_w == 0 || max_h == 0 {
         return (1, 1);
     }
 
-    // Terminal cells are ~2:1 (height:width in pixels), so adjust
-    let cell_aspect = 2.0;
-    let effective_max_h = (max_h as f64 * cell_aspect) as u32;
+    let font_w = FONT_WIDTH_PX as f64;
+    let font_h = FONT_HEIGHT_PX as f64;
 
-    let scale_w = max_w as f64 / img_width as f64;
-    let scale_h = effective_max_h as f64 / img_height as f64;
-    let scale = scale_w.min(scale_h).min(1.0); // Never upscale
+    // Convert image pixel dimensions to cell dimensions
+    let img_cells_w = img_width as f64 / font_w;
+    let img_cells_h = img_height as f64 / font_h;
 
-    let display_w = ((img_width as f64) * scale) as u16;
-    let display_h = ((img_height as f64) * scale / cell_aspect) as u16;
+    // Calculate scale to fit within available cells (never upscale)
+    let scale_w = max_w as f64 / img_cells_w;
+    let scale_h = max_h as f64 / img_cells_h;
+    let scale = scale_w.min(scale_h).min(1.0);
+
+    // Apply scale and round up to ensure image fits
+    let display_w = (img_cells_w * scale).ceil() as u16;
+    let display_h = (img_cells_h * scale).ceil() as u16;
 
     (display_w.max(1), display_h.max(1))
 }

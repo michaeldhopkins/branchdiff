@@ -1,6 +1,7 @@
 mod print;
 
 use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, FrameContext};
+use branchdiff::image_diff::{FONT_HEIGHT_PX, FONT_WIDTH_PX};
 #[cfg(target_os = "linux")]
 use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::{handle_event, AppAction};
@@ -148,18 +149,31 @@ fn main() -> Result<()> {
         return run_benchmark(repo_root, frames);
     }
 
+    // Initialize image protocol picker BEFORE raw mode (protocol detection works better in cooked mode)
+    // Terminal multiplexers (Zellij, tmux, screen) don't support image protocols well,
+    // so force halfblocks when running inside them to avoid CPU spikes and rendering issues
+    let in_multiplexer = std::env::var("ZELLIJ").is_ok()
+        || std::env::var("TMUX").is_ok()
+        || std::env::var("STY").is_ok();
+
+    let font_size = (FONT_WIDTH_PX as u16, FONT_HEIGHT_PX as u16);
+    let image_picker = if in_multiplexer {
+        // Force halfblocks protocol for terminal multiplexers
+        let mut picker = ratatui_image::picker::Picker::from_fontsize(font_size);
+        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Halfblocks);
+        picker
+    } else {
+        // Query terminal capabilities to detect Kitty/Sixel/iTerm2 support
+        ratatui_image::picker::Picker::from_query_stdio()
+            .unwrap_or_else(|_| ratatui_image::picker::Picker::from_fontsize(font_size))
+    };
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-
-    // Initialize image protocol picker (detects Kitty/Sixel/iTerm2/halfblocks support)
-    // Must be done after terminal setup since it queries via control sequences
-    // Falls back to default font size if protocol detection fails (e.g., on Windows)
-    let image_picker = ratatui_image::picker::Picker::from_query_stdio()
-        .unwrap_or_else(|_| ratatui_image::picker::Picker::from_fontsize((8, 16)));
 
     // Get platform-specific watch limit (None on macOS/Windows, Some on Linux)
     let watch_limit = limits::get_watch_limit();
