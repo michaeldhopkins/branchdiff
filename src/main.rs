@@ -155,7 +155,7 @@ fn main() -> Result<()> {
         || std::env::var("TMUX").is_ok()
         || std::env::var("STY").is_ok();
 
-    let image_picker = if in_multiplexer {
+    let mut image_picker = if in_multiplexer {
         // Force halfblocks protocol for terminal multiplexers
         ratatui_image::picker::Picker::halfblocks()
     } else {
@@ -163,6 +163,8 @@ fn main() -> Result<()> {
         ratatui_image::picker::Picker::from_query_stdio()
             .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks())
     };
+    // Composite transparent pixels against dark background (matches terminal)
+    image_picker.set_background_color(image::Rgba([30, 30, 30, 255]));
 
     // Setup terminal
     enable_raw_mode()?;

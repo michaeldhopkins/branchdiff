@@ -31,6 +31,26 @@ pub const FONT_HEIGHT_PX: u8 = 16;
 /// Prevents very tall images from consuming excessive vertical space.
 pub const MAX_IMAGE_HEIGHT_ROWS: u16 = 40;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Image panel layout constants
+//
+// These define the vertical layout within an image diff panel. Used by both
+// diff_view.rs (for reserving space) and image_view.rs (for rendering).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Height of the metadata line below each image panel (rows)
+pub const METADATA_HEIGHT: u16 = 1;
+
+/// Margin above the image within the panel (rows)
+pub const IMAGE_TOP_MARGIN: u16 = 1;
+
+/// Margin between image and metadata (rows)
+pub const IMAGE_BOTTOM_MARGIN: u16 = 1;
+
+/// Total overhead for an image panel: borders (2) + margins (2) + metadata (1)
+/// This is subtracted from the panel height to get the available image height.
+pub const IMAGE_PANEL_OVERHEAD: u16 = 2 + IMAGE_TOP_MARGIN + IMAGE_BOTTOM_MARGIN + METADATA_HEIGHT;
+
 /// Check if a file is a supported image format.
 /// Uses the `image` crate's format detection - no hardcoded extension list.
 pub fn is_image_file(path: &str) -> bool {
@@ -83,6 +103,18 @@ impl CachedImage {
             "{}x{} {}, {}",
             self.original_width, self.original_height, self.format_name, size
         )
+    }
+
+    /// Get the display image width (may be downscaled from original).
+    /// Use this for layout calculations to match what the protocol will render.
+    pub fn display_width(&self) -> u32 {
+        self.display_image.width()
+    }
+
+    /// Get the display image height (may be downscaled from original).
+    /// Use this for layout calculations to match what the protocol will render.
+    pub fn display_height(&self) -> u32 {
+        self.display_image.height()
     }
 
     /// Ensure the protocol is initialized for rendering.
@@ -264,14 +296,23 @@ pub fn rasterize_svg(svg_bytes: &[u8], max_dimension: u32) -> Result<CachedImage
 /// Calculate display dimensions maintaining aspect ratio.
 /// Converts image pixel dimensions to terminal cell dimensions using font metrics,
 /// then scales to fit the available space without upscaling.
-pub fn fit_dimensions(img_width: u32, img_height: u32, max_w: u16, max_h: u16) -> (u16, u16) {
+///
+/// The `font_size` parameter should come from the Picker's detected font dimensions
+/// to ensure consistency between dimension calculation and actual image rendering.
+pub fn fit_dimensions(
+    img_width: u32,
+    img_height: u32,
+    max_w: u16,
+    max_h: u16,
+    font_size: (u16, u16),
+) -> (u16, u16) {
     // Handle zero inputs gracefully
     if img_width == 0 || img_height == 0 || max_w == 0 || max_h == 0 {
         return (1, 1);
     }
 
-    let font_w = FONT_WIDTH_PX as f64;
-    let font_h = FONT_HEIGHT_PX as f64;
+    let font_w = font_size.0.max(1) as f64;
+    let font_h = font_size.1.max(1) as f64;
 
     // Convert image pixel dimensions to cell dimensions
     let img_cells_w = img_width as f64 / font_w;
@@ -417,10 +458,13 @@ mod tests {
         assert!(!is_lfs_pointer(normal_content));
     }
 
+    // Default font size for tests (matches FONT_WIDTH_PX, FONT_HEIGHT_PX)
+    const TEST_FONT_SIZE: (u16, u16) = (FONT_WIDTH_PX as u16, FONT_HEIGHT_PX as u16);
+
     #[test]
     fn test_fit_dimensions_landscape() {
         // 1920x1080 into 80x24 panel
-        let (w, h) = fit_dimensions(1920, 1080, 80, 24);
+        let (w, h) = fit_dimensions(1920, 1080, 80, 24, TEST_FONT_SIZE);
         assert!(w <= 80);
         assert!(h <= 24);
     }
@@ -428,7 +472,7 @@ mod tests {
     #[test]
     fn test_fit_dimensions_portrait() {
         // 600x1200 into 40x30 panel
-        let (w, h) = fit_dimensions(600, 1200, 40, 30);
+        let (w, h) = fit_dimensions(600, 1200, 40, 30, TEST_FONT_SIZE);
         assert!(w <= 40);
         assert!(h <= 30);
     }
@@ -436,7 +480,7 @@ mod tests {
     #[test]
     fn test_fit_dimensions_no_upscale() {
         // 10x10 into 80x24 - should stay small (no upscaling)
-        let (w, h) = fit_dimensions(10, 10, 80, 24);
+        let (w, h) = fit_dimensions(10, 10, 80, 24, TEST_FONT_SIZE);
         assert!(w <= 10);
         assert!(h <= 10);
     }
@@ -444,7 +488,7 @@ mod tests {
     #[test]
     fn test_fit_dimensions_zero_input() {
         // Should not panic, should return minimum valid size
-        let (w, h) = fit_dimensions(0, 0, 80, 24);
+        let (w, h) = fit_dimensions(0, 0, 80, 24, TEST_FONT_SIZE);
         assert!(w >= 1);
         assert!(h >= 1);
     }
@@ -452,7 +496,7 @@ mod tests {
     #[test]
     fn test_fit_dimensions_zero_container() {
         // Container has no space - should handle gracefully
-        let (w, h) = fit_dimensions(100, 100, 0, 0);
+        let (w, h) = fit_dimensions(100, 100, 0, 0, TEST_FONT_SIZE);
         assert!(w >= 1);
         assert!(h >= 1);
     }
@@ -460,7 +504,7 @@ mod tests {
     #[test]
     fn test_fit_dimensions_huge_image() {
         // 100k x 100k image - should not overflow
-        let (w, h) = fit_dimensions(100_000, 100_000, 80, 24);
+        let (w, h) = fit_dimensions(100_000, 100_000, 80, 24, TEST_FONT_SIZE);
         assert!(w <= 80);
         assert!(h <= 24);
     }
@@ -642,5 +686,47 @@ mod tests {
         // (second.png was evicted instead)
         assert!(cache.contains("first.png"));
         assert!(!cache.contains("second.png"));
+    }
+
+    #[test]
+    fn test_image_panel_layout_constants() {
+        // Verify the layout constants are sensible values
+        assert_eq!(IMAGE_TOP_MARGIN, 1, "Top margin should be 1 row");
+        assert_eq!(IMAGE_BOTTOM_MARGIN, 1, "Bottom margin should be 1 row");
+        assert_eq!(METADATA_HEIGHT, 1, "Metadata should be 1 row");
+    }
+
+    #[test]
+    fn test_image_panel_overhead_calculation() {
+        // IMAGE_PANEL_OVERHEAD = borders (2) + margins (2) + metadata (1) = 5
+        // This constant is used to calculate expected_available_height for images
+        let borders = 2u16; // Block::default().borders(Borders::ALL) adds 1 top + 1 bottom
+        let expected = borders + IMAGE_TOP_MARGIN + IMAGE_BOTTOM_MARGIN + METADATA_HEIGHT;
+
+        assert_eq!(
+            IMAGE_PANEL_OVERHEAD, expected,
+            "IMAGE_PANEL_OVERHEAD should be borders + margins + metadata"
+        );
+        assert_eq!(IMAGE_PANEL_OVERHEAD, 5, "Total overhead should be 5 rows");
+    }
+
+    #[test]
+    fn test_expected_available_height_from_panel_height() {
+        // Given a panel height, expected_available_height is what's left after overhead
+        let test_cases = [
+            (20u16, 15u16), // 20 - 5 = 15
+            (10u16, 5u16),  // 10 - 5 = 5
+            (5u16, 0u16),   // 5 - 5 = 0 (edge case)
+            (3u16, 0u16),   // 3 - 5 = saturates to 0
+        ];
+
+        for (panel_height, expected_available) in test_cases {
+            let available = panel_height.saturating_sub(IMAGE_PANEL_OVERHEAD);
+            assert_eq!(
+                available, expected_available,
+                "For panel_height={}, expected_available_height should be {}",
+                panel_height, expected_available
+            );
+        }
     }
 }
