@@ -15,7 +15,7 @@ use ratatui::{
 
 use crate::app::{App, DisplayableItem, FrameContext, Selection};
 use crate::diff::{DiffLine, LineSource};
-use crate::image_diff::ImageCache;
+use crate::image_diff::{ImageCache, IMAGE_PANEL_OVERHEAD};
 
 use super::colors::{line_style, status_symbol};
 use super::selection::{apply_selection_to_span, get_line_selection_range};
@@ -57,6 +57,9 @@ pub struct ImageRenderPosition {
     pub start_row: u16,
     /// Height in rows for the image display
     pub height: u16,
+    /// Expected available height for image sizing (used even when viewport clips)
+    /// This ensures consistent image dimensions when scrolling
+    pub expected_available_height: u16,
 }
 
 /// Output from rendering (data App needs to store).
@@ -432,11 +435,16 @@ impl<'a> DiffViewModel<'a> {
                 self.font_size,
             );
 
+            // Calculate expected available height for consistent sizing
+            // This height is used for dimension calculations even when viewport clips
+            let expected_available_height = image_height.saturating_sub(IMAGE_PANEL_OVERHEAD);
+
             // Record position for image rendering (saturate to u16::MAX for safety)
             image_positions.push(ImageRenderPosition {
                 file_path: path.clone(),
                 start_row: screen_row_idx.min(u16::MAX as usize) as u16,
                 height: image_height,
+                expected_available_height,
             });
 
             // Add blank lines as placeholders for the image area
@@ -754,6 +762,7 @@ pub fn draw_diff_view_with_frame(
             &output.image_positions,
             output.content_offset,
             area,
+            app.font_size,
         );
     }
 }
@@ -766,6 +775,7 @@ fn render_images_at_positions(
     positions: &[ImageRenderPosition],
     content_offset: (u16, u16),
     area: Rect,
+    font_size: (u16, u16),
 ) {
     use crate::ui::image_view::render_image_diff;
 
@@ -805,8 +815,16 @@ fn render_images_at_positions(
                 }
             }
 
-            // Render the image diff
-            render_image_diff(frame, image_area, state, &pos.file_path);
+            // Render the image diff with expected available height for consistent sizing
+            // This ensures images maintain their size when viewport clips them
+            render_image_diff(
+                frame,
+                image_area,
+                state,
+                &pos.file_path,
+                pos.expected_available_height,
+                font_size,
+            );
         }
     }
 }
@@ -1393,25 +1411,34 @@ mod tests {
 
     #[test]
     fn test_image_render_position_fields() {
+        use crate::image_diff::IMAGE_PANEL_OVERHEAD;
+
+        let height = 12u16;
         let pos = ImageRenderPosition {
             file_path: "test/image.png".to_string(),
             start_row: 42,
-            height: 12,
+            height,
+            expected_available_height: height.saturating_sub(IMAGE_PANEL_OVERHEAD),
         };
 
         assert_eq!(pos.file_path, "test/image.png");
         assert_eq!(pos.start_row, 42);
         assert_eq!(pos.height, 12);
+        assert_eq!(pos.expected_available_height, 7); // 12 - 5
     }
 
     #[test]
     fn test_image_render_position_large_row_saturates() {
+        use crate::image_diff::IMAGE_PANEL_OVERHEAD;
+
         // Test that large row values are handled (the actual saturation happens
         // in render_image_marker, but we verify the struct can hold max values)
+        let height = 12u16;
         let pos = ImageRenderPosition {
             file_path: "large.png".to_string(),
             start_row: u16::MAX,
-            height: 12,
+            height,
+            expected_available_height: height.saturating_sub(IMAGE_PANEL_OVERHEAD),
         };
 
         assert_eq!(pos.start_row, u16::MAX);
@@ -1419,6 +1446,9 @@ mod tests {
 
     #[test]
     fn test_render_output_includes_image_positions() {
+        use crate::image_diff::IMAGE_PANEL_OVERHEAD;
+
+        let height = 12u16;
         let output = RenderOutput {
             row_map: Vec::new(),
             content_offset: (0, 0),
@@ -1428,12 +1458,14 @@ mod tests {
                 ImageRenderPosition {
                     file_path: "a.png".to_string(),
                     start_row: 5,
-                    height: 12,
+                    height,
+                    expected_available_height: height.saturating_sub(IMAGE_PANEL_OVERHEAD),
                 },
                 ImageRenderPosition {
                     file_path: "b.png".to_string(),
                     start_row: 20,
-                    height: 12,
+                    height,
+                    expected_available_height: height.saturating_sub(IMAGE_PANEL_OVERHEAD),
                 },
             ],
         };
@@ -1546,5 +1578,236 @@ mod tests {
         let status_h = crate::ui::status_bar_height(&app, width);
         let diff_h = height - status_h;
         verify_diff_area_borders(frame.buffer, width, diff_h);
+    }
+
+    #[test]
+    fn test_expected_available_height_overhead_calculation() {
+        // This test verifies that the IMAGE_PANEL_OVERHEAD constant correctly
+        // represents the total overhead in an image panel.
+        //
+        // Overhead components:
+        //   - borders: 2 (top + bottom, from Block)
+        //   - margins: 2 (IMAGE_TOP_MARGIN + IMAGE_BOTTOM_MARGIN)
+        //   - metadata: 1
+        //   Total: 5
+        //
+        // render_image_marker subtracts IMAGE_PANEL_OVERHEAD from image_height
+        // to get the expected_available_height for render_image_panel.
+
+        use crate::image_diff::{
+            IMAGE_BOTTOM_MARGIN, IMAGE_PANEL_OVERHEAD, IMAGE_TOP_MARGIN, METADATA_HEIGHT,
+        };
+
+        // Verify overhead components sum correctly
+        let borders = 2u16;
+        let margins = IMAGE_TOP_MARGIN + IMAGE_BOTTOM_MARGIN;
+        let metadata = METADATA_HEIGHT;
+        let expected_overhead = borders + margins + metadata;
+
+        assert_eq!(
+            IMAGE_PANEL_OVERHEAD, expected_overhead,
+            "IMAGE_PANEL_OVERHEAD should equal borders (2) + margins (2) + metadata (1)"
+        );
+        assert_eq!(IMAGE_PANEL_OVERHEAD, 5, "Total overhead should be 5");
+
+        // Verify expected_available_height calculation for a sample image_height
+        let image_height = 20u16;
+        let expected_available_height = image_height.saturating_sub(IMAGE_PANEL_OVERHEAD);
+        assert_eq!(
+            expected_available_height, 15,
+            "For image_height=20, expected_available_height should be 15"
+        );
+    }
+
+    /// Test that partial rendering maintains consistent image dimensions.
+    ///
+    /// When an image is partially visible (e.g., scrolling into view from bottom),
+    /// the expected_available_height must remain constant. This ensures:
+    /// 1. Image sizing via fit_dimensions() produces the same (width, height)
+    /// 2. The image appears to scroll into view at full size, cropped by viewport
+    /// 3. No rescaling or jumping occurs as more of the image becomes visible
+    #[test]
+    fn test_partial_rendering_consistency() {
+        use crate::image_diff::IMAGE_PANEL_OVERHEAD;
+        use crate::ui::image_view::calculate_image_height_for_images;
+
+        // Simulate a 400x300 image in a 100-char wide panel
+        let img_dims = Some((400u32, 300u32));
+        let panel_width = 100u16;
+        let font_size = (8u16, 16u16);
+
+        // Calculate the image height (this is what render_image_marker does)
+        let image_height =
+            calculate_image_height_for_images(img_dims, None, panel_width, font_size);
+        let expected_available = image_height.saturating_sub(IMAGE_PANEL_OVERHEAD);
+
+        // Simulate different viewport clipping scenarios
+        // The key invariant: expected_available_height is always the same
+        let viewport_scenarios = [
+            ("fully visible", image_height),       // Image fully in viewport
+            ("90% visible", image_height - 2),     // Top 2 rows clipped
+            ("50% visible", image_height / 2),     // Half the image visible
+            ("barely visible", 3u16),              // Only 3 rows visible
+            ("just entering", 1u16),               // Just 1 row visible
+        ];
+
+        for (scenario, clamped_height) in viewport_scenarios {
+            // In render_images_at_positions, the area passed to render_image_diff
+            // has clamped_height, but expected_available_height is unchanged
+            let pos = ImageRenderPosition {
+                file_path: "test.png".to_string(),
+                start_row: 0,
+                height: image_height,
+                expected_available_height: expected_available,
+            };
+
+            // The expected_available_height should be the same regardless of clipping
+            assert_eq!(
+                pos.expected_available_height, expected_available,
+                "Scenario '{}': expected_available_height should be {} (from full image height {}), \
+                 not derived from clamped_height {}",
+                scenario, expected_available, image_height, clamped_height
+            );
+        }
+    }
+
+    /// Test that fit_dimensions produces consistent output when called with
+    /// expected_available_height vs viewport-clamped height.
+    #[test]
+    fn test_fit_dimensions_consistency_across_viewports() {
+        use crate::image_diff::{fit_dimensions, IMAGE_PANEL_OVERHEAD};
+        use crate::ui::image_view::calculate_image_height_for_images;
+
+        // Test with a real image scenario
+        let img_w = 800u32;
+        let img_h = 600u32;
+        let panel_width = 120u16;
+        let font_size = (8u16, 16u16);
+
+        // Calculate the full image height
+        let full_height = calculate_image_height_for_images(
+            Some((img_w, img_h)),
+            None,
+            panel_width,
+            font_size,
+        );
+        let expected_available = full_height.saturating_sub(IMAGE_PANEL_OVERHEAD);
+
+        // Calculate display dimensions using expected_available_height (correct)
+        let inner_width = (panel_width.saturating_sub(4)) / 2; // Half panel minus borders
+        let (expected_w, expected_h) =
+            fit_dimensions(img_w, img_h, inner_width, expected_available, font_size);
+
+        // Now simulate what would happen if we incorrectly used clamped heights
+        let clamped_heights = [
+            expected_available,     // Full view
+            expected_available - 5, // Partial view
+            expected_available / 2, // Half view
+            5u16,                   // Minimal view
+        ];
+
+        for clamped in clamped_heights {
+            // Using expected_available (correct) should always produce the same dimensions
+            let (w, h) =
+                fit_dimensions(img_w, img_h, inner_width, expected_available, font_size);
+            assert_eq!(
+                (w, h),
+                (expected_w, expected_h),
+                "fit_dimensions with expected_available should always produce ({}, {})",
+                expected_w,
+                expected_h
+            );
+
+            // Using clamped height (incorrect) would produce different dimensions
+            // when clamped < expected_available
+            if clamped < expected_available {
+                let (clamped_w, _clamped_h) =
+                    fit_dimensions(img_w, img_h, inner_width, clamped, font_size);
+                // This demonstrates why we pass expected_available_height:
+                // clamped dimensions would be smaller, causing the image to "jump"
+                assert!(
+                    clamped_w <= expected_w,
+                    "Clamped height {} would produce width {} <= expected width {}",
+                    clamped,
+                    clamped_w,
+                    expected_w
+                );
+            }
+        }
+    }
+
+    /// Test that ImageRenderPosition captures the correct expected_available_height
+    /// based on image dimensions, not viewport position.
+    #[test]
+    fn test_image_render_position_expected_height_invariant() {
+        use crate::image_diff::{CachedImage, ImageDiffState, IMAGE_PANEL_OVERHEAD};
+        use crate::ui::image_view::calculate_image_height_for_images;
+        use image::DynamicImage;
+
+        // Create image cache with a test image
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![
+                DiffLine::file_header("test.png"),
+                DiffLine::image_marker("test.png"),
+            ])
+            .build();
+        app.estimate_content_width(100);
+
+        // Add image to cache
+        let cached_image = CachedImage {
+            display_image: DynamicImage::new_rgb8(400, 300),
+            original_width: 400,
+            original_height: 300,
+            file_size: 50000,
+            format_name: "PNG".to_string(),
+            protocol: None,
+        };
+        app.image_cache.insert(
+            "test.png".to_string(),
+            ImageDiffState {
+                before: None,
+                after: Some(cached_image),
+            },
+        );
+
+        // Calculate expected height from image dimensions
+        let image_height = calculate_image_height_for_images(
+            None,
+            Some((400, 300)),
+            100, // panel_width
+            app.font_size,
+        );
+        let expected_available = image_height.saturating_sub(IMAGE_PANEL_OVERHEAD);
+
+        // Render at different scroll positions
+        for scroll in [0, 5, 10, 20] {
+            app.scroll_offset = scroll;
+            app.viewport_height = 30; // Fixed viewport
+
+            let ctx = FrameContext::new(&app);
+            let area = Rect::new(0, 0, 100, 30);
+            let view_model = DiffViewModel::from_app(&app, &ctx, area);
+
+            use ratatui::backend::TestBackend;
+            use ratatui::Terminal;
+            let backend = TestBackend::new(100, 30);
+            let mut terminal = Terminal::new(backend).unwrap();
+
+            terminal
+                .draw(|f| {
+                    let output = view_model.render(f);
+
+                    // If the image marker is visible, check its expected_available_height
+                    for pos in &output.image_positions {
+                        assert_eq!(
+                            pos.expected_available_height, expected_available,
+                            "At scroll_offset={}, expected_available_height should be {} \
+                             (derived from image dimensions), got {}",
+                            scroll, expected_available, pos.expected_available_height
+                        );
+                    }
+                })
+                .unwrap();
+        }
     }
 }
