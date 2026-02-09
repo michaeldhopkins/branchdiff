@@ -1462,12 +1462,12 @@ mod tests {
 
     #[test]
     fn test_lines_appended_to_end_of_file_show_as_unstaged() {
-        use crate::diff::compute_file_diff_v2;
+        use crate::diff::compute_four_way_diff;
 
         let base = "line1\nline2\nline3\n";
         let working = "line1\nline2\nline3\nline4\nline5\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working), None);
+        let diff = compute_four_way_diff("test.txt", Some(base), Some(base), Some(base), Some(working), None);
 
         let unstaged: Vec<_> = diff
             .lines
@@ -1482,12 +1482,12 @@ mod tests {
 
     #[test]
     fn test_middle_insertion_plus_appends_at_end() {
-        use crate::diff::compute_file_diff_v2;
+        use crate::diff::compute_four_way_diff;
 
         let base = "line1\nline2\nline3\nline4\nline5\n";
         let working = "line1\nINSERTED\nline2\nline3\nline4\nline5\nAPPEND1\nAPPEND2\n";
 
-        let diff = compute_file_diff_v2("test.txt", Some(base), Some(base), Some(base), Some(working), None);
+        let diff = compute_four_way_diff("test.txt", Some(base), Some(base), Some(base), Some(working), None);
 
         let unstaged: Vec<_> = diff
             .lines
