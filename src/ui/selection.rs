@@ -250,12 +250,33 @@ mod tests {
 
     #[test]
     fn span_unicode_content() {
+        // Test that unicode content is handled correctly
+        // apply_selection_to_span uses CHARACTER positions (via .chars()), not byte positions
+        // "héllo wörld" = 11 characters: h é l l o (space) w ö r l d
         let span = Span::styled("héllo wörld", Style::default());
-        // Note: this uses byte positions, not char positions
-        // "héllo" = 6 bytes (h=1, é=2, l=1, l=1, o=1), space=1, "wörld"=6 bytes
-        let result = apply_selection_to_span(span, 0, 0, 13);
-        // The first 13 bytes should be selected
-        assert!(!result.is_empty());
+
+        // Select the entire string (all 11 characters)
+        let result = apply_selection_to_span(span.clone(), 0, 0, 11);
+        assert_eq!(result.len(), 1, "Entire string should be one selected span");
+        assert_eq!(result[0].content, "héllo wörld");
+        assert_eq!(result[0].style.bg, Some(SELECTION_BG_COLOR));
+
+        // Select first 5 characters: "héllo"
+        let span2 = Span::styled("héllo wörld", Style::default());
+        let result2 = apply_selection_to_span(span2, 0, 0, 5);
+        assert_eq!(result2.len(), 2, "Should split into selected and unselected");
+        assert_eq!(result2[0].content, "héllo");
+        assert_eq!(result2[0].style.bg, Some(SELECTION_BG_COLOR));
+        assert_eq!(result2[1].content, " wörld");
+
+        // Verify multi-byte characters work in the middle too
+        let span3 = Span::styled("héllo wörld", Style::default());
+        let result3 = apply_selection_to_span(span3, 0, 6, 9); // "wör"
+        assert_eq!(result3.len(), 3);
+        assert_eq!(result3[0].content, "héllo ");
+        assert_eq!(result3[1].content, "wör");
+        assert_eq!(result3[1].style.bg, Some(SELECTION_BG_COLOR));
+        assert_eq!(result3[2].content, "ld");
     }
 
     #[test]
