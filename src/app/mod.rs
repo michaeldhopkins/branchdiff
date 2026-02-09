@@ -1,5 +1,6 @@
 //! Application state and logic module for branchdiff
 
+mod collapse;
 mod frame;
 mod navigation;
 mod refresh;
@@ -14,37 +15,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-
-/// File patterns that should be collapsed by default (lock files, generated files)
-const AUTO_COLLAPSE_PATTERNS: &[&str] = &[
-    // Ruby/Rails
-    "Gemfile.lock",
-    "db/schema.rb",
-    "db/structure.sql",
-    // JavaScript/Node
-    "package-lock.json",
-    "yarn.lock",
-    "pnpm-lock.yaml",
-    "bun.lockb",
-    // Rust
-    "Cargo.lock",
-    // Python
-    "poetry.lock",
-    "Pipfile.lock",
-    "pdm.lock",
-    // PHP
-    "composer.lock",
-    // .NET
-    "packages.lock.json",
-    // Go
-    "go.sum",
-    // Elixir
-    "mix.lock",
-    // Swift
-    "Package.resolved",
-    // Dart/Flutter
-    "pubspec.lock",
-];
 
 use anyhow::Result;
 
@@ -246,41 +216,12 @@ impl App {
         self.collapsed_files.contains(path)
     }
 
-    /// Check if a file path matches any auto-collapse pattern (lock files)
-    fn should_auto_collapse(path: &str) -> bool {
-        AUTO_COLLAPSE_PATTERNS.iter().any(|pattern| path.ends_with(pattern))
-    }
-
-    /// Check if a file header indicates a deleted file
-    fn is_deleted_file(header_content: &str) -> bool {
-        header_content.ends_with("(deleted)")
-    }
-
-    /// Auto-collapse files matching lock/generated file patterns and deleted files.
-    /// Also uncollapse files that were previously collapsed due to deletion but are
-    /// no longer deleted (unless they match auto-collapse patterns).
-    /// Skips files that have been manually toggled by the user.
     fn auto_collapse_files(&mut self) {
-        for file in &self.files {
-            if let Some(first_line) = file.lines.first()
-                && let Some(ref path) = first_line.file_path
-            {
-                if self.manually_toggled.contains(path) {
-                    continue;
-                }
-
-                let is_pattern_match = Self::should_auto_collapse(path);
-                let is_deleted = Self::is_deleted_file(&first_line.content);
-
-                if is_pattern_match || is_deleted {
-                    self.collapsed_files.insert(path.clone());
-                } else if self.collapsed_files.contains(path) {
-                    // File was collapsed but is no longer deleted and doesn't match
-                    // auto-collapse patterns - uncollapse it
-                    self.collapsed_files.remove(path);
-                }
-            }
-        }
+        collapse::auto_collapse_files(
+            &self.files,
+            &mut self.collapsed_files,
+            &self.manually_toggled,
+        );
     }
 
     pub fn refresh(&mut self) -> Result<()> {
@@ -684,27 +625,6 @@ mod tests {
 
         app.auto_collapse_files();
         assert!(app.is_file_collapsed("Gemfile.lock"), "lock file should stay collapsed even after restore");
-    }
-
-    #[test]
-    fn test_should_auto_collapse_patterns() {
-        // Lock files should match
-        assert!(App::should_auto_collapse("Gemfile.lock"));
-        assert!(App::should_auto_collapse("package-lock.json"));
-        assert!(App::should_auto_collapse("yarn.lock"));
-        assert!(App::should_auto_collapse("Cargo.lock"));
-        assert!(App::should_auto_collapse("poetry.lock"));
-        assert!(App::should_auto_collapse("go.sum"));
-
-        // Nested paths should also match
-        assert!(App::should_auto_collapse("some/path/to/Gemfile.lock"));
-        assert!(App::should_auto_collapse("frontend/package-lock.json"));
-
-        // Regular files should not match
-        assert!(!App::should_auto_collapse("src/main.rs"));
-        assert!(!App::should_auto_collapse("Gemfile"));
-        assert!(!App::should_auto_collapse("package.json"));
-        assert!(!App::should_auto_collapse("Cargo.toml"));
     }
 
     #[test]
