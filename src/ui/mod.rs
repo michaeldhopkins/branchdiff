@@ -73,7 +73,7 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
     diff_view::draw_diff_view_with_frame(frame, app, diff_area, ctx);
     draw_status_bar(frame, app, status_area);
 
-    if app.show_help {
+    if app.view.show_help {
         draw_help_modal(frame, size);
     }
 }

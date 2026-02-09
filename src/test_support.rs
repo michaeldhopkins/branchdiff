@@ -3,10 +3,10 @@
 //! This module provides a builder pattern for creating test App instances,
 //! eliminating duplication across test modules.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::app::{App, ViewMode};
+use crate::app::{App, ViewMode, ViewState};
 use crate::diff::{DiffLine, FileDiff, LineSource};
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
@@ -95,30 +95,32 @@ impl TestAppBuilder {
             current_branch: self.current_branch,
             files: self.files,
             lines: self.lines,
-            scroll_offset: self.scroll_offset,
-            viewport_height: self.viewport_height,
             error: None,
-            show_help: false,
-            view_mode: self.view_mode,
-            selection: None,
-            word_selection_anchor: None,
-            line_selection_anchor: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            panel_width: 80,
             conflict_warning: None,
             performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-            last_click: None,
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
             image_picker: None,
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
+            view: ViewState {
+                scroll_offset: self.scroll_offset,
+                viewport_height: self.viewport_height,
+                view_mode: self.view_mode,
+                content_offset: (1, 1),
+                line_num_width: 0,
+                content_width: 80,
+                panel_width: 80,
+                show_help: false,
+                selection: None,
+                word_selection_anchor: None,
+                line_selection_anchor: None,
+                row_map: Vec::new(),
+                collapsed_files: Default::default(),
+                manually_toggled: Default::default(),
+                needs_inline_spans: true,
+                path_copied_at: None,
+                last_click: None,
+            },
         }
     }
 }

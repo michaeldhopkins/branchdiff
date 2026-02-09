@@ -6,12 +6,14 @@ mod navigation;
 mod refresh;
 mod selection;
 mod view_mode;
+mod view_state;
 
 pub use frame::{DisplayableItem, FrameContext};
 pub use refresh::{compute_refresh, compute_single_file_diff, RefreshResult};
 pub use selection::{Position, Selection};
+pub use view_state::ViewState;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -24,7 +26,6 @@ use crate::diff::{DiffLine, FileDiff};
 use crate::git;
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
-use crate::ui::ScreenRowInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -36,6 +37,9 @@ pub enum ViewMode {
 
 /// Application state
 pub struct App {
+    /// View-related state (scrolling, layout, selection, etc.)
+    pub view: ViewState,
+
     /// Path to the git repository root
     pub repo_path: PathBuf,
     /// The base branch (main or master)
@@ -48,48 +52,12 @@ pub struct App {
     pub files: Vec<FileDiff>,
     /// Flattened lines for display
     pub lines: Vec<DiffLine>,
-    /// Current scroll offset
-    pub scroll_offset: usize,
-    /// Viewport height (set during rendering)
-    pub viewport_height: usize,
     /// Error message to display (if any)
     pub error: Option<String>,
-    /// Whether to show the help modal
-    pub show_help: bool,
-    /// Current view mode (Full, Context, or ChangesOnly)
-    pub view_mode: ViewMode,
-    /// Current text selection (if any)
-    pub selection: Option<Selection>,
-    /// Anchor for word-based selection (row, word_start_col, word_end_col in screen coords)
-    /// When set, dragging extends selection by whole words
-    pub word_selection_anchor: Option<(usize, usize, usize)>,
-    /// Anchor for line-based selection (start_row, end_row)
-    /// When set, dragging extends selection by whole lines
-    pub line_selection_anchor: Option<(usize, usize)>,
-    /// Content area offset (x, y) for coordinate mapping
-    pub content_offset: (u16, u16),
-    /// Width of line number column (for extracting content without line numbers)
-    pub line_num_width: usize,
-    /// Available width for content (used for wrapping calculation)
-    pub content_width: usize,
-    /// Full panel width (for image height calculations)
-    pub panel_width: u16,
     /// Warning message about merge conflicts (if any)
     pub conflict_warning: Option<String>,
     /// Performance warning (large repo or diff)
     pub performance_warning: Option<String>,
-    /// Mapping from screen row index to logical line info (set during rendering)
-    pub row_map: Vec<ScreenRowInfo>,
-    /// Set of collapsed file paths (persists across refreshes)
-    pub collapsed_files: HashSet<String>,
-    /// Set of files that have been manually toggled (won't be auto-collapsed)
-    pub manually_toggled: HashSet<String>,
-    /// Track whether inline spans need recomputation for visible lines
-    pub needs_inline_spans: bool,
-    /// Timestamp when path was last copied (for flash feedback)
-    pub path_copied_at: Option<std::time::Instant>,
-    /// Last click position, time, and count (for double/triple-click detection)
-    pub last_click: Option<(std::time::Instant, u16, u16, u8)>,
     /// Gitignore filter for file change events
     pub gitignore_filter: GitignoreFilter,
     /// Bidirectional map: path → related path (app ↔ spec file links)
@@ -108,6 +76,15 @@ impl App {
     pub fn new_for_bench(lines: Vec<DiffLine>) -> Self {
         let repo_path = PathBuf::from("/bench");
         Self {
+            view: ViewState {
+                viewport_height: 50,
+                view_mode: ViewMode::Full,
+                content_offset: (1, 1),
+                line_num_width: 4,
+                content_width: 120,
+                panel_width: 120,
+                ..ViewState::default()
+            },
             gitignore_filter: GitignoreFilter::new(&repo_path),
             repo_path,
             base_branch: "main".to_string(),
@@ -115,26 +92,9 @@ impl App {
             current_branch: Some("feature".to_string()),
             files: Vec::new(),
             lines,
-            scroll_offset: 0,
-            viewport_height: 50,
             error: None,
-            show_help: false,
-            view_mode: ViewMode::Full,
-            selection: None,
-            word_selection_anchor: None,
-            line_selection_anchor: None,
-            content_offset: (1, 1),
-            line_num_width: 4,
-            content_width: 120,
-            panel_width: 120,
             conflict_warning: None,
             performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-            last_click: None,
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
             image_picker: None,
@@ -156,32 +116,22 @@ impl App {
         let gitignore_filter = GitignoreFilter::new(&repo_path);
 
         let mut app = Self {
+            view: ViewState {
+                viewport_height: 20,
+                content_offset: (1, 1),
+                content_width: 80,
+                panel_width: 80,
+                ..ViewState::default()
+            },
             repo_path,
             base_branch,
             merge_base,
             current_branch,
             files: Vec::new(),
             lines: Vec::new(),
-            scroll_offset: 0,
-            viewport_height: 20,
             error: None,
-            show_help: false,
-            view_mode: ViewMode::Context,
-            selection: None,
-            word_selection_anchor: None,
-            line_selection_anchor: None,
-            content_offset: (1, 1),
-            line_num_width: 0,
-            content_width: 80,
-            panel_width: 80,
             conflict_warning: None,
             performance_warning: None,
-            row_map: Vec::new(),
-            collapsed_files: HashSet::new(),
-            manually_toggled: HashSet::new(),
-            needs_inline_spans: true,
-            path_copied_at: None,
-            last_click: None,
             gitignore_filter,
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
@@ -202,25 +152,25 @@ impl App {
 
     /// Toggle the collapse state of a file
     pub fn toggle_file_collapsed(&mut self, path: &str) {
-        self.manually_toggled.insert(path.to_string());
-        if self.collapsed_files.contains(path) {
-            self.collapsed_files.remove(path);
+        self.view.manually_toggled.insert(path.to_string());
+        if self.view.collapsed_files.contains(path) {
+            self.view.collapsed_files.remove(path);
         } else {
-            self.collapsed_files.insert(path.to_string());
+            self.view.collapsed_files.insert(path.to_string());
         }
-        self.needs_inline_spans = true;
+        self.view.needs_inline_spans = true;
     }
 
     /// Check if a file is collapsed
     pub fn is_file_collapsed(&self, path: &str) -> bool {
-        self.collapsed_files.contains(path)
+        self.view.collapsed_files.contains(path)
     }
 
     fn auto_collapse_files(&mut self) {
         collapse::auto_collapse_files(
             &self.files,
-            &mut self.collapsed_files,
-            &self.manually_toggled,
+            &mut self.view.collapsed_files,
+            &self.view.manually_toggled,
         );
     }
 
@@ -240,7 +190,7 @@ impl App {
         self.file_links = result.file_links;
         self.auto_collapse_files();
         self.clamp_scroll();
-        self.needs_inline_spans = true;
+        self.view.needs_inline_spans = true;
 
         // Load images for any image markers
         self.load_images_for_markers(&result.merge_base);
@@ -287,7 +237,7 @@ impl App {
     pub fn ensure_inline_spans_for_visible(&mut self, visible_height: usize) -> Vec<DisplayableItem> {
         // Use the SAME items that will be rendered (including collapsed file filtering)
         let items = self.compute_displayable_items();
-        let start = self.scroll_offset.min(items.len());
+        let start = self.view.scroll_offset.min(items.len());
         let end = (start + visible_height).min(items.len());
 
         for item in &items[start..end] {
@@ -326,7 +276,7 @@ impl App {
         self.regenerate_lines();
         self.auto_collapse_files();
         self.clamp_scroll();
-        self.needs_inline_spans = true;
+        self.view.needs_inline_spans = true;
     }
 
     fn regenerate_lines(&mut self) {
@@ -340,12 +290,12 @@ impl App {
     }
 
     pub fn toggle_help(&mut self) {
-        self.show_help = !self.show_help;
+        self.view.show_help = !self.view.show_help;
     }
 
     pub fn should_quit(&mut self) -> bool {
-        if self.show_help {
-            self.show_help = false;
+        if self.view.show_help {
+            self.view.show_help = false;
             false
         } else {
             true
@@ -355,8 +305,8 @@ impl App {
     /// Get the file path of the first visible line
     pub fn current_file(&self) -> Option<String> {
         let items = self.compute_displayable_items();
-        let start = self.scroll_offset.min(items.len());
-        let end = (start + self.viewport_height).min(items.len());
+        let start = self.view.scroll_offset.min(items.len());
+        let end = (start + self.view.viewport_height).min(items.len());
 
         for item in &items[start..end] {
             if let DisplayableItem::Line(idx) = item
@@ -377,23 +327,23 @@ impl App {
         content_width: usize,
         panel_width: u16,
     ) {
-        if self.content_width != content_width {
-            self.needs_inline_spans = true;
+        if self.view.content_width != content_width {
+            self.view.needs_inline_spans = true;
         }
-        self.content_offset = (offset_x, offset_y);
-        self.line_num_width = line_num_width;
-        self.content_width = content_width;
-        self.panel_width = panel_width;
+        self.view.content_offset = (offset_x, offset_y);
+        self.view.line_num_width = line_num_width;
+        self.view.content_width = content_width;
+        self.view.panel_width = panel_width;
     }
 
     /// Check if inline spans need recomputation
     pub fn needs_inline_spans(&self) -> bool {
-        self.needs_inline_spans
+        self.view.needs_inline_spans
     }
 
     /// Clear the needs_inline_spans flag after computation
     pub fn clear_needs_inline_spans(&mut self) {
-        self.needs_inline_spans = false;
+        self.view.needs_inline_spans = false;
     }
 
     /// Get the related file (app ↔ spec) for a given path.
@@ -440,8 +390,8 @@ impl App {
             0
         } + PREFIX_CHAR_WIDTH;
 
-        self.content_width = available_width.saturating_sub(prefix_width);
-        self.panel_width = terminal_width;
+        self.view.content_width = available_width.saturating_sub(prefix_width);
+        self.view.panel_width = terminal_width;
     }
 }
 
@@ -671,7 +621,7 @@ mod tests {
             base_line("context line 3"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::ChangesOnly;
+        app.view.view_mode = ViewMode::ChangesOnly;
         let items = app.compute_displayable_items();
         let displayed = collect_lines(&app, &items);
         assert_eq!(displayed.len(), 3);
@@ -695,7 +645,7 @@ mod tests {
             DiffLine::new(LineSource::Committed, "committed".to_string(), '+', Some(3)),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::ChangesOnly;
+        app.view.view_mode = ViewMode::ChangesOnly;
         let items = app.compute_displayable_items();
         let displayed = collect_lines(&app, &items);
 
@@ -709,12 +659,12 @@ mod tests {
     #[test]
     fn test_should_quit_dismisses_help_first() {
         let mut app = TestAppBuilder::new().build();
-        assert!(!app.show_help);
+        assert!(!app.view.show_help);
         assert!(app.should_quit());
 
-        app.show_help = true;
+        app.view.show_help = true;
         assert!(!app.should_quit());
-        assert!(!app.show_help);
+        assert!(!app.view.show_help);
 
         assert!(app.should_quit());
     }
@@ -723,12 +673,12 @@ mod tests {
     fn test_cycle_view_mode_empty_lines() {
         let mut app = TestAppBuilder::new().build();
         app.cycle_view_mode();
-        assert_eq!(app.view_mode, ViewMode::Context);
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.view.view_mode, ViewMode::Context);
+        assert_eq!(app.view.scroll_offset, 0);
         app.cycle_view_mode();
-        assert_eq!(app.view_mode, ViewMode::ChangesOnly);
+        assert_eq!(app.view.view_mode, ViewMode::ChangesOnly);
         app.cycle_view_mode();
-        assert_eq!(app.view_mode, ViewMode::Full);
+        assert_eq!(app.view.view_mode, ViewMode::Full);
     }
 
     #[test]
@@ -739,11 +689,11 @@ mod tests {
             base_line("line3"),
         ];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
 
         app.cycle_view_mode();
-        assert_eq!(app.view_mode, ViewMode::Context);
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.view.view_mode, ViewMode::Context);
+        assert_eq!(app.view.scroll_offset, 0);
     }
 
     #[test]
@@ -760,10 +710,10 @@ mod tests {
         }
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
 
         // Scroll to middle of file (around line 15)
-        app.scroll_offset = 10;
+        app.view.scroll_offset = 10;
 
         // The middle of viewport is at offset 5, so line 15 in original
         // Toggle to context mode
@@ -772,7 +722,7 @@ mod tests {
         // Should still be showing content near line 15
         // The change is at original index 10, context shows 5 lines around it
         // So visible in context: indices 5-15 of original (lines before5..after4)
-        assert_eq!(app.view_mode, ViewMode::Context);
+        assert_eq!(app.view.view_mode, ViewMode::Context);
         // Scroll should be adjusted to keep similar content visible
     }
 
@@ -787,16 +737,16 @@ mod tests {
         lines.push(change_line("change at end"));
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
 
         // Scroll to line 20 (far from the change at 50)
-        app.scroll_offset = 20;
+        app.view.scroll_offset = 20;
 
         // Toggle to context mode - line 25 (middle) will be elided
         app.cycle_view_mode();
 
         // Should find closest visible line and anchor there
-        assert_eq!(app.view_mode, ViewMode::Context);
+        assert_eq!(app.view.view_mode, ViewMode::Context);
         // The only visible content is around line 50, so scroll should jump there
     }
 
@@ -813,18 +763,18 @@ mod tests {
         }
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
 
         // Position so the change is visible (change is at index 20)
-        app.scroll_offset = 16; // Middle at 21, close to change
+        app.view.scroll_offset = 16; // Middle at 21, close to change
 
         // Cycle through all three modes back to Full
         app.cycle_view_mode(); // Full -> Context
-        assert_eq!(app.view_mode, ViewMode::Context);
+        assert_eq!(app.view.view_mode, ViewMode::Context);
         app.cycle_view_mode(); // Context -> ChangesOnly
-        assert_eq!(app.view_mode, ViewMode::ChangesOnly);
+        assert_eq!(app.view.view_mode, ViewMode::ChangesOnly);
         app.cycle_view_mode(); // ChangesOnly -> Full
-        assert_eq!(app.view_mode, ViewMode::Full);
+        assert_eq!(app.view.view_mode, ViewMode::Full);
     }
 
     #[test]
@@ -836,14 +786,14 @@ mod tests {
         }
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
-        app.scroll_offset = 0;
+        app.view.viewport_height = 10;
+        app.view.scroll_offset = 0;
 
         app.cycle_view_mode();
 
         // Should stay near top since change is at top
-        assert_eq!(app.view_mode, ViewMode::Context);
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.view.view_mode, ViewMode::Context);
+        assert_eq!(app.view.scroll_offset, 0);
     }
 
     #[test]
@@ -855,7 +805,7 @@ mod tests {
         lines.push(change_line("change at bottom"));
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
 
         // Scroll to bottom
         app.go_to_bottom();
@@ -863,7 +813,7 @@ mod tests {
         app.cycle_view_mode();
 
         // Should stay near bottom content
-        assert_eq!(app.view_mode, ViewMode::Context);
+        assert_eq!(app.view.view_mode, ViewMode::Context);
     }
 
     #[test]
@@ -878,7 +828,7 @@ mod tests {
         }
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::Context;
+        app.view.view_mode = ViewMode::Context;
 
         // The change is at original index 5
         // In context mode with 5 lines of context, indices 0-10 are visible
@@ -903,7 +853,7 @@ mod tests {
         }
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::Context;
+        app.view.view_mode = ViewMode::Context;
 
         // Original index 0 is far from change at 20, so it's elided
         // Should find closest visible line
@@ -963,7 +913,7 @@ mod tests {
         }
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::Context;
+        app.view.view_mode = ViewMode::Context;
 
         // Get the filtered items in context mode
         let items = app.compute_displayable_items();
@@ -1013,7 +963,7 @@ mod tests {
         lines.push(base_line("end"));
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::Context;
+        app.view.view_mode = ViewMode::Context;
 
         let items = app.compute_displayable_items();
         let filtered = collect_lines(&app, &items);
@@ -1076,7 +1026,7 @@ mod tests {
         lines.push(base_line("end"));
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::Context;
+        app.view.view_mode = ViewMode::Context;
 
         let items = app.compute_displayable_items();
         let filtered = collect_lines(&app, &items);
@@ -1124,8 +1074,8 @@ mod tests {
         lines.push(base_line("trailing_3"));
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::Context;
-        app.viewport_height = 20;
+        app.view.view_mode = ViewMode::Context;
+        app.view.viewport_height = 20;
 
         // Scroll to bottom
         app.go_to_bottom();
@@ -1181,8 +1131,8 @@ mod tests {
         lines.push(base_line("final_end_2"));
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::Context;
-        app.viewport_height = 15; // Small viewport so we need to scroll
+        app.view.view_mode = ViewMode::Context;
+        app.view.viewport_height = 15; // Small viewport so we need to scroll
 
         // Check all displayable items before scrolling
         {
@@ -1260,8 +1210,8 @@ mod tests {
         lines.push(DiffLine::new(LineSource::Base, "end".to_string(), ' ', Some(107)));
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view_mode = ViewMode::Context;
-        app.viewport_height = 20;
+        app.view.view_mode = ViewMode::Context;
+        app.view.viewport_height = 20;
 
         // Check ALL displayable items before scrolling
         {
@@ -1521,7 +1471,7 @@ mod tests {
     fn test_scroll_marks_needs_inline_spans() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
         app.clear_needs_inline_spans();
 
         app.scroll_down(5);
@@ -1536,7 +1486,7 @@ mod tests {
     fn test_page_navigation_marks_needs_inline_spans() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
         app.clear_needs_inline_spans();
 
         app.page_down();
@@ -1551,7 +1501,7 @@ mod tests {
     fn test_go_to_extremes_marks_needs_inline_spans() {
         let lines: Vec<DiffLine> = (0..50).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
         app.clear_needs_inline_spans();
 
         app.go_to_bottom();
@@ -1623,7 +1573,7 @@ mod tests {
     fn test_scroll_at_top_does_not_mark_dirty() {
         let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.scroll_offset = 0;
+        app.view.scroll_offset = 0;
         app.clear_needs_inline_spans();
 
         app.scroll_up(5);
@@ -1634,7 +1584,7 @@ mod tests {
     fn test_scroll_at_bottom_does_not_mark_dirty() {
         let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.viewport_height = 10;
+        app.view.viewport_height = 10;
         app.go_to_bottom();
         app.clear_needs_inline_spans();
 
@@ -1646,7 +1596,7 @@ mod tests {
     fn test_go_to_top_when_at_top_does_not_mark_dirty() {
         let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line{}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.scroll_offset = 0;
+        app.view.scroll_offset = 0;
         app.clear_needs_inline_spans();
 
         app.go_to_top();
@@ -1656,7 +1606,7 @@ mod tests {
     #[test]
     fn test_same_viewport_height_does_not_mark_dirty() {
         let mut app = TestAppBuilder::new().build();
-        app.viewport_height = 20;
+        app.view.viewport_height = 20;
         app.clear_needs_inline_spans();
 
         app.set_viewport_height(20);
@@ -1701,7 +1651,7 @@ mod tests {
         lines[3].file_path = Some("visible.rs".to_string());
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.collapsed_files.insert("collapsed.rs".to_string());
+        app.view.collapsed_files.insert("collapsed.rs".to_string());
 
         let output = app.format_diff_for_copy();
 
@@ -1740,7 +1690,7 @@ mod tests {
         app.estimate_content_width(120);
 
         assert_eq!(
-            app.content_width, 109,
+            app.view.content_width, 109,
             "content_width should be terminal_width (120) - borders (2) - line_num_width+space (5) - prefix ({})",
             PREFIX_CHAR_WIDTH
         );
@@ -1762,7 +1712,7 @@ mod tests {
         app.estimate_content_width(100);
 
         assert_eq!(
-            app.content_width, 94,
+            app.view.content_width, 94,
             "content_width without line numbers should be terminal_width - borders - prefix ({})",
             PREFIX_CHAR_WIDTH
         );
@@ -1782,7 +1732,7 @@ mod tests {
         // = 150 - 2 - 7 - 4 = 137
         app.estimate_content_width(150);
 
-        assert_eq!(app.content_width, 137);
+        assert_eq!(app.view.content_width, 137);
     }
 
     // === Tests for file_links query methods ===

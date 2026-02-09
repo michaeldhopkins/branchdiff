@@ -31,7 +31,7 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
     let file_count = app.files.len();
     let additions = app.additions_count();
     let deletions = app.deletions_count();
-    let mode = match app.view_mode {
+    let mode = match app.view.view_mode {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
         crate::app::ViewMode::ChangesOnly => " [changes]",
@@ -62,7 +62,7 @@ fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
     let file_count = app.files.len();
     let additions = app.additions_count();
     let deletions = app.deletions_count();
-    let mode = match app.view_mode {
+    let mode = match app.view.view_mode {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
         crate::app::ViewMode::ChangesOnly => " [changes]",
@@ -103,7 +103,7 @@ fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
     let file_count = app.files.len();
     let additions = app.additions_count();
     let deletions = app.deletions_count();
-    let mode = match app.view_mode {
+    let mode = match app.view.view_mode {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
         crate::app::ViewMode::ChangesOnly => " [changes]",
@@ -159,7 +159,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let file_count = app.files.len();
     let additions = app.additions_count();
     let deletions = app.deletions_count();
-    let mode = match app.view_mode {
+    let mode = match app.view.view_mode {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
         crate::app::ViewMode::ChangesOnly => " [changes]",

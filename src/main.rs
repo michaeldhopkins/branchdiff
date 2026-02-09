@@ -131,8 +131,8 @@ fn main() -> Result<()> {
     match cli.output.mode() {
         OutputMode::Print => {
             let mut app = app::App::new(repo_root)?;
-            app.collapsed_files.clear();
-            app.view_mode = app::ViewMode::Full;
+            app.view.collapsed_files.clear();
+            app.view.view_mode = app::ViewMode::Full;
 
             for line in &mut app.lines {
                 if line.old_content.is_some() {
@@ -277,7 +277,7 @@ fn run_benchmark(repo_root: PathBuf, frames: usize) -> Result<()> {
     let visible_height = 40_usize;
 
     app.set_viewport_height(visible_height);
-    app.collapsed_files.clear();
+    app.view.collapsed_files.clear();
 
     eprintln!("Running {} frames...", frames);
     let bench_start = Instant::now();
@@ -301,11 +301,11 @@ fn run_benchmark(repo_root: PathBuf, frames: usize) -> Result<()> {
 
         match action {
             AppAction::ScrollDown(n) => {
-                let new_offset = (app.scroll_offset + n).min(max_scroll);
-                app.scroll_offset = new_offset;
+                let new_offset = (app.view.scroll_offset + n).min(max_scroll);
+                app.view.scroll_offset = new_offset;
             }
             AppAction::ScrollUp(n) => {
-                app.scroll_offset = app.scroll_offset.saturating_sub(n);
+                app.view.scroll_offset = app.view.scroll_offset.saturating_sub(n);
             }
             AppAction::NextFile => app.next_file(),
             AppAction::PrevFile => app.prev_file(),
