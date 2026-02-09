@@ -8,6 +8,15 @@ use ratatui::{
 
 use crate::app::App;
 
+/// Get the repo directory name for display
+fn repo_name(app: &App) -> String {
+    app.repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo")
+        .to_string()
+}
+
 /// Determine how many lines the status bar needs based on content and width
 pub fn status_bar_height(app: &App, width: u16) -> u16 {
     let width = width as usize;
@@ -15,8 +24,8 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
     let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
 
     let branch_info = match &app.current_branch {
-        Some(b) => format!("{} vs {}", b, app.base_branch),
-        None => format!("HEAD vs {}", app.base_branch),
+        Some(b) => format!("{} | {} vs {}", repo_name(app), b, app.base_branch),
+        None => format!("{} | HEAD vs {}", repo_name(app), app.base_branch),
     };
 
     let file_count = app.files.len();
@@ -87,8 +96,8 @@ fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
 /// Build full status spans (branch info + stats) with colored +/- counts
 fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
     let branch_info = match &app.current_branch {
-        Some(b) => format!("{} vs {}", b, app.base_branch),
-        None => format!("HEAD vs {}", app.base_branch),
+        Some(b) => format!("{} | {} vs {}", repo_name(app), b, app.base_branch),
+        None => format!("{} | HEAD vs {}", repo_name(app), app.base_branch),
     };
 
     let file_count = app.files.len();
@@ -167,8 +176,8 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let branch_info = match &app.current_branch {
-        Some(b) => format!("{} vs {}", b, app.base_branch),
-        None => format!("HEAD vs {}", app.base_branch),
+        Some(b) => format!("{} | {} vs {}", repo_name(app), b, app.base_branch),
+        None => format!("{} | HEAD vs {}", repo_name(app), app.base_branch),
     };
 
     // Try different layouts based on available width
@@ -249,5 +258,53 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
         let paragraph = Paragraph::new(line);
         frame.render_widget(paragraph, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestAppBuilder;
+
+    #[test]
+    fn test_repo_name_extracts_directory_name() {
+        let app = TestAppBuilder::new().build();
+        // TestAppBuilder uses "/tmp/test" as repo_path
+        assert_eq!(repo_name(&app), "test");
+    }
+
+    #[test]
+    fn test_branch_info_includes_repo_name() {
+        let app = TestAppBuilder::new()
+            .with_current_branch(Some("feature"))
+            .with_base_branch("main")
+            .build();
+
+        // Manually construct what build_full_status_spans produces
+        let spans = build_full_status_spans(&app);
+        let combined: String = spans.iter().map(|s| s.content.to_string()).collect();
+
+        assert!(
+            combined.starts_with("test | feature vs main"),
+            "Expected branch info to start with 'test | feature vs main', got: {}",
+            combined
+        );
+    }
+
+    #[test]
+    fn test_branch_info_uses_head_when_no_current_branch() {
+        let app = TestAppBuilder::new()
+            .with_current_branch(None)
+            .with_base_branch("master")
+            .build();
+
+        let spans = build_full_status_spans(&app);
+        let combined: String = spans.iter().map(|s| s.content.to_string()).collect();
+
+        assert!(
+            combined.starts_with("test | HEAD vs master"),
+            "Expected branch info to start with 'test | HEAD vs master', got: {}",
+            combined
+        );
     }
 }
