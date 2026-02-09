@@ -1,3 +1,11 @@
+// Lint configuration for code quality
+#![warn(
+    clippy::unwrap_used,        // Require .expect() over .unwrap()
+    clippy::redundant_clone,    // Catch unnecessary clones
+    clippy::too_many_lines,     // Flag long functions (configured in clippy.toml)
+    clippy::excessive_nesting,  // Flag deeply nested code
+)]
+
 mod print;
 
 use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, FrameContext};

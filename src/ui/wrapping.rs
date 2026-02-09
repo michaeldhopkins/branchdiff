@@ -186,13 +186,38 @@ pub fn wrap_content(
     // Need to wrap - split content into chunks
     let mut result_lines = Vec::new();
     let mut row_infos = Vec::new();
-    let mut current_line_spans = Vec::new();
+    let mut current_line_spans: Vec<Span<'static>> = Vec::new();
     let mut current_width = 0;
     let mut is_first_line = true;
     let mut current_content = String::new();
 
     // Continuation line indent (same width as "123 + ")
     let continuation_indent = " ".repeat(prefix_width);
+
+    // Helper closure to emit the current line and reset state
+    let emit_line = |current_line_spans: &mut Vec<Span<'static>>,
+                         current_content: &mut String,
+                         is_first_line: &mut bool,
+                         row_infos: &mut Vec<ScreenRowInfo>,
+                         result_lines: &mut Vec<Line<'static>>| {
+        let mut line_spans = Vec::new();
+        if *is_first_line {
+            line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
+            line_spans.push(Span::styled(prefix_char.clone(), style));
+            *is_first_line = false;
+        } else {
+            line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
+        }
+        line_spans.append(current_line_spans);
+        result_lines.push(Line::from(line_spans));
+
+        row_infos.push(ScreenRowInfo {
+            content: std::mem::take(current_content),
+            is_file_header: false,
+            file_path: None,
+            is_continuation: !row_infos.is_empty(),
+        });
+    };
 
     for span in content_spans {
         let span_text = span.content.to_string();
@@ -203,26 +228,13 @@ pub fn wrap_content(
             let space_available = content_width.saturating_sub(current_width);
 
             if space_available == 0 {
-                // Emit current line and start new one
-                let mut line_spans = Vec::new();
-
-                if is_first_line {
-                    line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
-                    line_spans.push(Span::styled(prefix_char.clone(), style));
-                    is_first_line = false;
-                } else {
-                    line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
-                }
-                line_spans.append(&mut current_line_spans);
-                result_lines.push(Line::from(line_spans));
-
-                row_infos.push(ScreenRowInfo {
-                    content: std::mem::take(&mut current_content),
-                    is_file_header: false,
-                    file_path: None,
-                    is_continuation: !row_infos.is_empty(),
-                });
-
+                emit_line(
+                    &mut current_line_spans,
+                    &mut current_content,
+                    &mut is_first_line,
+                    &mut row_infos,
+                    &mut result_lines,
+                );
                 current_width = 0;
                 continue;
             }
@@ -244,26 +256,13 @@ pub fn wrap_content(
                 current_content.push_str(chunk);
                 remaining = rest;
 
-                // Emit current line
-                let mut line_spans = Vec::new();
-
-                if is_first_line {
-                    line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
-                    line_spans.push(Span::styled(prefix_char.clone(), style));
-                    is_first_line = false;
-                } else {
-                    line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
-                }
-                line_spans.append(&mut current_line_spans);
-                result_lines.push(Line::from(line_spans));
-
-                row_infos.push(ScreenRowInfo {
-                    content: std::mem::take(&mut current_content),
-                    is_file_header: false,
-                    file_path: None,
-                    is_continuation: !row_infos.is_empty(),
-                });
-
+                emit_line(
+                    &mut current_line_spans,
+                    &mut current_content,
+                    &mut is_first_line,
+                    &mut row_infos,
+                    &mut result_lines,
+                );
                 current_width = 0;
             }
         }
@@ -271,23 +270,13 @@ pub fn wrap_content(
 
     // Emit any remaining content
     if !current_line_spans.is_empty() || is_first_line {
-        let mut line_spans = Vec::new();
-
-        if is_first_line {
-            line_spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
-            line_spans.push(Span::styled(prefix_char, style));
-        } else {
-            line_spans.push(Span::styled(continuation_indent, Style::default().fg(Color::DarkGray)));
-        }
-        line_spans.extend(current_line_spans);
-        result_lines.push(Line::from(line_spans));
-
-        row_infos.push(ScreenRowInfo {
-            content: current_content,
-            is_file_header: false,
-            file_path: None,
-            is_continuation: !row_infos.is_empty(),
-        });
+        emit_line(
+            &mut current_line_spans,
+            &mut current_content,
+            &mut is_first_line,
+            &mut row_infos,
+            &mut result_lines,
+        );
     }
 
     (result_lines, row_infos)
