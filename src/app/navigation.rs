@@ -210,6 +210,36 @@ impl App {
         if self.content_width == 0 {
             return 1;
         }
+
+        // Image markers take dynamic height based on actual image dimensions
+        if line.is_image_marker() {
+            // Look up actual image dimensions from cache
+            if let Some(ref path) = line.file_path
+                && let Some(state) = self.image_cache.peek(path)
+            {
+                let before_dims = state
+                    .before
+                    .as_ref()
+                    .map(|img| (img.original_width, img.original_height));
+                let after_dims = state
+                    .after
+                    .as_ref()
+                    .map(|img| (img.original_width, img.original_height));
+
+                // Use dimension-based height if we have image data
+                if before_dims.is_some() || after_dims.is_some() {
+                    return crate::ui::image_view::calculate_image_height_for_images(
+                        before_dims,
+                        after_dims,
+                        self.panel_width,
+                        self.font_size,
+                    ) as usize;
+                }
+            }
+            // Fallback: minimal height for images not yet loaded
+            return 1;
+        }
+
         let width = content_display_width(&line.content);
         if width <= self.content_width {
             1
@@ -436,5 +466,115 @@ mod tests {
         app.clamp_scroll();
 
         assert_eq!(app.scroll_offset, 10); // Clamped to max
+    }
+
+    #[test]
+    fn test_wrapped_line_height_for_image_marker() {
+        use crate::image_diff::{CachedImage, ImageDiffState};
+        use image::DynamicImage;
+
+        let lines = vec![
+            DiffLine::file_header("test.png"),
+            DiffLine::image_marker("test.png"),
+        ];
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.viewport_height = 40;
+        app.content_width = 80;
+        app.panel_width = 100;
+
+        // Add image data to cache with known dimensions
+        let cached_image = CachedImage {
+            display_image: DynamicImage::new_rgb8(192, 192),
+            original_width: 192,
+            original_height: 192,
+            file_size: 1024,
+            format_name: "PNG".to_string(),
+            protocol: None,
+        };
+        app.image_cache.insert(
+            "test.png".to_string(),
+            ImageDiffState {
+                before: Some(cached_image),
+                after: None,
+            },
+        );
+
+        // Image markers should have dynamic height based on actual image dimensions
+        let image_line = &app.lines[1];
+        let height = app.wrapped_line_height(image_line);
+
+        // Height is calculated from actual image dimensions, not viewport percentage
+        let expected = crate::ui::image_view::calculate_image_height_for_images(
+            Some((192, 192)),
+            None,
+            100, // panel_width
+            (8, 16), // default font size
+        ) as usize;
+        assert_eq!(height, expected);
+        assert!(height > 1, "Image marker should be taller than 1 row");
+    }
+
+    #[test]
+    fn test_wrapped_line_height_for_image_marker_no_cache() {
+        // When image is not in cache, height should be 1 (fallback)
+        let lines = vec![
+            DiffLine::file_header("test.png"),
+            DiffLine::image_marker("test.png"),
+        ];
+        let app = TestAppBuilder::new().with_lines(lines).build();
+
+        let image_line = &app.lines[1];
+        let height = app.wrapped_line_height(image_line);
+
+        assert_eq!(height, 1, "Image marker without cache data should be 1 row");
+    }
+
+    #[test]
+    fn test_max_scroll_accounts_for_image_markers() {
+        use crate::image_diff::{CachedImage, ImageDiffState};
+        use image::DynamicImage;
+
+        let lines = vec![
+            DiffLine::file_header("image1.png"),
+            DiffLine::image_marker("image1.png"),
+            DiffLine::file_header("image2.png"),
+            DiffLine::image_marker("image2.png"),
+            DiffLine::file_header("image3.png"),
+            DiffLine::image_marker("image3.png"),
+        ];
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.viewport_height = 15;
+        app.content_width = 80;
+        app.panel_width = 100;
+
+        // Add image data for all three images
+        for i in 1..=3 {
+            let cached_image = CachedImage {
+                display_image: DynamicImage::new_rgb8(192, 192),
+                original_width: 192,
+                original_height: 192,
+                file_size: 1024,
+                format_name: "PNG".to_string(),
+                protocol: None,
+            };
+            app.image_cache.insert(
+                format!("image{}.png", i),
+                ImageDiffState {
+                    before: Some(cached_image),
+                    after: None,
+                },
+            );
+        }
+
+        let items = app.compute_displayable_items();
+        let max_scroll = app.max_scroll_for_items(&items);
+
+        // With image data in cache, markers have real heights based on dimensions
+        // 3 file headers (3 rows) + 3 image markers with real height
+        // Total should exceed viewport of 15, so max_scroll > 0
+        assert!(
+            max_scroll > 0,
+            "max_scroll should account for tall image markers"
+        );
     }
 }

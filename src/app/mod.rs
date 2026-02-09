@@ -102,6 +102,8 @@ pub struct App {
     pub line_num_width: usize,
     /// Available width for content (used for wrapping calculation)
     pub content_width: usize,
+    /// Full panel width (for image height calculations)
+    pub panel_width: u16,
     /// Warning message about merge conflicts (if any)
     pub conflict_warning: Option<String>,
     /// Performance warning (large repo or diff)
@@ -126,6 +128,9 @@ pub struct App {
     pub image_cache: ImageCache,
     /// Image protocol picker for terminal image rendering (None if terminal doesn't support)
     pub image_picker: Option<Picker>,
+    /// Font size in pixels (width, height) from the Picker, used for image height calculations.
+    /// Defaults to (8, 16) but updated when set_image_picker() is called.
+    pub font_size: (u16, u16),
 }
 
 impl App {
@@ -151,6 +156,7 @@ impl App {
             content_offset: (1, 1),
             line_num_width: 4,
             content_width: 120,
+            panel_width: 120,
             conflict_warning: None,
             performance_warning: None,
             row_map: Vec::new(),
@@ -162,6 +168,7 @@ impl App {
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
             image_picker: None,
+            font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
         }
     }
 
@@ -196,6 +203,7 @@ impl App {
             content_offset: (1, 1),
             line_num_width: 0,
             content_width: 80,
+            panel_width: 80,
             conflict_warning: None,
             performance_warning: None,
             row_map: Vec::new(),
@@ -208,14 +216,17 @@ impl App {
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
             image_picker: None,
+            font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
         };
 
         app.refresh()?;
         Ok(app)
     }
 
-    /// Set the image picker for terminal image rendering
+    /// Set the image picker for terminal image rendering.
+    /// Also stores the font size from the picker for height calculations.
     pub fn set_image_picker(&mut self, picker: Picker) {
+        self.font_size = picker.font_size();
         self.image_picker = Some(picker);
     }
 
@@ -417,13 +428,21 @@ impl App {
     }
 
     /// Set content area layout info (called during rendering)
-    pub fn set_content_layout(&mut self, offset_x: u16, offset_y: u16, line_num_width: usize, content_width: usize) {
+    pub fn set_content_layout(
+        &mut self,
+        offset_x: u16,
+        offset_y: u16,
+        line_num_width: usize,
+        content_width: usize,
+        panel_width: u16,
+    ) {
         if self.content_width != content_width {
             self.needs_inline_spans = true;
         }
         self.content_offset = (offset_x, offset_y);
         self.line_num_width = line_num_width;
         self.content_width = content_width;
+        self.panel_width = panel_width;
     }
 
     /// Check if inline spans need recomputation
@@ -481,6 +500,7 @@ impl App {
         } + PREFIX_CHAR_WIDTH;
 
         self.content_width = available_width.saturating_sub(prefix_width);
+        self.panel_width = terminal_width;
     }
 }
 

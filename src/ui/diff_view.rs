@@ -44,6 +44,8 @@ pub struct DiffViewModel<'a> {
     pub show_copied_flash: bool,
     /// Image cache for loaded image data.
     pub image_cache: &'a ImageCache,
+    /// Font size in pixels (width, height) for image height calculations.
+    pub font_size: (u16, u16),
 }
 
 /// Position where an image should be rendered after text render
@@ -81,6 +83,7 @@ impl<'a> DiffViewModel<'a> {
             area,
             show_copied_flash: app.should_show_copied_flash(),
             image_cache: &app.image_cache,
+            font_size: app.font_size,
         }
     }
 
@@ -403,15 +406,31 @@ impl<'a> DiffViewModel<'a> {
             .and_then(|path| self.image_cache.peek(path));
 
         // If we have image data, reserve space for rendering (protocols created lazily during render)
-        let has_image_data = image_info.is_some_and(|state| {
-            state.before.is_some() || state.after.is_some()
+        let image_dims = image_info.map(|state| {
+            let before_dims = state
+                .before
+                .as_ref()
+                .map(|img| (img.original_width, img.original_height));
+            let after_dims = state
+                .after
+                .as_ref()
+                .map(|img| (img.original_width, img.original_height));
+            (before_dims, after_dims)
         });
+
+        let has_image_data = image_dims.is_some_and(|(b, a)| b.is_some() || a.is_some());
 
         if has_image_data
             && let Some(ref path) = diff_line.file_path
+            && let Some((before_dims, after_dims)) = image_dims
         {
-            // Calculate dynamic height based on viewport size
-            let image_height = crate::ui::image_view::calculate_image_height(self.area.height);
+            // Calculate height based on actual image dimensions
+            let image_height = crate::ui::image_view::calculate_image_height_for_images(
+                before_dims,
+                after_dims,
+                self.area.width,
+                self.font_size,
+            );
 
             // Record position for image rendering (saturate to u16::MAX for safety)
             image_positions.push(ImageRenderPosition {
@@ -722,6 +741,7 @@ pub fn draw_diff_view_with_frame(
         output.content_offset.1,
         output.line_num_width,
         output.content_width,
+        area.width,
     );
     app.set_row_map(output.row_map.clone());
 
