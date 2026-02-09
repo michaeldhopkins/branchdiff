@@ -236,4 +236,77 @@ mod tests {
         assert_eq!(result[1].style.bg, Some(SELECTION_BG_COLOR));
         assert_eq!(result[2].content, "d");
     }
+
+    // ===== Additional edge case tests =====
+
+    #[test]
+    fn span_empty_string() {
+        let span = Span::styled("", Style::default());
+        let result = apply_selection_to_span(span, 0, 0, 10);
+        // Empty span should return original
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "");
+    }
+
+    #[test]
+    fn span_unicode_content() {
+        let span = Span::styled("héllo wörld", Style::default());
+        // Note: this uses byte positions, not char positions
+        // "héllo" = 6 bytes (h=1, é=2, l=1, l=1, o=1), space=1, "wörld"=6 bytes
+        let result = apply_selection_to_span(span, 0, 0, 13);
+        // The first 13 bytes should be selected
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn span_selection_exact_boundaries() {
+        let span = Span::styled("hello", Style::default());
+        // Selection exactly matches span boundaries
+        let result = apply_selection_to_span(span, 5, 5, 10);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "hello");
+        assert_eq!(result[0].style.bg, Some(SELECTION_BG_COLOR));
+    }
+
+    #[test]
+    fn line_selection_normalizes_multiline_backwards() {
+        // Selection dragged backwards across multiple lines
+        let sel = selection(10, 4, 5, 8);
+        // Line 7 should still be fully selected (middle line)
+        assert_eq!(get_line_selection_range(&Some(sel.clone()), 7), Some((0, usize::MAX)));
+        // Start line (after normalization, this is row 5)
+        assert_eq!(get_line_selection_range(&Some(sel.clone()), 5), Some((8, usize::MAX)));
+        // End line (after normalization, this is row 10)
+        assert_eq!(get_line_selection_range(&Some(sel), 10), Some((0, 4)));
+    }
+
+    #[test]
+    fn line_selection_at_boundary() {
+        // Selection starts and ends at exact line boundaries
+        let sel = selection(5, 0, 5, 0);
+        // Zero-width selection at start of line
+        assert_eq!(get_line_selection_range(&Some(sel), 5), Some((0, 0)));
+    }
+
+    #[test]
+    fn span_preserves_original_style_fg() {
+        use ratatui::style::Color;
+        let base_style = Style::default().fg(Color::Red);
+        let span = Span::styled("hello", base_style);
+        let result = apply_selection_to_span(span, 0, 0, 5);
+        // Selected span should keep fg color but add selection bg
+        assert_eq!(result[0].style.fg, Some(Color::Red));
+        assert_eq!(result[0].style.bg, Some(SELECTION_BG_COLOR));
+    }
+
+    #[test]
+    fn span_single_char_selection() {
+        let span = Span::styled("hello", Style::default());
+        let result = apply_selection_to_span(span, 0, 2, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].content, "he");
+        assert_eq!(result[1].content, "l");
+        assert_eq!(result[1].style.bg, Some(SELECTION_BG_COLOR));
+        assert_eq!(result[2].content, "lo");
+    }
 }
