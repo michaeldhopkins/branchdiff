@@ -2,6 +2,35 @@ After building or making changes, always run `cargo install --path .` to install
 
 Always run `cargo clippy -- -D warnings` before committing to match CI. Clippy warnings should never be allowed to go unaddressed. Using `#[allow(...)]` to suppress warnings is not acceptable - actually fix the underlying issue.
 
+## Antipatterns (Not Caught by Lints)
+
+These patterns require manual vigilance during code review:
+
+**Stringly-typed error handling:**
+- Don't use `.contains()` on error messages for control flow
+- Error messages are localized and change between versions
+- Use error types, exit codes, or structured data instead
+
+**Panic in error handlers:**
+- Don't use `panic!()` inside `unwrap_or_else` closures
+- For programmer errors (should never happen), use `.expect("reason")`
+- For runtime errors, return `Result` or provide a fallback
+
+**Unnecessary cloning:**
+- Watch for `.clone().or(.clone())` - use `match` to consume Options directly
+- If a function takes `&T` but clones internally, consider taking `T` by value
+- Cloning for thread spawning (`Arc::clone`, `PathBuf::clone`) is correct
+
+**Code duplication:**
+- If the same logic appears 3+ times, extract a helper function
+- Common patterns: emit/flush loops, validation checks, state updates
+- Lints can't detect semantic duplication - only humans can
+
+**Local fixes that ignore root cause:**
+- Adding `.clone()` to satisfy the borrow checker instead of restructuring
+- Wrapping errors in strings instead of adding enum variants
+- Suppressing warnings instead of fixing the underlying issue
+
 Run `cargo llvm-cov` to check test coverage after adding or modifying functionality.
 
 Run `cargo audit` after adding or updating dependencies to check for security vulnerabilities.
