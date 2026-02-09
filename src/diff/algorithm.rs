@@ -387,3 +387,463 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
 
     FileDiff { lines }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === Tests for check_file_deletion ===
+
+    #[test]
+    fn test_check_file_deletion_unstaged() {
+        // File exists in index but not in working tree = unstaged deletion
+        let input = DiffInput {
+            path: "deleted.rs",
+            base: Some("base content"),
+            head: Some("head content"),
+            index: Some("index content\nline 2"),
+            working: None, // Not in working tree
+            old_path: None,
+        };
+
+        let result = check_file_deletion(&input);
+        assert!(result.is_some(), "Should detect unstaged deletion");
+
+        let diff = result.unwrap();
+        // First line is header
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+        assert!(diff.lines[0].content.contains("deleted.rs"));
+        assert!(diff.lines[0].content.contains("(deleted)"));
+
+        // Content lines should have DeletedStaged source
+        assert_eq!(diff.lines[1].source, LineSource::DeletedStaged);
+        assert_eq!(diff.lines[1].content, "index content");
+        assert_eq!(diff.lines[1].prefix, '-');
+        assert_eq!(diff.lines[1].line_number, Some(1));
+
+        assert_eq!(diff.lines[2].source, LineSource::DeletedStaged);
+        assert_eq!(diff.lines[2].content, "line 2");
+        assert_eq!(diff.lines[2].line_number, Some(2));
+    }
+
+    #[test]
+    fn test_check_file_deletion_staged() {
+        // File exists in HEAD but not in index or working = staged deletion
+        let input = DiffInput {
+            path: "staged_delete.rs",
+            base: Some("base content"),
+            head: Some("head content\nhead line 2"),
+            index: None,    // Not in index
+            working: None,  // Not in working
+            old_path: None,
+        };
+
+        let result = check_file_deletion(&input);
+        assert!(result.is_some(), "Should detect staged deletion");
+
+        let diff = result.unwrap();
+        // Content should come from HEAD with DeletedCommitted source
+        assert_eq!(diff.lines[1].source, LineSource::DeletedCommitted);
+        assert_eq!(diff.lines[1].content, "head content");
+    }
+
+    #[test]
+    fn test_check_file_deletion_committed() {
+        // File exists in base but not in HEAD/index/working = committed deletion
+        let input = DiffInput {
+            path: "committed_delete.rs",
+            base: Some("base content\nbase line 2\nbase line 3"),
+            head: None,
+            index: None,
+            working: None,
+            old_path: None,
+        };
+
+        let result = check_file_deletion(&input);
+        assert!(result.is_some(), "Should detect committed deletion");
+
+        let diff = result.unwrap();
+        // Content should come from base with DeletedBase source
+        assert_eq!(diff.lines[1].source, LineSource::DeletedBase);
+        assert_eq!(diff.lines[1].content, "base content");
+        assert_eq!(diff.lines.len(), 4); // header + 3 content lines
+    }
+
+    #[test]
+    fn test_check_file_deletion_no_deletion() {
+        // File exists in working tree = not a deletion
+        let input = DiffInput {
+            path: "exists.rs",
+            base: Some("base"),
+            head: Some("head"),
+            index: Some("index"),
+            working: Some("working"),
+            old_path: None,
+        };
+
+        let result = check_file_deletion(&input);
+        assert!(result.is_none(), "Should not detect deletion when file exists");
+    }
+
+    #[test]
+    fn test_check_file_deletion_new_file() {
+        // New file - no base/head/index, only working
+        let input = DiffInput {
+            path: "new.rs",
+            base: None,
+            head: None,
+            index: None,
+            working: Some("new content"),
+            old_path: None,
+        };
+
+        let result = check_file_deletion(&input);
+        assert!(result.is_none(), "New file should not be detected as deletion");
+    }
+
+    // === Tests for build_deletion_diff ===
+
+    #[test]
+    fn test_build_deletion_diff_preserves_content() {
+        let content = "line 1\nline 2\nline 3";
+        let diff = build_deletion_diff("test.rs", content, LineSource::DeletedBase);
+
+        // Should have header + 3 content lines
+        assert_eq!(diff.lines.len(), 4);
+
+        // Verify all content is preserved
+        assert_eq!(diff.lines[1].content, "line 1");
+        assert_eq!(diff.lines[2].content, "line 2");
+        assert_eq!(diff.lines[3].content, "line 3");
+    }
+
+    #[test]
+    fn test_build_deletion_diff_correct_source() {
+        let content = "content";
+
+        // Test each deletion source type
+        let diff_base = build_deletion_diff("a.rs", content, LineSource::DeletedBase);
+        assert_eq!(diff_base.lines[1].source, LineSource::DeletedBase);
+
+        let diff_committed = build_deletion_diff("b.rs", content, LineSource::DeletedCommitted);
+        assert_eq!(diff_committed.lines[1].source, LineSource::DeletedCommitted);
+
+        let diff_staged = build_deletion_diff("c.rs", content, LineSource::DeletedStaged);
+        assert_eq!(diff_staged.lines[1].source, LineSource::DeletedStaged);
+    }
+
+    #[test]
+    fn test_build_deletion_diff_line_numbers() {
+        let content = "a\nb\nc\nd\ne";
+        let diff = build_deletion_diff("test.rs", content, LineSource::DeletedBase);
+
+        // Line numbers should be 1-indexed
+        for (i, line) in diff.lines.iter().skip(1).enumerate() {
+            assert_eq!(line.line_number, Some(i + 1));
+        }
+    }
+
+    #[test]
+    fn test_build_deletion_diff_file_path() {
+        let diff = build_deletion_diff("path/to/file.rs", "content", LineSource::DeletedBase);
+
+        // All content lines should have file_path set
+        for line in diff.lines.iter().skip(1) {
+            assert_eq!(line.file_path, Some("path/to/file.rs".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_build_deletion_diff_empty_file() {
+        let diff = build_deletion_diff("empty.rs", "", LineSource::DeletedBase);
+
+        // Should only have header, no content lines
+        assert_eq!(diff.lines.len(), 1);
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+    }
+
+    // === Tests for compute_four_way_diff ===
+
+    #[test]
+    fn test_four_way_diff_base_equals_working() {
+        // When base == working, only canceled lines should appear
+        let base = "line1\nline2";
+        let head = "line1\ninserted\nline2"; // Added a line
+        let index = "line1\nline2"; // Removed it again
+
+        let diff = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(head),
+            index: Some(index),
+            working: Some(base), // Same as base
+            old_path: None,
+        });
+
+        // Should have header + canceled line
+        let canceled: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::CanceledCommitted)
+            .collect();
+        assert_eq!(canceled.len(), 1);
+        assert_eq!(canceled[0].content, "inserted");
+    }
+
+    #[test]
+    fn test_four_way_diff_simple_addition() {
+        let base = "line1\nline2";
+        let working = "line1\nline2\nline3";
+
+        let diff = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+
+        // line3 should be marked as Unstaged addition
+        let additions: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::Unstaged)
+            .collect();
+        assert_eq!(additions.len(), 1);
+        assert_eq!(additions[0].content, "line3");
+        assert_eq!(additions[0].prefix, '+');
+    }
+
+    #[test]
+    fn test_four_way_diff_simple_deletion() {
+        let base = "line1\nline2\nline3";
+        let working = "line1\nline3";
+
+        let diff = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+
+        // line2 should be marked as deleted
+        let deletions: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source.is_deletion())
+            .collect();
+        assert_eq!(deletions.len(), 1);
+        assert_eq!(deletions[0].content, "line2");
+        assert_eq!(deletions[0].prefix, '-');
+    }
+
+    #[test]
+    fn test_four_way_diff_committed_change() {
+        // When a line is modified in a commit and the change is similar enough,
+        // the algorithm merges it into an inline diff rather than showing
+        // separate delete/add lines.
+        let base = "old line";
+        let head = "new line"; // Changed in commit
+
+        let diff = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(head),
+            index: Some(head),
+            working: Some(head),
+            old_path: None,
+        });
+
+        // The result should show the current content with old_content attached
+        // for inline diff rendering
+        let modified_line = diff.lines.iter()
+            .find(|l| l.content == "new line")
+            .expect("Should have the current content");
+
+        assert_eq!(modified_line.old_content, Some("old line".to_string()),
+            "Should have old content for inline diff");
+        assert_eq!(modified_line.change_source, Some(LineSource::Committed),
+            "Should indicate change came from commit");
+        assert_eq!(modified_line.source, LineSource::Base,
+            "Source should be Base since line traces back to base");
+        assert_eq!(modified_line.prefix, ' ',
+            "Prefix should be space (not deletion marker)");
+    }
+
+    #[test]
+    fn test_four_way_diff_committed_complete_replacement() {
+        // When lines are completely different, they appear as separate
+        // delete/add rather than inline diff
+        let base = "func foo() { return 42; }";
+        let head = "struct Bar { x: i32, y: i32 }"; // Completely different
+
+        let diff = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(head),
+            index: Some(head),
+            working: Some(head),
+            old_path: None,
+        });
+
+        // Should show deletion of old content
+        let has_deletion = diff.lines.iter()
+            .any(|l| l.source.is_deletion() && l.content == "func foo() { return 42; }");
+        assert!(has_deletion, "Should show deletion when lines are too different");
+
+        // Should show the new content
+        let has_new = diff.lines.iter()
+            .any(|l| l.content == "struct Bar { x: i32, y: i32 }");
+        assert!(has_new, "Should show new content");
+    }
+
+    #[test]
+    fn test_four_way_diff_staged_change() {
+        let base = "base";
+        let index = "staged"; // Changed in staging
+
+        let diff = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(index),
+            working: Some(index),
+            old_path: None,
+        });
+
+        // Should have staged addition
+        let staged: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::Staged)
+            .collect();
+        assert!(!staged.is_empty(), "Should have staged content");
+    }
+
+    #[test]
+    fn test_four_way_diff_empty_files() {
+        let diff = compute_four_way_diff(DiffInput {
+            path: "empty.rs",
+            base: Some(""),
+            head: Some(""),
+            index: Some(""),
+            working: Some(""),
+            old_path: None,
+        });
+
+        // Should only have header
+        assert_eq!(diff.lines.len(), 1);
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+    }
+
+    #[test]
+    fn test_four_way_diff_new_file() {
+        let diff = compute_four_way_diff(DiffInput {
+            path: "new.rs",
+            base: None,
+            head: None,
+            index: None,
+            working: Some("new content"),
+            old_path: None,
+        });
+
+        // All content should be Unstaged additions
+        let content_lines: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source != LineSource::FileHeader)
+            .collect();
+        assert_eq!(content_lines.len(), 1);
+        assert_eq!(content_lines[0].source, LineSource::Unstaged);
+        assert_eq!(content_lines[0].content, "new content");
+    }
+
+    #[test]
+    fn test_four_way_diff_renamed_file() {
+        let diff = compute_four_way_diff(DiffInput {
+            path: "new_name.rs",
+            base: Some("content"),
+            head: Some("content"),
+            index: Some("content"),
+            working: Some("content"),
+            old_path: Some("old_name.rs"),
+        });
+
+        // Header should indicate rename
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+        assert!(diff.lines[0].content.contains("old_name.rs"));
+        assert!(diff.lines[0].content.contains("new_name.rs"));
+    }
+
+    #[test]
+    fn test_four_way_diff_multiple_changes() {
+        let base = "a\nb\nc\nd\ne";
+        let working = "a\nB\nc\nD\ne\nf";
+
+        let diff = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+
+        // Should have: header + 5 original lines (some modified) + 1 addition + 2 deletions
+        // Total content depends on algorithm specifics, but verify key aspects
+        let additions: Vec<_> = diff.lines.iter()
+            .filter(|l| l.source == LineSource::Unstaged && l.prefix == '+')
+            .collect();
+        assert!(!additions.is_empty(), "Should have additions");
+
+        // 'f' should be added
+        let has_f = diff.lines.iter().any(|l| l.content == "f");
+        assert!(has_f, "Should have 'f' as addition");
+    }
+
+    #[test]
+    fn test_four_way_diff_preserves_line_numbers() {
+        let working = "line1\nline2\nline3";
+
+        let diff = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(""),
+            head: Some(""),
+            index: Some(""),
+            working: Some(working),
+            old_path: None,
+        });
+
+        // Line numbers should be sequential starting from 1
+        let content_lines: Vec<_> = diff.lines.iter()
+            .filter(|l| l.line_number.is_some())
+            .collect();
+
+        for (i, line) in content_lines.iter().enumerate() {
+            assert_eq!(line.line_number, Some(i + 1));
+        }
+    }
+
+    #[test]
+    fn test_four_way_diff_file_path_propagation() {
+        let diff = compute_four_way_diff(DiffInput {
+            path: "path/to/file.rs",
+            base: Some("content"),
+            head: Some("content"),
+            index: Some("content"),
+            working: Some("content"),
+            old_path: None,
+        });
+
+        // All lines should have file_path set
+        for line in &diff.lines {
+            assert_eq!(line.file_path, Some("path/to/file.rs".to_string()));
+        }
+    }
+
+    // === Tests for DiffInput defaults ===
+
+    #[test]
+    fn test_diff_input_default() {
+        let input = DiffInput::default();
+        assert_eq!(input.path, "");
+        assert!(input.base.is_none());
+        assert!(input.head.is_none());
+        assert!(input.index.is_none());
+        assert!(input.working.is_none());
+        assert!(input.old_path.is_none());
+    }
+}
