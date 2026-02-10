@@ -56,6 +56,23 @@ If a change seems hard to test, that's a signal the code needs refactoring. Extr
 
 Run `cargo test` before every commit. A change without corresponding tests is incomplete.
 
+### Unit Tests vs Integration Tests
+
+**Unit tests** (in `src/`) test logic in isolation. They should cover the vast majority of code.
+
+**Integration tests** (in `tests/integration/`) spawn the real binary in a PTY. Use them *only* for:
+- Runtime interactions with external systems (git commands, file watching)
+- Behavior that depends on terminal state (PTY dimensions, escape sequences)
+- End-to-end flows that cross multiple system boundaries
+
+If you need an integration test to verify rendering or UI logic, that's a design smell. The renderer should accept data (e.g., a `DiffResult`) and produce output - it shouldn't query git directly. Refactor to make the logic unit-testable.
+
+**Examples:**
+- Testing that view mode cycles correctly when pressing 'c' → integration test (requires real terminal input)
+- Testing that `ViewMode::Context` filters lines correctly → unit test (pure logic on data)
+- Testing that file watcher detects git changes → integration test (real filesystem/git)
+- Testing that status bar formats "+3 -2" correctly → unit test (string formatting)
+
 When adding user-facing features (keybindings, commands, UI elements):
 - Update README.md with feature description and keybindings
 - Update the help menu in src/ui/help.rs
