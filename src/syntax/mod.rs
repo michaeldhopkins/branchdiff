@@ -90,16 +90,31 @@ impl SyntaxHighlighter {
 
             let hl_state = state.as_mut().unwrap();
 
-            match hl_state.highlighter.highlight_line(content, &self.syntax_set) {
+            // Append newline so syntect properly terminates line comments (e.g., // in JS)
+            // Without this, line comments bleed into subsequent lines.
+            let content_with_newline = format!("{}\n", content);
+
+            match hl_state
+                .highlighter
+                .highlight_line(&content_with_newline, &self.syntax_set)
+            {
                 Ok(ranges) => ranges
                     .into_iter()
-                    .map(|(style, text)| SyntaxSegment {
-                        text: text.to_string(),
-                        fg_color: Color::Rgb(
-                            style.foreground.r,
-                            style.foreground.g,
-                            style.foreground.b,
-                        ),
+                    .filter_map(|(style, text)| {
+                        // Strip the trailing newline we added
+                        let text = text.strip_suffix('\n').unwrap_or(text);
+                        if text.is_empty() {
+                            None
+                        } else {
+                            Some(SyntaxSegment {
+                                text: text.to_string(),
+                                fg_color: Color::Rgb(
+                                    style.foreground.r,
+                                    style.foreground.g,
+                                    style.foreground.b,
+                                ),
+                            })
+                        }
                     })
                     .collect(),
                 Err(_) => {
@@ -244,5 +259,22 @@ mod tests {
         // Should have "const" as keyword
         let const_segment = segments.iter().find(|s| s.text == "const");
         assert!(const_segment.is_some(), "TypeScript 'const' keyword should be highlighted");
+    }
+
+    #[test]
+    fn test_js_line_comment_does_not_bleed() {
+        reset_highlight_state();
+        // Simulate rendering lines from a JS file
+        // The highlight_line function now appends \n internally to fix this
+        let _line1 = highlight_line("// This is a comment", Some("test.js"));
+        let line2 = highlight_line("const BOT_PATTERNS = [", Some("test.js"));
+
+        // Line 2 should have "const" as a keyword, NOT as comment text
+        let const_segment = line2.iter().find(|s| s.text == "const");
+        assert!(
+            const_segment.is_some(),
+            "JS 'const' after line comment should be highlighted as keyword, got: {:?}",
+            line2
+        );
     }
 }
