@@ -16,6 +16,7 @@ use ratatui::{
 use crate::app::{App, DisplayableItem, FrameContext, Selection};
 use crate::diff::{DiffLine, LineSource};
 use crate::image_diff::{ImageCache, IMAGE_PANEL_OVERHEAD};
+use crate::syntax::reset_highlight_state;
 
 use super::colors::{line_style, status_symbol};
 use super::selection::{apply_selection_to_span, get_line_selection_range};
@@ -97,6 +98,10 @@ impl<'a> DiffViewModel<'a> {
 
     /// Render the diff view and return output data.
     pub fn render(&self, frame: &mut Frame) -> RenderOutput {
+        // Reset syntax highlight state at the start of each render to avoid
+        // stale state from previous renders causing flickering or incorrect colors
+        reset_highlight_state();
+
         let max_line_num = self
             .items
             .iter()
