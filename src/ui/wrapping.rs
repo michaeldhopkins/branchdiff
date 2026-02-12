@@ -49,6 +49,23 @@ pub fn wrapped_line_height(
         return 1;
     }
 
+    // Pure deletions always render as split del/ins lines to show removed text
+    if has_pure_deletion_inline(line) {
+        let del_width = line
+            .old_content
+            .as_ref()
+            .map(|s| content_display_width(s))
+            .unwrap_or(0);
+        let ins_width = content_display_width(&line.content);
+        let del_height = if del_width == 0 {
+            0
+        } else {
+            del_width.div_ceil(content_width).max(1)
+        };
+        let ins_height = ins_width.div_ceil(content_width).max(1);
+        return del_height + ins_height;
+    }
+
     // Mixed inline changes (deletions + insertions) may render on separate rows
     if has_mixed_inline_changes(line) && content_display_width(&line.content) > content_width {
         let del_width = line
@@ -86,6 +103,19 @@ fn has_mixed_inline_changes(line: &DiffLine) -> bool {
         .iter()
         .any(|s| !s.is_deletion && s.source.is_some());
     has_deletions && has_insertions
+}
+
+/// Check if a line has only deletions (no insertions) in its inline spans.
+fn has_pure_deletion_inline(line: &DiffLine) -> bool {
+    if line.inline_spans.is_empty() {
+        return false;
+    }
+    let has_deletions = line.inline_spans.iter().any(|s| s.is_deletion);
+    let has_insertions = line
+        .inline_spans
+        .iter()
+        .any(|s| !s.is_deletion && s.source.is_some());
+    has_deletions && !has_insertions
 }
 
 /// Compute the display width of content accounting for tab expansion and
@@ -695,5 +725,119 @@ mod tests {
         let height = wrapped_line_height(&line, 50, None, 100, (8, 16));
         // del_height = 80/50 = 2, ins_height = 100/50 = 2, total = 4
         assert_eq!(height, 4);
+    }
+
+    #[test]
+    fn test_wrapped_line_height_pure_deletion_splits_into_two_lines() {
+        use crate::diff::{InlineSpan, LineSource};
+
+        let mut line = DiffLine::new(LineSource::Base, "hello wrld".to_string(), ' ', None);
+        line.old_content = Some("hello world".to_string());
+        line.inline_spans = vec![
+            InlineSpan {
+                text: "hello w".to_string(),
+                source: None,
+                is_deletion: false,
+            },
+            InlineSpan {
+                text: "o".to_string(),
+                source: Some(LineSource::DeletedBase),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "rld".to_string(),
+                source: None,
+                is_deletion: false,
+            },
+        ];
+
+        let height = wrapped_line_height(&line, 80, None, 100, (8, 16));
+        assert_eq!(height, 2, "pure deletion should render as two lines (del + ins)");
+    }
+
+    #[test]
+    fn test_wrapped_line_height_pure_deletion_long_lines() {
+        use crate::diff::{InlineSpan, LineSource};
+
+        let prefix = "a".repeat(90);
+        let old = format!("{}Xend", prefix);
+        let new = format!("{}end", prefix);
+
+        let mut line = DiffLine::new(LineSource::Base, new, ' ', None);
+        line.old_content = Some(old);
+        line.inline_spans = vec![
+            InlineSpan {
+                text: prefix,
+                source: None,
+                is_deletion: false,
+            },
+            InlineSpan {
+                text: "X".to_string(),
+                source: Some(LineSource::DeletedBase),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "end".to_string(),
+                source: None,
+                is_deletion: false,
+            },
+        ];
+
+        let height = wrapped_line_height(&line, 50, None, 100, (8, 16));
+        // del: 94 chars / 50 = 2 rows, ins: 93 chars / 50 = 2 rows, total = 4
+        assert_eq!(height, 4);
+    }
+
+    #[test]
+    fn test_has_pure_deletion_inline_true() {
+        use crate::diff::{InlineSpan, LineSource};
+
+        let mut line = DiffLine::new(LineSource::Base, "test".to_string(), ' ', None);
+        line.inline_spans = vec![
+            InlineSpan {
+                text: "tes".to_string(),
+                source: None,
+                is_deletion: false,
+            },
+            InlineSpan {
+                text: "x".to_string(),
+                source: Some(LineSource::DeletedBase),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "t".to_string(),
+                source: None,
+                is_deletion: false,
+            },
+        ];
+        assert!(has_pure_deletion_inline(&line));
+    }
+
+    #[test]
+    fn test_has_pure_deletion_inline_false_for_mixed() {
+        use crate::diff::{InlineSpan, LineSource};
+
+        let mut line = DiffLine::new(LineSource::Base, "test".to_string(), ' ', None);
+        line.inline_spans = vec![
+            InlineSpan {
+                text: "old".to_string(),
+                source: Some(LineSource::DeletedBase),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "new".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: false,
+            },
+        ];
+        assert!(!has_pure_deletion_inline(&line));
+    }
+
+    #[test]
+    fn test_has_pure_deletion_inline_false_for_empty() {
+        use crate::diff::LineSource;
+
+        let line = DiffLine::new(LineSource::Base, "test".to_string(), ' ', None);
+        assert!(!has_pure_deletion_inline(&line));
     }
 }

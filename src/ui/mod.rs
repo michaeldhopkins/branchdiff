@@ -1231,4 +1231,58 @@ mod tests {
             "DeletedStaged span should have the correct highlight background"
         );
     }
+
+    #[test]
+    fn test_pure_deletion_builds_correct_deletion_and_insertion_spans() {
+        let old_content = "hello world";
+        let new_content = "hello wrld";
+
+        let result = compute_inline_diff_merged(old_content, new_content, LineSource::Committed);
+
+        assert_eq!(classify_inline_change(&result.spans), InlineChangeType::PureDeletion);
+
+        let del_spans = build_deletion_spans_with_highlight(
+            &result.spans,
+            LineSource::DeletedBase,
+            old_content,
+            None,
+        );
+        let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(del_text, old_content, "deletion line should show old content");
+
+        let ins_spans = build_insertion_spans_with_highlight(
+            &result.spans,
+            LineSource::Committed,
+            new_content,
+            None,
+        );
+        let ins_text: String = ins_spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(ins_text, new_content, "insertion line should show new content");
+    }
+
+    #[test]
+    fn test_pure_deletion_highlights_removed_character() {
+        let old_content = ".*}o)";
+        let new_content = ".*})";
+
+        let result = compute_inline_diff_merged(old_content, new_content, LineSource::Committed);
+        assert_eq!(classify_inline_change(&result.spans), InlineChangeType::PureDeletion);
+
+        let del_spans = build_deletion_spans_with_highlight(
+            &result.spans,
+            LineSource::DeletedBase,
+            old_content,
+            None,
+        );
+        let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(del_text, ".*}o)");
+
+        let highlight_style = line_style_with_highlight(LineSource::DeletedBase);
+        let highlighted: String = del_spans
+            .iter()
+            .filter(|s| s.style.bg == highlight_style.bg)
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(highlighted, "o", "only the removed 'o' should be highlighted");
+    }
 }
