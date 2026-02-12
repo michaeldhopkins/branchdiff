@@ -54,10 +54,7 @@ fn style_to_ansi(style: Style) -> String {
 pub fn print_diff(app: &App) -> Result<()> {
     let mut stdout = io::stdout().lock();
 
-    let branch_info = match &app.current_branch {
-        Some(b) => format!("{} vs {}", b, app.base_branch),
-        None => format!("HEAD vs {}", app.base_branch),
-    };
+    let branch_info = format!("{} vs {}", app.comparison.to_label, app.comparison.from_label);
 
     let file_count = app.files.len();
     let line_count = app.changed_line_count();
@@ -203,14 +200,17 @@ mod tests {
         use branchdiff::diff::FileDiff;
         use branchdiff::gitignore::GitignoreFilter;
         use branchdiff::image_diff::{ImageCache, FONT_WIDTH_PX, FONT_HEIGHT_PX};
+        use branchdiff::vcs::ComparisonContext;
 
         let repo_path = PathBuf::from("/tmp/test");
         let app = App {
             gitignore_filter: GitignoreFilter::new(&repo_path),
             repo_path,
-            base_branch: "main".to_string(),
-            merge_base: "abc123".to_string(),
-            current_branch: Some("feature".to_string()),
+            comparison: ComparisonContext {
+                from_label: "main".to_string(),
+                to_label: "feature".to_string(),
+                base_identifier: "abc123".to_string(),
+            },
             files: vec![FileDiff {
                 lines: vec![
                     DiffLine::file_header("test.rs"),
