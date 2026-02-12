@@ -1,10 +1,16 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+
+use crate::app::{compute_refresh, compute_single_file_diff};
+use crate::diff::FileDiff;
+use crate::vcs::{ComparisonContext, RefreshResult, Vcs};
 
 /// Maximum number of retries for transient git errors
 const MAX_RETRIES: u32 = 3;
@@ -705,6 +711,95 @@ pub fn get_current_branch(repo_path: &Path) -> Result<Option<String>> {
         Ok(None)
     } else {
         Ok(Some(branch))
+    }
+}
+
+/// Git backend for branchdiff.
+pub struct GitVcs {
+    repo_path: PathBuf,
+    base_branch: String,
+}
+
+impl GitVcs {
+    /// Create a new GitVcs for the given repository.
+    pub fn new(repo_path: PathBuf) -> Result<Self> {
+        let base_branch = detect_base_branch(&repo_path)
+            .unwrap_or_else(|_| "main".to_string());
+        Ok(Self { repo_path, base_branch })
+    }
+
+    /// The base branch name (e.g., "main" or "master").
+    pub fn base_branch(&self) -> &str {
+        &self.base_branch
+    }
+
+    /// Detect the installed git version.
+    pub fn git_version(&self) -> Result<GitVersion> {
+        get_git_version()
+    }
+
+    /// Fetch the base branch from the remote.
+    pub fn fetch(&self) -> Result<()> {
+        fetch_base_branch(&self.repo_path, &self.base_branch)
+    }
+
+    /// Check if there are merge conflicts with the base branch.
+    pub fn has_merge_conflicts(&self, git_version: &GitVersion) -> Result<bool> {
+        has_merge_conflicts(&self.repo_path, &self.base_branch, git_version)
+    }
+
+    /// Check if the git index is locked.
+    pub fn is_index_locked(&self) -> bool {
+        is_index_locked(&self.repo_path)
+    }
+}
+
+impl Vcs for GitVcs {
+    fn repo_path(&self) -> &Path {
+        &self.repo_path
+    }
+
+    fn comparison_context(&self) -> Result<ComparisonContext> {
+        let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
+            .unwrap_or_default();
+        let current_branch = get_current_branch(&self.repo_path).unwrap_or(None);
+        let to_label = current_branch.unwrap_or_else(|| "HEAD".to_string());
+
+        Ok(ComparisonContext {
+            from_label: self.base_branch.clone(),
+            to_label,
+            base_identifier: merge_base,
+        })
+    }
+
+    fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
+        compute_refresh(&self.repo_path, &self.base_branch, cancel_flag)
+    }
+
+    fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
+        let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
+            .unwrap_or_default();
+        compute_single_file_diff(&self.repo_path, file_path, &merge_base)
+    }
+
+    fn base_identifier(&self) -> Result<String> {
+        get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
+    }
+
+    fn base_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
+        let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
+            .unwrap_or_default();
+        get_file_bytes_at_ref(&self.repo_path, file_path, &merge_base)
+    }
+
+    fn working_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
+        get_working_tree_bytes(&self.repo_path, file_path)
+    }
+
+    fn binary_files(&self) -> HashSet<String> {
+        let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
+            .unwrap_or_default();
+        get_binary_files(&self.repo_path, &merge_base)
     }
 }
 
@@ -1476,5 +1571,101 @@ mod tests {
         let temp = TempDir::new().unwrap();
         // No .git directory at all
         assert!(!is_index_locked(temp.path()));
+    }
+
+    // ---- GitVcs tests ----
+
+    #[test]
+    fn test_git_vcs_new_detects_base_branch() {
+        let temp = create_test_repo();
+        let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
+        assert_eq!(vcs.base_branch(), "main");
+        assert_eq!(vcs.repo_path(), temp.path());
+    }
+
+    #[test]
+    fn test_git_vcs_comparison_context() {
+        let temp = create_test_repo();
+        git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+
+        let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
+        let ctx = vcs.comparison_context().unwrap();
+        assert_eq!(ctx.from_label, "main");
+        assert_eq!(ctx.to_label, "feature");
+        assert!(!ctx.base_identifier.is_empty());
+    }
+
+    #[test]
+    fn test_git_vcs_comparison_context_detached_head() {
+        let temp = create_test_repo();
+        let sha = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        let sha = String::from_utf8_lossy(&sha.stdout).trim().to_string();
+        git_cmd(temp.path(), &["checkout", "--detach", &sha]);
+
+        let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
+        let ctx = vcs.comparison_context().unwrap();
+        assert_eq!(ctx.to_label, "HEAD");
+    }
+
+    #[test]
+    fn test_git_vcs_binary_files() {
+        let temp = create_test_repo();
+        fs::write(temp.path().join("binary.bin"), &[0u8, 1, 2, 255]).unwrap();
+        git_cmd(temp.path(), &["add", "binary.bin"]);
+
+        let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
+        let binaries = vcs.binary_files();
+        assert!(binaries.contains("binary.bin"));
+    }
+
+    #[test]
+    fn test_git_vcs_base_file_bytes() {
+        let temp = create_test_repo();
+        let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
+
+        let bytes = vcs.base_file_bytes("file.txt").unwrap();
+        assert!(bytes.is_some());
+        assert_eq!(bytes.unwrap(), b"initial\n");
+    }
+
+    #[test]
+    fn test_git_vcs_working_file_bytes() {
+        let temp = create_test_repo();
+        fs::write(temp.path().join("file.txt"), "modified\n").unwrap();
+
+        let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
+        let bytes = vcs.working_file_bytes("file.txt").unwrap();
+        assert!(bytes.is_some());
+        assert_eq!(bytes.unwrap(), b"modified\n");
+    }
+
+    #[test]
+    fn test_git_vcs_through_dyn_trait() {
+        let temp = create_test_repo();
+        git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+        fs::write(temp.path().join("file.txt"), "changed\n").unwrap();
+
+        let vcs: Box<dyn Vcs> = Box::new(GitVcs::new(temp.path().to_path_buf()).unwrap());
+
+        assert_eq!(vcs.repo_path(), temp.path());
+
+        let ctx = vcs.comparison_context().unwrap();
+        assert_eq!(ctx.from_label, "main");
+        assert_eq!(ctx.to_label, "feature");
+
+        let base_id = vcs.base_identifier().unwrap();
+        assert!(!base_id.is_empty());
+
+        let base_bytes = vcs.base_file_bytes("file.txt").unwrap();
+        assert_eq!(base_bytes.unwrap(), b"initial\n");
+
+        let working_bytes = vcs.working_file_bytes("file.txt").unwrap();
+        assert_eq!(working_bytes.unwrap(), b"changed\n");
+
+        assert!(vcs.binary_files().is_empty());
     }
 }

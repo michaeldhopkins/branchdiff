@@ -369,7 +369,7 @@ pub fn load_image_diff(
     file_path: &str,
     merge_base: &str,
 ) -> Option<ImageDiffState> {
-    use crate::git;
+    use crate::vcs::git;
 
     let format_name = format_name_from_path(file_path);
 

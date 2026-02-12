@@ -10,6 +10,7 @@ use crate::app::{App, ViewMode, ViewState};
 use crate::diff::{DiffLine, FileDiff, LineSource};
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
+use crate::vcs::ComparisonContext;
 
 /// Builder for creating test App instances with sensible defaults.
 ///
@@ -87,12 +88,15 @@ impl TestAppBuilder {
 
     pub fn build(self) -> App {
         let repo_path = PathBuf::from("/tmp/test");
+        let to_label = self.current_branch.unwrap_or_else(|| "HEAD".to_string());
         App {
             gitignore_filter: GitignoreFilter::new(&repo_path),
             repo_path,
-            base_branch: self.base_branch,
-            merge_base: "abc123".to_string(),
-            current_branch: self.current_branch,
+            comparison: ComparisonContext {
+                from_label: self.base_branch,
+                to_label,
+                base_identifier: "abc123".to_string(),
+            },
             files: self.files,
             lines: self.lines,
             error: None,
