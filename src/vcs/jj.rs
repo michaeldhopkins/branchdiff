@@ -87,7 +87,7 @@ impl JjVcs {
     /// Get bookmarks for a revision.
     fn get_bookmarks(&self, rev: &str) -> Option<String> {
         let output = self.run_jj(&["log", "-r", rev, "-T", "bookmarks", "--no-graph", "--limit", "1"]).ok()?;
-        let trimmed = output.trim();
+        let trimmed = output.trim().trim_end_matches('*');
         if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
     }
 
@@ -787,5 +787,22 @@ mod tests {
         let base_label = result.base_label.expect("should have base_label");
         assert!(!base_label.is_empty());
         assert_eq!(base_label, result.base_identifier, "without bookmark, base_label should match change_id");
+    }
+
+    #[test]
+    fn test_jj_bookmark_strips_tracking_marker() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["bookmark", "set", "my-branch"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let label = vcs.rev_label("@");
+        assert_eq!(label, "my-branch", "should strip trailing * from bookmark name");
     }
 }
