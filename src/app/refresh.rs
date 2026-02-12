@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -9,7 +9,8 @@ use rayon::ThreadPoolBuilder;
 
 use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff, LineSource};
 use crate::file_links::compute_file_links;
-use crate::git;
+use crate::vcs::git;
+use crate::vcs::RefreshResult;
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
 
@@ -32,16 +33,6 @@ fn git_thread_pool() -> &'static rayon::ThreadPool {
             .build()
             .expect("failed to build git thread pool")
     })
-}
-
-#[derive(Debug)]
-pub struct RefreshResult {
-    pub files: Vec<FileDiff>,
-    pub lines: Vec<DiffLine>,
-    pub merge_base: String,
-    pub current_branch: Option<String>,
-    pub metrics: DiffMetrics,
-    pub file_links: HashMap<String, String>,
 }
 
 enum FileProcessResult {

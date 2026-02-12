@@ -17,16 +17,22 @@ fn repo_name(app: &App) -> String {
         .to_string()
 }
 
+fn branch_info(app: &App) -> String {
+    format!(
+        "{} | {} vs {}",
+        repo_name(app),
+        app.comparison.to_label,
+        app.comparison.from_label
+    )
+}
+
 /// Determine how many lines the status bar needs based on content and width
 pub fn status_bar_height(app: &App, width: u16) -> u16 {
     let width = width as usize;
 
     let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
 
-    let branch_info = match &app.current_branch {
-        Some(b) => format!("{} | {} vs {}", repo_name(app), b, app.base_branch),
-        None => format!("{} | HEAD vs {}", repo_name(app), app.base_branch),
-    };
+    let branch_info = branch_info(app);
 
     let file_count = app.files.len();
     let additions = app.additions_count();
@@ -95,10 +101,7 @@ fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
 
 /// Build full status spans (branch info + stats) with colored +/- counts
 fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
-    let branch_info = match &app.current_branch {
-        Some(b) => format!("{} | {} vs {}", repo_name(app), b, app.base_branch),
-        None => format!("{} | HEAD vs {}", repo_name(app), app.base_branch),
-    };
+    let branch_info = branch_info(app);
 
     let file_count = app.files.len();
     let additions = app.additions_count();
@@ -175,10 +178,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         app.scroll_percentage()
     );
 
-    let branch_info = match &app.current_branch {
-        Some(b) => format!("{} | {} vs {}", repo_name(app), b, app.base_branch),
-        None => format!("{} | HEAD vs {}", repo_name(app), app.base_branch),
-    };
+    let branch_info = branch_info(app);
 
     // Try different layouts based on available width
     let full_status = format!("{} | {}", branch_info, stats);

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use notify_debouncer_mini::DebouncedEvent;
 
-use crate::app::RefreshResult;
+use crate::vcs::RefreshResult;
 use crate::diff::FileDiff;
 
 /// User input actions (from keyboard/mouse).
