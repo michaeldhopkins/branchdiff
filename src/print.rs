@@ -209,8 +209,8 @@ mod tests {
             comparison: ComparisonContext {
                 from_label: "main".to_string(),
                 to_label: "feature".to_string(),
-                base_identifier: "abc123".to_string(),
             },
+            base_identifier: "abc123".to_string(),
             files: vec![FileDiff {
                 lines: vec![
                     DiffLine::file_header("test.rs"),
