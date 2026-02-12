@@ -1,7 +1,7 @@
 pub mod git;
 pub mod types;
 
-pub use types::{ComparisonContext, RefreshResult};
+pub use types::{ComparisonContext, RefreshResult, VcsEventType, VcsWatchPaths};
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -40,4 +40,22 @@ pub trait Vcs: Send + Sync {
 
     /// Get the set of binary files in the current diff.
     fn binary_files(&self) -> HashSet<String>;
+
+    /// Fetch updates from remote (e.g., git fetch).
+    fn fetch(&self) -> Result<()>;
+
+    /// Check if there are merge conflicts with the remote base.
+    fn has_conflicts(&self) -> Result<bool>;
+
+    /// Check if an external VCS operation holds a lock (e.g., .git/index.lock).
+    fn is_locked(&self) -> bool;
+
+    /// Paths to watch for VCS state changes.
+    fn watch_paths(&self) -> VcsWatchPaths;
+
+    /// Classify a file event for differentiated debouncing.
+    fn classify_event(&self, path: &Path) -> VcsEventType;
+
+    /// Human-readable VCS name (e.g., "git", "jj").
+    fn vcs_name(&self) -> &str;
 }

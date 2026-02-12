@@ -10,16 +10,11 @@ mod view_state;
 
 pub use frame::{DisplayableItem, FrameContext};
 pub use crate::vcs::RefreshResult;
-pub use refresh::{compute_refresh, compute_single_file_diff};
 pub use selection::{Position, Selection};
 pub use view_state::ViewState;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-
-use anyhow::Result;
 
 use ratatui_image::picker::Picker;
 
@@ -101,11 +96,11 @@ impl App {
         }
     }
 
-    /// Create a new App instance with a pre-computed comparison context.
+    /// Create a new App instance with pre-computed comparison context and initial refresh.
     ///
-    /// The caller is responsible for detecting the VCS and building the context.
-    /// Use `GitVcs::comparison_context()` or equivalent for other backends.
-    pub fn new(repo_path: PathBuf, comparison: ComparisonContext) -> Result<Self> {
+    /// The caller is responsible for detecting the VCS, building the context,
+    /// and computing the initial refresh via `vcs.refresh()`.
+    pub fn new(repo_path: PathBuf, comparison: ComparisonContext, initial: RefreshResult) -> Self {
         let gitignore_filter = GitignoreFilter::new(&repo_path);
 
         let mut app = Self {
@@ -130,8 +125,8 @@ impl App {
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
         };
 
-        app.refresh()?;
-        Ok(app)
+        app.apply_refresh_result(initial);
+        app
     }
 
     /// Set the image picker for terminal image rendering.
@@ -165,16 +160,9 @@ impl App {
         );
     }
 
-    pub fn refresh(&mut self) -> Result<()> {
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        let result = compute_refresh(&self.repo_path, &self.comparison.from_label, &cancel_flag)?;
-        self.apply_refresh_result(result);
-        Ok(())
-    }
-
     pub fn apply_refresh_result(&mut self, result: RefreshResult) {
         self.error = None;
-        self.comparison.base_identifier = result.merge_base.clone();
+        self.comparison.base_identifier = result.base_identifier;
         if let Some(branch) = result.current_branch {
             self.comparison.to_label = branch;
         }
@@ -184,17 +172,13 @@ impl App {
         self.auto_collapse_files();
         self.clamp_scroll();
         self.view.needs_inline_spans = true;
-
-        // Load images for any image markers
-        self.load_images_for_markers(&result.merge_base);
     }
 
     /// Load images for any image marker lines into the cache.
-    fn load_images_for_markers(&mut self, merge_base: &str) {
+    pub fn load_images_for_markers(&mut self, vcs: &dyn crate::vcs::Vcs) {
         use crate::image_diff::load_image_diff;
         use std::collections::HashSet;
 
-        // Collect image paths from markers
         let image_paths: Vec<String> = self
             .lines
             .iter()
@@ -202,16 +186,13 @@ impl App {
             .filter_map(|line| line.file_path.clone())
             .collect();
 
-        // Evict stale images from cache
         let current_paths: HashSet<&str> = image_paths.iter().map(|s| s.as_str()).collect();
         self.image_cache.evict_stale(&current_paths);
 
-        // Load new images that aren't in the cache
         for path in image_paths {
             if !self.image_cache.contains(&path)
-                && let Some(mut state) = load_image_diff(&self.repo_path, &path, merge_base)
+                && let Some(mut state) = load_image_diff(vcs, &path)
             {
-                // Pre-create protocols for rendering if picker is available
                 if let Some(ref picker) = self.image_picker {
                     if let Some(ref mut before) = state.before {
                         before.ensure_protocol(picker);
@@ -1235,57 +1216,33 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_refresh_returns_valid_result() {
+    fn test_vcs_refresh_returns_valid_result() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
         use std::process::Command;
         use tempfile::TempDir;
+        use crate::vcs::git::GitVcs;
+        use crate::vcs::Vcs;
 
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().to_path_buf();
 
-        Command::new("git")
-            .args(["init"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to init git repo");
-
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to set git email");
-
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to set git name");
+        Command::new("git").args(["init"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git").args(["config", "user.name", "Test"]).current_dir(&repo_path).output().unwrap();
 
         std::fs::write(repo_path.join("test.txt"), "initial content\n").unwrap();
-
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to add files");
-
-        Command::new("git")
-            .args(["commit", "-m", "initial"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to commit");
-
-        Command::new("git")
-            .args(["branch", "-M", "main"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to rename branch");
+        Command::new("git").args(["add", "."]).current_dir(&repo_path).output().unwrap();
+        Command::new("git").args(["commit", "-m", "initial"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git").args(["branch", "-M", "main"]).current_dir(&repo_path).output().unwrap();
 
         std::fs::write(repo_path.join("test.txt"), "modified content\n").unwrap();
 
+        let vcs = GitVcs::new(repo_path).unwrap();
         let cancel_flag = Arc::new(AtomicBool::new(false));
-        let result = compute_refresh(&repo_path, "main", &cancel_flag);
+        let result = vcs.refresh(&cancel_flag);
 
-        assert!(result.is_ok(), "compute_refresh should succeed");
+        assert!(result.is_ok(), "refresh should succeed");
         let refresh_result = result.unwrap();
 
         assert!(!refresh_result.lines.is_empty(), "should have some diff lines");
@@ -1308,7 +1265,7 @@ mod tests {
         let result = RefreshResult {
             files: vec![],
             lines: new_lines.clone(),
-            merge_base: "newbase123".to_string(),
+            base_identifier: "newbase123".to_string(),
             current_branch: Some("new-branch".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
@@ -1380,59 +1337,34 @@ mod tests {
     #[test]
     fn test_refresh_channel_communication() {
         use std::sync::mpsc;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
         use std::thread;
         use std::time::Duration;
         use tempfile::TempDir;
         use std::process::Command;
+        use crate::vcs::git::GitVcs;
+        use crate::vcs::Vcs;
 
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().to_path_buf();
 
-        Command::new("git")
-            .args(["init"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to init git repo");
-
-        Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to set git email");
-
-        Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to set git name");
+        Command::new("git").args(["init"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git").args(["config", "user.name", "Test"]).current_dir(&repo_path).output().unwrap();
 
         std::fs::write(repo_path.join("file.txt"), "content\n").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(&repo_path).output().unwrap();
+        Command::new("git").args(["commit", "-m", "initial"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git").args(["branch", "-M", "main"]).current_dir(&repo_path).output().unwrap();
 
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to add files");
-
-        Command::new("git")
-            .args(["commit", "-m", "initial"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to commit");
-
-        Command::new("git")
-            .args(["branch", "-M", "main"])
-            .current_dir(&repo_path)
-            .output()
-            .expect("failed to rename branch");
-
+        let vcs = Arc::new(GitVcs::new(repo_path).unwrap());
         let (tx, rx) = mpsc::channel::<RefreshResult>();
         let cancel_flag = Arc::new(AtomicBool::new(false));
-        let repo_clone = repo_path.clone();
-        let cancel_clone = cancel_flag.clone();
 
+        let vcs_clone = Arc::clone(&vcs);
         thread::spawn(move || {
-            if let Ok(result) = compute_refresh(&repo_clone, "main", &cancel_clone) {
+            if let Ok(result) = vcs_clone.refresh(&cancel_flag) {
                 let _ = tx.send(result);
             }
         });
@@ -1441,7 +1373,7 @@ mod tests {
         assert!(result.is_ok(), "should receive result within timeout");
 
         let refresh_result = result.unwrap();
-        assert!(refresh_result.lines.is_empty() || !refresh_result.merge_base.is_empty());
+        assert!(refresh_result.lines.is_empty() || !refresh_result.base_identifier.is_empty());
     }
 
     // === Tests for needs_inline_spans dirty flag ===
@@ -1533,7 +1465,7 @@ mod tests {
         let result = RefreshResult {
             files: vec![],
             lines: vec![change_line("new")],
-            merge_base: "abc".to_string(),
+            base_identifier: "abc".to_string(),
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
