@@ -1,0 +1,587 @@
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+
+use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff, LineSource};
+use crate::image_diff::is_image_file;
+use crate::limits::DiffMetrics;
+use crate::vcs::{ComparisonContext, RefreshResult, VcsEventType, VcsWatchPaths};
+
+/// Jujutsu (jj) backend for branchdiff.
+pub struct JjVcs {
+    repo_path: PathBuf,
+    /// Revset for the base of comparison (default: "@-")
+    from_rev: String,
+}
+
+impl JjVcs {
+    pub fn new(repo_path: PathBuf) -> Result<Self> {
+        Ok(Self {
+            repo_path,
+            from_rev: "@-".to_string(),
+        })
+    }
+
+    fn run_jj(&self, args: &[&str]) -> Result<String> {
+        let output = Command::new("jj")
+            .args(args)
+            .current_dir(&self.repo_path)
+            .output()
+            .context("failed to run jj")?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("jj {} failed: {}", args.join(" "), stderr.trim())
+        }
+    }
+
+    fn run_jj_bytes(&self, args: &[&str]) -> Result<Option<Vec<u8>>> {
+        let output = Command::new("jj")
+            .args(args)
+            .current_dir(&self.repo_path)
+            .output()
+            .context("failed to run jj")?;
+
+        if output.status.success() {
+            Ok(Some(output.stdout))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get changed files between from_rev and @.
+    fn get_changed_files(&self) -> Result<Vec<ChangedFile>> {
+        let output = self.run_jj(&["diff", "--from", &self.from_rev, "--to", "@", "--summary"])?;
+        Ok(parse_jj_summary(&output))
+    }
+
+    /// Detect binary files by checking --stat output for "(binary)" markers.
+    fn get_binary_files_set(&self) -> HashSet<String> {
+        let Ok(output) = self.run_jj(&["diff", "--from", &self.from_rev, "--to", "@", "--stat"]) else {
+            return HashSet::new();
+        };
+        parse_binary_from_stat(&output)
+    }
+
+    fn get_file_content_at_rev(&self, file_path: &str, rev: &str) -> Result<Option<String>> {
+        let bytes = self.run_jj_bytes(&["file", "show", "-r", rev, file_path])?;
+        Ok(bytes.and_then(|b| String::from_utf8(b).ok()))
+    }
+
+    fn get_file_bytes_at_rev(&self, file_path: &str, rev: &str) -> Result<Option<Vec<u8>>> {
+        self.run_jj_bytes(&["file", "show", "-r", rev, file_path])
+    }
+
+    /// Get the current change ID for a revision.
+    fn get_change_id(&self, rev: &str) -> Result<String> {
+        let output = self.run_jj(&["log", "-r", rev, "-T", "change_id.short(12)", "--no-graph", "--limit", "1"])?;
+        Ok(output.trim().to_string())
+    }
+
+    /// Get bookmarks for a revision.
+    fn get_bookmarks(&self, rev: &str) -> Option<String> {
+        let output = self.run_jj(&["log", "-r", rev, "-T", "bookmarks", "--no-graph", "--limit", "1"]).ok()?;
+        let trimmed = output.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    }
+
+    /// Build a label for a revision (bookmark name or short change ID).
+    fn rev_label(&self, rev: &str) -> String {
+        self.get_bookmarks(rev)
+            .unwrap_or_else(|| self.get_change_id(rev).unwrap_or_else(|_| rev.to_string()))
+    }
+
+    /// Check if repo is colocated (has .git directory alongside .jj).
+    fn is_colocated(&self) -> bool {
+        self.repo_path.join(".git").exists()
+    }
+}
+
+/// Get the jj repo root from a path.
+pub fn get_repo_root(path: &Path) -> Result<PathBuf> {
+    let output = Command::new("jj")
+        .args(["root"])
+        .current_dir(path)
+        .output()
+        .context("failed to run jj root")?;
+
+    if output.status.success() {
+        let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(PathBuf::from(root))
+    } else {
+        anyhow::bail!("not a jj repository")
+    }
+}
+
+impl crate::vcs::Vcs for JjVcs {
+    fn repo_path(&self) -> &Path {
+        &self.repo_path
+    }
+
+    fn comparison_context(&self) -> Result<ComparisonContext> {
+        let from_label = self.rev_label(&self.from_rev);
+        let to_label = self.rev_label("@");
+        let base_identifier = self.get_change_id(&self.from_rev)?;
+
+        Ok(ComparisonContext {
+            from_label,
+            to_label,
+            base_identifier,
+        })
+    }
+
+    fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
+        let changed_files = self.get_changed_files()?;
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            anyhow::bail!("refresh cancelled");
+        }
+
+        let binary_files = self.get_binary_files_set();
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            anyhow::bail!("refresh cancelled");
+        }
+
+        let mut files = Vec::new();
+        let mut all_lines = Vec::new();
+
+        for changed in &changed_files {
+            if cancel_flag.load(Ordering::Relaxed) {
+                anyhow::bail!("refresh cancelled");
+            }
+
+            if binary_files.contains(&changed.path) {
+                let header = DiffLine::file_header(&changed.path);
+                if is_image_file(&changed.path) {
+                    let marker = DiffLine::image_marker(&changed.path);
+                    all_lines.push(header.clone());
+                    all_lines.push(marker.clone());
+                    files.push(FileDiff { lines: vec![header, marker] });
+                } else {
+                    let marker = DiffLine::new(LineSource::Base, "[binary file]".to_string(), ' ', None);
+                    all_lines.push(header.clone());
+                    all_lines.push(marker.clone());
+                    files.push(FileDiff { lines: vec![header, marker] });
+                }
+                continue;
+            }
+
+            // jj has no staging area: base = from_rev, head = @, no index/working
+            let base = self.get_file_content_at_rev(&changed.path, &self.from_rev).ok().flatten();
+            let head = self.get_file_content_at_rev(&changed.path, "@").ok().flatten();
+
+            let file_diff = compute_four_way_diff(DiffInput {
+                path: &changed.path,
+                base: base.as_deref(),
+                head: head.as_deref(),
+                index: None,
+                working: None,
+                old_path: None,
+            });
+
+            all_lines.extend(file_diff.lines.clone());
+            files.push(file_diff);
+        }
+
+        let metrics = DiffMetrics {
+            total_lines: all_lines.len(),
+            file_count: files.len(),
+        };
+        let base_identifier = self.get_change_id(&self.from_rev).unwrap_or_default();
+        let current_branch = Some(self.rev_label("@"));
+
+        let file_paths: Vec<&str> = files
+            .iter()
+            .filter_map(|f| f.lines.first())
+            .filter_map(|l| l.file_path.as_deref())
+            .collect();
+        let file_links = crate::file_links::compute_file_links(&file_paths);
+
+        Ok(RefreshResult {
+            files,
+            lines: all_lines,
+            base_identifier,
+            current_branch,
+            metrics,
+            file_links,
+        })
+    }
+
+    fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
+        let base = self.get_file_content_at_rev(file_path, &self.from_rev).ok().flatten();
+        let head = self.get_file_content_at_rev(file_path, "@").ok().flatten();
+
+        if base.is_none() && head.is_none() {
+            return None;
+        }
+
+        let binary_files = self.get_binary_files_set();
+        if binary_files.contains(file_path) {
+            return None;
+        }
+
+        Some(compute_four_way_diff(DiffInput {
+            path: file_path,
+            base: base.as_deref(),
+            head: head.as_deref(),
+            index: None,
+            working: None,
+            old_path: None,
+        }))
+    }
+
+    fn base_identifier(&self) -> Result<String> {
+        self.get_change_id(&self.from_rev)
+    }
+
+    fn base_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
+        self.get_file_bytes_at_rev(file_path, &self.from_rev)
+    }
+
+    fn working_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
+        self.get_file_bytes_at_rev(file_path, "@")
+    }
+
+    fn binary_files(&self) -> HashSet<String> {
+        self.get_binary_files_set()
+    }
+
+    fn fetch(&self) -> Result<()> {
+        if self.is_colocated() {
+            self.run_jj(&["git", "fetch"])?;
+        }
+        Ok(())
+    }
+
+    fn has_conflicts(&self) -> Result<bool> {
+        // jj conflict detection is a future enhancement
+        Ok(false)
+    }
+
+    fn is_locked(&self) -> bool {
+        // jj doesn't use lock files the same way git does
+        false
+    }
+
+    fn watch_paths(&self) -> VcsWatchPaths {
+        let jj_dir = self.repo_path.join(".jj");
+        VcsWatchPaths {
+            files: vec![jj_dir.join("working_copy/checkout")],
+            recursive_dirs: vec![jj_dir.join("repo/op_store")],
+        }
+    }
+
+    fn classify_event(&self, path: &Path) -> VcsEventType {
+        let relative = path.strip_prefix(&self.repo_path).unwrap_or(path);
+        let is_jj_path = relative
+            .components()
+            .next()
+            .is_some_and(|c| c.as_os_str() == ".jj");
+
+        if !is_jj_path {
+            return VcsEventType::Source;
+        }
+
+        let path_str = relative.to_string_lossy();
+        if path_str.contains("op_store/") || path_str.contains("working_copy/") {
+            VcsEventType::RevisionChange
+        } else {
+            VcsEventType::Internal
+        }
+    }
+
+    fn vcs_name(&self) -> &str {
+        "jj"
+    }
+}
+
+/// Changed file from jj diff --summary output.
+#[derive(Debug, Clone)]
+struct ChangedFile {
+    path: String,
+}
+
+/// Parse `jj diff --summary` output into changed files.
+fn parse_jj_summary(output: &str) -> Vec<ChangedFile> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let first = line.chars().next()?;
+            if !matches!(first, 'M' | 'A' | 'D' | 'R' | 'C') {
+                return None;
+            }
+            let path = line[1..].trim().to_string();
+            if path.is_empty() {
+                return None;
+            }
+            Some(ChangedFile { path })
+        })
+        .collect()
+}
+
+/// Parse `jj diff --stat` output to find binary files (marked with "(binary)").
+fn parse_binary_from_stat(output: &str) -> HashSet<String> {
+    output
+        .lines()
+        .filter(|line| line.contains("(binary)"))
+        .filter_map(|line| {
+            let path = line.split('|').next()?.trim();
+            if path.is_empty() { None } else { Some(path.to_string()) }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vcs::Vcs;
+
+    // === parse_jj_summary tests ===
+
+    #[test]
+    fn test_parse_summary_modified() {
+        let files = parse_jj_summary("M file.txt\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "file.txt");
+    }
+
+    #[test]
+    fn test_parse_summary_added() {
+        let files = parse_jj_summary("A new_file.txt\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "new_file.txt");
+    }
+
+    #[test]
+    fn test_parse_summary_deleted() {
+        let files = parse_jj_summary("D old_file.txt\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "old_file.txt");
+    }
+
+    #[test]
+    fn test_parse_summary_multiple() {
+        let output = "M file1.txt\nA file2.txt\nD file3.txt\n";
+        let files = parse_jj_summary(output);
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].path, "file1.txt");
+        assert_eq!(files[1].path, "file2.txt");
+        assert_eq!(files[2].path, "file3.txt");
+    }
+
+    #[test]
+    fn test_parse_summary_empty() {
+        let files = parse_jj_summary("");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_parse_summary_skips_blank_lines() {
+        let output = "M file.txt\n\nA other.txt\n";
+        let files = parse_jj_summary(output);
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_summary_path_with_spaces() {
+        let files = parse_jj_summary("M path with spaces.txt\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "path with spaces.txt");
+    }
+
+    // === parse_binary_from_stat tests ===
+
+    #[test]
+    fn test_parse_binary_from_stat_detects_binary() {
+        let output = "image.png | (binary)\nfile.txt  | 2 +-\n1 file changed\n";
+        let binaries = parse_binary_from_stat(output);
+        assert!(binaries.contains("image.png"));
+        assert!(!binaries.contains("file.txt"));
+    }
+
+    #[test]
+    fn test_parse_binary_from_stat_empty() {
+        let binaries = parse_binary_from_stat("file.txt | 2 +-\n");
+        assert!(binaries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_binary_from_stat_multiple() {
+        let output = "a.png | (binary)\nb.jpg | (binary)\nc.txt | 1 +\n";
+        let binaries = parse_binary_from_stat(output);
+        assert_eq!(binaries.len(), 2);
+        assert!(binaries.contains("a.png"));
+        assert!(binaries.contains("b.jpg"));
+    }
+
+    // === classify_event tests ===
+
+    #[test]
+    fn test_classify_source_file() {
+        let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
+        assert_eq!(
+            vcs.classify_event(Path::new("/repo/src/main.rs")),
+            VcsEventType::Source
+        );
+    }
+
+    #[test]
+    fn test_classify_jj_op_store() {
+        let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
+        assert_eq!(
+            vcs.classify_event(Path::new("/repo/.jj/repo/op_store/heads")),
+            VcsEventType::RevisionChange
+        );
+    }
+
+    #[test]
+    fn test_classify_jj_working_copy() {
+        let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
+        assert_eq!(
+            vcs.classify_event(Path::new("/repo/.jj/working_copy/checkout")),
+            VcsEventType::RevisionChange
+        );
+    }
+
+    #[test]
+    fn test_classify_jj_internal() {
+        let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
+        assert_eq!(
+            vcs.classify_event(Path::new("/repo/.jj/repo/store/something")),
+            VcsEventType::Internal
+        );
+    }
+
+    #[test]
+    fn test_classify_path_outside_repo() {
+        let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
+        assert_eq!(
+            vcs.classify_event(Path::new("/other/file.rs")),
+            VcsEventType::Source
+        );
+    }
+
+    // === watch_paths tests ===
+
+    #[test]
+    fn test_watch_paths() {
+        use crate::vcs::Vcs;
+        let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
+        let paths = vcs.watch_paths();
+        assert!(paths.files.contains(&PathBuf::from("/repo/.jj/working_copy/checkout")));
+        assert!(paths.recursive_dirs.contains(&PathBuf::from("/repo/.jj/repo/op_store")));
+    }
+
+    // === Integration tests (require jj installed) ===
+
+    fn jj_available() -> bool {
+        Command::new("jj").arg("--version").output().is_ok_and(|o| o.status.success())
+    }
+
+    #[test]
+    fn test_jj_refresh_detects_modified_file() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "initial\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "modified\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        assert!(!result.files.is_empty(), "should detect changed file");
+        assert!(!result.lines.is_empty(), "should produce diff lines");
+    }
+
+    #[test]
+    fn test_jj_refresh_detects_new_file() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("existing.txt"), "content\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("new_file.txt"), "new content\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        assert!(!result.files.is_empty(), "should detect new file");
+        let has_new_content = result.lines.iter().any(|l| l.content.contains("new content"));
+        assert!(has_new_content, "should contain new file content in diff lines");
+    }
+
+    #[test]
+    fn test_jj_comparison_context() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let ctx = vcs.comparison_context().unwrap();
+
+        assert!(!ctx.base_identifier.is_empty(), "should have a base identifier");
+        assert!(!ctx.to_label.is_empty(), "should have a to label");
+        assert!(!ctx.from_label.is_empty(), "should have a from label");
+    }
+
+    #[test]
+    fn test_jj_base_file_bytes() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "original\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "changed\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let base = vcs.base_file_bytes("file.txt").unwrap();
+        assert_eq!(base.unwrap(), b"original\n");
+
+        let working = vcs.working_file_bytes("file.txt").unwrap();
+        assert_eq!(working.unwrap(), b"changed\n");
+    }
+
+    #[test]
+    fn test_jj_get_repo_root() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+
+        let root = get_repo_root(repo).unwrap();
+        // Canonicalize both to handle /tmp vs /private/tmp on macOS
+        let expected = repo.canonicalize().unwrap();
+        let actual = root.canonicalize().unwrap();
+        assert_eq!(actual, expected);
+    }
+}
