@@ -62,7 +62,7 @@ struct OutputArgs {
     #[arg(short = 'p', long = "print", conflicts_with = "diff")]
     print: bool,
 
-    /// Output git patch format to stdout (for use with git apply)
+    /// Output unified patch format to stdout (for use with git apply / patch)
     #[arg(short = 'd', long = "diff", conflicts_with = "print")]
     diff: bool,
 }
@@ -81,7 +81,7 @@ impl OutputArgs {
 
 #[derive(Parser)]
 #[command(name = "branchdiff")]
-#[command(about = "Terminal UI showing unified diff of current branch vs main/master")]
+#[command(about = "Terminal UI showing unified diff of current branch vs its base")]
 #[command(version)]
 struct Cli {
     /// Path to repository (default: current directory)
