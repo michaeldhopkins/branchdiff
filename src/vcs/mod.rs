@@ -13,6 +13,30 @@ use anyhow::Result;
 
 use crate::diff::FileDiff;
 
+/// Detect the VCS backend for a given path.
+///
+/// Checks jj first (takes precedence in colocated repos where both
+/// .jj/ and .git/ exist), then falls back to git.
+pub fn detect(path: &Path) -> Result<Box<dyn Vcs>> {
+    // jj first — in colocated repos, jj is the primary VCS.
+    // Check the path itself, then walk up parent dirs.
+    if path.join(".jj").exists()
+        && let Ok(root) = jj::get_repo_root(path)
+    {
+        return Ok(Box::new(jj::JjVcs::new(root)?));
+    }
+    if let Some(ancestor) = path.ancestors().find(|p| p.join(".jj").exists())
+        && let Ok(root) = jj::get_repo_root(ancestor)
+    {
+        return Ok(Box::new(jj::JjVcs::new(root)?));
+    }
+    // Fall back to git
+    if let Ok(root) = git::get_repo_root(path) {
+        return Ok(Box::new(git::GitVcs::new(root)?));
+    }
+    anyhow::bail!("Not a git or jj repository")
+}
+
 /// Trait for version control system backends.
 ///
 /// Provides the operations branchdiff needs to compute and display diffs.

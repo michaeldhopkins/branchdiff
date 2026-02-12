@@ -18,8 +18,7 @@ use branchdiff::message::{
     FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger, FALLBACK_REFRESH_SECS,
 };
 use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
-use branchdiff::vcs::git::{self, GitVcs};
-use branchdiff::vcs::Vcs;
+use branchdiff::vcs::{self, Vcs};
 use branchdiff::ui;
 
 use std::io;
@@ -85,7 +84,7 @@ impl OutputArgs {
 #[command(about = "Terminal UI showing unified diff of current branch vs main/master")]
 #[command(version)]
 struct Cli {
-    /// Path to git repository (default: current directory)
+    /// Path to repository (default: current directory)
     #[arg(default_value = ".")]
     path: PathBuf,
 
@@ -124,69 +123,73 @@ fn main() -> Result<()> {
         .canonicalize()
         .context("Failed to resolve repository path")?;
 
-    // Try to find git repo - for non-TUI modes, fail immediately if not found
-    let repo_root = match git::get_repo_root(&repo_path) {
-        Ok(root) => root,
+    // Try to detect VCS - for non-TUI modes, fail immediately if not found
+    let detected = match vcs::detect(&repo_path) {
+        Ok(vcs) => Some(vcs),
         Err(_) => {
             if cli.output.mode() != OutputMode::Tui {
-                anyhow::bail!("Not a git repository");
+                anyhow::bail!("Not a git or jj repository");
             }
-            // TUI mode: wait for git init
-            return run_waiting_for_git(&repo_path, !cli.no_auto_fetch);
+            None
         }
     };
 
-    // Non-interactive modes
-    match cli.output.mode() {
-        OutputMode::Print => {
-            let vcs = GitVcs::new(repo_root.clone())?;
-            let comparison = vcs.comparison_context()?;
-            let cancel_flag = Arc::new(AtomicBool::new(false));
-            let initial = vcs.refresh(&cancel_flag)?;
-            let mut app = app::App::new(repo_root, comparison, initial);
-            app.view.collapsed_files.clear();
-            app.view.view_mode = app::ViewMode::Full;
+    // Non-interactive modes (detected is always Some here due to bail above)
+    if let Some(vcs) = &detected {
+        match cli.output.mode() {
+            OutputMode::Print => {
+                let repo_root = vcs.repo_path().to_path_buf();
+                let comparison = vcs.comparison_context()?;
+                let cancel_flag = Arc::new(AtomicBool::new(false));
+                let initial = vcs.refresh(&cancel_flag)?;
+                let mut app = app::App::new(repo_root, comparison, initial);
+                app.view.collapsed_files.clear();
+                app.view.view_mode = app::ViewMode::Full;
 
-            for line in &mut app.lines {
-                if line.old_content.is_some() {
-                    line.ensure_inline_spans();
+                for line in &mut app.lines {
+                    if line.old_content.is_some() {
+                        line.ensure_inline_spans();
+                    }
                 }
+                print::print_diff(&app)?;
+                return Ok(());
             }
-            print::print_diff(&app)?;
-            return Ok(());
+            OutputMode::Diff => {
+                let repo_root = vcs.repo_path().to_path_buf();
+                let comparison = vcs.comparison_context()?;
+                let cancel_flag = Arc::new(AtomicBool::new(false));
+                let initial = vcs.refresh(&cancel_flag)?;
+                let app = app::App::new(repo_root, comparison, initial);
+                let patch = branchdiff::patch::generate_patch(&app.lines);
+                print!("{}", patch);
+                return Ok(());
+            }
+            OutputMode::Tui => {}
         }
-        OutputMode::Diff => {
-            let vcs = GitVcs::new(repo_root.clone())?;
-            let comparison = vcs.comparison_context()?;
-            let cancel_flag = Arc::new(AtomicBool::new(false));
-            let initial = vcs.refresh(&cancel_flag)?;
-            let app = app::App::new(repo_root, comparison, initial);
-            let patch = branchdiff::patch::generate_patch(&app.lines);
-            print!("{}", patch);
-            return Ok(());
-        }
-        OutputMode::Tui => {}
     }
 
-    // Benchmark mode: stress test for profiling
-    if let Some(frames) = cli.benchmark {
-        return run_benchmark(repo_root, frames);
+    // TUI mode
+    match detected {
+        Some(vcs) => {
+            let repo_root = vcs.repo_path().to_path_buf();
+            if let Some(frames) = cli.benchmark {
+                return run_benchmark(vcs, repo_root, frames);
+            }
+            run_main_app(vcs, repo_root, !cli.no_auto_fetch)
+        }
+        None => run_waiting_for_vcs(&repo_path, !cli.no_auto_fetch),
     }
-
-    // Run the TUI app
-    run_main_app(repo_root, !cli.no_auto_fetch)
 }
 
-/// Run in "waiting for git init" mode until git is detected.
+/// Run in "waiting for VCS" mode until a repository is detected.
 ///
-/// Displays a message and periodically checks if `git init` was run.
+/// Displays a message and periodically checks if a VCS was initialized.
 /// When detected, transitions to normal app operation.
-fn run_waiting_for_git(path: &Path, auto_fetch: bool) -> Result<()> {
+fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::widgets::{Block, Borders, Paragraph};
     use ratatui::layout::Alignment;
 
-    // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -197,14 +200,12 @@ fn run_waiting_for_git(path: &Path, auto_fetch: bool) -> Result<()> {
     let mut last_check = Instant::now();
 
     loop {
-        // Draw waiting message
         terminal.draw(|f| {
             let area = f.area();
-            let message = Paragraph::new("Not a git repository.\n\nWaiting for git init...")
+            let message = Paragraph::new("Not a repository.\n\nWaiting for git init or jj init...")
                 .alignment(Alignment::Center)
                 .block(Block::default().borders(Borders::NONE));
 
-            // Center vertically
             let y = area.height / 2;
             let centered_area = ratatui::layout::Rect {
                 x: 0,
@@ -215,7 +216,6 @@ fn run_waiting_for_git(path: &Path, auto_fetch: bool) -> Result<()> {
             f.render_widget(message, centered_area);
         })?;
 
-        // Check for input
         if event::poll(Duration::from_millis(100))?
             && let crossterm::event::Event::Key(KeyEvent { code, modifiers, .. }) = event::read()?
         {
@@ -223,7 +223,6 @@ fn run_waiting_for_git(path: &Path, auto_fetch: bool) -> Result<()> {
                 (KeyCode::Char('q'), _)
                 | (KeyCode::Char('c'), KeyModifiers::CONTROL)
                 | (KeyCode::Esc, _) => {
-                    // Restore terminal and exit
                     disable_raw_mode()?;
                     execute!(
                         terminal.backend_mut(),
@@ -237,11 +236,10 @@ fn run_waiting_for_git(path: &Path, auto_fetch: bool) -> Result<()> {
             }
         }
 
-        // Check for git init every second
         if last_check.elapsed() >= check_interval {
             last_check = Instant::now();
-            if let Ok(repo_root) = git::get_repo_root(path) {
-                // Git was initialized! Restore terminal and run main app
+            if let Ok(detected) = vcs::detect(path) {
+                let repo_root = detected.repo_path().to_path_buf();
                 disable_raw_mode()?;
                 execute!(
                     terminal.backend_mut(),
@@ -249,17 +247,15 @@ fn run_waiting_for_git(path: &Path, auto_fetch: bool) -> Result<()> {
                     DisableMouseCapture
                 )?;
                 terminal.show_cursor()?;
-
-                // Call run_main_app with the detected repo
-                return run_main_app(repo_root, auto_fetch);
+                return run_main_app(detected, repo_root, auto_fetch);
             }
         }
     }
 }
 
-/// Main app logic, extracted for reuse after git init detection.
-fn run_main_app(repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
-    let vcs: Arc<dyn Vcs> = Arc::new(GitVcs::new(repo_root.clone())?);
+/// Main app logic, extracted for reuse after VCS detection.
+fn run_main_app(detected: Box<dyn Vcs>, repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
+    let vcs: Arc<dyn Vcs> = Arc::from(detected);
 
     // Initialize image protocol picker
     let in_multiplexer = std::env::var("ZELLIJ").is_ok()
@@ -351,15 +347,14 @@ fn run_main_app(repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
     result
 }
 
-fn run_benchmark(repo_root: PathBuf, frames: usize) -> Result<()> {
+fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> Result<()> {
     use ratatui::backend::TestBackend;
 
     eprintln!("Loading diff from {}...", repo_root.display());
     let load_start = Instant::now();
-    let vcs = GitVcs::new(repo_root.clone())?;
-    let comparison = vcs.comparison_context()?;
+    let comparison = detected.comparison_context()?;
     let cancel_flag = Arc::new(AtomicBool::new(false));
-    let initial = vcs.refresh(&cancel_flag)?;
+    let initial = detected.refresh(&cancel_flag)?;
     let mut app = App::new(repo_root, comparison, initial);
     let load_time = load_start.elapsed();
     eprintln!(
