@@ -254,10 +254,12 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
 }
 
 /// Main app logic, extracted for reuse after VCS detection.
-fn run_main_app(detected: Box<dyn Vcs>, repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
-    let vcs: Arc<dyn Vcs> = Arc::from(detected);
-
-    // Initialize image protocol picker
+fn run_main_app(
+    mut detected: Box<dyn Vcs>,
+    mut repo_root: PathBuf,
+    auto_fetch: bool,
+) -> Result<()> {
+    // Initialize image protocol picker (once — survives restarts)
     let in_multiplexer = std::env::var("ZELLIJ").is_ok()
         || std::env::var("TMUX").is_ok()
         || std::env::var("STY").is_ok();
@@ -270,72 +272,91 @@ fn run_main_app(detected: Box<dyn Vcs>, repo_root: PathBuf, auto_fetch: bool) ->
     };
     image_picker.set_background_color(image::Rgba([30, 30, 30, 255]));
 
-    // Setup terminal
+    // Setup terminal (once — survives restarts)
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Get watch limit
     let watch_limit = limits::get_watch_limit();
 
-    // Create app with initial refresh
-    let comparison = vcs.comparison_context()?;
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let initial = vcs.refresh(&cancel_flag)?;
-    let mut app = App::new(repo_root, comparison, initial);
-    app.load_images_for_markers(&*vcs);
-    app.set_image_picker(image_picker);
+    loop {
+        let vcs: Arc<dyn Vcs> = Arc::from(detected);
 
-    // Setup file watcher
-    let (file_tx, file_rx) = mpsc::channel();
-    let debouncer_config = DebouncerConfig::default()
-        .with_timeout(Duration::from_millis(100))
-        .with_notify_config(
-            notify::Config::default().with_poll_interval(Duration::from_millis(500)),
-        );
+        let comparison = vcs.comparison_context()?;
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let initial = vcs.refresh(&cancel_flag)?;
+        let mut app = App::new(repo_root.clone(), comparison, initial);
+        app.load_images_for_markers(&*vcs);
+        app.set_image_picker(image_picker.clone());
 
-    let mut debouncer = if limits::is_wsl() {
-        AnyDebouncer::Poll(new_debouncer_opt::<_, PollWatcher>(debouncer_config, file_tx)?)
-    } else {
-        AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(
-            debouncer_config,
-            file_tx,
-        )?)
-    };
+        // Setup file watcher (recreated on restart — old watcher is dropped)
+        let (file_tx, file_rx) = mpsc::channel();
+        let debouncer_config = DebouncerConfig::default()
+            .with_timeout(Duration::from_millis(100))
+            .with_notify_config(
+                notify::Config::default().with_poll_interval(Duration::from_millis(500)),
+            );
 
-    let watcher_metrics = setup_watcher(debouncer.watcher(), &*vcs, watch_limit)?;
+        let mut debouncer = if limits::is_wsl() {
+            AnyDebouncer::Poll(new_debouncer_opt::<_, PollWatcher>(debouncer_config, file_tx)?)
+        } else {
+            AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(
+                debouncer_config,
+                file_tx,
+            )?)
+        };
 
-    let needs_fallback_refresh = limits::check_watch_warning(&watcher_metrics, watch_limit).is_some();
-    if needs_fallback_refresh {
-        app.performance_warning = Some(format!(
-            "Large repo: refreshing every {}s",
-            FALLBACK_REFRESH_SECS
-        ));
+        let watcher_metrics = setup_watcher(debouncer.watcher(), &*vcs, watch_limit)?;
+
+        let needs_fallback_refresh =
+            limits::check_watch_warning(&watcher_metrics, watch_limit).is_some();
+        if needs_fallback_refresh {
+            app.performance_warning = Some(format!(
+                "Large repo: refreshing every {}s",
+                FALLBACK_REFRESH_SECS
+            ));
+        }
+
+        let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshOutcome>();
+
+        let config = UpdateConfig {
+            auto_fetch,
+            needs_fallback_refresh,
+            repo_path: repo_root.clone(),
+            ..Default::default()
+        };
+
+        let loop_action = run_app(
+            &mut terminal,
+            &mut app,
+            debouncer.watcher(),
+            file_rx,
+            refresh_tx,
+            refresh_rx,
+            vcs,
+            config,
+            watch_limit,
+        )?;
+
+        match loop_action {
+            LoopAction::Quit => break,
+            LoopAction::RestartVcs => {
+                match vcs::detect(&repo_root) {
+                    Ok(new_vcs) => {
+                        repo_root = new_vcs.repo_path().to_path_buf();
+                        detected = new_vcs;
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+            }
+            LoopAction::Continue => unreachable!("run_app should not return Continue"),
+        }
     }
 
-    let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshOutcome>();
-
-    let config = UpdateConfig {
-        auto_fetch,
-        needs_fallback_refresh,
-        ..Default::default()
-    };
-
-    let result = run_app(
-        &mut terminal,
-        &mut app,
-        debouncer.watcher(),
-        file_rx,
-        refresh_tx,
-        refresh_rx,
-        vcs,
-        config,
-        watch_limit,
-    );
-
-    // Restore terminal
+    // Restore terminal (once)
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -344,7 +365,7 @@ fn run_main_app(detected: Box<dyn Vcs>, repo_root: PathBuf, auto_fetch: bool) ->
     )?;
     terminal.show_cursor()?;
 
-    result
+    Ok(())
 }
 
 fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> Result<()> {
@@ -496,13 +517,13 @@ fn run_app<B: Backend>(
     vcs: Arc<dyn Vcs>,
     config: UpdateConfig,
     watch_limit: Option<usize>,
-) -> Result<()>
+) -> Result<LoopAction>
 where
     B::Error: Send + Sync + 'static,
 {
     let mut refresh_state = RefreshState::Idle;
     let mut vcs_lock = VcsLockState::default();
-    let mut timers = Timers::default();
+    let mut timers = Timers::new(config.repo_path.join(".jj").is_dir());
 
     let (fetch_tx, fetch_rx) = mpsc::channel::<FetchResult>();
 
@@ -560,8 +581,10 @@ where
 
             needs_redraw |= result.needs_redraw;
 
-            if result.loop_action == LoopAction::Quit {
-                return Ok(());
+            if result.loop_action == LoopAction::Quit
+                || result.loop_action == LoopAction::RestartVcs
+            {
+                return Ok(result.loop_action);
             }
 
             match result.refresh {
