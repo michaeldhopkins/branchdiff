@@ -9,7 +9,8 @@ mod view_mode;
 mod view_state;
 
 pub use frame::{DisplayableItem, FrameContext};
-pub use refresh::{compute_refresh, compute_single_file_diff, RefreshResult};
+pub use crate::vcs::RefreshResult;
+pub use refresh::{compute_refresh, compute_single_file_diff};
 pub use selection::{Position, Selection};
 pub use view_state::ViewState;
 
@@ -23,7 +24,7 @@ use anyhow::Result;
 use ratatui_image::picker::Picker;
 
 use crate::diff::{DiffLine, FileDiff};
-use crate::git;
+use crate::vcs::ComparisonContext;
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
 
@@ -40,14 +41,10 @@ pub struct App {
     /// View-related state (scrolling, layout, selection, etc.)
     pub view: ViewState,
 
-    /// Path to the git repository root
+    /// Path to the repository root
     pub repo_path: PathBuf,
-    /// The base branch (main or master)
-    pub base_branch: String,
-    /// The merge-base commit
-    pub merge_base: String,
-    /// Current branch name (if any)
-    pub current_branch: Option<String>,
+    /// What we're comparing (branch names/labels and resolved base reference)
+    pub comparison: ComparisonContext,
     /// All file diffs
     pub files: Vec<FileDiff>,
     /// Flattened lines for display
@@ -87,9 +84,11 @@ impl App {
             },
             gitignore_filter: GitignoreFilter::new(&repo_path),
             repo_path,
-            base_branch: "main".to_string(),
-            merge_base: "bench".to_string(),
-            current_branch: Some("feature".to_string()),
+            comparison: ComparisonContext {
+                from_label: "main".to_string(),
+                to_label: "feature".to_string(),
+                base_identifier: "bench".to_string(),
+            },
             files: Vec::new(),
             lines,
             error: None,
@@ -102,17 +101,11 @@ impl App {
         }
     }
 
-    /// Create a new App instance
-    pub fn new(repo_path: PathBuf) -> Result<Self> {
-        let base_branch = git::detect_base_branch(&repo_path)
-            .unwrap_or_else(|_| "main".to_string());
-
-        let merge_base = git::get_merge_base_preferring_origin(&repo_path, &base_branch)
-            .unwrap_or_default();
-
-        let current_branch = git::get_current_branch(&repo_path)
-            .unwrap_or(None);
-
+    /// Create a new App instance with a pre-computed comparison context.
+    ///
+    /// The caller is responsible for detecting the VCS and building the context.
+    /// Use `GitVcs::comparison_context()` or equivalent for other backends.
+    pub fn new(repo_path: PathBuf, comparison: ComparisonContext) -> Result<Self> {
         let gitignore_filter = GitignoreFilter::new(&repo_path);
 
         let mut app = Self {
@@ -124,9 +117,7 @@ impl App {
                 ..ViewState::default()
             },
             repo_path,
-            base_branch,
-            merge_base,
-            current_branch,
+            comparison,
             files: Vec::new(),
             lines: Vec::new(),
             error: None,
@@ -176,15 +167,17 @@ impl App {
 
     pub fn refresh(&mut self) -> Result<()> {
         let cancel_flag = Arc::new(AtomicBool::new(false));
-        let result = compute_refresh(&self.repo_path, &self.base_branch, &cancel_flag)?;
+        let result = compute_refresh(&self.repo_path, &self.comparison.from_label, &cancel_flag)?;
         self.apply_refresh_result(result);
         Ok(())
     }
 
     pub fn apply_refresh_result(&mut self, result: RefreshResult) {
         self.error = None;
-        self.merge_base = result.merge_base.clone();
-        self.current_branch = result.current_branch;
+        self.comparison.base_identifier = result.merge_base.clone();
+        if let Some(branch) = result.current_branch {
+            self.comparison.to_label = branch;
+        }
         self.files = result.files;
         self.lines = result.lines;
         self.file_links = result.file_links;
@@ -1323,7 +1316,7 @@ mod tests {
 
         app.apply_refresh_result(result);
 
-        assert_eq!(app.merge_base, "newbase123");
+        assert_eq!(app.comparison.base_identifier, "newbase123");
         assert_eq!(app.lines.len(), 3);
         assert_eq!(app.lines[0].content, "new_file.txt");
         assert_eq!(app.lines[1].content, "new line 1");

@@ -18,7 +18,8 @@ use branchdiff::message::{
     FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger, FALLBACK_REFRESH_SECS,
 };
 use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
-use branchdiff::git;
+use branchdiff::vcs::git::{self, GitVcs};
+use branchdiff::vcs::Vcs;
 use branchdiff::ui;
 
 use std::io;
@@ -138,7 +139,9 @@ fn main() -> Result<()> {
     // Non-interactive modes
     match cli.output.mode() {
         OutputMode::Print => {
-            let mut app = app::App::new(repo_root)?;
+            let vcs = GitVcs::new(repo_root.clone())?;
+            let comparison = vcs.comparison_context()?;
+            let mut app = app::App::new(repo_root, comparison)?;
             app.view.collapsed_files.clear();
             app.view.view_mode = app::ViewMode::Full;
 
@@ -151,7 +154,9 @@ fn main() -> Result<()> {
             return Ok(());
         }
         OutputMode::Diff => {
-            let app = app::App::new(repo_root)?;
+            let vcs = GitVcs::new(repo_root.clone())?;
+            let comparison = vcs.comparison_context()?;
+            let app = app::App::new(repo_root, comparison)?;
             let patch = branchdiff::patch::generate_patch(&app.lines);
             print!("{}", patch);
             return Ok(());
@@ -250,8 +255,9 @@ fn run_waiting_for_git(path: &Path, auto_fetch: bool) -> Result<()> {
 
 /// Main app logic, extracted for reuse after git init detection.
 fn run_main_app(repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
-    // Detect git version
-    let git_version = git::get_git_version().context("Failed to detect git version")?;
+    // Initialize git backend
+    let git_vcs = GitVcs::new(repo_root.clone())?;
+    let git_version = git_vcs.git_version().context("Failed to detect git version")?;
 
     // Initialize image protocol picker
     let in_multiplexer = std::env::var("ZELLIJ").is_ok()
@@ -277,7 +283,8 @@ fn run_main_app(repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
     let watch_limit = limits::get_watch_limit();
 
     // Create app
-    let mut app = App::new(repo_root.clone())?;
+    let comparison = git_vcs.comparison_context()?;
+    let mut app = App::new(repo_root.clone(), comparison)?;
     app.set_image_picker(image_picker);
 
     // Setup file watcher
@@ -345,7 +352,9 @@ fn run_benchmark(repo_root: PathBuf, frames: usize) -> Result<()> {
 
     eprintln!("Loading diff from {}...", repo_root.display());
     let load_start = Instant::now();
-    let mut app = App::new(repo_root)?;
+    let vcs = GitVcs::new(repo_root.clone())?;
+    let comparison = vcs.comparison_context()?;
+    let mut app = App::new(repo_root, comparison)?;
     let load_time = load_start.elapsed();
     eprintln!(
         "Loaded {} lines across {} files in {:?}",
@@ -563,7 +572,7 @@ where
                     let cancel_flag = refresh_state.start();
                     spawn_refresh(
                         repo_root.clone(),
-                        app.base_branch.clone(),
+                        app.comparison.from_label.clone(),
                         refresh_tx.clone(),
                         cancel_flag,
                     );
@@ -573,7 +582,7 @@ where
                     spawn_single_file_refresh(
                         repo_root.clone(),
                         file_path.to_string_lossy().to_string(),
-                        app.merge_base.clone(),
+                        app.comparison.base_identifier.clone(),
                         refresh_tx.clone(),
                     );
                 }
@@ -581,7 +590,7 @@ where
             }
 
             if result.trigger_fetch {
-                spawn_fetch(repo_root.clone(), app.base_branch.clone(), git_version, fetch_tx.clone());
+                spawn_fetch(repo_root.clone(), app.comparison.from_label.clone(), git_version, fetch_tx.clone());
             }
         }
 
