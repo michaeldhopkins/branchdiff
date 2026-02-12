@@ -99,8 +99,8 @@ impl TestAppBuilder {
             comparison: ComparisonContext {
                 from_label: self.base_branch,
                 to_label,
-                base_identifier: "abc123".to_string(),
             },
+            base_identifier: "abc123".to_string(),
             files: self.files,
             lines: self.lines,
             error: None,
