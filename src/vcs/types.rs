@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::diff::{DiffLine, FileDiff};
 use crate::limits::DiffMetrics;
@@ -22,8 +23,29 @@ pub struct ComparisonContext {
 pub struct RefreshResult {
     pub files: Vec<FileDiff>,
     pub lines: Vec<DiffLine>,
-    pub merge_base: String,
+    pub base_identifier: String,
     pub current_branch: Option<String>,
     pub metrics: DiffMetrics,
     pub file_links: HashMap<String, String>,
+}
+
+/// Paths a VCS backend wants watched for change detection.
+pub struct VcsWatchPaths {
+    /// Individual files to watch non-recursively (e.g., .git/index, .git/HEAD)
+    pub files: Vec<PathBuf>,
+    /// Directories to watch recursively (e.g., .git/refs/)
+    pub recursive_dirs: Vec<PathBuf>,
+}
+
+/// Classification of a file event for differentiated debouncing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VcsEventType {
+    /// VCS internal state change (e.g., .git/index) — triggers delayed refresh
+    Internal,
+    /// Branch/revision change (e.g., .git/HEAD, .git/refs/) — triggers refresh
+    RevisionChange,
+    /// Lock file (external operation in progress) — defer refresh
+    Lock,
+    /// Regular source file — triggers immediate refresh
+    Source,
 }

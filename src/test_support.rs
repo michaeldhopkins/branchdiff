@@ -3,14 +3,18 @@
 //! This module provides a builder pattern for creating test App instances,
 //! eliminating duplication across test modules.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+use anyhow::Result;
 
 use crate::app::{App, ViewMode, ViewState};
 use crate::diff::{DiffLine, FileDiff, LineSource};
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
-use crate::vcs::ComparisonContext;
+use crate::vcs::{ComparisonContext, RefreshResult, VcsEventType, VcsWatchPaths};
 
 /// Builder for creating test App instances with sensible defaults.
 ///
@@ -157,4 +161,77 @@ pub fn deletion_line(content: &str) -> DiffLine {
 /// Generate a sequence of base lines for padding in tests.
 pub fn base_lines(count: usize) -> Vec<DiffLine> {
     (0..count).map(|i| base_line(&format!("line{}", i))).collect()
+}
+
+/// Minimal Vcs implementation for unit tests.
+///
+/// Classifies events using git-style path conventions (`.git/` prefix)
+/// and checks for `.git/index.lock` to determine lock state.
+/// Only `classify_event`, `is_locked`, `repo_path`, `base_file_bytes`,
+/// and `working_file_bytes` are implemented — other methods panic.
+pub struct StubVcs {
+    repo_path: PathBuf,
+}
+
+impl StubVcs {
+    pub fn new(repo_path: PathBuf) -> Self {
+        Self { repo_path }
+    }
+}
+
+impl crate::vcs::Vcs for StubVcs {
+    fn repo_path(&self) -> &Path { &self.repo_path }
+
+    fn comparison_context(&self) -> Result<ComparisonContext> { unimplemented!() }
+
+    fn refresh(&self, _: &Arc<AtomicBool>) -> Result<RefreshResult> { unimplemented!() }
+
+    fn single_file_diff(&self, _: &str) -> Option<FileDiff> { unimplemented!() }
+
+    fn base_identifier(&self) -> Result<String> { unimplemented!() }
+
+    fn base_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
+
+    fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
+
+    fn binary_files(&self) -> HashSet<String> { HashSet::new() }
+
+    fn fetch(&self) -> Result<()> { unimplemented!() }
+
+    fn has_conflicts(&self) -> Result<bool> { unimplemented!() }
+
+    fn is_locked(&self) -> bool {
+        self.repo_path.join(".git/index.lock").exists()
+    }
+
+    fn watch_paths(&self) -> VcsWatchPaths {
+        VcsWatchPaths { files: vec![], recursive_dirs: vec![] }
+    }
+
+    fn classify_event(&self, path: &Path) -> VcsEventType {
+        let relative = path.strip_prefix(&self.repo_path).unwrap_or(path);
+        let is_vcs_path = relative.components().next()
+            .is_some_and(|c| c.as_os_str() == ".git");
+
+        if !is_vcs_path { return VcsEventType::Source; }
+
+        // Any .lock file signals an external operation
+        if relative.extension().is_some_and(|ext| ext == "lock") {
+            return VcsEventType::Lock;
+        }
+
+        // Only exact .git/HEAD is a revision change
+        if relative == Path::new(".git/HEAD") {
+            return VcsEventType::RevisionChange;
+        }
+
+        let path_str = relative.to_string_lossy();
+        if path_str.contains("refs/") {
+            VcsEventType::RevisionChange
+        } else {
+            VcsEventType::Internal
+        }
+    }
+
+    fn vcs_name(&self) -> &str { "stub" }
 }
