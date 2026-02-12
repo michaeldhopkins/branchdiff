@@ -1,28 +1,30 @@
 # branchdiff
 
-Terminal UI showing unified diff of current branch vs main/master.
+Terminal UI showing unified diff of current branch vs its base.
+
 <img width="987" height="1172" alt="Screenshot 2026-01-26 at 22 30 08" src="https://github.com/user-attachments/assets/d5301f02-bb6e-4ba2-b15d-c5e1af7e165f" />
 
 <img width="742" height="1144" alt="Screenshot 2026-01-21 at 22 39 43" src="https://github.com/user-attachments/assets/afc453b4-5b43-458e-91ae-7f739ff97f8e" />
 
-
 ![branchdiff screenshot](assets/screenshot.png)
-
-
 
 ## Features
 
-- Color-coded diff view: cyan (committed), green (staged), yellow (unstaged), red (deleted)
-- Inline diff highlighting for modified lines
-- Context-only view to focus on changes
-- Live file watching - auto-refreshes on changes
-- Mouse support for scrolling and text selection
-- Copy selection to clipboard
+- **Git and Jujutsu (jj)** support with automatic backend detection
+- **Auto-switching**: detects `jj init` or `.jj` removal at runtime and seamlessly restarts
+- Color-coded diff view with distinct colors for committed, staged, and unstaged changes
+- Inline diff highlighting showing exactly which characters changed
+- Three view modes: context (default), changes-only, and full file
+- Image diffs with side-by-side before/after panels
+- Live file watching with auto-refresh on changes
+- Mouse support: scrolling, click-to-collapse file sections, text selection (double-click word, triple-click line)
+- Copy to clipboard: selection, file path, entire diff, or git patch format
+- Non-interactive output modes for scripting (`--print`, `--diff`)
 
 ## Requirements
 
-- **Git**: Works with any reasonably modern git (1.7+). Some features require newer versions:
-  - Conflict detection (warning when base branch has diverged): Git 2.38+
+- **Git**: Any reasonably modern git (1.7+). Conflict detection requires Git 2.38+.
+- **Jujutsu** (optional): If a `.jj` directory is present, branchdiff uses jj automatically.
 
 ## Installation
 
@@ -48,11 +50,14 @@ Download binaries from [GitHub Releases](https://github.com/michaeldhopkins/bran
 branchdiff [path]
 ```
 
+If no repository is found, branchdiff waits and automatically starts when `git init` or `jj init` is detected.
+
 ### Options
 
 | Flag | Description |
 |------|-------------|
 | `-p`, `--print` | Print diff to stdout and exit (non-interactive mode) |
+| `-d`, `--diff` | Output unified patch format to stdout (for `git apply` / `patch`) |
 | `--no-auto-fetch` | Disable automatic fetching of base branch |
 | `--benchmark N` | Run stress test rendering N frames (for profiling) |
 | `-h`, `--help` | Print help |
@@ -82,8 +87,7 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 
 | Key | Action |
 |-----|--------|
-| `j` | Next file |
-| `k` | Previous file |
+| `j` / `k` | Next / previous file |
 | `↓` / `↑` | Scroll line |
 | `Ctrl+d` / `PgDn` | Page down |
 | `Ctrl+u` / `PgUp` | Page up |
@@ -94,14 +98,23 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 | `y` | Copy selection |
 | `p` | Copy current file path |
 | `Y` | Copy entire diff |
+| `D` | Copy git patch format |
 | `?` | Toggle help |
-| `q` / `Esc` / `Ctrl+c` | Quit |
+| `q` / `Esc` | Quit |
+| `Ctrl+c` | Copy selection (or quit if nothing selected) |
+
+### Mouse
+
+- Scroll wheel to scroll
+- Click file headers to collapse/expand
+- Click and drag to select text
+- Double-click to select word, triple-click to select line
 
 ## Contributing
 
 ### Requirements
 
-- Rust 1.85+ (edition 2024)
+- Rust 1.91+ (edition 2024)
 
 ### Build and test
 
