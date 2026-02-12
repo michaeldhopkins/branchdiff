@@ -64,7 +64,7 @@ pub enum RefreshTrigger {
     SingleFile(PathBuf),
 }
 
-/// Whether to continue or quit the event loop.
+/// Whether to continue, quit, or restart the event loop.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum LoopAction {
     /// Continue running.
@@ -72,6 +72,8 @@ pub enum LoopAction {
     Continue,
     /// Exit the application.
     Quit,
+    /// Re-detect VCS backend and restart (e.g., after jj init or .jj removal).
+    RestartVcs,
 }
 
 /// Result of processing a message.
