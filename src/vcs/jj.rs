@@ -71,7 +71,7 @@ impl JjVcs {
 
     fn get_file_content_at_rev(&self, file_path: &str, rev: &str) -> Result<Option<String>> {
         let bytes = self.run_jj_bytes(&["file", "show", "-r", rev, file_path])?;
-        Ok(bytes.and_then(|b| String::from_utf8(b).ok()))
+        Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
     }
 
     fn get_file_bytes_at_rev(&self, file_path: &str, rev: &str) -> Result<Option<Vec<u8>>> {
@@ -125,14 +125,16 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
-        let from_label = self.rev_label(&self.from_rev);
+        // Fetch base change_id once and reuse for both label and identifier
+        let base_change_id = self.get_change_id(&self.from_rev)?;
+        let from_label = self.get_bookmarks(&self.from_rev)
+            .unwrap_or_else(|| base_change_id.clone());
         let to_label = self.rev_label("@");
-        let base_identifier = self.get_change_id(&self.from_rev)?;
 
         Ok(ComparisonContext {
             from_label,
             to_label,
-            base_identifier,
+            base_identifier: base_change_id,
         })
     }
 
@@ -174,7 +176,9 @@ impl crate::vcs::Vcs for JjVcs {
             }
 
             // jj has no staging area: base = from_rev, head = @, no index/working
-            let base = self.get_file_content_at_rev(&changed.path, &self.from_rev).ok().flatten();
+            // For renames, read base content from the old path
+            let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
+            let base = self.get_file_content_at_rev(base_path, &self.from_rev).ok().flatten();
             let head = self.get_file_content_at_rev(&changed.path, "@").ok().flatten();
 
             let file_diff = compute_four_way_diff(DiffInput {
@@ -183,7 +187,7 @@ impl crate::vcs::Vcs for JjVcs {
                 head: head.as_deref(),
                 index: None,
                 working: None,
-                old_path: None,
+                old_path: changed.old_path.as_deref(),
             });
 
             all_lines.extend(file_diff.lines.clone());
@@ -306,9 +310,12 @@ impl crate::vcs::Vcs for JjVcs {
 #[derive(Debug, Clone)]
 struct ChangedFile {
     path: String,
+    old_path: Option<String>,
 }
 
 /// Parse `jj diff --summary` output into changed files.
+///
+/// Renames use the format `R {old_path => new_path}`.
 fn parse_jj_summary(output: &str) -> Vec<ChangedFile> {
     output
         .lines()
@@ -321,22 +328,54 @@ fn parse_jj_summary(output: &str) -> Vec<ChangedFile> {
             if !matches!(first, 'M' | 'A' | 'D' | 'R' | 'C') {
                 return None;
             }
-            let path = line[1..].trim().to_string();
-            if path.is_empty() {
+            let rest = line[1..].trim();
+            if rest.is_empty() {
                 return None;
             }
-            Some(ChangedFile { path })
+            if first == 'R' {
+                parse_rename(rest)
+            } else {
+                Some(ChangedFile { path: rest.to_string(), old_path: None })
+            }
         })
         .collect()
 }
 
+/// Parse jj rename format: `{old_path => new_path}`
+fn parse_rename(s: &str) -> Option<ChangedFile> {
+    let s = s.strip_prefix('{')?.strip_suffix('}')?;
+    let (old, new) = s.split_once(" => ")?;
+    let old = old.trim();
+    let new = new.trim();
+    if new.is_empty() {
+        return None;
+    }
+    Some(ChangedFile {
+        path: new.to_string(),
+        old_path: Some(old.to_string()),
+    })
+}
+
 /// Parse `jj diff --stat` output to find binary files (marked with "(binary)").
+///
+/// Handles renamed files: `{old => new} | (binary)` extracts just the new name.
 fn parse_binary_from_stat(output: &str) -> HashSet<String> {
     output
         .lines()
         .filter(|line| line.contains("(binary)"))
         .filter_map(|line| {
-            let path = line.split('|').next()?.trim();
+            let raw_path = line.split('|').next()?.trim();
+            if raw_path.is_empty() {
+                return None;
+            }
+            // Renames show as "{old => new}" — extract the new name
+            let path = if let Some(inner) = raw_path.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+                inner.split(" => ").last().unwrap_or(inner).trim()
+            } else if raw_path.contains(" => ") {
+                raw_path.split(" => ").last().unwrap_or(raw_path).trim()
+            } else {
+                raw_path
+            };
             if path.is_empty() { None } else { Some(path.to_string()) }
         })
         .collect()
@@ -354,6 +393,7 @@ mod tests {
         let files = parse_jj_summary("M file.txt\n");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "file.txt");
+        assert!(files[0].old_path.is_none());
     }
 
     #[test]
@@ -361,6 +401,7 @@ mod tests {
         let files = parse_jj_summary("A new_file.txt\n");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "new_file.txt");
+        assert!(files[0].old_path.is_none());
     }
 
     #[test]
@@ -371,6 +412,22 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_summary_renamed() {
+        let files = parse_jj_summary("R {old_name.txt => new_name.txt}\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "new_name.txt");
+        assert_eq!(files[0].old_path.as_deref(), Some("old_name.txt"));
+    }
+
+    #[test]
+    fn test_parse_summary_renamed_with_directory() {
+        let files = parse_jj_summary("R {src/old.rs => src/new.rs}\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/new.rs");
+        assert_eq!(files[0].old_path.as_deref(), Some("src/old.rs"));
+    }
+
+    #[test]
     fn test_parse_summary_multiple() {
         let output = "M file1.txt\nA file2.txt\nD file3.txt\n";
         let files = parse_jj_summary(output);
@@ -378,6 +435,19 @@ mod tests {
         assert_eq!(files[0].path, "file1.txt");
         assert_eq!(files[1].path, "file2.txt");
         assert_eq!(files[2].path, "file3.txt");
+    }
+
+    #[test]
+    fn test_parse_summary_mixed_with_rename() {
+        let output = "M file.txt\nR {old.rs => new.rs}\nA added.txt\n";
+        let files = parse_jj_summary(output);
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].path, "file.txt");
+        assert!(files[0].old_path.is_none());
+        assert_eq!(files[1].path, "new.rs");
+        assert_eq!(files[1].old_path.as_deref(), Some("old.rs"));
+        assert_eq!(files[2].path, "added.txt");
+        assert!(files[2].old_path.is_none());
     }
 
     #[test]
@@ -398,6 +468,18 @@ mod tests {
         let files = parse_jj_summary("M path with spaces.txt\n");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "path with spaces.txt");
+    }
+
+    #[test]
+    fn test_parse_rename_malformed_no_braces() {
+        let files = parse_jj_summary("R old.txt => new.txt\n");
+        assert!(files.is_empty(), "rename without braces should be skipped");
+    }
+
+    #[test]
+    fn test_parse_rename_malformed_no_arrow() {
+        let files = parse_jj_summary("R {old.txt new.txt}\n");
+        assert!(files.is_empty(), "rename without => should be skipped");
     }
 
     // === parse_binary_from_stat tests ===
@@ -423,6 +505,21 @@ mod tests {
         assert_eq!(binaries.len(), 2);
         assert!(binaries.contains("a.png"));
         assert!(binaries.contains("b.jpg"));
+    }
+
+    #[test]
+    fn test_parse_binary_from_stat_renamed_with_braces() {
+        let output = "{original.bin => renamed.bin} | (binary)\n";
+        let binaries = parse_binary_from_stat(output);
+        assert!(binaries.contains("renamed.bin"), "should extract new name from rename");
+        assert!(!binaries.contains("{original.bin => renamed.bin}"), "should not store raw rename format");
+    }
+
+    #[test]
+    fn test_parse_binary_from_stat_renamed_without_braces() {
+        let output = "original.bin => renamed.bin | (binary)\n";
+        let binaries = parse_binary_from_stat(output);
+        assert!(binaries.contains("renamed.bin"), "should extract new name from arrow format");
     }
 
     // === classify_event tests ===
