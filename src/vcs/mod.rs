@@ -1,4 +1,5 @@
 pub mod git;
+pub mod jj;
 pub mod types;
 
 pub use types::{ComparisonContext, RefreshResult, VcsEventType, VcsWatchPaths};
