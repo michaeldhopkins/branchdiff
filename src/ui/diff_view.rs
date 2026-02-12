@@ -520,88 +520,93 @@ impl<'a> DiffViewModel<'a> {
     ) -> usize {
         let inline_width = inline_display_width(&diff_line.inline_spans);
         let rows_before = all_lines.len();
+        let change_type = classify_inline_change(&diff_line.inline_spans);
+
+        let should_split = change_type == InlineChangeType::PureDeletion
+            || (change_type == InlineChangeType::Mixed && inline_width > content_width);
+
+        if should_split {
+            let del_source = get_deletion_source(&diff_line.inline_spans);
+            let ins_source = if change_type == InlineChangeType::PureDeletion {
+                diff_line.change_source.unwrap_or(LineSource::Committed)
+            } else {
+                get_insertion_source(&diff_line.inline_spans)
+            };
+
+            let old_content = diff_line.old_content.as_deref().unwrap_or("");
+            let del_spans = build_deletion_spans_with_highlight(
+                &diff_line.inline_spans,
+                del_source,
+                old_content,
+                diff_line.file_path.as_deref(),
+            );
+
+            if !del_spans.is_empty() {
+                let del_style = line_style(del_source);
+                let del_prefix_str = if !prefix_str.is_empty() {
+                    " ".repeat(prefix_str.len())
+                } else {
+                    String::new()
+                };
+
+                let del_spans = apply_selection_to_content(
+                    del_spans,
+                    self.selection,
+                    screen_row_idx,
+                    prefix_width,
+                );
+
+                let del_prefix_char = format!("- {} ", status_symbol(del_source));
+                let (del_lines, del_row_infos) = wrap_content(
+                    del_spans,
+                    old_content,
+                    del_prefix_str,
+                    del_prefix_char,
+                    del_style,
+                    content_width,
+                    prefix_width,
+                );
+
+                screen_row_idx += del_lines.len();
+                all_lines.extend(del_lines);
+                all_row_infos.extend(del_row_infos);
+            }
+
+            let new_content = &diff_line.content;
+            let ins_style = line_style(ins_source);
+            let ins_spans = build_insertion_spans_with_highlight(
+                &diff_line.inline_spans,
+                ins_source,
+                new_content,
+                diff_line.file_path.as_deref(),
+            );
+            let ins_spans = apply_selection_to_content(
+                ins_spans,
+                self.selection,
+                screen_row_idx,
+                prefix_width,
+            );
+
+            let ins_prefix_char = format!("+ {} ", status_symbol(ins_source));
+            let (ins_lines, ins_row_infos) = wrap_content(
+                ins_spans,
+                new_content,
+                prefix_str.to_string(),
+                ins_prefix_char,
+                ins_style,
+                content_width,
+                prefix_width,
+            );
+
+            all_lines.extend(ins_lines);
+            all_row_infos.extend(ins_row_infos);
+
+            return all_lines.len() - rows_before;
+        }
 
         if inline_width > content_width {
-            let change_type = classify_inline_change(&diff_line.inline_spans);
-
             match change_type {
-                InlineChangeType::Mixed => {
-                    let del_source = get_deletion_source(&diff_line.inline_spans);
-                    let ins_source = get_insertion_source(&diff_line.inline_spans);
-
-                    // Get old content for deletion line syntax highlighting
-                    let old_content = diff_line.old_content.as_deref().unwrap_or("");
-                    let del_spans = build_deletion_spans_with_highlight(
-                        &diff_line.inline_spans,
-                        del_source,
-                        old_content,
-                        diff_line.file_path.as_deref(),
-                    );
-
-                    if !del_spans.is_empty() {
-                        let del_style = line_style(del_source);
-                        let del_prefix_str = if !prefix_str.is_empty() {
-                            " ".repeat(prefix_str.len())
-                        } else {
-                            String::new()
-                        };
-
-                        let del_spans = apply_selection_to_content(
-                            del_spans,
-                            self.selection,
-                            screen_row_idx,
-                            prefix_width,
-                        );
-
-                        let del_prefix_char = format!("- {} ", status_symbol(del_source));
-                        let (del_lines, del_row_infos) = wrap_content(
-                            del_spans,
-                            old_content,
-                            del_prefix_str,
-                            del_prefix_char,
-                            del_style,
-                            content_width,
-                            prefix_width,
-                        );
-
-                        screen_row_idx += del_lines.len();
-                        all_lines.extend(del_lines);
-                        all_row_infos.extend(del_row_infos);
-                    }
-
-                    let new_content = &diff_line.content;
-                    let ins_style = line_style(ins_source);
-                    let ins_spans = build_insertion_spans_with_highlight(
-                        &diff_line.inline_spans,
-                        ins_source,
-                        new_content,
-                        diff_line.file_path.as_deref(),
-                    );
-                    let ins_spans = apply_selection_to_content(
-                        ins_spans,
-                        self.selection,
-                        screen_row_idx,
-                        prefix_width,
-                    );
-
-                    let ins_prefix_char = format!("+ {} ", status_symbol(ins_source));
-                    let (ins_lines, ins_row_infos) = wrap_content(
-                        ins_spans,
-                        new_content,
-                        prefix_str.to_string(),
-                        ins_prefix_char,
-                        ins_style,
-                        content_width,
-                        prefix_width,
-                    );
-
-                    all_lines.extend(ins_lines);
-                    all_row_infos.extend(ins_row_infos);
-
-                    return all_lines.len() - rows_before;
-                }
-                InlineChangeType::PureDeletion | InlineChangeType::PureAddition => {
-                    // Use the actual source from spans, not the line's base source
+                InlineChangeType::PureAddition => {
                     let highlight_source = get_insertion_source(&diff_line.inline_spans);
                     let highlight_style = line_style_with_highlight(highlight_source);
                     let content_spans = syntax_highlight_inline_spans(
@@ -635,7 +640,7 @@ impl<'a> DiffViewModel<'a> {
 
                     return all_lines.len() - rows_before;
                 }
-                InlineChangeType::NoChange => {}
+                InlineChangeType::NoChange | InlineChangeType::Mixed | InlineChangeType::PureDeletion => {}
             }
         }
 
