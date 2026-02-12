@@ -26,6 +26,9 @@ use crate::message::{
 /// Delay before processing VCS internal events (500ms reduces lock collisions by ~80%)
 const VCS_EVENT_DELAY_MS: u64 = 500;
 
+/// How often to check for VCS backend changes (e.g., .jj appearing or disappearing).
+const VCS_CHECK_INTERVAL_SECS: u64 = 2;
+
 /// Timer state for periodic operations.
 pub struct Timers {
     pub last_refresh: Instant,
@@ -33,16 +36,28 @@ pub struct Timers {
     pub fetch_in_progress: bool,
     /// Timestamp of last VCS internal event for delayed processing
     pub pending_vcs_event: Option<Instant>,
+    /// Timestamp of last VCS backend detection check
+    pub last_vcs_check: Instant,
+    /// Whether .jj directory existed at last check
+    pub jj_present: bool,
 }
 
-impl Default for Timers {
-    fn default() -> Self {
+impl Timers {
+    pub fn new(jj_present: bool) -> Self {
         Self {
             last_refresh: Instant::now(),
             last_fetch: Instant::now(),
             fetch_in_progress: false,
             pending_vcs_event: None,
+            last_vcs_check: Instant::now(),
+            jj_present,
         }
+    }
+}
+
+impl Default for Timers {
+    fn default() -> Self {
+        Self::new(false)
     }
 }
 
@@ -140,6 +155,8 @@ pub struct UpdateConfig {
     pub diff_thresholds: DiffThresholds,
     /// Whether to use fallback periodic refresh (for large repos exceeding file watch limits)
     pub needs_fallback_refresh: bool,
+    /// Repository root path (for VCS backend detection)
+    pub repo_path: PathBuf,
 }
 
 impl Default for UpdateConfig {
@@ -151,6 +168,7 @@ impl Default for UpdateConfig {
             auto_fetch: true,
             diff_thresholds: DiffThresholds::default(),
             needs_fallback_refresh: false,
+            repo_path: PathBuf::new(),
         }
     }
 }
@@ -562,6 +580,17 @@ fn handle_tick(
     config: &UpdateConfig,
 ) -> UpdateResult {
     let mut result = UpdateResult::default();
+
+    // Detect VCS backend changes (e.g., jj init --colocate or rm -rf .jj)
+    if timers.last_vcs_check.elapsed() >= Duration::from_secs(VCS_CHECK_INTERVAL_SECS) {
+        timers.last_vcs_check = Instant::now();
+        let jj_now = config.repo_path.join(".jj").is_dir();
+        if jj_now != timers.jj_present {
+            timers.jj_present = jj_now;
+            result.loop_action = LoopAction::RestartVcs;
+            return result;
+        }
+    }
 
     // Trigger periodic fetch if enabled
     if config.auto_fetch
@@ -1448,5 +1477,91 @@ mod tests {
         let result = handle_input(AppAction::CopyPath, &mut app, &mut refresh_state);
 
         assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_tick_detects_vcs_change() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir(temp.path().join(".jj")).unwrap();
+
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::new(false); // started without .jj
+        timers.last_vcs_check = Instant::now() - Duration::from_secs(3);
+
+        let config = UpdateConfig {
+            repo_path: temp.path().to_path_buf(),
+            auto_fetch: false,
+            ..Default::default()
+        };
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+        assert_eq!(result.loop_action, LoopAction::RestartVcs);
+        assert!(timers.jj_present);
+    }
+
+    #[test]
+    fn test_handle_tick_detects_vcs_removal() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        // No .jj directory exists
+
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::new(true); // started with .jj
+        timers.last_vcs_check = Instant::now() - Duration::from_secs(3);
+
+        let config = UpdateConfig {
+            repo_path: temp.path().to_path_buf(),
+            auto_fetch: false,
+            ..Default::default()
+        };
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+        assert_eq!(result.loop_action, LoopAction::RestartVcs);
+        assert!(!timers.jj_present);
+    }
+
+    #[test]
+    fn test_handle_tick_no_vcs_change() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        // No .jj directory, and jj_present is false — no change
+
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::new(false);
+        timers.last_vcs_check = Instant::now() - Duration::from_secs(3);
+
+        let config = UpdateConfig {
+            repo_path: temp.path().to_path_buf(),
+            auto_fetch: false,
+            ..Default::default()
+        };
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+        assert_eq!(result.loop_action, LoopAction::Continue);
+    }
+
+    #[test]
+    fn test_handle_tick_no_vcs_change_jj_still_present() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir(temp.path().join(".jj")).unwrap();
+
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::new(true); // started with .jj, still present
+        timers.last_vcs_check = Instant::now() - Duration::from_secs(3);
+
+        let config = UpdateConfig {
+            repo_path: temp.path().to_path_buf(),
+            auto_fetch: false,
+            ..Default::default()
+        };
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+        assert_eq!(result.loop_action, LoopAction::Continue);
     }
 }
