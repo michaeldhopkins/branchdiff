@@ -166,6 +166,9 @@ impl App {
     pub fn apply_refresh_result(&mut self, result: RefreshResult) {
         self.error = None;
         self.base_identifier = result.base_identifier;
+        if let Some(label) = result.base_label {
+            self.comparison.from_label = label;
+        }
         if let Some(branch) = result.current_branch {
             self.comparison.to_label = branch;
         }
@@ -1269,6 +1272,7 @@ mod tests {
             files: vec![],
             lines: new_lines.clone(),
             base_identifier: "newbase123".to_string(),
+            base_label: None,
             current_branch: Some("new-branch".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
@@ -1469,6 +1473,7 @@ mod tests {
             files: vec![],
             lines: vec![change_line("new")],
             base_identifier: "abc".to_string(),
+            base_label: None,
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
@@ -1688,5 +1693,44 @@ mod tests {
 
         assert!(app.has_related_file("handler.go"));
         assert!(!app.has_related_file("other.go"));
+    }
+
+    #[test]
+    fn test_apply_refresh_result_updates_from_label() {
+        let mut app = TestAppBuilder::new().build();
+        app.comparison.from_label = "old-base".to_string();
+
+        let result = RefreshResult {
+            files: vec![],
+            lines: vec![],
+            base_identifier: "abc".to_string(),
+            base_label: Some("new-base".to_string()),
+            current_branch: Some("feature".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+        };
+        app.apply_refresh_result(result);
+
+        assert_eq!(app.comparison.from_label, "new-base");
+        assert_eq!(app.comparison.to_label, "feature");
+    }
+
+    #[test]
+    fn test_apply_refresh_result_preserves_from_label_when_none() {
+        let mut app = TestAppBuilder::new().build();
+        app.comparison.from_label = "keep-this".to_string();
+
+        let result = RefreshResult {
+            files: vec![],
+            lines: vec![],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("feature".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+        };
+        app.apply_refresh_result(result);
+
+        assert_eq!(app.comparison.from_label, "keep-this");
     }
 }

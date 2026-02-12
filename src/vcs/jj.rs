@@ -198,6 +198,7 @@ impl crate::vcs::Vcs for JjVcs {
             file_count: files.len(),
         };
         let base_identifier = self.get_change_id(&self.from_rev).unwrap_or_default();
+        let base_label = Some(self.rev_label(&self.from_rev));
         let current_branch = Some(self.rev_label("@"));
 
         let file_paths: Vec<&str> = files
@@ -211,6 +212,7 @@ impl crate::vcs::Vcs for JjVcs {
             files,
             lines: all_lines,
             base_identifier,
+            base_label,
             current_branch,
             metrics,
             file_links,
@@ -744,5 +746,46 @@ mod tests {
         let expected = repo.canonicalize().unwrap();
         let actual = root.canonicalize().unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_jj_refresh_returns_base_label_with_bookmark() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["bookmark", "set", "my-base", "-r", "@-"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "changed\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        assert_eq!(result.base_label.as_deref(), Some("my-base"));
+    }
+
+    #[test]
+    fn test_jj_refresh_returns_base_label_as_change_id_without_bookmark() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "changed\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        let base_label = result.base_label.expect("should have base_label");
+        assert!(!base_label.is_empty());
+        assert_eq!(base_label, result.base_identifier, "without bookmark, base_label should match change_id");
     }
 }

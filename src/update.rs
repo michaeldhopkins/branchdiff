@@ -499,13 +499,11 @@ fn handle_file_change(
 
         if has_only_vcs_changes {
             timers.pending_vcs_event = Some(Instant::now());
-            if !refresh_state.is_idle() {
-                refresh_state.cancel_and_mark_pending();
-            }
             return result;
         }
 
         // Source file changes - process immediately
+        timers.pending_vcs_event = None;
         if !refresh_state.is_idle() {
             if has_vcs_change {
                 refresh_state.cancel_and_mark_pending();
@@ -513,7 +511,6 @@ fn handle_file_change(
                 refresh_state.mark_pending();
             }
         } else {
-            timers.pending_vcs_event = None;
 
             let can_use_single_file =
                 !has_vcs_change && source_files.len() == 1 && !app.files.is_empty();
@@ -691,6 +688,7 @@ mod tests {
             files: vec![],
             lines: vec![base_line("new content")],
             base_identifier: "def456".to_string(),
+            base_label: None,
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
@@ -967,6 +965,7 @@ mod tests {
             files: vec![],
             lines: vec![base_line("content")],
             base_identifier: "abc".to_string(),
+            base_label: None,
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
@@ -1280,6 +1279,35 @@ mod tests {
     }
 
     #[test]
+    fn test_source_file_event_clears_stale_pending_vcs_timer() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".git")).unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            started_at: Instant::now(),
+        };
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        timers.pending_vcs_event = Some(Instant::now() - Duration::from_millis(300));
+        let vcs = StubVcs::new(temp.path().to_path_buf());
+
+        let events = vec![
+            DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any),
+        ];
+        let _result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+
+        assert!(
+            timers.pending_vcs_event.is_none(),
+            "source file event should clear stale pending_vcs_event"
+        );
+    }
+
+    #[test]
     fn test_revision_change_cancels_in_progress_refresh() {
         use notify_debouncer_mini::DebouncedEvent;
         use tempfile::TempDir;
@@ -1332,6 +1360,39 @@ mod tests {
         // VCS-only changes are deferred (not immediate refresh)
         assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(timers.pending_vcs_event.is_some());
+    }
+
+    #[test]
+    fn test_vcs_only_event_during_in_progress_refresh_does_not_cancel() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let mut refresh_state = RefreshState::InProgress {
+            cancel_flag: cancel_flag.clone(),
+            started_at: Instant::now(),
+        };
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        let vcs = StubVcs::new(temp.path().to_path_buf());
+
+        let events = vec![
+            DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any),
+        ];
+        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        assert!(timers.pending_vcs_event.is_some());
+        assert!(!cancel_flag.load(Ordering::Relaxed), "cancel flag should not be set");
+        assert!(
+            matches!(refresh_state, RefreshState::InProgress { .. }),
+            "should remain InProgress, not InProgressPending"
+        );
     }
 
     #[test]
