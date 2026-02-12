@@ -38,8 +38,10 @@ pub struct App {
 
     /// Path to the repository root
     pub repo_path: PathBuf,
-    /// What we're comparing (branch names/labels and resolved base reference)
+    /// What we're comparing (branch names/labels)
     pub comparison: ComparisonContext,
+    /// Resolved base reference for diff computation (merge-base SHA, change ID)
+    pub base_identifier: String,
     /// All file diffs
     pub files: Vec<FileDiff>,
     /// Flattened lines for display
@@ -82,8 +84,8 @@ impl App {
             comparison: ComparisonContext {
                 from_label: "main".to_string(),
                 to_label: "feature".to_string(),
-                base_identifier: "bench".to_string(),
             },
+            base_identifier: "bench".to_string(),
             files: Vec::new(),
             lines,
             error: None,
@@ -113,6 +115,7 @@ impl App {
             },
             repo_path,
             comparison,
+            base_identifier: String::new(),
             files: Vec::new(),
             lines: Vec::new(),
             error: None,
@@ -162,7 +165,7 @@ impl App {
 
     pub fn apply_refresh_result(&mut self, result: RefreshResult) {
         self.error = None;
-        self.comparison.base_identifier = result.base_identifier;
+        self.base_identifier = result.base_identifier;
         if let Some(branch) = result.current_branch {
             self.comparison.to_label = branch;
         }
@@ -1273,7 +1276,7 @@ mod tests {
 
         app.apply_refresh_result(result);
 
-        assert_eq!(app.comparison.base_identifier, "newbase123");
+        assert_eq!(app.base_identifier, "newbase123");
         assert_eq!(app.lines.len(), 3);
         assert_eq!(app.lines[0].content, "new_file.txt");
         assert_eq!(app.lines[1].content, "new line 1");

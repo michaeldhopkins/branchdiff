@@ -125,16 +125,13 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
-        // Fetch base change_id once and reuse for both label and identifier
-        let base_change_id = self.get_change_id(&self.from_rev)?;
         let from_label = self.get_bookmarks(&self.from_rev)
-            .unwrap_or_else(|| base_change_id.clone());
+            .unwrap_or_else(|| self.get_change_id(&self.from_rev).unwrap_or_else(|_| self.from_rev.clone()));
         let to_label = self.rev_label("@");
 
         Ok(ComparisonContext {
             from_label,
             to_label,
-            base_identifier: base_change_id,
         })
     }
 
@@ -175,7 +172,9 @@ impl crate::vcs::Vcs for JjVcs {
                 continue;
             }
 
-            // jj has no staging area: base = from_rev, head = @, no index/working
+            // jj has no staging area: base = from_rev, head = @
+            // Pass head as index/working so the diff algorithm doesn't
+            // misinterpret None as "file deleted from staging area"
             // For renames, read base content from the old path
             let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
             let base = self.get_file_content_at_rev(base_path, &self.from_rev).ok().flatten();
@@ -185,8 +184,8 @@ impl crate::vcs::Vcs for JjVcs {
                 path: &changed.path,
                 base: base.as_deref(),
                 head: head.as_deref(),
-                index: None,
-                working: None,
+                index: head.as_deref(),
+                working: head.as_deref(),
                 old_path: changed.old_path.as_deref(),
             });
 
@@ -219,7 +218,12 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
-        let base = self.get_file_content_at_rev(file_path, &self.from_rev).ok().flatten();
+        let changed_files = self.get_changed_files().ok()?;
+        let changed = changed_files.iter().find(|f| f.path == file_path);
+        let old_path = changed.and_then(|f| f.old_path.as_deref());
+
+        let base_path = old_path.unwrap_or(file_path);
+        let base = self.get_file_content_at_rev(base_path, &self.from_rev).ok().flatten();
         let head = self.get_file_content_at_rev(file_path, "@").ok().flatten();
 
         if base.is_none() && head.is_none() {
@@ -235,9 +239,9 @@ impl crate::vcs::Vcs for JjVcs {
             path: file_path,
             base: base.as_deref(),
             head: head.as_deref(),
-            index: None,
-            working: None,
-            old_path: None,
+            index: head.as_deref(),
+            working: head.as_deref(),
+            old_path,
         }))
     }
 
@@ -604,6 +608,14 @@ mod tests {
 
         assert!(!result.files.is_empty(), "should detect changed file");
         assert!(!result.lines.is_empty(), "should produce diff lines");
+
+        // Verify the file header is a normal header, not a "(deleted)" header
+        let has_committed = result.lines.iter().any(|l| l.source == LineSource::Committed);
+        assert!(has_committed, "modified lines should have Committed source");
+        let header = &result.lines[0];
+        assert_eq!(header.source, LineSource::FileHeader, "first line should be file header");
+        assert!(!header.content.contains("(deleted)"),
+            "modified file should not have deletion header, got: {}", header.content);
     }
 
     #[test]
@@ -641,9 +653,11 @@ mod tests {
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
         let ctx = vcs.comparison_context().unwrap();
 
-        assert!(!ctx.base_identifier.is_empty(), "should have a base identifier");
         assert!(!ctx.to_label.is_empty(), "should have a to label");
         assert!(!ctx.from_label.is_empty(), "should have a from label");
+
+        let base_id = vcs.base_identifier().unwrap();
+        assert!(!base_id.is_empty(), "should have a base identifier");
     }
 
     #[test]
@@ -664,6 +678,56 @@ mod tests {
 
         let working = vcs.working_file_bytes("file.txt").unwrap();
         assert_eq!(working.unwrap(), b"changed\n");
+    }
+
+    #[test]
+    fn test_jj_refresh_detects_deleted_file() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("doomed.txt"), "goodbye\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        std::fs::remove_file(repo.join("doomed.txt")).unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        assert!(!result.files.is_empty(), "should detect deleted file");
+        let header = &result.lines[0];
+        assert!(header.content.contains("(deleted)"),
+            "deleted file should have deletion header, got: {}", header.content);
+        let has_deleted_source = result.lines.iter().any(|l| l.source == LineSource::DeletedBase);
+        assert!(has_deleted_source, "deleted file lines should have DeletedBase source");
+    }
+
+    #[test]
+    fn test_jj_single_file_diff_handles_rename() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("original.txt"), "line1\nline2\nline3\nline4\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        std::fs::rename(repo.join("original.txt"), repo.join("renamed.txt")).unwrap();
+        std::fs::write(repo.join("renamed.txt"), "line1\nline2\nline3\nmodified\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let diff = vcs.single_file_diff("renamed.txt");
+        assert!(diff.is_some(), "should produce a diff for renamed file");
+
+        let diff = diff.unwrap();
+        let header = &diff.lines[0];
+        assert!(
+            header.content.contains("original.txt"),
+            "rename header should reference old filename, got: {}",
+            header.content
+        );
     }
 
     #[test]
