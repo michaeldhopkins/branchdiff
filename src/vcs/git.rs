@@ -1,15 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 
-use crate::app::{compute_refresh, compute_single_file_diff};
-use crate::diff::FileDiff;
+use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff, LineSource};
+use crate::file_links::compute_file_links;
+use crate::image_diff::is_image_file;
+use crate::limits::DiffMetrics;
 use crate::vcs::{ComparisonContext, RefreshResult, Vcs};
 
 /// Maximum number of retries for transient git errors
@@ -714,10 +718,247 @@ pub fn get_current_branch(repo_path: &Path) -> Result<Option<String>> {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Refresh pipeline (git-specific implementation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PARALLEL_THRESHOLD: usize = 4;
+
+/// Maximum threads for git subprocess operations.
+const MAX_GIT_THREADS: usize = 16;
+
+static GIT_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+fn git_thread_pool() -> &'static rayon::ThreadPool {
+    GIT_POOL.get_or_init(|| {
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(MAX_GIT_THREADS))
+            .unwrap_or(4);
+
+        ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .expect("failed to build git thread pool")
+    })
+}
+
+enum FileProcessResult {
+    Diff(FileDiff),
+    Binary { path: String },
+    Image { path: String },
+}
+
+struct FileContents {
+    base: Option<String>,
+    head: Option<String>,
+    index: Option<String>,
+    working: Option<String>,
+}
+
+impl FileContents {
+    fn fetch(repo_path: &Path, file_path: &str, old_path: Option<&str>, merge_base: &str) -> Self {
+        let base_path = old_path.unwrap_or(file_path);
+
+        let base = if merge_base.is_empty() {
+            None
+        } else {
+            get_file_at_ref(repo_path, base_path, merge_base)
+                .ok()
+                .flatten()
+        };
+
+        let head = get_file_at_ref(repo_path, file_path, "HEAD")
+            .ok()
+            .flatten()
+            .or_else(|| {
+                old_path.and_then(|p| get_file_at_ref(repo_path, p, "HEAD").ok().flatten())
+            });
+
+        let index = get_file_at_ref(repo_path, file_path, "")
+            .ok()
+            .flatten()
+            .or_else(|| {
+                old_path.and_then(|p| get_file_at_ref(repo_path, p, "").ok().flatten())
+            });
+
+        Self {
+            base,
+            head,
+            index,
+            working: get_working_tree_file(repo_path, file_path)
+                .ok()
+                .flatten(),
+        }
+    }
+
+    fn all_equal(&self) -> bool {
+        self.base == self.working && self.base == self.head && self.base == self.index
+    }
+}
+
+fn process_single_file(
+    repo_path: &Path,
+    file_path: &str,
+    old_path: Option<&str>,
+    merge_base: &str,
+    binary_files: &HashSet<String>,
+) -> FileProcessResult {
+    if binary_files.contains(file_path) {
+        if is_image_file(file_path) {
+            return FileProcessResult::Image {
+                path: file_path.to_string(),
+            };
+        }
+        return FileProcessResult::Binary {
+            path: file_path.to_string(),
+        };
+    }
+
+    let contents = FileContents::fetch(repo_path, file_path, old_path, merge_base);
+    let file_diff = compute_four_way_diff(DiffInput {
+        path: file_path,
+        base: contents.base.as_deref(),
+        head: contents.head.as_deref(),
+        index: contents.index.as_deref(),
+        working: contents.working.as_deref(),
+        old_path,
+    });
+
+    FileProcessResult::Diff(file_diff)
+}
+
+fn git_compute_single_file_diff(
+    repo_path: &Path,
+    file_path: &str,
+    merge_base: &str,
+) -> Option<FileDiff> {
+    if is_binary_file(repo_path, file_path) {
+        return None;
+    }
+
+    let contents = FileContents::fetch(repo_path, file_path, None, merge_base);
+
+    if contents.all_equal() {
+        return None;
+    }
+
+    Some(compute_four_way_diff(DiffInput {
+        path: file_path,
+        base: contents.base.as_deref(),
+        head: contents.head.as_deref(),
+        index: contents.index.as_deref(),
+        working: contents.working.as_deref(),
+        old_path: None,
+    }))
+}
+
+fn git_compute_refresh(
+    repo_path: &Path,
+    base_branch: &str,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Result<RefreshResult> {
+    let merge_base = get_merge_base_preferring_origin(repo_path, base_branch)
+        .unwrap_or_default();
+
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Err(anyhow!("refresh cancelled"));
+    }
+
+    let (changed_files_result, binary_files) = std::thread::scope(|s| {
+        let changed_handle = s.spawn(|| get_all_changed_files(repo_path, &merge_base));
+        let binary_handle = s.spawn(|| get_binary_files(repo_path, &merge_base));
+
+        (
+            changed_handle.join().expect("changed files thread panicked"),
+            binary_handle.join().expect("binary files thread panicked"),
+        )
+    });
+
+    let changed_files = changed_files_result.context("Failed to get changed files")?;
+
+    let results: Vec<FileProcessResult> = if changed_files.len() >= PARALLEL_THRESHOLD {
+        git_thread_pool().install(|| {
+            changed_files
+                .par_iter()
+                .map(|file| process_single_file(repo_path, &file.path, file.old_path.as_deref(), &merge_base, &binary_files))
+                .collect()
+        })
+    } else {
+        changed_files
+            .iter()
+            .map(|file| process_single_file(repo_path, &file.path, file.old_path.as_deref(), &merge_base, &binary_files))
+            .collect()
+    };
+
+    if cancel_flag.load(Ordering::Relaxed) {
+        return Err(anyhow!("refresh cancelled"));
+    }
+
+    let mut files = Vec::new();
+    let mut lines = Vec::new();
+
+    for result in results {
+        match result {
+            FileProcessResult::Diff(file_diff) => {
+                lines.extend(file_diff.lines.iter().cloned());
+                lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
+                files.push(file_diff);
+            }
+            FileProcessResult::Binary { path } => {
+                let header = DiffLine::file_header(&path);
+                let marker = DiffLine::new(
+                    LineSource::Base,
+                    "[binary file]".to_string(),
+                    ' ',
+                    None,
+                );
+                lines.push(header.clone());
+                lines.push(marker.clone());
+                files.push(FileDiff {
+                    lines: vec![header, marker],
+                });
+            }
+            FileProcessResult::Image { path } => {
+                let header = DiffLine::file_header(&path);
+                let marker = DiffLine::image_marker(&path);
+                lines.push(header.clone());
+                lines.push(marker.clone());
+                files.push(FileDiff {
+                    lines: vec![header, marker],
+                });
+            }
+        }
+    }
+
+    let current_branch = get_current_branch(repo_path).unwrap_or(None);
+
+    let metrics = DiffMetrics {
+        total_lines: lines.len(),
+        file_count: files.len(),
+    };
+
+    let file_paths: Vec<&str> = files
+        .iter()
+        .filter_map(|f| f.lines.first())
+        .filter_map(|l| l.file_path.as_deref())
+        .collect();
+    let file_links = compute_file_links(&file_paths);
+
+    Ok(RefreshResult {
+        files,
+        lines,
+        base_identifier: merge_base,
+        current_branch,
+        metrics,
+        file_links,
+    })
+}
+
 /// Git backend for branchdiff.
 pub struct GitVcs {
     repo_path: PathBuf,
     base_branch: String,
+    git_version: GitVersion,
 }
 
 impl GitVcs {
@@ -725,32 +966,14 @@ impl GitVcs {
     pub fn new(repo_path: PathBuf) -> Result<Self> {
         let base_branch = detect_base_branch(&repo_path)
             .unwrap_or_else(|_| "main".to_string());
-        Ok(Self { repo_path, base_branch })
+        let git_version = get_git_version()
+            .context("Failed to detect git version")?;
+        Ok(Self { repo_path, base_branch, git_version })
     }
 
     /// The base branch name (e.g., "main" or "master").
     pub fn base_branch(&self) -> &str {
         &self.base_branch
-    }
-
-    /// Detect the installed git version.
-    pub fn git_version(&self) -> Result<GitVersion> {
-        get_git_version()
-    }
-
-    /// Fetch the base branch from the remote.
-    pub fn fetch(&self) -> Result<()> {
-        fetch_base_branch(&self.repo_path, &self.base_branch)
-    }
-
-    /// Check if there are merge conflicts with the base branch.
-    pub fn has_merge_conflicts(&self, git_version: &GitVersion) -> Result<bool> {
-        has_merge_conflicts(&self.repo_path, &self.base_branch, git_version)
-    }
-
-    /// Check if the git index is locked.
-    pub fn is_index_locked(&self) -> bool {
-        is_index_locked(&self.repo_path)
     }
 }
 
@@ -773,13 +996,13 @@ impl Vcs for GitVcs {
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
-        compute_refresh(&self.repo_path, &self.base_branch, cancel_flag)
+        git_compute_refresh(&self.repo_path, &self.base_branch, cancel_flag)
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
         let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
             .unwrap_or_default();
-        compute_single_file_diff(&self.repo_path, file_path, &merge_base)
+        git_compute_single_file_diff(&self.repo_path, file_path, &merge_base)
     }
 
     fn base_identifier(&self) -> Result<String> {
@@ -801,11 +1024,67 @@ impl Vcs for GitVcs {
             .unwrap_or_default();
         get_binary_files(&self.repo_path, &merge_base)
     }
+
+    fn fetch(&self) -> Result<()> {
+        fetch_base_branch(&self.repo_path, &self.base_branch)
+    }
+
+    fn has_conflicts(&self) -> Result<bool> {
+        has_merge_conflicts(&self.repo_path, &self.base_branch, &self.git_version)
+    }
+
+    fn is_locked(&self) -> bool {
+        is_index_locked(&self.repo_path)
+    }
+
+    fn watch_paths(&self) -> crate::vcs::VcsWatchPaths {
+        let git_dir = self.repo_path.join(".git");
+        crate::vcs::VcsWatchPaths {
+            files: vec![git_dir.join("index"), git_dir.join("HEAD")],
+            recursive_dirs: vec![git_dir.join("refs")],
+        }
+    }
+
+    fn classify_event(&self, path: &Path) -> crate::vcs::VcsEventType {
+        use crate::vcs::VcsEventType;
+
+        let relative = path.strip_prefix(&self.repo_path).unwrap_or(path);
+        let is_git_path = relative
+            .components()
+            .next()
+            .is_some_and(|c| c.as_os_str() == ".git");
+
+        if !is_git_path {
+            return VcsEventType::Source;
+        }
+
+        // Any .lock file inside .git/ signals an external operation
+        if relative.extension().is_some_and(|ext| ext == "lock") {
+            return VcsEventType::Lock;
+        }
+
+        // Only exact .git/HEAD is a revision change, not FETCH_HEAD/ORIG_HEAD/MERGE_HEAD
+        if relative == Path::new(".git/HEAD") {
+            return VcsEventType::RevisionChange;
+        }
+
+        let path_str = relative.to_string_lossy();
+        if path_str.contains("refs/") {
+            VcsEventType::RevisionChange
+        } else {
+            VcsEventType::Internal
+        }
+    }
+
+    fn vcs_name(&self) -> &str {
+        "git"
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vcs::VcsEventType;
     use std::fs;
     use std::process::Command;
     use tempfile::TempDir;
@@ -1667,5 +1946,143 @@ mod tests {
         assert_eq!(working_bytes.unwrap(), b"changed\n");
 
         assert!(vcs.binary_files().is_empty());
+    }
+
+    // === classify_event tests ===
+
+    fn classify(repo_path: &Path, relative: &str) -> VcsEventType {
+        use crate::vcs::Vcs;
+        let vcs = GitVcs {
+            repo_path: repo_path.to_path_buf(),
+            base_branch: "main".to_string(),
+            git_version: GitVersion { major: 2, minor: 40, patch: 0 },
+        };
+        vcs.classify_event(&repo_path.join(relative))
+    }
+
+    #[test]
+    fn test_classify_source_file() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, "src/main.rs"), VcsEventType::Source);
+    }
+
+    #[test]
+    fn test_classify_source_file_at_root() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, "Cargo.toml"), VcsEventType::Source);
+    }
+
+    #[test]
+    fn test_classify_gitignore_is_source() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".gitignore"), VcsEventType::Source);
+    }
+
+    #[test]
+    fn test_classify_git_index() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/index"), VcsEventType::Internal);
+    }
+
+    #[test]
+    fn test_classify_git_config() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/config"), VcsEventType::Internal);
+    }
+
+    #[test]
+    fn test_classify_git_head() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/HEAD"), VcsEventType::RevisionChange);
+    }
+
+    #[test]
+    fn test_classify_git_refs() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/refs/heads/main"), VcsEventType::RevisionChange);
+    }
+
+    #[test]
+    fn test_classify_git_index_lock() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/index.lock"), VcsEventType::Lock);
+    }
+
+    #[test]
+    fn test_classify_git_head_lock() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/HEAD.lock"), VcsEventType::Lock);
+    }
+
+    #[test]
+    fn test_classify_git_refs_lock() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/refs/heads/main.lock"), VcsEventType::Lock);
+    }
+
+    #[test]
+    fn test_classify_fetch_head_is_internal() {
+        // FETCH_HEAD is not a revision change — it's written on every fetch
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/FETCH_HEAD"), VcsEventType::Internal);
+    }
+
+    #[test]
+    fn test_classify_orig_head_is_internal() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/ORIG_HEAD"), VcsEventType::Internal);
+    }
+
+    #[test]
+    fn test_classify_merge_head_is_internal() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/MERGE_HEAD"), VcsEventType::Internal);
+    }
+
+    #[test]
+    fn test_classify_nested_worktree_lock() {
+        let repo = Path::new("/repo");
+        assert_eq!(classify(repo, ".git/worktrees/foo/index.lock"), VcsEventType::Lock);
+    }
+
+    #[test]
+    fn test_classify_path_outside_repo() {
+        let repo = Path::new("/repo");
+        let vcs = GitVcs {
+            repo_path: repo.to_path_buf(),
+            base_branch: "main".to_string(),
+            git_version: GitVersion { major: 2, minor: 40, patch: 0 },
+        };
+        // Path outside repo — strip_prefix fails, treated as source
+        assert_eq!(vcs.classify_event(Path::new("/other/file.rs")), VcsEventType::Source);
+    }
+
+    // === watch_paths tests ===
+
+    #[test]
+    fn test_watch_paths_includes_index_and_head() {
+        use crate::vcs::Vcs;
+        let repo = Path::new("/repo");
+        let vcs = GitVcs {
+            repo_path: repo.to_path_buf(),
+            base_branch: "main".to_string(),
+            git_version: GitVersion { major: 2, minor: 40, patch: 0 },
+        };
+        let paths = vcs.watch_paths();
+        assert!(paths.files.contains(&repo.join(".git/index")));
+        assert!(paths.files.contains(&repo.join(".git/HEAD")));
+    }
+
+    #[test]
+    fn test_watch_paths_includes_refs_dir() {
+        use crate::vcs::Vcs;
+        let repo = Path::new("/repo");
+        let vcs = GitVcs {
+            repo_path: repo.to_path_buf(),
+            base_branch: "main".to_string(),
+            git_version: GitVersion { major: 2, minor: 40, patch: 0 },
+        };
+        let paths = vcs.watch_paths();
+        assert!(paths.recursive_dirs.contains(&repo.join(".git/refs")));
     }
 }

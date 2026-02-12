@@ -8,8 +8,8 @@
 
 mod print;
 
-use branchdiff::app::{self, compute_refresh, compute_single_file_diff, App, FrameContext};
-use branchdiff::file_events::GitLockState;
+use branchdiff::app::{self, App, FrameContext};
+use branchdiff::file_events::VcsLockState;
 #[cfg(target_os = "linux")]
 use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::{handle_event, AppAction};
@@ -141,7 +141,9 @@ fn main() -> Result<()> {
         OutputMode::Print => {
             let vcs = GitVcs::new(repo_root.clone())?;
             let comparison = vcs.comparison_context()?;
-            let mut app = app::App::new(repo_root, comparison)?;
+            let cancel_flag = Arc::new(AtomicBool::new(false));
+            let initial = vcs.refresh(&cancel_flag)?;
+            let mut app = app::App::new(repo_root, comparison, initial);
             app.view.collapsed_files.clear();
             app.view.view_mode = app::ViewMode::Full;
 
@@ -156,7 +158,9 @@ fn main() -> Result<()> {
         OutputMode::Diff => {
             let vcs = GitVcs::new(repo_root.clone())?;
             let comparison = vcs.comparison_context()?;
-            let app = app::App::new(repo_root, comparison)?;
+            let cancel_flag = Arc::new(AtomicBool::new(false));
+            let initial = vcs.refresh(&cancel_flag)?;
+            let app = app::App::new(repo_root, comparison, initial);
             let patch = branchdiff::patch::generate_patch(&app.lines);
             print!("{}", patch);
             return Ok(());
@@ -255,9 +259,7 @@ fn run_waiting_for_git(path: &Path, auto_fetch: bool) -> Result<()> {
 
 /// Main app logic, extracted for reuse after git init detection.
 fn run_main_app(repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
-    // Initialize git backend
-    let git_vcs = GitVcs::new(repo_root.clone())?;
-    let git_version = git_vcs.git_version().context("Failed to detect git version")?;
+    let vcs: Arc<dyn Vcs> = Arc::new(GitVcs::new(repo_root.clone())?);
 
     // Initialize image protocol picker
     let in_multiplexer = std::env::var("ZELLIJ").is_ok()
@@ -282,9 +284,12 @@ fn run_main_app(repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
     // Get watch limit
     let watch_limit = limits::get_watch_limit();
 
-    // Create app
-    let comparison = git_vcs.comparison_context()?;
-    let mut app = App::new(repo_root.clone(), comparison)?;
+    // Create app with initial refresh
+    let comparison = vcs.comparison_context()?;
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let initial = vcs.refresh(&cancel_flag)?;
+    let mut app = App::new(repo_root, comparison, initial);
+    app.load_images_for_markers(&*vcs);
     app.set_image_picker(image_picker);
 
     // Setup file watcher
@@ -304,7 +309,7 @@ fn run_main_app(repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
         )?)
     };
 
-    let watcher_metrics = setup_watcher(debouncer.watcher(), &repo_root, watch_limit)?;
+    let watcher_metrics = setup_watcher(debouncer.watcher(), &*vcs, watch_limit)?;
 
     let needs_fallback_refresh = limits::check_watch_warning(&watcher_metrics, watch_limit).is_some();
     if needs_fallback_refresh {
@@ -329,9 +334,8 @@ fn run_main_app(repo_root: PathBuf, auto_fetch: bool) -> Result<()> {
         file_rx,
         refresh_tx,
         refresh_rx,
-        repo_root,
+        vcs,
         config,
-        git_version,
         watch_limit,
     );
 
@@ -354,7 +358,9 @@ fn run_benchmark(repo_root: PathBuf, frames: usize) -> Result<()> {
     let load_start = Instant::now();
     let vcs = GitVcs::new(repo_root.clone())?;
     let comparison = vcs.comparison_context()?;
-    let mut app = App::new(repo_root, comparison)?;
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let initial = vcs.refresh(&cancel_flag)?;
+    let mut app = App::new(repo_root, comparison, initial);
     let load_time = load_start.elapsed();
     eprintln!(
         "Loaded {} lines across {} files in {:?}",
@@ -443,25 +449,23 @@ fn run_benchmark(repo_root: PathBuf, frames: usize) -> Result<()> {
 }
 
 fn spawn_single_file_refresh(
-    repo_path: PathBuf,
+    vcs: Arc<dyn Vcs>,
     file_path: String,
-    merge_base: String,
     refresh_tx: mpsc::Sender<RefreshOutcome>,
 ) {
     thread::spawn(move || {
-        let diff = compute_single_file_diff(&repo_path, &file_path, &merge_base);
+        let diff = vcs.single_file_diff(&file_path);
         let _ = refresh_tx.send(RefreshOutcome::SingleFile { path: file_path, diff });
     });
 }
 
 fn spawn_refresh(
-    repo_path: PathBuf,
-    base_branch: String,
+    vcs: Arc<dyn Vcs>,
     refresh_tx: mpsc::Sender<RefreshOutcome>,
     cancel_flag: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
-        match compute_refresh(&repo_path, &base_branch, &cancel_flag) {
+        match vcs.refresh(&cancel_flag) {
             Ok(result) => {
                 let _ = refresh_tx.send(RefreshOutcome::Success(result));
             }
@@ -472,12 +476,11 @@ fn spawn_refresh(
     });
 }
 
-fn spawn_fetch(repo_path: PathBuf, base_branch: String, git_version: git::GitVersion, fetch_tx: mpsc::Sender<FetchResult>) {
+fn spawn_fetch(vcs: Arc<dyn Vcs>, fetch_tx: mpsc::Sender<FetchResult>) {
     thread::spawn(move || {
-        if git::fetch_base_branch(&repo_path, &base_branch).is_ok() {
-            let has_conflicts = git::has_merge_conflicts(&repo_path, &base_branch, &git_version).unwrap_or(false);
-            let new_merge_base =
-                git::get_merge_base_preferring_origin(&repo_path, &base_branch).ok();
+        if vcs.fetch().is_ok() {
+            let has_conflicts = vcs.has_conflicts().unwrap_or(false);
+            let new_merge_base = vcs.base_identifier().ok();
 
             let _ = fetch_tx.send(FetchResult {
                 has_conflicts,
@@ -495,16 +498,15 @@ fn run_app<B: Backend>(
     file_events: mpsc::Receiver<Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>>,
     refresh_tx: mpsc::Sender<RefreshOutcome>,
     refresh_rx: mpsc::Receiver<RefreshOutcome>,
-    repo_root: PathBuf,
+    vcs: Arc<dyn Vcs>,
     config: UpdateConfig,
-    git_version: git::GitVersion,
     watch_limit: Option<usize>,
 ) -> Result<()>
 where
     B::Error: Send + Sync + 'static,
 {
     let mut refresh_state = RefreshState::Idle;
-    let mut git_lock = GitLockState::default();
+    let mut vcs_lock = VcsLockState::default();
     let mut timers = Timers::default();
 
     let (fetch_tx, fetch_rx) = mpsc::channel::<FetchResult>();
@@ -537,14 +539,14 @@ where
         for msg in &messages {
             if let Message::FileChanged(events) = msg {
                 // Watch any newly created directories (Linux only - macOS/Windows use recursive)
-                watch_new_directories(watcher, &repo_root, events);
+                watch_new_directories(watcher, vcs.repo_path(), events);
 
                 // When .gitignore changes, add watches for newly visible directories
                 let gitignore_changed = events
                     .iter()
                     .any(|e| GitignoreFilter::is_gitignore_file(&e.path));
                 if gitignore_changed {
-                    add_watches_for_visible_directories(watcher, &repo_root, watch_limit);
+                    add_watches_for_visible_directories(watcher, vcs.repo_path(), watch_limit);
                 }
             }
         }
@@ -555,10 +557,10 @@ where
                 msg,
                 app,
                 &mut refresh_state,
-                &mut git_lock,
+                &mut vcs_lock,
                 &mut timers,
                 &config,
-                &repo_root,
+                &*vcs,
             );
 
             needs_redraw |= result.needs_redraw;
@@ -571,8 +573,7 @@ where
                 RefreshTrigger::Full => {
                     let cancel_flag = refresh_state.start();
                     spawn_refresh(
-                        repo_root.clone(),
-                        app.comparison.from_label.clone(),
+                        vcs.clone(),
                         refresh_tx.clone(),
                         cancel_flag,
                     );
@@ -580,9 +581,8 @@ where
                 RefreshTrigger::SingleFile(file_path) => {
                     refresh_state.start_single_file();
                     spawn_single_file_refresh(
-                        repo_root.clone(),
+                        vcs.clone(),
                         file_path.to_string_lossy().to_string(),
-                        app.comparison.base_identifier.clone(),
                         refresh_tx.clone(),
                     );
                 }
@@ -590,7 +590,7 @@ where
             }
 
             if result.trigger_fetch {
-                spawn_fetch(repo_root.clone(), app.comparison.from_label.clone(), git_version, fetch_tx.clone());
+                spawn_fetch(vcs.clone(), fetch_tx.clone());
             }
         }
 
@@ -664,11 +664,13 @@ fn collect_messages(
 /// Returns metrics about directories watched (meaningful on Linux only).
 fn setup_watcher(
     watcher: &mut (impl notify::Watcher + ?Sized),
-    repo_root: &Path,
+    vcs: &dyn Vcs,
     watch_limit: Option<usize>,
 ) -> Result<limits::WatcherMetrics> {
-    // Always watch specific .git paths for detecting commits and branch switches
-    setup_git_watches(watcher, repo_root)?;
+    // Watch VCS-specific paths (e.g., .git/index, .git/HEAD, .git/refs/)
+    setup_vcs_watches(watcher, vcs)?;
+
+    let repo_root = vcs.repo_path();
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
@@ -696,27 +698,20 @@ fn setup_watcher(
     }
 }
 
-/// Watch specific .git paths for detecting commits, branch switches, etc.
-fn setup_git_watches(
+/// Watch VCS-specific paths for detecting commits, branch switches, etc.
+fn setup_vcs_watches(
     watcher: &mut (impl notify::Watcher + ?Sized),
-    repo_root: &Path,
+    vcs: &dyn Vcs,
 ) -> Result<()> {
-    let git_dir = repo_root.join(".git");
-    if git_dir.exists() {
-        // Watch index for staging changes
-        let index = git_dir.join("index");
-        if index.exists() {
-            watcher.watch(&index, NonRecursive)?;
+    let watch_paths = vcs.watch_paths();
+    for file in &watch_paths.files {
+        if file.exists() {
+            watcher.watch(file, NonRecursive)?;
         }
-        // Watch HEAD for branch switches
-        let head = git_dir.join("HEAD");
-        if head.exists() {
-            watcher.watch(&head, NonRecursive)?;
-        }
-        // Watch refs for branch updates
-        let refs = git_dir.join("refs");
-        if refs.exists() {
-            watcher.watch(&refs, Recursive)?;
+    }
+    for dir in &watch_paths.recursive_dirs {
+        if dir.exists() {
+            watcher.watch(dir, Recursive)?;
         }
     }
     Ok(())

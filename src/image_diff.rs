@@ -360,50 +360,37 @@ pub fn format_name_from_path(path: &str) -> String {
 /// Load image diff state for a file (before and after versions).
 ///
 /// Fetches image bytes from:
-/// - Before: merge-base ref (base version)
-/// - After: working tree (current version)
+/// - Before: base ref via VCS (base version)
+/// - After: working tree via VCS (current version)
 ///
 /// Returns None if both versions fail to load.
 pub fn load_image_diff(
-    repo_path: &std::path::Path,
+    vcs: &dyn crate::vcs::Vcs,
     file_path: &str,
-    merge_base: &str,
 ) -> Option<ImageDiffState> {
-    use crate::vcs::git;
-
     let format_name = format_name_from_path(file_path);
 
-    // Load before image (from merge-base)
-    let before = git::get_file_bytes_at_ref(repo_path, file_path, merge_base)
+    let load_bytes = |bytes: &[u8]| -> Option<CachedImage> {
+        if is_lfs_pointer(bytes) {
+            return None;
+        }
+        if is_svg(file_path) {
+            rasterize_svg(bytes, MAX_CACHE_DIMENSION).ok()
+        } else {
+            load_and_cache(bytes, &format_name).ok()
+        }
+    };
+
+    let before = vcs.base_file_bytes(file_path)
         .ok()
         .flatten()
-        .and_then(|bytes| {
-            if is_lfs_pointer(&bytes) {
-                return None;
-            }
-            if is_svg(file_path) {
-                rasterize_svg(&bytes, MAX_CACHE_DIMENSION).ok()
-            } else {
-                load_and_cache(&bytes, &format_name).ok()
-            }
-        });
+        .and_then(|bytes| load_bytes(&bytes));
 
-    // Load after image (from working tree)
-    let after = git::get_working_tree_bytes(repo_path, file_path)
+    let after = vcs.working_file_bytes(file_path)
         .ok()
         .flatten()
-        .and_then(|bytes| {
-            if is_lfs_pointer(&bytes) {
-                return None;
-            }
-            if is_svg(file_path) {
-                rasterize_svg(&bytes, MAX_CACHE_DIMENSION).ok()
-            } else {
-                load_and_cache(&bytes, &format_name).ok()
-            }
-        });
+        .and_then(|bytes| load_bytes(&bytes));
 
-    // Return None if both fail (nothing to show)
     if before.is_none() && after.is_none() {
         return None;
     }
