@@ -22,6 +22,7 @@ pub struct RefreshResult {
     pub files: Vec<FileDiff>,
     pub lines: Vec<DiffLine>,
     pub base_identifier: String,
+    pub base_label: Option<String>,
     pub current_branch: Option<String>,
     pub metrics: DiffMetrics,
     pub file_links: HashMap<String, String>,

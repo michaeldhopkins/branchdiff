@@ -964,6 +964,7 @@ fn git_compute_refresh(
         files,
         lines,
         base_identifier: merge_base,
+        base_label: Some(base_branch.to_string()),
         current_branch,
         metrics,
         file_links,
