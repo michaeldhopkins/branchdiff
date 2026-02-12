@@ -1,9 +1,9 @@
 [package]
 name = "branchdiff"
-version = "0.47.1"
+version = "0.47.2"
 edition = "2024"
 rust-version = "1.91"
-description = "Terminal UI showing unified diff of current branch vs main/master"
+description = "Terminal UI showing unified diff of current branch vs its base"
 license = "UNLICENSED"
 repository = "https://github.com/michaeldhopkins/branchdiff"
 homepage = "https://github.com/michaeldhopkins/branchdiff"
