@@ -20,12 +20,12 @@ use crate::diff::FileDiff;
 pub fn detect(path: &Path) -> Result<Box<dyn Vcs>> {
     // jj first — in colocated repos, jj is the primary VCS.
     // Check the path itself, then walk up parent dirs.
-    if path.join(".jj").exists()
+    if path.join(".jj").is_dir()
         && let Ok(root) = jj::get_repo_root(path)
     {
         return Ok(Box::new(jj::JjVcs::new(root)?));
     }
-    if let Some(ancestor) = path.ancestors().find(|p| p.join(".jj").exists())
+    if let Some(ancestor) = path.ancestors().find(|p| p.join(".jj").is_dir())
         && let Ok(root) = jj::get_repo_root(ancestor)
     {
         return Ok(Box::new(jj::JjVcs::new(root)?));
