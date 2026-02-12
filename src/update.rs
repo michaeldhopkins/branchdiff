@@ -542,9 +542,9 @@ fn handle_fetch(
     }
 
     if let Some(new_base) = fetch_result.new_merge_base
-        && new_base != app.comparison.base_identifier
+        && new_base != app.base_identifier
     {
-        app.comparison.base_identifier = new_base;
+        app.base_identifier = new_base;
         if refresh_state.is_idle() {
             result.refresh = RefreshTrigger::Full;
         } else {
@@ -672,7 +672,7 @@ mod tests {
 
         assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(refresh_state.is_idle());
-        assert_eq!(app.comparison.base_identifier, "def456");
+        assert_eq!(app.base_identifier, "def456");
         assert!(timers.last_refresh.elapsed() < Duration::from_secs(1));
     }
 
@@ -736,7 +736,7 @@ mod tests {
     #[test]
     fn test_handle_fetch_new_merge_base_triggers_refresh() {
         let mut app = TestAppBuilder::new().build();
-        app.comparison.base_identifier = "old_base".to_string();
+        app.base_identifier = "old_base".to_string();
         let mut refresh_state = RefreshState::Idle;
         let mut timers = Timers {
             fetch_in_progress: true,
@@ -751,7 +751,7 @@ mod tests {
         let result = handle_fetch(fetch_result, &mut app, &mut refresh_state, &mut timers);
 
         assert_eq!(result.refresh, RefreshTrigger::Full);
-        assert_eq!(app.comparison.base_identifier, "new_base");
+        assert_eq!(app.base_identifier, "new_base");
     }
 
     #[test]

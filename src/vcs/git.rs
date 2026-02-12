@@ -827,16 +827,32 @@ fn process_single_file(
     FileProcessResult::Diff(file_diff)
 }
 
+/// Check if file_path was renamed from another path in committed changes.
+fn find_rename_source(repo_path: &Path, file_path: &str, merge_base: &str) -> Option<String> {
+    if merge_base.is_empty() {
+        return None;
+    }
+    let transitions = get_diff_transitions(repo_path, merge_base, "HEAD").ok()?;
+    transitions.into_iter().find_map(|t| {
+        if t.to.as_deref() == Some(file_path) && t.from.as_deref() != Some(file_path) {
+            t.from
+        } else {
+            None
+        }
+    })
+}
+
 fn git_compute_single_file_diff(
     repo_path: &Path,
     file_path: &str,
+    old_path: Option<&str>,
     merge_base: &str,
 ) -> Option<FileDiff> {
     if is_binary_file(repo_path, file_path) {
         return None;
     }
 
-    let contents = FileContents::fetch(repo_path, file_path, None, merge_base);
+    let contents = FileContents::fetch(repo_path, file_path, old_path, merge_base);
 
     if contents.all_equal() {
         return None;
@@ -848,7 +864,7 @@ fn git_compute_single_file_diff(
         head: contents.head.as_deref(),
         index: contents.index.as_deref(),
         working: contents.working.as_deref(),
-        old_path: None,
+        old_path,
     }))
 }
 
@@ -983,15 +999,12 @@ impl Vcs for GitVcs {
     }
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
-        let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
-            .unwrap_or_default();
         let current_branch = get_current_branch(&self.repo_path).unwrap_or(None);
         let to_label = current_branch.unwrap_or_else(|| "HEAD".to_string());
 
         Ok(ComparisonContext {
             from_label: self.base_branch.clone(),
             to_label,
-            base_identifier: merge_base,
         })
     }
 
@@ -1002,7 +1015,8 @@ impl Vcs for GitVcs {
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
         let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
             .unwrap_or_default();
-        git_compute_single_file_diff(&self.repo_path, file_path, &merge_base)
+        let old_path = find_rename_source(&self.repo_path, file_path, &merge_base);
+        git_compute_single_file_diff(&self.repo_path, file_path, old_path.as_deref(), &merge_base)
     }
 
     fn base_identifier(&self) -> Result<String> {
@@ -1316,6 +1330,10 @@ mod tests {
     }
 
     fn create_test_repo() -> tempfile::TempDir {
+        create_test_repo_with_content("initial\n")
+    }
+
+    fn create_test_repo_with_content(content: &str) -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path();
 
@@ -1323,7 +1341,7 @@ mod tests {
         git_cmd(path, &["config", "user.email", "test@test.com"]);
         git_cmd(path, &["config", "user.name", "Test"]);
 
-        fs::write(path.join("file.txt"), "initial\n").unwrap();
+        fs::write(path.join("file.txt"), content).unwrap();
         git_cmd(path, &["add", "."]);
         git_cmd(path, &["commit", "-m", "initial"]);
         git_cmd(path, &["branch", "-M", "main"]);
@@ -1871,7 +1889,6 @@ mod tests {
         let ctx = vcs.comparison_context().unwrap();
         assert_eq!(ctx.from_label, "main");
         assert_eq!(ctx.to_label, "feature");
-        assert!(!ctx.base_identifier.is_empty());
     }
 
     #[test]
@@ -1946,6 +1963,81 @@ mod tests {
         assert_eq!(working_bytes.unwrap(), b"changed\n");
 
         assert!(vcs.binary_files().is_empty());
+    }
+
+    // === rename support tests ===
+
+    #[test]
+    fn test_find_rename_source_detects_committed_rename() {
+        let temp = create_test_repo_with_content("line1\nline2\nline3\nline4\n");
+        git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+        git_cmd(temp.path(), &["mv", "file.txt", "renamed.txt"]);
+        git_cmd(temp.path(), &["commit", "-m", "rename"]);
+
+        let merge_base = get_merge_base_preferring_origin(temp.path(), "main").unwrap();
+        let old = find_rename_source(temp.path(), "renamed.txt", &merge_base);
+        assert_eq!(old.as_deref(), Some("file.txt"));
+    }
+
+    #[test]
+    fn test_find_rename_source_returns_none_for_non_rename() {
+        let temp = create_test_repo();
+        git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+        fs::write(temp.path().join("file.txt"), "changed\n").unwrap();
+        git_cmd(temp.path(), &["add", "file.txt"]);
+        git_cmd(temp.path(), &["commit", "-m", "modify"]);
+
+        let merge_base = get_merge_base_preferring_origin(temp.path(), "main").unwrap();
+        let old = find_rename_source(temp.path(), "file.txt", &merge_base);
+        assert!(old.is_none());
+    }
+
+    #[test]
+    fn test_find_rename_source_empty_merge_base() {
+        let old = find_rename_source(Path::new("/tmp"), "file.txt", "");
+        assert!(old.is_none());
+    }
+
+    #[test]
+    fn test_single_file_diff_returns_diff_for_modified_file() {
+        let temp = create_test_repo();
+        git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+        fs::write(temp.path().join("file.txt"), "modified\n").unwrap();
+        git_cmd(temp.path(), &["add", "file.txt"]);
+        git_cmd(temp.path(), &["commit", "-m", "modify"]);
+
+        let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
+        let diff = vcs.single_file_diff("file.txt");
+        assert!(diff.is_some(), "should produce a diff for modified file");
+
+        let diff = diff.unwrap();
+        let header = &diff.lines[0];
+        assert_eq!(header.source, LineSource::FileHeader);
+        assert!(!header.content.contains("(deleted)"), "should not be a deletion header");
+        assert!(!header.content.contains("→"), "should not be a rename header");
+    }
+
+    #[test]
+    fn test_single_file_diff_handles_rename() {
+        // Use multi-line content so git's rename detection (>50% similarity) works
+        let temp = create_test_repo_with_content("line1\nline2\nline3\nline4\n");
+        git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+        git_cmd(temp.path(), &["mv", "file.txt", "renamed.txt"]);
+        fs::write(temp.path().join("renamed.txt"), "line1\nline2\nline3\nmodified\n").unwrap();
+        git_cmd(temp.path(), &["add", "renamed.txt"]);
+        git_cmd(temp.path(), &["commit", "-m", "rename and modify"]);
+
+        let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
+        let diff = vcs.single_file_diff("renamed.txt");
+        assert!(diff.is_some(), "should produce a diff for renamed file");
+
+        let diff = diff.unwrap();
+        let header = &diff.lines[0];
+        assert!(
+            header.content.contains("file.txt"),
+            "rename header should reference old filename, got: {}",
+            header.content
+        );
     }
 
     // === classify_event tests ===

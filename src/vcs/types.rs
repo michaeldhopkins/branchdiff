@@ -6,16 +6,14 @@ use crate::limits::DiffMetrics;
 
 /// VCS-agnostic context describing what we're comparing.
 ///
-/// For git: "feature vs main" with a merge-base SHA.
-/// For jj: "@ vs @-" with a change ID.
+/// Contains only UI labels. The base identifier (merge-base SHA, change ID)
+/// lives in `RefreshResult` and `App::base_identifier`.
 #[derive(Debug, Clone)]
 pub struct ComparisonContext {
     /// Label for what we're comparing against (e.g., "main", "@-")
     pub from_label: String,
     /// Label for what we're comparing to (e.g., "feature", "HEAD", "@")
     pub to_label: String,
-    /// Resolved base reference for diff computation (e.g., merge-base SHA, change ID)
-    pub base_identifier: String,
 }
 
 /// Result of a full refresh from a VCS backend.
