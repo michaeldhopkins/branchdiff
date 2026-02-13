@@ -365,6 +365,10 @@ fn handle_refresh(
 
     match outcome {
         RefreshOutcome::Success(refresh_result) => {
+            // Clear pending VCS events that are likely self-triggered by our own
+            // VCS commands during the refresh (e.g., jj auto-snapshot)
+            timers.pending_vcs_event = None;
+
             // Check for diff-related warnings
             let diff_warning = config.diff_thresholds.check_diff_warning(&refresh_result.metrics);
 
@@ -498,6 +502,11 @@ fn handle_file_change(
         let has_only_vcs_changes = source_files.is_empty();
 
         if has_only_vcs_changes {
+            // VCS-internal events during an active refresh are likely side-effects
+            // of our own VCS commands (e.g., jj auto-snapshot writing to op_store).
+            if !refresh_state.is_idle() {
+                return result;
+            }
             timers.pending_vcs_event = Some(Instant::now());
             return result;
         }
@@ -1387,7 +1396,9 @@ mod tests {
         let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
 
         assert_eq!(result.refresh, RefreshTrigger::None);
-        assert!(timers.pending_vcs_event.is_some());
+        // VCS-only events during active refresh are suppressed entirely
+        // (likely side-effects of our own VCS commands like jj auto-snapshot)
+        assert!(timers.pending_vcs_event.is_none());
         assert!(!cancel_flag.load(Ordering::Relaxed), "cancel flag should not be set");
         assert!(
             matches!(refresh_state, RefreshState::InProgress { .. }),
@@ -1538,6 +1549,69 @@ mod tests {
         let result = handle_input(AppAction::CopyPath, &mut app, &mut refresh_state);
 
         assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_refresh_clears_pending_vcs_event() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        // Simulate a pending VCS event from just before refresh completed
+        timers.pending_vcs_event = Some(Instant::now() - Duration::from_millis(100));
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+            files: vec![],
+            lines: vec![base_line("content")],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+        });
+
+        let config = UpdateConfig::default();
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(
+            timers.pending_vcs_event.is_none(),
+            "successful refresh should clear pending VCS events (likely self-triggered)"
+        );
+    }
+
+    #[test]
+    fn test_vcs_only_events_ignored_during_active_refresh() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            started_at: Instant::now(),
+        };
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        let vcs = StubVcs::new(temp.path().to_path_buf());
+
+        // Send VCS-only event while refresh is in progress
+        let events = vec![DebouncedEvent::new(
+            git_dir.join("index"),
+            DebouncedEventKind::Any,
+        )];
+        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        assert!(
+            timers.pending_vcs_event.is_none(),
+            "VCS-only events during active refresh should be suppressed entirely"
+        );
     }
 
     #[test]
