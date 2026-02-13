@@ -33,8 +33,8 @@ pub enum RefreshOutcome {
     Success(RefreshResult),
     /// Single file refresh completed.
     SingleFile { path: String, diff: Option<FileDiff> },
-    /// Refresh was cancelled.
-    Cancelled,
+    /// Refresh failed with an error.
+    Error(String),
 }
 
 /// Unified message type for all application events.
@@ -106,7 +106,7 @@ mod tests {
     fn test_message_variants() {
         // Verify all message variants can be constructed
         let _input = Message::Input(AppAction::Quit);
-        let _refresh = Message::RefreshCompleted(RefreshOutcome::Cancelled);
+        let _refresh = Message::RefreshCompleted(RefreshOutcome::Error("test".to_string()));
         let _file = Message::FileChanged(vec![]);
         let _fetch = Message::FetchCompleted(FetchResult {
             has_conflicts: false,
@@ -117,11 +117,11 @@ mod tests {
 
     #[test]
     fn test_refresh_outcome_variants() {
-        let _cancelled = RefreshOutcome::Cancelled;
         let _single = RefreshOutcome::SingleFile {
             path: "test.rs".to_string(),
             diff: None,
         };
+        let _error = RefreshOutcome::Error("something failed".to_string());
     }
 
     #[test]
