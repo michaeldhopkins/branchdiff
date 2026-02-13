@@ -1,10 +1,52 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+
+const MAX_RETRIES: u32 = 2;
+const BASE_RETRY_DELAY_MS: u64 = 100;
+
+/// Detect transient jj errors worth retrying.
+/// "stale" matches "The working copy is stale" (exit code 1), which resolves
+/// after jj finishes its working copy update.
+fn is_transient_jj_error(stderr: &str) -> bool {
+    stderr.contains("stale")
+}
+
+/// Run a jj command with exponential backoff on transient errors.
+fn run_jj_with_retry(repo_path: &Path, args: &[&str]) -> Result<Output> {
+    for attempt in 0..=MAX_RETRIES {
+        let output = Command::new("jj")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .context("failed to run jj")?;
+
+        if output.status.success() {
+            return Ok(output);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !is_transient_jj_error(&stderr) || attempt == MAX_RETRIES {
+            return Ok(output);
+        }
+
+        let delay = Duration::from_millis(BASE_RETRY_DELAY_MS * (1 << attempt));
+        thread::sleep(delay);
+    }
+
+    // Unreachable due to loop structure, but satisfies the compiler
+    Command::new("jj")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .context("failed to run jj")
+}
 
 use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff, LineSource};
 use crate::image_diff::is_image_file;
@@ -57,16 +99,29 @@ impl JjVcs {
 
     /// Get changed files between from_rev and @.
     fn get_changed_files(&self) -> Result<Vec<ChangedFile>> {
-        let output = self.run_jj(&["diff", "--from", &self.from_rev, "--to", "@", "--summary"])?;
-        Ok(parse_jj_summary(&output))
+        let output = run_jj_with_retry(
+            &self.repo_path,
+            &["diff", "--from", &self.from_rev, "--to", "@", "--summary"],
+        )?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("jj diff --summary failed: {}", stderr.trim());
+        }
+        Ok(parse_jj_summary(&String::from_utf8_lossy(&output.stdout)))
     }
 
     /// Detect binary files by checking --stat output for "(binary)" markers.
     fn get_binary_files_set(&self) -> HashSet<String> {
-        let Ok(output) = self.run_jj(&["diff", "--from", &self.from_rev, "--to", "@", "--stat"]) else {
+        let Ok(output) = run_jj_with_retry(
+            &self.repo_path,
+            &["diff", "--from", &self.from_rev, "--to", "@", "--stat"],
+        ) else {
             return HashSet::new();
         };
-        parse_binary_from_stat(&output)
+        if !output.status.success() {
+            return HashSet::new();
+        }
+        parse_binary_from_stat(&String::from_utf8_lossy(&output.stdout))
     }
 
     fn get_file_content_at_rev(&self, file_path: &str, rev: &str) -> Result<Option<String>> {
@@ -300,9 +355,11 @@ impl crate::vcs::Vcs for JjVcs {
         }
 
         let path_str = relative.to_string_lossy();
-        if path_str.contains("op_store/") || path_str.contains("working_copy/") {
+        if path_str.contains("working_copy/") {
             VcsEventType::RevisionChange
         } else {
+            // op_store/ writes happen on every jj command (even reads like jj diff)
+            // and are mostly side-effects of our own refresh calls
             VcsEventType::Internal
         }
     }
@@ -540,11 +597,11 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_jj_op_store() {
+    fn test_classify_jj_op_store_as_internal() {
         let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
         assert_eq!(
             vcs.classify_event(Path::new("/repo/.jj/repo/op_store/heads")),
-            VcsEventType::RevisionChange
+            VcsEventType::Internal
         );
     }
 
@@ -584,6 +641,44 @@ mod tests {
         let paths = vcs.watch_paths();
         assert!(paths.files.contains(&PathBuf::from("/repo/.jj/working_copy/checkout")));
         assert!(paths.recursive_dirs.contains(&PathBuf::from("/repo/.jj/repo/op_store")));
+    }
+
+    // === is_transient_jj_error tests ===
+
+    #[test]
+    fn test_transient_error_stale() {
+        assert!(is_transient_jj_error("The working copy is stale"));
+    }
+
+    #[test]
+    fn test_not_transient_error() {
+        assert!(!is_transient_jj_error("fatal: not a jj repository"));
+        assert!(!is_transient_jj_error("Error: revision not found"));
+        assert!(!is_transient_jj_error(""));
+    }
+
+    // === run_jj_with_retry tests ===
+
+    #[test]
+    fn test_run_jj_with_retry_succeeds_on_first_attempt() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        Command::new("jj").args(["git", "init"]).current_dir(temp.path()).output().unwrap();
+
+        let output = run_jj_with_retry(temp.path(), &["log", "--limit", "1"]).unwrap();
+        assert!(output.status.success());
+    }
+
+    #[test]
+    fn test_run_jj_with_retry_returns_failure_for_permanent_error() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        Command::new("jj").args(["git", "init"]).current_dir(temp.path()).output().unwrap();
+
+        let output = run_jj_with_retry(temp.path(), &["log", "-r", "nonexistent_rev_xyz"]).unwrap();
+        assert!(!output.status.success());
     }
 
     // === Integration tests (require jj installed) ===
