@@ -397,7 +397,10 @@ fn handle_refresh(
             timers.last_refresh = Instant::now();
             result.needs_redraw = true;
         }
-        RefreshOutcome::Cancelled => {}
+        RefreshOutcome::Error(msg) => {
+            app.error = Some(msg);
+            result.needs_redraw = true;
+        }
     }
 
     if refresh_state.complete() {
@@ -722,7 +725,7 @@ mod tests {
         let mut timers = Timers::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Cancelled;
+        let outcome = RefreshOutcome::Error("test error".to_string());
         let config = UpdateConfig::default();
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
@@ -1002,28 +1005,6 @@ mod tests {
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
         assert!(result.needs_redraw);
-    }
-
-    #[test]
-    fn test_handle_refresh_cancelled_no_redraw() {
-        let mut app = TestAppBuilder::new().build();
-        let mut refresh_state = RefreshState::InProgress {
-            started_at: Instant::now(),
-            cancel_flag: Arc::new(AtomicBool::new(false)),
-        };
-        let mut timers = Timers::default();
-        let config = UpdateConfig::default();
-        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
-
-        let result = handle_refresh(
-            RefreshOutcome::Cancelled,
-            &mut app,
-            &mut refresh_state,
-            &mut timers,
-            &config,
-            &vcs,
-        );
-        assert!(!result.needs_redraw);
     }
 
     #[test]
@@ -1580,6 +1561,57 @@ mod tests {
             timers.pending_vcs_event.is_none(),
             "successful refresh should clear pending VCS events (likely self-triggered)"
         );
+    }
+
+    #[test]
+    fn test_handle_refresh_error_sets_app_error_and_redraws() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let result = handle_refresh(
+            RefreshOutcome::Error("jj diff failed: Config error".to_string()),
+            &mut app,
+            &mut refresh_state,
+            &mut timers,
+            &config,
+            &vcs,
+        );
+
+        assert!(result.needs_redraw);
+        assert_eq!(app.error, Some("jj diff failed: Config error".to_string()));
+        assert!(refresh_state.is_idle());
+    }
+
+    #[test]
+    fn test_handle_refresh_error_cleared_by_success() {
+        let mut app = TestAppBuilder::new().build();
+        app.error = Some("previous error".to_string());
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+            files: vec![],
+            lines: vec![base_line("content")],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+        });
+
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        assert!(app.error.is_none());
     }
 
     #[test]

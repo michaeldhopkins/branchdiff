@@ -38,7 +38,7 @@ pub struct ScreenRowInfo {
 pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
     let size = frame.area();
 
-    let has_warning = app.conflict_warning.is_some();
+    let has_warning = app.conflict_warning.is_some() || app.error.is_some();
     let status_height = status_bar_height(app, size.width);
 
     let chunks = Layout::default()
@@ -63,8 +63,12 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
         (None, chunks[0], chunks[1])
     };
 
-    if let (Some(area), Some(warning)) = (warning_area, &app.conflict_warning) {
-        draw_warning_banner(frame, warning, area);
+    if let Some(area) = warning_area {
+        if let Some(error) = &app.error {
+            draw_warning_banner(frame, error, area);
+        } else if let Some(warning) = &app.conflict_warning {
+            draw_warning_banner(frame, warning, area);
+        }
     }
 
     let content_height = diff_area.height.saturating_sub(2) as usize;

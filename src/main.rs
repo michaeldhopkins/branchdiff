@@ -485,8 +485,8 @@ fn spawn_refresh(
             Ok(result) => {
                 let _ = refresh_tx.send(RefreshOutcome::Success(result));
             }
-            Err(_) => {
-                let _ = refresh_tx.send(RefreshOutcome::Cancelled);
+            Err(e) => {
+                let _ = refresh_tx.send(RefreshOutcome::Error(format!("{e:#}")));
             }
         }
     });
