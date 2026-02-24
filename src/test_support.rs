@@ -34,6 +34,7 @@ pub struct TestAppBuilder {
     base_branch: String,
     current_branch: Option<String>,
     stack_position: Option<StackPosition>,
+    vcs_name: String,
 }
 
 impl Default for TestAppBuilder {
@@ -53,6 +54,7 @@ impl TestAppBuilder {
             base_branch: "main".to_string(),
             current_branch: Some("feature".to_string()),
             stack_position: None,
+            vcs_name: "stub".to_string(),
         }
     }
 
@@ -97,6 +99,11 @@ impl TestAppBuilder {
         self
     }
 
+    pub fn with_vcs_name(mut self, name: &str) -> Self {
+        self.vcs_name = name.to_string();
+        self
+    }
+
     pub fn build(self) -> App {
         let repo_path = PathBuf::from("/tmp/test");
         let to_label = self.current_branch.unwrap_or_else(|| "HEAD".to_string());
@@ -107,6 +114,7 @@ impl TestAppBuilder {
                 from_label: self.base_branch,
                 to_label,
                 stack_position: self.stack_position,
+                vcs_name: self.vcs_name,
             },
             base_identifier: "abc123".to_string(),
             files: self.files,

@@ -27,6 +27,8 @@ pub struct ComparisonContext {
     pub to_label: String,
     /// Position of `@` in the jj commit stack, if applicable.
     pub stack_position: Option<StackPosition>,
+    /// VCS backend name (e.g., "git", "jj") for UI label customization.
+    pub vcs_name: String,
 }
 
 /// Result of a full refresh from a VCS backend.
