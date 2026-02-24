@@ -69,15 +69,39 @@ use crate::vcs::{ComparisonContext, RefreshResult, VcsEventType, VcsWatchPaths};
 /// Jujutsu (jj) backend for branchdiff.
 pub struct JjVcs {
     repo_path: PathBuf,
-    /// Revset for the base of comparison (default: "@-")
+    /// Revset for the base of comparison: `trunk()` when available, `@-` otherwise.
     from_rev: String,
+}
+
+/// Probe whether `trunk()` points to a real remote-tracking bookmark.
+/// `trunk()` falls back to `root()` when no remote exists, which would diff
+/// the entire repo history — so only use it when it resolves to an actual branch.
+fn resolve_base_rev(repo_path: &Path) -> String {
+    let output = Command::new("jj")
+        .args([
+            "log", "-r", "trunk() ~ root()", "--no-graph",
+            "--limit", "1", "-T", "change_id.short(12)",
+        ])
+        .current_dir(repo_path)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            if String::from_utf8_lossy(&o.stdout).trim().is_empty() {
+                "@-".to_string()
+            } else {
+                "trunk()".to_string()
+            }
+        }
+        _ => "@-".to_string(),
+    }
 }
 
 impl JjVcs {
     pub fn new(repo_path: PathBuf) -> Result<Self> {
+        let from_rev = resolve_base_rev(&repo_path);
         Ok(Self {
             repo_path,
-            from_rev: "@-".to_string(),
+            from_rev,
         })
     }
 
@@ -239,14 +263,23 @@ fn process_jj_file(
 
     let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
     let base = file_content_no_snapshot(repo_path, base_path, from_rev);
-    let head = file_content_no_snapshot(repo_path, &changed.path, "@");
+
+    // @- content for the committed/staged boundary — try current path first,
+    // fall back to old_path for files renamed in the current commit
+    let parent = file_content_no_snapshot(repo_path, &changed.path, "@-")
+        .or_else(|| {
+            changed.old_path.as_deref()
+                .and_then(|old| file_content_no_snapshot(repo_path, old, "@-"))
+        });
+
+    let working = file_content_no_snapshot(repo_path, &changed.path, "@");
 
     FileProcessResult::Diff(compute_four_way_diff(DiffInput {
         path: &changed.path,
         base: base.as_deref(),
-        head: head.as_deref(),
-        index: head.as_deref(),
-        working: head.as_deref(),
+        head: parent.as_deref(),
+        index: working.as_deref(),
+        working: working.as_deref(),
         old_path: changed.old_path.as_deref(),
     }))
 }
@@ -413,9 +446,15 @@ impl crate::vcs::Vcs for JjVcs {
         // Subsequent commands skip snapshot
         let base_path = old_path.unwrap_or(file_path);
         let base = file_content_no_snapshot(&self.repo_path, base_path, &self.from_rev);
-        let head = file_content_no_snapshot(&self.repo_path, file_path, "@");
 
-        if base.is_none() && head.is_none() {
+        let parent = file_content_no_snapshot(&self.repo_path, file_path, "@-")
+            .or_else(|| {
+                old_path.and_then(|old| file_content_no_snapshot(&self.repo_path, old, "@-"))
+            });
+
+        let working = file_content_no_snapshot(&self.repo_path, file_path, "@");
+
+        if base.is_none() && working.is_none() {
             return None;
         }
 
@@ -427,9 +466,9 @@ impl crate::vcs::Vcs for JjVcs {
         Some(compute_four_way_diff(DiffInput {
             path: file_path,
             base: base.as_deref(),
-            head: head.as_deref(),
-            index: head.as_deref(),
-            working: head.as_deref(),
+            head: parent.as_deref(),
+            index: working.as_deref(),
+            working: working.as_deref(),
             old_path,
         }))
     }
@@ -885,9 +924,9 @@ mod tests {
         assert!(!result.files.is_empty(), "should detect changed file");
         assert!(!result.lines.is_empty(), "should produce diff lines");
 
-        // Verify the file header is a normal header, not a "(deleted)" header
-        let has_committed = result.lines.iter().any(|l| l.source == LineSource::Committed);
-        assert!(has_committed, "modified lines should have Committed source");
+        // With from_rev=@- (no remote), base==head so all @→@ changes are Staged
+        let has_staged = result.lines.iter().any(|l| l.source == LineSource::Staged);
+        assert!(has_staged, "modified lines should have Staged source (current commit)");
         let header = &result.lines[0];
         assert_eq!(header.source, LineSource::FileHeader, "first line should be file header");
         assert!(!header.content.contains("(deleted)"),
@@ -976,8 +1015,9 @@ mod tests {
         let header = &result.lines[0];
         assert!(header.content.contains("(deleted)"),
             "deleted file should have deletion header, got: {}", header.content);
-        let has_deleted_source = result.lines.iter().any(|l| l.source == LineSource::DeletedBase);
-        assert!(has_deleted_source, "deleted file lines should have DeletedBase source");
+        // With from_rev=@- (no remote), base==head so deletions in @ are DeletedCommitted
+        let has_deleted_source = result.lines.iter().any(|l| l.source == LineSource::DeletedCommitted);
+        assert!(has_deleted_source, "deleted file lines should have DeletedCommitted source");
     }
 
     #[test]
@@ -1139,5 +1179,148 @@ mod tests {
 
         assert!(!change_id.is_empty());
         assert_eq!(label, change_id, "without bookmark, label should be change_id");
+    }
+
+    // === resolve_base_rev tests ===
+
+    #[test]
+    fn test_resolve_base_rev_fallback_without_remote() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+
+        let rev = resolve_base_rev(repo);
+        assert_eq!(rev, "@-", "should fall back to @- when no remote tracking bookmarks");
+    }
+
+    #[test]
+    fn test_resolve_base_rev_uses_trunk_with_remote() {
+        if !jj_available() { return; }
+
+        // Create a bare git repo as the "remote"
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(remote_dir.path()).output().unwrap();
+
+        // Create a jj repo and add the remote
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["bookmark", "set", "main", "-r", "@-"]).current_dir(repo).output().unwrap();
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        Command::new("jj").args(["git", "remote", "add", "origin", &remote_path]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["git", "push", "--bookmark", "main"]).current_dir(repo).output().unwrap();
+
+        let rev = resolve_base_rev(repo);
+        assert_eq!(rev, "trunk()", "should use trunk() when remote tracking bookmarks exist");
+    }
+
+    // === Stack coloring tests ===
+
+    /// Helper: create a jj repo with a remote "origin" and push main.
+    /// Returns (repo_tempdir, remote_tempdir) — keep both alive.
+    fn setup_repo_with_remote() -> (tempfile::TempDir, tempfile::TempDir) {
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(remote_dir.path()).output().unwrap();
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("base.txt"), "trunk content\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "base"]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["bookmark", "set", "main", "-r", "@-"]).current_dir(repo).output().unwrap();
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        Command::new("jj").args(["git", "remote", "add", "origin", &remote_path]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["git", "push", "--bookmark", "main"]).current_dir(repo).output().unwrap();
+
+        (temp, remote_dir)
+    }
+
+    #[test]
+    fn test_jj_stack_coloring_two_commits() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // First stack commit: add a file
+        std::fs::write(repo.join("stack.txt"), "from earlier commit\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "stack commit 1"]).current_dir(repo).output().unwrap();
+
+        // Current commit (@): modify the file
+        std::fs::write(repo.join("stack.txt"), "from earlier commit\nfrom current commit\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        assert_eq!(vcs.from_rev, "trunk()");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        let has_committed = result.lines.iter().any(|l| l.source == LineSource::Committed);
+        let has_staged = result.lines.iter().any(|l| l.source == LineSource::Staged);
+        assert!(has_committed, "earlier stack commit lines should be Committed (teal)");
+        assert!(has_staged, "current commit lines should be Staged (green)");
+    }
+
+    #[test]
+    fn test_jj_single_commit_above_trunk_all_staged() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // Only one commit above trunk — everything should be Staged
+        std::fs::write(repo.join("feature.txt"), "new feature\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        assert_eq!(vcs.from_rev, "trunk()");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        assert!(!result.files.is_empty(), "should detect the new file");
+        let has_staged = result.lines.iter().any(|l| l.source == LineSource::Staged);
+        let has_committed = result.lines.iter().any(|l| l.source == LineSource::Committed);
+        assert!(has_staged, "single commit above trunk: all additions should be Staged");
+        assert!(!has_committed, "single commit above trunk: no lines should be Committed");
+    }
+
+    #[test]
+    fn test_jj_trunk_deletion_coloring() {
+        if !jj_available() { return; }
+
+        let remote_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(remote_dir.path()).output().unwrap();
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+
+        // File exists at trunk
+        std::fs::write(repo.join("doomed.txt"), "will be deleted\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "base"]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["bookmark", "set", "main", "-r", "@-"]).current_dir(repo).output().unwrap();
+        let remote_path = remote_dir.path().to_string_lossy().to_string();
+        Command::new("jj").args(["git", "remote", "add", "origin", &remote_path]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["git", "push", "--bookmark", "main"]).current_dir(repo).output().unwrap();
+
+        // Current commit (@): delete the file
+        std::fs::remove_file(repo.join("doomed.txt")).unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        assert_eq!(vcs.from_rev, "trunk()");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        assert!(!result.files.is_empty(), "should detect deleted file");
+        let header = &result.lines[0];
+        assert!(header.content.contains("(deleted)"),
+            "deleted file should have deletion header, got: {}", header.content);
+        let has_deleted = result.lines.iter().any(|l| l.source == LineSource::DeletedCommitted);
+        assert!(has_deleted, "file deleted in current commit should have DeletedCommitted source");
     }
 }

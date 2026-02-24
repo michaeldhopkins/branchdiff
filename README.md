@@ -24,7 +24,7 @@ Terminal UI showing unified diff of current branch vs its base.
 ## Requirements
 
 - **Git**: Any reasonably modern git (1.7+). Conflict detection requires Git 2.38+.
-- **Jujutsu** (optional): If a `.jj` directory is present, branchdiff uses jj automatically.
+- **Jujutsu** (optional): If a `.jj` directory is present, branchdiff uses jj automatically. When remote tracking bookmarks exist (e.g. `main@origin`), branchdiff shows the full stack diff from `trunk()` to `@`, with earlier stack commits in teal and the current commit's changes in green. Falls back to `@-` vs `@` when no remote is configured.
 
 ## Installation
 
@@ -143,4 +143,4 @@ cargo clippy -- -D warnings
 
 ## License
 
-All rights reserved. Copyright (c) 2025 Michael Hopkins.
+All rights reserved. Copyright (c) 2025-2026 Michael Hopkins.
