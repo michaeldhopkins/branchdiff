@@ -64,7 +64,7 @@ fn run_jj_with_retry(repo_path: &Path, args: &[&str]) -> Result<Output> {
 use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff, LineSource};
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
-use crate::vcs::{ComparisonContext, RefreshResult, VcsEventType, VcsWatchPaths};
+use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsEventType, VcsWatchPaths};
 
 /// Jujutsu (jj) backend for branchdiff.
 pub struct JjVcs {
@@ -94,6 +94,105 @@ fn resolve_base_rev(repo_path: &Path) -> String {
         }
         _ => "@-".to_string(),
     }
+}
+
+/// Info about the stack tip when @ is not at the top.
+struct StackTip {
+    /// Short change_id of the chosen tip commit.
+    change_id: String,
+    /// How many independent heads descend from @ (1 = linear stack).
+    head_count: usize,
+}
+
+/// Find the tip(s) of the mutable stack above @.
+/// Returns None when @ is already the tip or from_rev isn't trunk().
+fn resolve_stack_tip(repo_path: &Path, from_rev: &str) -> Option<StackTip> {
+    if from_rev != "trunk()" {
+        return None;
+    }
+
+    let args = no_snapshot(&[
+        "log", "-r", "heads(trunk()..(@::))", "--no-graph",
+        "-T", r#"change_id.short(12) ++ "\n""#,
+    ]);
+    let output = Command::new("jj")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let heads: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+
+    if heads.is_empty() {
+        return None;
+    }
+
+    // Check if the only head IS @ (meaning @ is already at the tip)
+    let at_id = get_change_id_static(repo_path, "@")?;
+    if heads.len() == 1 && heads[0].trim() == at_id.trim() {
+        return None;
+    }
+
+    Some(StackTip {
+        change_id: heads[0].trim().to_string(),
+        head_count: heads.len(),
+    })
+}
+
+/// Get a change_id without requiring a JjVcs instance.
+fn get_change_id_static(repo_path: &Path, rev: &str) -> Option<String> {
+    let args = no_snapshot(&[
+        "log", "-r", rev, "--no-graph", "--limit", "1",
+        "-T", "change_id.short(12)",
+    ]);
+    let output = Command::new("jj")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// Compute @'s position in the stack from trunk to tip.
+/// Returns (1-based position of @, total commits in stack).
+fn compute_stack_position(repo_path: &Path, tip_id: &str) -> Option<(usize, usize)> {
+    let revset = format!("trunk()..\"{}\"", tip_id);
+    let args = no_snapshot(&[
+        "log", "-r", &revset, "--no-graph",
+        "-T", r#"if(self.contained_in("@"), "@", ".") ++ "\n""#,
+    ]);
+    let output = Command::new("jj")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let entries: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    let total = entries.len();
+    if total == 0 {
+        return None;
+    }
+
+    // jj log outputs newest-first; @ marker tells us position
+    // Position from bottom: total - index_from_top
+    let index_from_top = entries.iter().position(|e| e.trim() == "@")?;
+    let current = total - index_from_top;
+
+    Some((current, total))
 }
 
 impl JjVcs {
@@ -134,13 +233,13 @@ impl JjVcs {
         }
     }
 
-    /// Get changed files between from_rev and @.
+    /// Get changed files between from_rev and effective_to.
     /// This is the first command per refresh and triggers the working copy
     /// auto-snapshot — all subsequent commands use `--ignore-working-copy`.
-    fn get_changed_files(&self) -> Result<Vec<ChangedFile>> {
+    fn get_changed_files(&self, effective_to: &str) -> Result<Vec<ChangedFile>> {
         let output = run_jj_with_retry(
             &self.repo_path,
-            &["diff", "--from", &self.from_rev, "--to", "@", "--summary"],
+            &["diff", "--from", &self.from_rev, "--to", effective_to, "--summary"],
         )?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -152,9 +251,9 @@ impl JjVcs {
     /// Detect binary files by checking --stat output for "(binary)" markers.
     /// Uses `--ignore-working-copy` since the snapshot is already fresh from
     /// `get_changed_files`.
-    fn get_binary_files_set(&self) -> HashSet<String> {
+    fn get_binary_files_set(&self, effective_to: &str) -> HashSet<String> {
         let args = no_snapshot(&[
-            "diff", "--from", &self.from_rev, "--to", "@", "--stat",
+            "diff", "--from", &self.from_rev, "--to", effective_to, "--stat",
         ]);
         let Ok(output) = run_jj_with_retry(&self.repo_path, &args) else {
             return HashSet::new();
@@ -253,6 +352,7 @@ fn process_jj_file(
     from_rev: &str,
     changed: &ChangedFile,
     binary_files: &HashSet<String>,
+    tip_rev: Option<&str>,
 ) -> FileProcessResult {
     if binary_files.contains(&changed.path) {
         if is_image_file(&changed.path) {
@@ -272,14 +372,27 @@ fn process_jj_file(
                 .and_then(|old| file_content_no_snapshot(repo_path, old, "@-"))
         });
 
-    let working = file_content_no_snapshot(repo_path, &changed.path, "@");
+    let index = file_content_no_snapshot(repo_path, &changed.path, "@");
+    let tip_content = tip_rev
+        .and_then(|tip| file_content_no_snapshot(repo_path, &changed.path, tip));
+
+    // When tip_rev is None (@ is at tip), working == index.
+    // When tip_rev is Some, working is the tip content — even if None (file
+    // deleted above @). TODO: algorithm.rs check_file_deletion collapses the
+    // per-commit coloring into a flat DeletedStaged block. A proper fix needs
+    // a new code path that preserves base/head/index provenance while marking
+    // the file as eventually-deleted.
+    let working = match tip_rev {
+        Some(_) => tip_content.as_deref(),
+        None => index.as_deref(),
+    };
 
     FileProcessResult::Diff(compute_four_way_diff(DiffInput {
         path: &changed.path,
         base: base.as_deref(),
         head: parent.as_deref(),
-        index: working.as_deref(),
-        working: working.as_deref(),
+        index: index.as_deref(),
+        working,
         old_path: changed.old_path.as_deref(),
     }))
 }
@@ -329,19 +442,29 @@ impl crate::vcs::Vcs for JjVcs {
             "@".to_string()
         };
 
-        Ok(ComparisonContext { from_label, to_label })
+        // stack_position is computed by refresh() and applied via
+        // apply_refresh_result — no need to resolve it here too.
+        Ok(ComparisonContext { from_label, to_label, stack_position: None })
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
+        // Resolve stack tip — determines if @ is mid-stack
+        let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev);
+        let effective_to = stack_tip
+            .as_ref()
+            .map(|t| t.change_id.as_str())
+            .unwrap_or("@");
+        let tip_rev = stack_tip.as_ref().map(|t| t.change_id.as_str());
+
         // First command — triggers working copy auto-snapshot
-        let changed_files = self.get_changed_files()?;
+        let changed_files = self.get_changed_files(effective_to)?;
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
         }
 
         // All subsequent commands use --ignore-working-copy
-        let binary_files = self.get_binary_files_set();
+        let binary_files = self.get_binary_files_set(effective_to);
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
@@ -357,6 +480,7 @@ impl crate::vcs::Vcs for JjVcs {
                             &self.from_rev,
                             changed,
                             &binary_files,
+                            tip_rev,
                         )
                     })
                     .collect()
@@ -370,6 +494,7 @@ impl crate::vcs::Vcs for JjVcs {
                         &self.from_rev,
                         changed,
                         &binary_files,
+                        tip_rev,
                     )
                 })
                 .collect()
@@ -411,6 +536,15 @@ impl crate::vcs::Vcs for JjVcs {
             }
         }
 
+        let stack_position = stack_tip.as_ref().and_then(|tip| {
+            let (current, total) = compute_stack_position(&self.repo_path, &tip.change_id)?;
+            Some(StackPosition {
+                current,
+                total,
+                head_count: tip.head_count,
+            })
+        });
+
         let metrics = DiffMetrics {
             total_lines: all_lines.len(),
             file_count: files.len(),
@@ -434,12 +568,19 @@ impl crate::vcs::Vcs for JjVcs {
             current_branch: Some(current_branch_str),
             metrics,
             file_links,
+            stack_position,
         })
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
+        let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev);
+        let effective_to = stack_tip
+            .as_ref()
+            .map(|t| t.change_id.as_str())
+            .unwrap_or("@");
+
         // First command triggers auto-snapshot
-        let changed_files = self.get_changed_files().ok()?;
+        let changed_files = self.get_changed_files(effective_to).ok()?;
         let changed = changed_files.iter().find(|f| f.path == file_path);
         let old_path = changed.and_then(|f| f.old_path.as_deref());
 
@@ -452,23 +593,29 @@ impl crate::vcs::Vcs for JjVcs {
                 old_path.and_then(|old| file_content_no_snapshot(&self.repo_path, old, "@-"))
             });
 
-        let working = file_content_no_snapshot(&self.repo_path, file_path, "@");
+        let index = file_content_no_snapshot(&self.repo_path, file_path, "@");
+        let tip_content = stack_tip
+            .as_ref()
+            .and_then(|t| file_content_no_snapshot(&self.repo_path, file_path, &t.change_id));
+        let has_tip = stack_tip.is_some();
 
-        if base.is_none() && working.is_none() {
+        if base.is_none() && index.is_none() && tip_content.is_none() {
             return None;
         }
 
-        let binary_files = self.get_binary_files_set();
+        let binary_files = self.get_binary_files_set(effective_to);
         if binary_files.contains(file_path) {
             return None;
         }
+
+        let working = if has_tip { tip_content.as_deref() } else { index.as_deref() };
 
         Some(compute_four_way_diff(DiffInput {
             path: file_path,
             base: base.as_deref(),
             head: parent.as_deref(),
-            index: working.as_deref(),
-            working: working.as_deref(),
+            index: index.as_deref(),
+            working,
             old_path,
         }))
     }
@@ -486,7 +633,7 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn binary_files(&self) -> HashSet<String> {
-        self.get_binary_files_set()
+        self.get_binary_files_set("@")
     }
 
     fn fetch(&self) -> Result<()> {
@@ -1286,6 +1433,214 @@ mod tests {
         let has_committed = result.lines.iter().any(|l| l.source == LineSource::Committed);
         assert!(has_staged, "single commit above trunk: all additions should be Staged");
         assert!(!has_committed, "single commit above trunk: no lines should be Committed");
+    }
+
+    // === Stack tip resolution tests ===
+
+    #[test]
+    fn test_resolve_stack_tip_at_tip() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // @ is the tip — one commit above trunk, nothing above @
+        std::fs::write(repo.join("feature.txt"), "content\n").unwrap();
+
+        let tip = resolve_stack_tip(repo, "trunk()");
+        assert!(tip.is_none(), "should return None when @ is already the tip");
+    }
+
+    #[test]
+    fn test_resolve_stack_tip_mid_stack() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // Build 3-commit stack: commit1 → commit2 → commit3 (tip)
+        std::fs::write(repo.join("file.txt"), "commit1\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit1"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "commit2\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit2"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "commit3\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit3"]).current_dir(repo).output().unwrap();
+
+        // Move @ back to commit2 (mid-stack)
+        Command::new("jj").args(["edit", "@---"]).current_dir(repo).output().unwrap();
+
+        let tip = resolve_stack_tip(repo, "trunk()");
+        assert!(tip.is_some(), "should return a tip when @ is mid-stack");
+        let tip = tip.unwrap();
+        assert_eq!(tip.head_count, 1, "linear stack should have 1 head");
+        assert!(!tip.change_id.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_stack_tip_without_trunk() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+
+        let tip = resolve_stack_tip(repo, "@-");
+        assert!(tip.is_none(), "should return None when from_rev is not trunk()");
+    }
+
+    #[test]
+    fn test_resolve_stack_tip_branching() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // Linear base: commit1
+        std::fs::write(repo.join("file.txt"), "commit1\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit1"]).current_dir(repo).output().unwrap();
+
+        // Branch: create commit2a on one branch
+        std::fs::write(repo.join("branch_a.txt"), "branch a\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit2a"]).current_dir(repo).output().unwrap();
+
+        // Go back to commit1 and create commit2b (a second head)
+        // After commit2a: @=empty, @-=commit2a, @--=commit1
+        Command::new("jj").args(["edit", "@--"]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["new"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("branch_b.txt"), "branch b\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit2b"]).current_dir(repo).output().unwrap();
+
+        // Move @ to commit1 (below the fork)
+        // After commit2b: @=empty, @-=commit2b, @--=commit1
+        Command::new("jj").args(["edit", "@--"]).current_dir(repo).output().unwrap();
+
+        let tip = resolve_stack_tip(repo, "trunk()");
+        assert!(tip.is_some(), "should detect stack tip when @ is below a fork");
+        let tip = tip.unwrap();
+        assert_eq!(tip.head_count, 2, "branching stack should have 2 heads");
+    }
+
+    #[test]
+    fn test_stack_position_mid_stack() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // Build 3-commit stack
+        std::fs::write(repo.join("file.txt"), "commit1\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit1"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "commit2\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit2"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "commit3\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit3"]).current_dir(repo).output().unwrap();
+
+        // Move @ to commit2 (position 2 of 3 mutable commits, plus the empty @)
+        Command::new("jj").args(["edit", "@---"]).current_dir(repo).output().unwrap();
+
+        let tip = resolve_stack_tip(repo, "trunk()").expect("should have a tip");
+        let (current, total) = compute_stack_position(repo, &tip.change_id)
+            .expect("should compute position");
+
+        assert!(current >= 1 && current <= total,
+            "current ({current}) should be within 1..={total}");
+        assert!(total >= 3, "total ({total}) should be at least 3 commits");
+    }
+
+    #[test]
+    fn test_jj_midstack_coloring() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // Commit 1: add file
+        std::fs::write(repo.join("file.txt"), "line1\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit1"]).current_dir(repo).output().unwrap();
+
+        // Commit 2: modify file
+        std::fs::write(repo.join("file.txt"), "line1\nline2\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit2"]).current_dir(repo).output().unwrap();
+
+        // Commit 3: modify file further
+        std::fs::write(repo.join("file.txt"), "line1\nline2\nline3\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit3"]).current_dir(repo).output().unwrap();
+
+        // Move @ to commit2 (mid-stack): @=empty, @-=commit3, @--=commit2
+        Command::new("jj").args(["edit", "@--"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        let has_committed = result.lines.iter().any(|l| l.source == LineSource::Committed);
+        let has_staged = result.lines.iter().any(|l| l.source == LineSource::Staged);
+        let has_unstaged = result.lines.iter().any(|l| l.source == LineSource::Unstaged);
+
+        assert!(has_committed, "earlier stack commits should produce Committed (teal)");
+        assert!(has_staged, "current commit should produce Staged (green)");
+        assert!(has_unstaged, "later stack commits should produce Unstaged (yellow)");
+
+        assert!(result.stack_position.is_some(), "mid-stack should have stack_position");
+        let pos = result.stack_position.unwrap();
+        assert_eq!(pos.head_count, 1, "linear stack should have 1 head");
+    }
+
+    #[test]
+    fn test_jj_midstack_later_only_file() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // Commit 1: add base file
+        std::fs::write(repo.join("base.txt"), "base stuff\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit1"]).current_dir(repo).output().unwrap();
+
+        // Commit 2 (will be @): add something
+        std::fs::write(repo.join("current.txt"), "current\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit2"]).current_dir(repo).output().unwrap();
+
+        // Commit 3: add a file only in the later commit
+        std::fs::write(repo.join("later.txt"), "later only\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit3"]).current_dir(repo).output().unwrap();
+
+        // Move @ to commit2
+        Command::new("jj").args(["edit", "@---"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        // later.txt should appear with Unstaged lines (only changed above @)
+        let later_file = result.files.iter().find(|f| {
+            f.lines.first().is_some_and(|l| l.content.contains("later.txt"))
+        });
+        assert!(later_file.is_some(), "later.txt should be in diff (file only in later commit)");
+
+        let later_lines: Vec<_> = later_file.unwrap().lines.iter()
+            .filter(|l| l.source == LineSource::Unstaged)
+            .collect();
+        assert!(!later_lines.is_empty(),
+            "later.txt content should be Unstaged (only changed in later commit)");
+    }
+
+    #[test]
+    fn test_jj_at_tip_no_stack_position() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // Single commit above trunk — @ is at the tip
+        std::fs::write(repo.join("feature.txt"), "content\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        assert!(result.stack_position.is_none(),
+            "stack_position should be None when @ is at the tip");
     }
 
     #[test]
