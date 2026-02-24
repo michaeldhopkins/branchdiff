@@ -18,12 +18,19 @@ fn repo_name(app: &App) -> String {
 }
 
 fn branch_info(app: &App) -> String {
-    format!(
+    let base = format!(
         "{} | {} vs {}",
         repo_name(app),
         app.comparison.to_label,
         app.comparison.from_label
-    )
+    );
+    match app.comparison.stack_position {
+        Some(pos) if pos.head_count > 1 => {
+            format!("{base} [{}/{} head 1/{}]", pos.current, pos.total, pos.head_count)
+        }
+        Some(pos) => format!("{base} [{}/{}]", pos.current, pos.total),
+        None => base,
+    }
 }
 
 /// Determine how many lines the status bar needs based on content and width
@@ -306,5 +313,49 @@ mod tests {
             "Expected branch info to start with 'test | HEAD vs master', got: {}",
             combined
         );
+    }
+
+    #[test]
+    fn test_branch_info_stack_position_linear() {
+        use crate::vcs::StackPosition;
+
+        let app = TestAppBuilder::new()
+            .with_current_branch(Some("qvkxrzts"))
+            .with_base_branch("main")
+            .with_stack_position(StackPosition { current: 2, total: 3, head_count: 1 })
+            .build();
+
+        let info = branch_info(&app);
+        assert!(info.contains("[2/3]"),
+            "linear stack should show [2/3], got: {info}");
+        assert!(!info.contains("head"),
+            "linear stack should not show head count, got: {info}");
+    }
+
+    #[test]
+    fn test_branch_info_stack_position_branching() {
+        use crate::vcs::StackPosition;
+
+        let app = TestAppBuilder::new()
+            .with_current_branch(Some("qvkxrzts"))
+            .with_base_branch("main")
+            .with_stack_position(StackPosition { current: 3, total: 5, head_count: 2 })
+            .build();
+
+        let info = branch_info(&app);
+        assert!(info.contains("[3/5 head 1/2]"),
+            "branching stack should show [3/5 head 1/2], got: {info}");
+    }
+
+    #[test]
+    fn test_branch_info_no_stack_position() {
+        let app = TestAppBuilder::new()
+            .with_current_branch(Some("feature"))
+            .with_base_branch("main")
+            .build();
+
+        let info = branch_info(&app);
+        assert!(!info.contains('['),
+            "no stack position should show no brackets, got: {info}");
     }
 }

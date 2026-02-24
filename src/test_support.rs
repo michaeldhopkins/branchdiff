@@ -14,7 +14,7 @@ use crate::app::{App, ViewMode, ViewState};
 use crate::diff::{DiffLine, FileDiff, LineSource};
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
-use crate::vcs::{ComparisonContext, RefreshResult, VcsEventType, VcsWatchPaths};
+use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsEventType, VcsWatchPaths};
 
 /// Builder for creating test App instances with sensible defaults.
 ///
@@ -33,6 +33,7 @@ pub struct TestAppBuilder {
     scroll_offset: usize,
     base_branch: String,
     current_branch: Option<String>,
+    stack_position: Option<StackPosition>,
 }
 
 impl Default for TestAppBuilder {
@@ -51,6 +52,7 @@ impl TestAppBuilder {
             scroll_offset: 0,
             base_branch: "main".to_string(),
             current_branch: Some("feature".to_string()),
+            stack_position: None,
         }
     }
 
@@ -90,6 +92,11 @@ impl TestAppBuilder {
         self
     }
 
+    pub fn with_stack_position(mut self, pos: StackPosition) -> Self {
+        self.stack_position = Some(pos);
+        self
+    }
+
     pub fn build(self) -> App {
         let repo_path = PathBuf::from("/tmp/test");
         let to_label = self.current_branch.unwrap_or_else(|| "HEAD".to_string());
@@ -99,6 +106,7 @@ impl TestAppBuilder {
             comparison: ComparisonContext {
                 from_label: self.base_branch,
                 to_label,
+                stack_position: self.stack_position,
             },
             base_identifier: "abc123".to_string(),
             files: self.files,
