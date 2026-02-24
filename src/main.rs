@@ -289,6 +289,7 @@ fn run_main_app(
         let comparison = vcs.comparison_context().unwrap_or_else(|_| ComparisonContext {
             from_label: "base".to_string(),
             to_label: "working copy".to_string(),
+            stack_position: None,
         });
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let initial = vcs.refresh(&cancel_flag)?;
