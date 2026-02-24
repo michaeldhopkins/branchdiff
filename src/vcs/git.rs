@@ -949,6 +949,7 @@ fn git_compute_refresh(
         current_branch,
         metrics,
         file_links,
+        stack_position: None,
     })
 }
 
@@ -987,6 +988,7 @@ impl Vcs for GitVcs {
         Ok(ComparisonContext {
             from_label: self.base_branch.clone(),
             to_label,
+            stack_position: None,
         })
     }
 

@@ -721,6 +721,7 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
+            stack_position: None,
         });
 
         let config = UpdateConfig::default();
@@ -998,6 +999,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
+            stack_position: None,
         });
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
@@ -1569,6 +1571,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
+            stack_position: None,
         });
 
         let config = UpdateConfig::default();
@@ -1625,6 +1628,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
+            stack_position: None,
         });
 
         handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
