@@ -18,7 +18,7 @@ use branchdiff::message::{
     FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger, FALLBACK_REFRESH_SECS,
 };
 use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
-use branchdiff::vcs::{self, Vcs};
+use branchdiff::vcs::{self, ComparisonContext, Vcs};
 use branchdiff::ui;
 
 use std::io;
@@ -284,7 +284,12 @@ fn run_main_app(
     loop {
         let vcs: Arc<dyn Vcs> = Arc::from(detected);
 
-        let comparison = vcs.comparison_context()?;
+        // Fallback labels if jj has a transient error during restart — the
+        // first successful refresh will update them via apply_refresh_result.
+        let comparison = vcs.comparison_context().unwrap_or_else(|_| ComparisonContext {
+            from_label: "base".to_string(),
+            to_label: "working copy".to_string(),
+        });
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let initial = vcs.refresh(&cancel_flag)?;
         let mut app = App::new(repo_root.clone(), comparison, initial);

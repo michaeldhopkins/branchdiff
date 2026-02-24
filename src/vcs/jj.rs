@@ -7,6 +7,9 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
+
+use super::{vcs_thread_pool, PARALLEL_THRESHOLD};
 
 const MAX_RETRIES: u32 = 2;
 const BASE_RETRY_DELAY_MS: u64 = 100;
@@ -16,6 +19,16 @@ const BASE_RETRY_DELAY_MS: u64 = 100;
 /// after jj finishes its working copy update.
 fn is_transient_jj_error(stderr: &str) -> bool {
     stderr.contains("stale")
+}
+
+/// Prepend `--ignore-working-copy` to skip jj's auto-snapshot.
+/// Only the first command per refresh cycle needs to snapshot; subsequent
+/// commands reuse the snapshot and avoid writing to op_store/working_copy.
+fn no_snapshot<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut full = Vec::with_capacity(args.len() + 1);
+    full.push("--ignore-working-copy");
+    full.extend_from_slice(args);
+    full
 }
 
 /// Run a jj command with exponential backoff on transient errors.
@@ -98,6 +111,8 @@ impl JjVcs {
     }
 
     /// Get changed files between from_rev and @.
+    /// This is the first command per refresh and triggers the working copy
+    /// auto-snapshot — all subsequent commands use `--ignore-working-copy`.
     fn get_changed_files(&self) -> Result<Vec<ChangedFile>> {
         let output = run_jj_with_retry(
             &self.repo_path,
@@ -111,22 +126,19 @@ impl JjVcs {
     }
 
     /// Detect binary files by checking --stat output for "(binary)" markers.
+    /// Uses `--ignore-working-copy` since the snapshot is already fresh from
+    /// `get_changed_files`.
     fn get_binary_files_set(&self) -> HashSet<String> {
-        let Ok(output) = run_jj_with_retry(
-            &self.repo_path,
-            &["diff", "--from", &self.from_rev, "--to", "@", "--stat"],
-        ) else {
+        let args = no_snapshot(&[
+            "diff", "--from", &self.from_rev, "--to", "@", "--stat",
+        ]);
+        let Ok(output) = run_jj_with_retry(&self.repo_path, &args) else {
             return HashSet::new();
         };
         if !output.status.success() {
             return HashSet::new();
         }
         parse_binary_from_stat(&String::from_utf8_lossy(&output.stdout))
-    }
-
-    fn get_file_content_at_rev(&self, file_path: &str, rev: &str) -> Result<Option<String>> {
-        let bytes = self.run_jj_bytes(&["file", "show", "-r", rev, file_path])?;
-        Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
     }
 
     fn get_file_bytes_at_rev(&self, file_path: &str, rev: &str) -> Result<Option<Vec<u8>>> {
@@ -139,23 +151,104 @@ impl JjVcs {
         Ok(output.trim().to_string())
     }
 
-    /// Get bookmarks for a revision.
+    #[cfg(test)]
     fn get_bookmarks(&self, rev: &str) -> Option<String> {
         let output = self.run_jj(&["log", "-r", rev, "-T", "bookmarks", "--no-graph", "--limit", "1"]).ok()?;
         let trimmed = output.trim().trim_end_matches('*');
         if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
     }
 
-    /// Build a label for a revision (bookmark name or short change ID).
+    #[cfg(test)]
     fn rev_label(&self, rev: &str) -> String {
         self.get_bookmarks(rev)
             .unwrap_or_else(|| self.get_change_id(rev).unwrap_or_else(|_| rev.to_string()))
+    }
+
+    /// Fetch bookmarks and change_id for a revision in a single command,
+    /// using `--ignore-working-copy` to avoid redundant auto-snapshots.
+    /// Returns (change_id, display_label).
+    fn rev_metadata_no_snapshot(&self, rev: &str) -> (String, String) {
+        let template = r#"bookmarks ++ "\0" ++ change_id.short(12)"#;
+        let args = no_snapshot(&[
+            "log", "-r", rev, "-T", template, "--no-graph", "--limit", "1",
+        ]);
+        match self.run_jj(&args) {
+            Ok(raw) => parse_rev_metadata(&raw),
+            Err(_) => (rev.to_string(), rev.to_string()),
+        }
     }
 
     /// Check if repo is colocated (has .git directory alongside .jj).
     fn is_colocated(&self) -> bool {
         self.repo_path.join(".git").exists()
     }
+}
+
+/// Parse combined `bookmarks ++ "\0" ++ change_id` template output.
+/// Returns (change_id, display_label) where label prefers bookmarks.
+fn parse_rev_metadata(raw: &str) -> (String, String) {
+    let raw = raw.trim();
+    if let Some((bookmarks_raw, change_id)) = raw.split_once('\0') {
+        let bookmarks = bookmarks_raw.trim().trim_end_matches('*');
+        let change_id = change_id.trim().to_string();
+        let label = if bookmarks.is_empty() {
+            change_id.clone()
+        } else {
+            bookmarks.to_string()
+        };
+        (change_id, label)
+    } else {
+        (raw.to_string(), raw.to_string())
+    }
+}
+
+/// Read file content at a revision without triggering auto-snapshot.
+/// Free function for use in parallel contexts (rayon).
+fn file_content_no_snapshot(repo_path: &Path, file_path: &str, rev: &str) -> Option<String> {
+    let args = no_snapshot(&["file", "show", "-r", rev, file_path]);
+    let output = Command::new("jj")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        None
+    }
+}
+
+enum FileProcessResult {
+    Diff(FileDiff),
+    Binary { path: String },
+    Image { path: String },
+}
+
+fn process_jj_file(
+    repo_path: &Path,
+    from_rev: &str,
+    changed: &ChangedFile,
+    binary_files: &HashSet<String>,
+) -> FileProcessResult {
+    if binary_files.contains(&changed.path) {
+        if is_image_file(&changed.path) {
+            return FileProcessResult::Image { path: changed.path.clone() };
+        }
+        return FileProcessResult::Binary { path: changed.path.clone() };
+    }
+
+    let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
+    let base = file_content_no_snapshot(repo_path, base_path, from_rev);
+    let head = file_content_no_snapshot(repo_path, &changed.path, "@");
+
+    FileProcessResult::Diff(compute_four_way_diff(DiffInput {
+        path: &changed.path,
+        base: base.as_deref(),
+        head: head.as_deref(),
+        index: head.as_deref(),
+        working: head.as_deref(),
+        old_path: changed.old_path.as_deref(),
+    }))
 }
 
 /// Get the jj repo root from a path.
@@ -180,24 +273,74 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
-        let from_label = self.get_bookmarks(&self.from_rev)
-            .unwrap_or_else(|| self.get_change_id(&self.from_rev).unwrap_or_else(|_| self.from_rev.clone()));
-        let to_label = self.rev_label("@");
+        let template = r#"bookmarks ++ "\0" ++ change_id.short(12)"#;
+        // First call triggers auto-snapshot to capture current working copy
+        let from_output = run_jj_with_retry(
+            &self.repo_path,
+            &["log", "-r", &self.from_rev, "-T", template, "--no-graph", "--limit", "1"],
+        )?;
+        let from_label = if from_output.status.success() {
+            parse_rev_metadata(&String::from_utf8_lossy(&from_output.stdout)).1
+        } else {
+            self.from_rev.clone()
+        };
 
-        Ok(ComparisonContext {
-            from_label,
-            to_label,
-        })
+        // Second call skips snapshot (already fresh)
+        let to_args = no_snapshot(&[
+            "log", "-r", "@", "-T", template, "--no-graph", "--limit", "1",
+        ]);
+        let to_output = run_jj_with_retry(&self.repo_path, &to_args)?;
+        let to_label = if to_output.status.success() {
+            parse_rev_metadata(&String::from_utf8_lossy(&to_output.stdout)).1
+        } else {
+            "@".to_string()
+        };
+
+        Ok(ComparisonContext { from_label, to_label })
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
+        // First command — triggers working copy auto-snapshot
         let changed_files = self.get_changed_files()?;
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
         }
 
+        // All subsequent commands use --ignore-working-copy
         let binary_files = self.get_binary_files_set();
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            anyhow::bail!("refresh cancelled");
+        }
+
+        let results: Vec<FileProcessResult> = if changed_files.len() >= PARALLEL_THRESHOLD {
+            vcs_thread_pool().install(|| {
+                changed_files
+                    .par_iter()
+                    .map(|changed| {
+                        process_jj_file(
+                            &self.repo_path,
+                            &self.from_rev,
+                            changed,
+                            &binary_files,
+                        )
+                    })
+                    .collect()
+            })
+        } else {
+            changed_files
+                .iter()
+                .map(|changed| {
+                    process_jj_file(
+                        &self.repo_path,
+                        &self.from_rev,
+                        changed,
+                        &binary_files,
+                    )
+                })
+                .collect()
+        };
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
@@ -206,55 +349,42 @@ impl crate::vcs::Vcs for JjVcs {
         let mut files = Vec::new();
         let mut all_lines = Vec::new();
 
-        for changed in &changed_files {
-            if cancel_flag.load(Ordering::Relaxed) {
-                anyhow::bail!("refresh cancelled");
-            }
-
-            if binary_files.contains(&changed.path) {
-                let header = DiffLine::file_header(&changed.path);
-                if is_image_file(&changed.path) {
-                    let marker = DiffLine::image_marker(&changed.path);
-                    all_lines.push(header.clone());
-                    all_lines.push(marker.clone());
-                    files.push(FileDiff { lines: vec![header, marker] });
-                } else {
-                    let marker = DiffLine::new(LineSource::Base, "[binary file]".to_string(), ' ', None);
+        for result in results {
+            match result {
+                FileProcessResult::Diff(file_diff) => {
+                    all_lines.extend(file_diff.lines.iter().cloned());
+                    all_lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
+                    files.push(file_diff);
+                }
+                FileProcessResult::Binary { path } => {
+                    let header = DiffLine::file_header(&path);
+                    let marker = DiffLine::new(
+                        LineSource::Base,
+                        "[binary file]".to_string(),
+                        ' ',
+                        None,
+                    );
                     all_lines.push(header.clone());
                     all_lines.push(marker.clone());
                     files.push(FileDiff { lines: vec![header, marker] });
                 }
-                continue;
+                FileProcessResult::Image { path } => {
+                    let header = DiffLine::file_header(&path);
+                    let marker = DiffLine::image_marker(&path);
+                    all_lines.push(header.clone());
+                    all_lines.push(marker.clone());
+                    files.push(FileDiff { lines: vec![header, marker] });
+                }
             }
-
-            // jj has no staging area: base = from_rev, head = @
-            // Pass head as index/working so the diff algorithm doesn't
-            // misinterpret None as "file deleted from staging area"
-            // For renames, read base content from the old path
-            let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
-            let base = self.get_file_content_at_rev(base_path, &self.from_rev).ok().flatten();
-            let head = self.get_file_content_at_rev(&changed.path, "@").ok().flatten();
-
-            let file_diff = compute_four_way_diff(DiffInput {
-                path: &changed.path,
-                base: base.as_deref(),
-                head: head.as_deref(),
-                index: head.as_deref(),
-                working: head.as_deref(),
-                old_path: changed.old_path.as_deref(),
-            });
-
-            all_lines.extend(file_diff.lines.clone());
-            files.push(file_diff);
         }
 
         let metrics = DiffMetrics {
             total_lines: all_lines.len(),
             file_count: files.len(),
         };
-        let base_identifier = self.get_change_id(&self.from_rev).unwrap_or_default();
-        let base_label = Some(self.rev_label(&self.from_rev));
-        let current_branch = Some(self.rev_label("@"));
+        let (base_identifier, base_label_str) =
+            self.rev_metadata_no_snapshot(&self.from_rev);
+        let (_, current_branch_str) = self.rev_metadata_no_snapshot("@");
 
         let file_paths: Vec<&str> = files
             .iter()
@@ -267,21 +397,23 @@ impl crate::vcs::Vcs for JjVcs {
             files,
             lines: all_lines,
             base_identifier,
-            base_label,
-            current_branch,
+            base_label: Some(base_label_str),
+            current_branch: Some(current_branch_str),
             metrics,
             file_links,
         })
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
+        // First command triggers auto-snapshot
         let changed_files = self.get_changed_files().ok()?;
         let changed = changed_files.iter().find(|f| f.path == file_path);
         let old_path = changed.and_then(|f| f.old_path.as_deref());
 
+        // Subsequent commands skip snapshot
         let base_path = old_path.unwrap_or(file_path);
-        let base = self.get_file_content_at_rev(base_path, &self.from_rev).ok().flatten();
-        let head = self.get_file_content_at_rev(file_path, "@").ok().flatten();
+        let base = file_content_no_snapshot(&self.repo_path, base_path, &self.from_rev);
+        let head = file_content_no_snapshot(&self.repo_path, file_path, "@");
 
         if base.is_none() && head.is_none() {
             return None;
@@ -583,6 +715,53 @@ mod tests {
         let output = "original.bin => renamed.bin | (binary)\n";
         let binaries = parse_binary_from_stat(output);
         assert!(binaries.contains("renamed.bin"), "should extract new name from arrow format");
+    }
+
+    // === parse_rev_metadata tests ===
+
+    #[test]
+    fn test_parse_rev_metadata_with_bookmark() {
+        let (change_id, label) = parse_rev_metadata("my-feature\0abcdef123456\n");
+        assert_eq!(change_id, "abcdef123456");
+        assert_eq!(label, "my-feature");
+    }
+
+    #[test]
+    fn test_parse_rev_metadata_without_bookmark() {
+        let (change_id, label) = parse_rev_metadata("\0abcdef123456\n");
+        assert_eq!(change_id, "abcdef123456");
+        assert_eq!(label, "abcdef123456");
+    }
+
+    #[test]
+    fn test_parse_rev_metadata_strips_tracking_marker() {
+        let (change_id, label) = parse_rev_metadata("main*\0abcdef123456\n");
+        assert_eq!(change_id, "abcdef123456");
+        assert_eq!(label, "main");
+    }
+
+    #[test]
+    fn test_parse_rev_metadata_empty_string() {
+        let (change_id, label) = parse_rev_metadata("");
+        assert_eq!(change_id, "");
+        assert_eq!(label, "");
+    }
+
+    #[test]
+    fn test_parse_rev_metadata_no_separator() {
+        let (change_id, label) = parse_rev_metadata("fallback_text");
+        assert_eq!(change_id, "fallback_text");
+        assert_eq!(label, "fallback_text");
+    }
+
+    // === no_snapshot helper tests ===
+
+    #[test]
+    fn test_no_snapshot_prepends_flag() {
+        let args = no_snapshot(&["diff", "--from", "@-", "--to", "@"]);
+        assert_eq!(args[0], "--ignore-working-copy");
+        assert_eq!(args[1], "diff");
+        assert_eq!(args.len(), 6);
     }
 
     // === classify_event tests ===
@@ -899,5 +1078,66 @@ mod tests {
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
         let label = vcs.rev_label("@");
         assert_eq!(label, "my-branch", "should strip trailing * from bookmark name");
+    }
+
+    #[test]
+    fn test_jj_refresh_parallel_with_multiple_files() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        for i in 0..6 {
+            std::fs::write(repo.join(format!("file{i}.txt")), "initial\n").unwrap();
+        }
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        for i in 0..6 {
+            std::fs::write(repo.join(format!("file{i}.txt")), format!("modified {i}\n")).unwrap();
+        }
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        assert_eq!(result.files.len(), 6, "should detect all 6 changed files");
+        assert!(!result.base_identifier.is_empty());
+    }
+
+    #[test]
+    fn test_jj_rev_metadata_no_snapshot_with_bookmark() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["bookmark", "set", "test-bm", "-r", "@-"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let (change_id, label) = vcs.rev_metadata_no_snapshot("@-");
+
+        assert!(!change_id.is_empty());
+        assert_eq!(label, "test-bm");
+    }
+
+    #[test]
+    fn test_jj_rev_metadata_no_snapshot_without_bookmark() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "content\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let (change_id, label) = vcs.rev_metadata_no_snapshot("@-");
+
+        assert!(!change_id.is_empty());
+        assert_eq!(label, change_id, "without bookmark, label should be change_id");
     }
 }
