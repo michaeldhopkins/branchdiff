@@ -989,6 +989,7 @@ impl Vcs for GitVcs {
             from_label: self.base_branch.clone(),
             to_label,
             stack_position: None,
+            vcs_name: "git".to_string(),
         })
     }
 

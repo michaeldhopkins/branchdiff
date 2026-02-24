@@ -78,7 +78,7 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
     draw_status_bar(frame, app, status_area);
 
     if app.view.show_help {
-        draw_help_modal(frame, size);
+        draw_help_modal(frame, size, app);
     }
 }
 

@@ -444,7 +444,7 @@ impl crate::vcs::Vcs for JjVcs {
 
         // stack_position is computed by refresh() and applied via
         // apply_refresh_result — no need to resolve it here too.
-        Ok(ComparisonContext { from_label, to_label, stack_position: None })
+        Ok(ComparisonContext { from_label, to_label, stack_position: None, vcs_name: "jj".to_string() })
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
