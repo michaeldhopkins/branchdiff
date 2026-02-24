@@ -2,13 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use rayon::prelude::*;
-use rayon::ThreadPoolBuilder;
 
 use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff, LineSource};
 use crate::file_links::compute_file_links;
@@ -722,25 +721,7 @@ pub fn get_current_branch(repo_path: &Path) -> Result<Option<String>> {
 // Refresh pipeline (git-specific implementation)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PARALLEL_THRESHOLD: usize = 4;
-
-/// Maximum threads for git subprocess operations.
-const MAX_GIT_THREADS: usize = 16;
-
-static GIT_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
-
-fn git_thread_pool() -> &'static rayon::ThreadPool {
-    GIT_POOL.get_or_init(|| {
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get().min(MAX_GIT_THREADS))
-            .unwrap_or(4);
-
-        ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build()
-            .expect("failed to build git thread pool")
-    })
-}
+use super::{vcs_thread_pool, PARALLEL_THRESHOLD};
 
 enum FileProcessResult {
     Diff(FileDiff),
@@ -893,7 +874,7 @@ fn git_compute_refresh(
     let changed_files = changed_files_result.context("Failed to get changed files")?;
 
     let results: Vec<FileProcessResult> = if changed_files.len() >= PARALLEL_THRESHOLD {
-        git_thread_pool().install(|| {
+        vcs_thread_pool().install(|| {
             changed_files
                 .par_iter()
                 .map(|file| process_single_file(repo_path, &file.path, file.old_path.as_deref(), &merge_base, &binary_files))

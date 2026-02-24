@@ -26,6 +26,11 @@ use crate::message::{
 /// Delay before processing VCS internal events (500ms reduces lock collisions by ~80%)
 const VCS_EVENT_DELAY_MS: u64 = 500;
 
+/// Cooldown after refresh completion during which VCS-only events are suppressed.
+/// Must exceed the debouncer timeout (100ms) plus filesystem event delivery latency
+/// to catch self-triggered events from our own jj/git commands.
+const POST_REFRESH_COOLDOWN_MS: u64 = 300;
+
 /// How often to check for VCS backend changes (e.g., .jj appearing or disappearing).
 const VCS_CHECK_INTERVAL_SECS: u64 = 2;
 
@@ -40,6 +45,8 @@ pub struct Timers {
     pub last_vcs_check: Instant,
     /// Whether .jj directory existed at last check
     pub jj_present: bool,
+    /// When the last refresh completed (for suppressing self-triggered events)
+    pub last_refresh_completed: Option<Instant>,
 }
 
 impl Timers {
@@ -51,6 +58,7 @@ impl Timers {
             pending_vcs_event: None,
             last_vcs_check: Instant::now(),
             jj_present,
+            last_refresh_completed: None,
         }
     }
 }
@@ -368,6 +376,7 @@ fn handle_refresh(
             // Clear pending VCS events that are likely self-triggered by our own
             // VCS commands during the refresh (e.g., jj auto-snapshot)
             timers.pending_vcs_event = None;
+            timers.last_refresh_completed = Some(Instant::now());
 
             // Check for diff-related warnings
             let diff_warning = config.diff_thresholds.check_diff_warning(&refresh_result.metrics);
@@ -508,6 +517,14 @@ fn handle_file_change(
             // VCS-internal events during an active refresh are likely side-effects
             // of our own VCS commands (e.g., jj auto-snapshot writing to op_store).
             if !refresh_state.is_idle() {
+                return result;
+            }
+            // Events arriving shortly after a refresh completed are almost
+            // certainly self-triggered (debouncer delay causes them to land
+            // after the refresh finishes).
+            if let Some(completed) = timers.last_refresh_completed
+                && completed.elapsed() < Duration::from_millis(POST_REFRESH_COOLDOWN_MS)
+            {
                 return result;
             }
             timers.pending_vcs_event = Some(Instant::now());
@@ -1730,5 +1747,69 @@ mod tests {
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
         assert_eq!(result.loop_action, LoopAction::Continue);
+    }
+
+    #[test]
+    fn test_vcs_event_suppressed_during_post_refresh_cooldown() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        timers.last_refresh_completed = Some(Instant::now() - Duration::from_millis(100));
+
+        let vcs = StubVcs::new(temp.path().to_path_buf());
+
+        let events = vec![DebouncedEvent::new(
+            git_dir.join("index"),
+            DebouncedEventKind::Any,
+        )];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
+
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        assert!(
+            timers.pending_vcs_event.is_none(),
+            "VCS event during cooldown should be suppressed"
+        );
+    }
+
+    #[test]
+    fn test_vcs_event_accepted_after_cooldown_expires() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        timers.last_refresh_completed = Some(Instant::now() - Duration::from_millis(500));
+
+        let vcs = StubVcs::new(temp.path().to_path_buf());
+
+        let events = vec![DebouncedEvent::new(
+            git_dir.join("index"),
+            DebouncedEventKind::Any,
+        )];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
+
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        assert!(
+            timers.pending_vcs_event.is_some(),
+            "VCS event after cooldown should be accepted as pending"
+        );
     }
 }

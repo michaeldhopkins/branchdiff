@@ -7,11 +7,31 @@ pub use types::{ComparisonContext, RefreshResult, VcsEventType, VcsWatchPaths};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
+use rayon::ThreadPoolBuilder;
 
 use crate::diff::FileDiff;
+
+const PARALLEL_THRESHOLD: usize = 4;
+const MAX_VCS_THREADS: usize = 16;
+
+static VCS_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+/// Shared thread pool for parallel file processing across VCS backends.
+/// Only one backend is active at a time, so a single pool suffices.
+pub(crate) fn vcs_thread_pool() -> &'static rayon::ThreadPool {
+    VCS_POOL.get_or_init(|| {
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(MAX_VCS_THREADS))
+            .unwrap_or(4);
+        ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .expect("failed to build VCS thread pool")
+    })
+}
 
 /// Detect the VCS backend for a given path.
 ///
