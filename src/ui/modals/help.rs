@@ -1,8 +1,41 @@
 use super::prelude::*;
+use crate::app::App;
 use crate::diff::LineSource;
 use crate::ui::colors::{highlight_bg_color, line_bg_color};
 
-pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
+/// VCS-specific label set for the color legend.
+struct ColorLabels {
+    committed: &'static str,
+    staged: &'static str,
+    unstaged: &'static str,
+    del_committed: &'static str,
+    del_staged: &'static str,
+    del_unstaged: &'static str,
+}
+
+fn color_labels(vcs_name: &str) -> ColorLabels {
+    if vcs_name == "jj" {
+        ColorLabels {
+            committed: "Added (earlier commits)",
+            staged: "Added (current commit)",
+            unstaged: "Added (later commits)",
+            del_committed: "Deleted (earlier commits)",
+            del_staged: "Deleted (current commit)",
+            del_unstaged: "Deleted (later commits)",
+        }
+    } else {
+        ColorLabels {
+            committed: "Added (committed)",
+            staged: "Added (staged)",
+            unstaged: "Added (unstaged)",
+            del_committed: "Deleted (committed)",
+            del_staged: "Deleted (staged)",
+            del_unstaged: "Deleted (unstaged)",
+        }
+    }
+}
+
+pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
     let modal_width = 54u16;
     let modal_height = 49u16;
 
@@ -12,6 +45,8 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
     let modal_area = Rect::new(x, y, modal_width.min(area.width), modal_height.min(area.height));
 
     frame.render_widget(Clear, modal_area);
+
+    let labels = color_labels(&app.comparison.vcs_name);
 
     let help_lines = vec![
         Line::from(""),
@@ -87,27 +122,27 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" + C Added (committed)                 ", Style::default().bg(line_bg_color(LineSource::Committed))),
+            Span::styled(format!(" + C {:<34}", labels.committed), Style::default().bg(line_bg_color(LineSource::Committed))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" + S Added (staged)                    ", Style::default().bg(line_bg_color(LineSource::Staged))),
+            Span::styled(format!(" + S {:<34}", labels.staged), Style::default().bg(line_bg_color(LineSource::Staged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" +   Added (unstaged)                  ", Style::default().bg(line_bg_color(LineSource::Unstaged))),
+            Span::styled(format!(" +   {:<34}", labels.unstaged), Style::default().bg(line_bg_color(LineSource::Unstaged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" - C Deleted (committed)               ", Style::default().bg(line_bg_color(LineSource::DeletedBase))),
+            Span::styled(format!(" - C {:<34}", labels.del_committed), Style::default().bg(line_bg_color(LineSource::DeletedBase))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" - S Deleted (staged)                  ", Style::default().bg(line_bg_color(LineSource::DeletedCommitted))),
+            Span::styled(format!(" - S {:<34}", labels.del_staged), Style::default().bg(line_bg_color(LineSource::DeletedCommitted))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" -   Deleted (unstaged)                ", Style::default().bg(line_bg_color(LineSource::DeletedStaged))),
+            Span::styled(format!(" -   {:<34}", labels.del_unstaged), Style::default().bg(line_bg_color(LineSource::DeletedStaged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
@@ -120,27 +155,27 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" + C Added (committed) char highlight  ", Style::default().bg(highlight_bg_color(LineSource::Committed))),
+            Span::styled(format!(" + C {:<34}", format!("{} highlight", labels.committed)), Style::default().bg(highlight_bg_color(LineSource::Committed))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" + S Added (staged) char highlight     ", Style::default().bg(highlight_bg_color(LineSource::Staged))),
+            Span::styled(format!(" + S {:<34}", format!("{} highlight", labels.staged)), Style::default().bg(highlight_bg_color(LineSource::Staged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" +   Added (unstaged) char highlight   ", Style::default().bg(highlight_bg_color(LineSource::Unstaged))),
+            Span::styled(format!(" +   {:<34}", format!("{} highlight", labels.unstaged)), Style::default().bg(highlight_bg_color(LineSource::Unstaged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" - C Deleted (committed) char highlight", Style::default().bg(highlight_bg_color(LineSource::DeletedBase))),
+            Span::styled(format!(" - C {:<34}", format!("{} highlight", labels.del_committed)), Style::default().bg(highlight_bg_color(LineSource::DeletedBase))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" - S Deleted (staged) char highlight   ", Style::default().bg(highlight_bg_color(LineSource::DeletedCommitted))),
+            Span::styled(format!(" - S {:<34}", format!("{} highlight", labels.del_staged)), Style::default().bg(highlight_bg_color(LineSource::DeletedCommitted))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(" -   Deleted (unstaged) char highlight ", Style::default().bg(highlight_bg_color(LineSource::DeletedStaged))),
+            Span::styled(format!(" -   {:<34}", format!("{} highlight", labels.del_unstaged)), Style::default().bg(highlight_bg_color(LineSource::DeletedStaged))),
         ]),
     ];
 
@@ -152,6 +187,19 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect) {
     let paragraph = Paragraph::new(help_lines).block(block);
 
     frame.render_widget(paragraph, modal_area);
+}
+
+#[cfg(test)]
+fn build_color_labels(vcs_name: &str) -> Vec<String> {
+    let labels = color_labels(vcs_name);
+    vec![
+        labels.committed.to_string(),
+        labels.staged.to_string(),
+        labels.unstaged.to_string(),
+        labels.del_committed.to_string(),
+        labels.del_staged.to_string(),
+        labels.del_unstaged.to_string(),
+    ]
 }
 
 #[cfg(test)]
@@ -203,5 +251,34 @@ mod tests {
 
         assert_eq!(clamped_width, 30);
         assert_eq!(clamped_height, 15);
+    }
+
+    #[test]
+    fn test_help_labels_git_mode() {
+        let labels = build_color_labels("git");
+        assert_eq!(labels[0], "Added (committed)");
+        assert_eq!(labels[1], "Added (staged)");
+        assert_eq!(labels[2], "Added (unstaged)");
+        assert_eq!(labels[3], "Deleted (committed)");
+        assert_eq!(labels[4], "Deleted (staged)");
+        assert_eq!(labels[5], "Deleted (unstaged)");
+    }
+
+    #[test]
+    fn test_help_labels_jj_mode() {
+        let labels = build_color_labels("jj");
+        assert_eq!(labels[0], "Added (earlier commits)");
+        assert_eq!(labels[1], "Added (current commit)");
+        assert_eq!(labels[2], "Added (later commits)");
+        assert_eq!(labels[3], "Deleted (earlier commits)");
+        assert_eq!(labels[4], "Deleted (current commit)");
+        assert_eq!(labels[5], "Deleted (later commits)");
+    }
+
+    #[test]
+    fn test_help_labels_unknown_vcs_defaults_to_git() {
+        let labels = build_color_labels("stub");
+        assert_eq!(labels[0], "Added (committed)");
+        assert_eq!(labels[2], "Added (unstaged)");
     }
 }

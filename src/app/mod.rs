@@ -85,6 +85,7 @@ impl App {
                 from_label: "main".to_string(),
                 to_label: "feature".to_string(),
                 stack_position: None,
+                vcs_name: "git".to_string(),
             },
             base_identifier: "bench".to_string(),
             files: Vec::new(),
