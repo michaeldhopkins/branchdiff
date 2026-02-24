@@ -663,23 +663,22 @@ impl crate::vcs::Vcs for JjVcs {
 
     fn classify_event(&self, path: &Path) -> VcsEventType {
         let relative = path.strip_prefix(&self.repo_path).unwrap_or(path);
-        let is_jj_path = relative
-            .components()
-            .next()
-            .is_some_and(|c| c.as_os_str() == ".jj");
+        let first = relative.components().next().map(|c| c.as_os_str());
 
-        if !is_jj_path {
-            return VcsEventType::Source;
+        if first.is_some_and(|c| c == ".jj") {
+            let path_str = relative.to_string_lossy();
+            return if path_str.contains("working_copy/") {
+                VcsEventType::RevisionChange
+            } else {
+                VcsEventType::Internal
+            };
         }
 
-        let path_str = relative.to_string_lossy();
-        if path_str.contains("working_copy/") {
-            VcsEventType::RevisionChange
-        } else {
-            // op_store/ writes happen on every jj command (even reads like jj diff)
-            // and are mostly side-effects of our own refresh calls
-            VcsEventType::Internal
+        if first.is_some_and(|c| c == ".git") && self.is_colocated() {
+            return VcsEventType::Internal;
         }
+
+        VcsEventType::Source
     }
 
     fn vcs_name(&self) -> &str {
@@ -993,6 +992,75 @@ mod tests {
         let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
         assert_eq!(
             vcs.classify_event(Path::new("/other/file.rs")),
+            VcsEventType::Source
+        );
+    }
+
+    #[test]
+    fn test_classify_git_index_as_internal_in_colocated_repo() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".jj")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".git")).unwrap();
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+        assert_eq!(
+            vcs.classify_event(&temp.path().join(".git/index")),
+            VcsEventType::Internal
+        );
+    }
+
+    #[test]
+    fn test_classify_git_objects_as_internal_in_colocated_repo() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".jj")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".git")).unwrap();
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+        assert_eq!(
+            vcs.classify_event(&temp.path().join(".git/objects/ab/cd1234")),
+            VcsEventType::Internal
+        );
+    }
+
+    #[test]
+    fn test_classify_git_refs_as_internal_in_colocated_repo() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".jj")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".git")).unwrap();
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+        assert_eq!(
+            vcs.classify_event(&temp.path().join(".git/refs/jj/keep/abc123")),
+            VcsEventType::Internal
+        );
+    }
+
+    #[test]
+    fn test_classify_git_head_as_internal_in_colocated_repo() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".jj")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".git")).unwrap();
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+        assert_eq!(
+            vcs.classify_event(&temp.path().join(".git/HEAD")),
+            VcsEventType::Internal
+        );
+    }
+
+    #[test]
+    fn test_classify_git_path_as_source_in_non_colocated_repo() {
+        let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
+        assert_eq!(
+            vcs.classify_event(Path::new("/repo/.git/index")),
+            VcsEventType::Source
+        );
+    }
+
+    #[test]
+    fn test_classify_source_file_in_colocated_repo() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".jj")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".git")).unwrap();
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+        assert_eq!(
+            vcs.classify_event(&temp.path().join("src/main.rs")),
             VcsEventType::Source
         );
     }

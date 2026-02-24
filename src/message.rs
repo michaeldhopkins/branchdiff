@@ -33,6 +33,8 @@ pub enum RefreshOutcome {
     Success(RefreshResult),
     /// Single file refresh completed.
     SingleFile { path: String, diff: Option<FileDiff> },
+    /// Refresh was cancelled (e.g., by watchdog restart). Not a user-facing error.
+    Cancelled,
     /// Refresh failed with an error.
     Error(String),
 }
@@ -121,6 +123,7 @@ mod tests {
             path: "test.rs".to_string(),
             diff: None,
         };
+        let _cancelled = RefreshOutcome::Cancelled;
         let _error = RefreshOutcome::Error("something failed".to_string());
     }
 
