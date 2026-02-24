@@ -84,6 +84,7 @@ impl App {
             comparison: ComparisonContext {
                 from_label: "main".to_string(),
                 to_label: "feature".to_string(),
+                stack_position: None,
             },
             base_identifier: "bench".to_string(),
             files: Vec::new(),
@@ -172,6 +173,7 @@ impl App {
         if let Some(branch) = result.current_branch {
             self.comparison.to_label = branch;
         }
+        self.comparison.stack_position = result.stack_position;
         self.files = result.files;
         self.lines = result.lines;
         self.file_links = result.file_links;
@@ -1276,6 +1278,7 @@ mod tests {
             current_branch: Some("new-branch".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
+            stack_position: None,
         };
 
         app.apply_refresh_result(result);
@@ -1477,6 +1480,7 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
+            stack_position: None,
         };
         app.apply_refresh_result(result);
         assert!(app.needs_inline_spans(), "apply_refresh_result should mark dirty");
@@ -1708,6 +1712,7 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
+            stack_position: None,
         };
         app.apply_refresh_result(result);
 
@@ -1728,6 +1733,7 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
+            stack_position: None,
         };
         app.apply_refresh_result(result);
 
