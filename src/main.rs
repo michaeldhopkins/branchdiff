@@ -493,7 +493,12 @@ fn spawn_refresh(
                 let _ = refresh_tx.send(RefreshOutcome::Success(result));
             }
             Err(e) => {
-                let _ = refresh_tx.send(RefreshOutcome::Error(format!("{e:#}")));
+                let outcome = if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    RefreshOutcome::Cancelled
+                } else {
+                    RefreshOutcome::Error(format!("{e:#}"))
+                };
+                let _ = refresh_tx.send(outcome);
             }
         }
     });
