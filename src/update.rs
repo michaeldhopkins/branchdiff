@@ -5,7 +5,7 @@
 //! an UpdateResult indicating side effects to perform.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -438,6 +438,14 @@ fn is_noisy_path(path_str: &str) -> bool {
         || path_str.ends_with(".lock")
 }
 
+fn is_vcs_path(path: &Path, repo_root: &Path) -> bool {
+    let relative = path.strip_prefix(repo_root).unwrap_or(path);
+    relative
+        .components()
+        .next()
+        .is_some_and(|c| c.as_os_str() == ".jj" || c.as_os_str() == ".git")
+}
+
 /// Handle file system change events.
 fn handle_file_change(
     events: Vec<notify_debouncer_mini::DebouncedEvent>,
@@ -487,7 +495,7 @@ fn handle_file_change(
     let filtered_paths: Vec<_> = unique_paths
         .into_iter()
         .filter(|p| !is_noisy_path(&p.to_string_lossy()))
-        .filter(|p| !app.gitignore_filter.is_ignored(p))
+        .filter(|p| is_vcs_path(p, vcs.repo_path()) || !app.gitignore_filter.is_ignored(p))
         .collect();
 
     let mut should_refresh = false;
@@ -2077,6 +2085,41 @@ mod tests {
         assert!(
             timers.pending_vcs_event.is_some(),
             "Internal-only events should be delayed via pending_vcs_event"
+        );
+    }
+
+    #[test]
+    fn test_vcs_paths_bypass_gitignore_filter() {
+        use notify_debouncer_mini::DebouncedEvent;
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let jj_dir = temp.path().join(".jj");
+        std::fs::create_dir_all(jj_dir.join("working_copy")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".git/info")).unwrap();
+        std::fs::write(temp.path().join(".gitignore"), ".jj/\n").unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        app.gitignore_filter = crate::gitignore::GitignoreFilter::new(temp.path());
+        let mut refresh_state = RefreshState::Idle;
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        timers.last_refresh_completed = Some(Instant::now() - Duration::from_secs(5));
+        let vcs = StubVcs::new(temp.path().to_path_buf());
+
+        let events = vec![DebouncedEvent::new(
+            temp.path().join(".git/HEAD"),
+            DebouncedEventKind::Any,
+        )];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
+
+        assert_eq!(
+            result.refresh,
+            RefreshTrigger::Full,
+            ".git/HEAD should bypass gitignore filter and trigger refresh"
         );
     }
 }
