@@ -2,7 +2,7 @@ pub mod git;
 pub mod jj;
 pub mod types;
 
-pub use types::{ComparisonContext, RefreshResult, VcsEventType, VcsWatchPaths};
+pub use types::{ComparisonContext, RefreshResult, StackPosition, VcsEventType, VcsWatchPaths};
 
 use std::collections::HashSet;
 use std::path::Path;

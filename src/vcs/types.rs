@@ -4,6 +4,17 @@ use std::path::PathBuf;
 use crate::diff::{DiffLine, FileDiff};
 use crate::limits::DiffMetrics;
 
+/// Position of `@` within a jj commit stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackPosition {
+    /// 1-based index of `@` in the stack (1 = bottom, total = tip).
+    pub current: usize,
+    /// Total number of commits between trunk and the stack tip.
+    pub total: usize,
+    /// Number of independent heads descending from `@`. 1 = linear stack.
+    pub head_count: usize,
+}
+
 /// VCS-agnostic context describing what we're comparing.
 ///
 /// Contains only UI labels. The base identifier (merge-base SHA, change ID)
@@ -14,6 +25,8 @@ pub struct ComparisonContext {
     pub from_label: String,
     /// Label for what we're comparing to (e.g., "feature", "HEAD", "@")
     pub to_label: String,
+    /// Position of `@` in the jj commit stack, if applicable.
+    pub stack_position: Option<StackPosition>,
 }
 
 /// Result of a full refresh from a VCS backend.
@@ -26,6 +39,7 @@ pub struct RefreshResult {
     pub current_branch: Option<String>,
     pub metrics: DiffMetrics,
     pub file_links: HashMap<String, String>,
+    pub stack_position: Option<StackPosition>,
 }
 
 /// Paths a VCS backend wants watched for change detection.
