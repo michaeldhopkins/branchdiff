@@ -735,6 +735,22 @@ mod tests {
     }
 
     #[test]
+    fn test_four_way_diff_identical_nonempty_content() {
+        let content = "line1\nline2\nline3";
+        let diff = compute_four_way_diff(DiffInput {
+            path: "unchanged.rs",
+            base: Some(content),
+            head: Some(content),
+            index: Some(content),
+            working: Some(content),
+            old_path: None,
+        });
+
+        assert_eq!(diff.lines.len(), 1);
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+    }
+
+    #[test]
     fn test_four_way_diff_new_file() {
         let diff = compute_four_way_diff(DiffInput {
             path: "new.rs",

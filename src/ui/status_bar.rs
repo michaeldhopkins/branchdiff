@@ -358,4 +358,121 @@ mod tests {
         assert!(!info.contains('['),
             "no stack position should show no brackets, got: {info}");
     }
+
+    #[test]
+    fn test_truncate_with_ellipsis_no_truncation_needed() {
+        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
+        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_truncates_with_dots() {
+        assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
+        assert_eq!(truncate_with_ellipsis("hello world", 6), "hel...");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_very_short_max() {
+        assert_eq!(truncate_with_ellipsis("hello", 3), "...");
+        assert_eq!(truncate_with_ellipsis("hello", 2), "..");
+        assert_eq!(truncate_with_ellipsis("hello", 1), ".");
+        assert_eq!(truncate_with_ellipsis("hello", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_exactly_at_boundary() {
+        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
+        assert_eq!(truncate_with_ellipsis("hello", 4), "h...");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_utf8_characters() {
+        assert_eq!(truncate_with_ellipsis("日本語", 3), "日本語"); // fits exactly
+        assert_eq!(truncate_with_ellipsis("日本語", 2), ".."); // too short for any char + ...
+
+        assert_eq!(truncate_with_ellipsis("日本語です", 5), "日本語です");
+        assert_eq!(truncate_with_ellipsis("日本語です", 4), "日...");
+
+        assert_eq!(truncate_with_ellipsis("🎉🎊🎈", 3), "🎉🎊🎈");
+        assert_eq!(truncate_with_ellipsis("🎉🎊🎈", 2), "..");
+
+        assert_eq!(truncate_with_ellipsis("hello日本語", 10), "hello日本語");
+        assert_eq!(truncate_with_ellipsis("hello日本語", 8), "hello日本語");
+        assert_eq!(truncate_with_ellipsis("hello日本語", 7), "hell...");
+    }
+
+    fn create_status_bar_test_app(
+        current_branch: Option<&str>,
+        base_branch: &str,
+        file_count: usize,
+    ) -> crate::app::App {
+        use crate::diff::{DiffLine, FileDiff};
+
+        let files: Vec<FileDiff> = (0..file_count)
+            .map(|i| FileDiff {
+                lines: vec![DiffLine::file_header(&format!("file{}.rs", i))],
+            })
+            .collect();
+
+        TestAppBuilder::new()
+            .with_files(files)
+            .with_base_branch(base_branch)
+            .with_current_branch(current_branch)
+            .build()
+    }
+
+    #[test]
+    fn test_status_bar_height_wide_terminal_uses_one_line() {
+        let app = create_status_bar_test_app(Some("feature-branch"), "main", 5);
+        assert_eq!(status_bar_height(&app, 120), 1);
+    }
+
+    #[test]
+    fn test_status_bar_height_narrow_terminal_uses_two_lines() {
+        let app = create_status_bar_test_app(Some("feature-branch"), "main", 5);
+        assert_eq!(status_bar_height(&app, 40), 2);
+    }
+
+    #[test]
+    fn test_status_bar_height_long_branch_name_needs_two_lines() {
+        let app = create_status_bar_test_app(
+            Some("very-long-feature-branch-name-that-takes-space"),
+            "main",
+            5,
+        );
+        assert_eq!(status_bar_height(&app, 80), 2);
+    }
+
+    #[test]
+    fn test_status_bar_height_no_current_branch_uses_head() {
+        let app = create_status_bar_test_app(None, "main", 5);
+        assert_eq!(status_bar_height(&app, 120), 1);
+    }
+
+    #[test]
+    fn test_status_bar_height_boundary_case() {
+        let app = create_status_bar_test_app(Some("feat"), "main", 1);
+
+        let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
+        let branch_info = "test | feat vs main";
+
+        let stats = format!(
+            "{} file{} | +{} -{}{} | {}%",
+            app.files.len(),
+            if app.files.len() == 1 { "" } else { "s" },
+            app.additions_count(),
+            app.deletions_count(),
+            "",
+            app.scroll_percentage()
+        );
+        let full_status = format!("{} | {}", branch_info, stats);
+
+        let threshold = full_status.len() + help.len() + 2;
+
+        assert_eq!(status_bar_height(&app, threshold as u16), 1,
+            "At threshold width {} should use 1 line", threshold);
+
+        assert_eq!(status_bar_height(&app, (threshold - 1) as u16), 2,
+            "At width {} (one below threshold) should use 2 lines", threshold - 1);
+    }
 }

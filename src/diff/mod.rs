@@ -236,17 +236,6 @@ mod tests {
     }
 
     #[test]
-    fn test_no_changes() {
-        let content = "line1\nline2\nline3";
-        let diff = compute_diff_with_inline("test.txt", Some(content), Some(content), Some(content), Some(content));
-
-        assert_eq!(diff.lines.len(), 1);
-        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
-    }
-
-    // test_renamed_file_header moved to line_builder.rs
-
-    #[test]
     fn test_compute_file_diff_with_rename() {
         let content = "line1\nline2";
         let diff = compute_four_way_diff(DiffInput {
@@ -420,21 +409,6 @@ mod tests {
     }
 
     #[test]
-    fn test_committed_addition() {
-        let base = "line1\nline2";
-        let head = "line1\nline2\nline3";
-
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
-
-        let committed_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::Committed)
-            .collect();
-
-        assert!(!committed_lines.is_empty());
-        assert!(committed_lines.iter().any(|l| l.content == "line3" && l.prefix == '+'));
-    }
-
-    #[test]
     fn test_canceled_committed_line() {
         let base = "line1\nline2";
         let head = "line1\nline2\ncommitted_line";
@@ -496,108 +470,6 @@ mod tests {
             .collect();
 
         assert_eq!(canceled_lines.len(), 0, "modified line should not be canceled");
-    }
-
-    #[test]
-    fn test_unstaged_addition() {
-        let content = "line1\nline2";
-        let working = "line1\nline2\nline3";
-
-        let diff = compute_diff_with_inline("test.txt", Some(content), Some(content), Some(content), Some(working));
-
-        let unstaged_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::Unstaged)
-            .collect();
-
-        assert!(!unstaged_lines.is_empty());
-        assert!(unstaged_lines.iter().any(|l| l.content == "line3" && l.prefix == '+'));
-    }
-
-    #[test]
-    fn test_staged_addition() {
-        let base = "line1\nline2";
-        let index = "line1\nline2\nline3";
-
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(index), Some(index));
-
-        let staged_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::Staged)
-            .collect();
-
-        assert!(!staged_lines.is_empty());
-        assert!(staged_lines.iter().any(|l| l.content == "line3" && l.prefix == '+'));
-    }
-
-    #[test]
-    fn test_new_file() {
-        let working = "line1\nline2";
-
-        let diff = compute_diff_with_inline("test.txt", None, None, None, Some(working));
-
-        let unstaged_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::Unstaged)
-            .collect();
-
-        assert_eq!(unstaged_lines.len(), 2);
-        assert!(unstaged_lines.iter().all(|l| l.prefix == '+'));
-    }
-
-    #[test]
-    fn test_deleted_file_staged_deletion() {
-        let base = "line1\nline2";
-
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), None, None);
-
-        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
-        assert_eq!(diff.lines[0].content, "test.txt (deleted)");
-
-        let deleted_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::DeletedCommitted)
-            .collect();
-
-        assert_eq!(deleted_lines.len(), 2);
-        assert!(deleted_lines.iter().all(|l| l.prefix == '-'));
-        assert_eq!(deleted_lines[0].content, "line1");
-        assert_eq!(deleted_lines[1].content, "line2");
-    }
-
-    #[test]
-    fn test_deleted_file_unstaged_deletion() {
-        let content = "line1\nline2\nline3";
-
-        let diff = compute_diff_with_inline("test.txt", Some(content), Some(content), Some(content), None);
-
-        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
-        assert_eq!(diff.lines[0].content, "test.txt (deleted)");
-
-        let deleted_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::DeletedStaged)
-            .collect();
-
-        assert_eq!(deleted_lines.len(), 3);
-        assert!(deleted_lines.iter().all(|l| l.prefix == '-'));
-        assert_eq!(deleted_lines[0].content, "line1");
-        assert_eq!(deleted_lines[1].content, "line2");
-        assert_eq!(deleted_lines[2].content, "line3");
-    }
-
-    #[test]
-    fn test_deleted_file_committed_deletion() {
-        let base = "old content\nmore old content";
-
-        let diff = compute_diff_with_inline("test.txt", Some(base), None, None, None);
-
-        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
-        assert_eq!(diff.lines[0].content, "test.txt (deleted)");
-
-        let deleted_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::DeletedBase)
-            .collect();
-
-        assert_eq!(deleted_lines.len(), 2);
-        assert!(deleted_lines.iter().all(|l| l.prefix == '-'));
-        assert_eq!(deleted_lines[0].content, "old content");
-        assert_eq!(deleted_lines[1].content, "more old content");
     }
 
     #[test]
@@ -948,70 +820,6 @@ layout {
         assert_eq!(added.len(), 1);
         assert_eq!(added[0].content, "staged line");
         assert_eq!(added[0].source, LineSource::Staged);
-    }
-
-    #[test]
-    fn test_inline_diff_merged_simple_addition() {
-        let result = compute_inline_diff_merged("do_thing(data)", "do_thing(data, parameters)", LineSource::Unstaged);
-
-        assert!(result.is_meaningful);
-        assert!(!result.spans.is_empty());
-
-        let changed: Vec<_> = result.spans.iter().filter(|s| s.source.is_some()).collect();
-        let unchanged: Vec<_> = result.spans.iter().filter(|s| s.source.is_none()).collect();
-
-        assert!(!changed.is_empty());
-        assert!(!unchanged.is_empty());
-
-        let changed_text: String = changed.iter().map(|s| s.text.as_str()).collect();
-        assert!(changed_text.contains(", parameters"));
-
-        let unchanged_text: String = unchanged.iter().map(|s| s.text.as_str()).collect();
-        assert!(unchanged_text.contains("do_thing(data"));
-    }
-
-    #[test]
-    fn test_inline_diff_merged_modification() {
-        let result = compute_inline_diff_merged("hello world", "hello earth", LineSource::Unstaged);
-
-        assert!(result.is_meaningful);
-
-        let changed: Vec<_> = result.spans.iter().filter(|s| s.source.is_some()).collect();
-        let unchanged: Vec<_> = result.spans.iter().filter(|s| s.source.is_none()).collect();
-
-        assert!(!changed.is_empty());
-        assert!(!unchanged.is_empty());
-
-        let unchanged_text: String = unchanged.iter().map(|s| s.text.as_str()).collect();
-        assert!(unchanged_text.contains("hello "));
-    }
-
-    #[test]
-    fn test_inline_diff_merged_no_change() {
-        let result = compute_inline_diff_merged("unchanged line", "unchanged line", LineSource::Unstaged);
-
-        let changed: Vec<_> = result.spans.iter().filter(|s| s.source.is_some()).collect();
-        assert!(changed.is_empty());
-    }
-
-    #[test]
-    fn test_inline_diff_merged_complete_replacement() {
-        let result = compute_inline_diff_merged("abc", "xyz", LineSource::Unstaged);
-
-        assert!(!result.is_meaningful);
-
-        let deleted: Vec<_> = result.spans.iter().filter(|s| s.is_deletion).collect();
-        let inserted: Vec<_> = result.spans.iter().filter(|s| !s.is_deletion && s.source.is_some()).collect();
-        let unchanged: Vec<_> = result.spans.iter().filter(|s| s.source.is_none()).collect();
-
-        assert!(!deleted.is_empty());
-        assert!(!inserted.is_empty());
-        assert!(unchanged.is_empty());
-
-        let deleted_text: String = deleted.iter().map(|s| s.text.as_str()).collect();
-        let inserted_text: String = inserted.iter().map(|s| s.text.as_str()).collect();
-        assert_eq!(deleted_text, "abc");
-        assert_eq!(inserted_text, "xyz");
     }
 
     #[test]
@@ -1638,20 +1446,6 @@ end
         assert!(deleted_pos < inserted_pos);
         assert_eq!(prefixes[deleted_pos], '-');
         assert_eq!(prefixes[inserted_pos], '+');
-    }
-
-    #[test]
-    fn test_inline_diff_thresholds() {
-        let test_cases = [
-            ("  body_line", "  \"new body\"", false),
-            ("do_thing(data)", "do_thing(data, parameters)", true),
-            ("hello world", "hello earth", true),
-        ];
-
-        for (old, new, expected) in test_cases {
-            let result = compute_inline_diff_merged(old, new, LineSource::Unstaged);
-            assert_eq!(result.is_meaningful, expected);
-        }
     }
 
     #[test]
