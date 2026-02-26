@@ -3,13 +3,17 @@ use crate::app::App;
 use crate::diff::LineSource;
 use crate::ui::colors::{highlight_bg_color, line_bg_color};
 
-/// VCS-specific label set for the color legend.
+/// VCS-specific label and symbol set for the color legend.
 struct ColorLabels {
     committed: &'static str,
+    committed_sym: &'static str,
     staged: &'static str,
+    staged_sym: &'static str,
     unstaged: &'static str,
     del_committed: &'static str,
+    del_committed_sym: &'static str,
     del_staged: &'static str,
+    del_staged_sym: &'static str,
     del_unstaged: &'static str,
 }
 
@@ -17,19 +21,27 @@ fn color_labels(vcs_name: &str) -> ColorLabels {
     if vcs_name == "jj" {
         ColorLabels {
             committed: "Added (earlier commits)",
+            committed_sym: " ",
             staged: "Added (current commit)",
+            staged_sym: "@",
             unstaged: "Added (later commits)",
             del_committed: "Deleted (earlier commits)",
+            del_committed_sym: " ",
             del_staged: "Deleted (current commit)",
+            del_staged_sym: "@",
             del_unstaged: "Deleted (later commits)",
         }
     } else {
         ColorLabels {
             committed: "Added (committed)",
+            committed_sym: "C",
             staged: "Added (staged)",
+            staged_sym: "S",
             unstaged: "Added (unstaged)",
             del_committed: "Deleted (committed)",
+            del_committed_sym: "C",
             del_staged: "Deleted (staged)",
+            del_staged_sym: "S",
             del_unstaged: "Deleted (unstaged)",
         }
     }
@@ -122,11 +134,11 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!(" + C {:<34}", labels.committed), Style::default().bg(line_bg_color(LineSource::Committed))),
+            Span::styled(format!(" + {} {:<34}", labels.committed_sym, labels.committed), Style::default().bg(line_bg_color(LineSource::Committed))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!(" + S {:<34}", labels.staged), Style::default().bg(line_bg_color(LineSource::Staged))),
+            Span::styled(format!(" + {} {:<34}", labels.staged_sym, labels.staged), Style::default().bg(line_bg_color(LineSource::Staged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
@@ -134,11 +146,11 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!(" - C {:<34}", labels.del_committed), Style::default().bg(line_bg_color(LineSource::DeletedBase))),
+            Span::styled(format!(" - {} {:<34}", labels.del_committed_sym, labels.del_committed), Style::default().bg(line_bg_color(LineSource::DeletedBase))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!(" - S {:<34}", labels.del_staged), Style::default().bg(line_bg_color(LineSource::DeletedCommitted))),
+            Span::styled(format!(" - {} {:<34}", labels.del_staged_sym, labels.del_staged), Style::default().bg(line_bg_color(LineSource::DeletedCommitted))),
         ]),
         Line::from(vec![
             Span::raw(" "),
@@ -155,11 +167,11 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(""),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!(" + C {:<34}", format!("{} highlight", labels.committed)), Style::default().bg(highlight_bg_color(LineSource::Committed))),
+            Span::styled(format!(" + {} {:<34}", labels.committed_sym, format!("{} highlight", labels.committed)), Style::default().bg(highlight_bg_color(LineSource::Committed))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!(" + S {:<34}", format!("{} highlight", labels.staged)), Style::default().bg(highlight_bg_color(LineSource::Staged))),
+            Span::styled(format!(" + {} {:<34}", labels.staged_sym, format!("{} highlight", labels.staged)), Style::default().bg(highlight_bg_color(LineSource::Staged))),
         ]),
         Line::from(vec![
             Span::raw(" "),
@@ -167,11 +179,11 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!(" - C {:<34}", format!("{} highlight", labels.del_committed)), Style::default().bg(highlight_bg_color(LineSource::DeletedBase))),
+            Span::styled(format!(" - {} {:<34}", labels.del_committed_sym, format!("{} highlight", labels.del_committed)), Style::default().bg(highlight_bg_color(LineSource::DeletedBase))),
         ]),
         Line::from(vec![
             Span::raw(" "),
-            Span::styled(format!(" - S {:<34}", format!("{} highlight", labels.del_staged)), Style::default().bg(highlight_bg_color(LineSource::DeletedCommitted))),
+            Span::styled(format!(" - {} {:<34}", labels.del_staged_sym, format!("{} highlight", labels.del_staged)), Style::default().bg(highlight_bg_color(LineSource::DeletedCommitted))),
         ]),
         Line::from(vec![
             Span::raw(" "),
@@ -208,8 +220,8 @@ mod tests {
 
     #[test]
     fn test_help_modal_dimensions() {
-        let modal_width = 52u16;
-        let modal_height = 47u16;
+        let modal_width = 54u16;
+        let modal_height = 49u16;
         assert!(modal_width > 0);
         assert!(modal_height > 0);
     }
@@ -217,21 +229,21 @@ mod tests {
     #[test]
     fn test_help_modal_centering_large_area() {
         let area = Rect::new(0, 0, 120, 52);
-        let modal_width = 52u16;
-        let modal_height = 47u16;
+        let modal_width = 54u16;
+        let modal_height = 49u16;
 
         let x = area.width.saturating_sub(modal_width) / 2;
         let y = area.height.saturating_sub(modal_height) / 2;
 
-        assert_eq!(x, 34);
-        assert_eq!(y, 2);
+        assert_eq!(x, 33);
+        assert_eq!(y, 1);
     }
 
     #[test]
     fn test_help_modal_centering_small_area() {
         let area = Rect::new(0, 0, 40, 20);
-        let modal_width = 52u16;
-        let modal_height = 47u16;
+        let modal_width = 54u16;
+        let modal_height = 49u16;
 
         let x = area.width.saturating_sub(modal_width) / 2;
         let y = area.height.saturating_sub(modal_height) / 2;
@@ -243,8 +255,8 @@ mod tests {
     #[test]
     fn test_help_modal_clamps_to_area() {
         let area = Rect::new(0, 0, 30, 15);
-        let modal_width = 52u16;
-        let modal_height = 47u16;
+        let modal_width = 54u16;
+        let modal_height = 49u16;
 
         let clamped_width = modal_width.min(area.width);
         let clamped_height = modal_height.min(area.height);
@@ -280,5 +292,23 @@ mod tests {
         let labels = build_color_labels("stub");
         assert_eq!(labels[0], "Added (committed)");
         assert_eq!(labels[2], "Added (unstaged)");
+    }
+
+    #[test]
+    fn test_help_symbols_git_mode() {
+        let labels = color_labels("git");
+        assert_eq!(labels.committed_sym, "C");
+        assert_eq!(labels.staged_sym, "S");
+        assert_eq!(labels.del_committed_sym, "C");
+        assert_eq!(labels.del_staged_sym, "S");
+    }
+
+    #[test]
+    fn test_help_symbols_jj_mode() {
+        let labels = color_labels("jj");
+        assert_eq!(labels.committed_sym, " ");
+        assert_eq!(labels.staged_sym, "@");
+        assert_eq!(labels.del_committed_sym, " ");
+        assert_eq!(labels.del_staged_sym, "@");
     }
 }

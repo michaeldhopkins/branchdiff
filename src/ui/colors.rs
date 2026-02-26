@@ -132,16 +132,22 @@ pub fn line_style_with_highlight(source: LineSource) -> Style {
     line_style(source).fg(fg).bg(bg)
 }
 
-/// Status symbol for the line source (C=committed, S=staged, U=unstaged)
-/// Note: For deletions, the symbol reflects where the DELETION happened, not where the line was.
-/// DeletedBase = line deleted in committed changes → C
-/// DeletedCommitted = line deleted in staged changes → S
-/// DeletedStaged = line deleted in working tree → U
-pub fn status_symbol(source: LineSource) -> &'static str {
-    match source {
-        LineSource::Committed | LineSource::DeletedBase | LineSource::CanceledCommitted => "C",
-        LineSource::Staged | LineSource::DeletedCommitted | LineSource::CanceledStaged => "S",
-        _ => " ",
+/// Gutter symbol for the line source, adapted per VCS backend.
+///
+/// git: C=committed, S=staged (traditional git terminology).
+/// jj: @=current commit (`@`), blank for earlier/later commits (color suffices).
+pub fn status_symbol(source: LineSource, vcs_name: &str) -> &'static str {
+    if vcs_name == "jj" {
+        match source {
+            LineSource::Staged | LineSource::DeletedCommitted | LineSource::CanceledStaged => "@",
+            _ => " ",
+        }
+    } else {
+        match source {
+            LineSource::Committed | LineSource::DeletedBase | LineSource::CanceledCommitted => "C",
+            LineSource::Staged | LineSource::DeletedCommitted | LineSource::CanceledStaged => "S",
+            _ => " ",
+        }
     }
 }
 
@@ -424,37 +430,56 @@ mod tests {
     // === status_symbol tests ===
 
     #[test]
-    fn test_status_symbol_committed() {
-        assert_eq!(status_symbol(LineSource::Committed), "C");
+    fn test_status_symbol_git_committed() {
+        assert_eq!(status_symbol(LineSource::Committed, "git"), "C");
     }
 
     #[test]
-    fn test_status_symbol_staged() {
-        assert_eq!(status_symbol(LineSource::Staged), "S");
+    fn test_status_symbol_git_staged() {
+        assert_eq!(status_symbol(LineSource::Staged, "git"), "S");
     }
 
     #[test]
-    fn test_status_symbol_base() {
-        assert_eq!(status_symbol(LineSource::Base), " ");
+    fn test_status_symbol_git_base() {
+        assert_eq!(status_symbol(LineSource::Base, "git"), " ");
     }
 
     #[test]
-    fn test_status_symbol_unstaged() {
-        assert_eq!(status_symbol(LineSource::Unstaged), " ");
+    fn test_status_symbol_git_unstaged() {
+        assert_eq!(status_symbol(LineSource::Unstaged, "git"), " ");
     }
 
     #[test]
-    fn test_status_symbol_deletions() {
-        // Deletion symbols reflect where deletion happened
-        assert_eq!(status_symbol(LineSource::DeletedBase), "C"); // committed deletion
-        assert_eq!(status_symbol(LineSource::DeletedCommitted), "S"); // staged deletion
-        assert_eq!(status_symbol(LineSource::DeletedStaged), " "); // working tree deletion
+    fn test_status_symbol_git_deletions() {
+        assert_eq!(status_symbol(LineSource::DeletedBase, "git"), "C");
+        assert_eq!(status_symbol(LineSource::DeletedCommitted, "git"), "S");
+        assert_eq!(status_symbol(LineSource::DeletedStaged, "git"), " ");
     }
 
     #[test]
-    fn test_status_symbol_canceled() {
-        assert_eq!(status_symbol(LineSource::CanceledCommitted), "C");
-        assert_eq!(status_symbol(LineSource::CanceledStaged), "S");
+    fn test_status_symbol_git_canceled() {
+        assert_eq!(status_symbol(LineSource::CanceledCommitted, "git"), "C");
+        assert_eq!(status_symbol(LineSource::CanceledStaged, "git"), "S");
+    }
+
+    #[test]
+    fn test_status_symbol_jj_current_commit() {
+        assert_eq!(status_symbol(LineSource::Staged, "jj"), "@");
+        assert_eq!(status_symbol(LineSource::DeletedCommitted, "jj"), "@");
+        assert_eq!(status_symbol(LineSource::CanceledStaged, "jj"), "@");
+    }
+
+    #[test]
+    fn test_status_symbol_jj_earlier_commits() {
+        assert_eq!(status_symbol(LineSource::Committed, "jj"), " ");
+        assert_eq!(status_symbol(LineSource::DeletedBase, "jj"), " ");
+        assert_eq!(status_symbol(LineSource::CanceledCommitted, "jj"), " ");
+    }
+
+    #[test]
+    fn test_status_symbol_jj_other() {
+        assert_eq!(status_symbol(LineSource::Base, "jj"), " ");
+        assert_eq!(status_symbol(LineSource::Unstaged, "jj"), " ");
     }
 
     // === print_line_style tests ===

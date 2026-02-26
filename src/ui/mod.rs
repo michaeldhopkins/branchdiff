@@ -1106,27 +1106,7 @@ mod tests {
         assert_eq!(classify_inline_change(&result.spans), InlineChangeType::Mixed);
     }
 
-    #[test]
-    fn test_status_symbol_returns_correct_symbols() {
-        use super::colors::status_symbol;
-
-        // Committed additions and deletions get "C"
-        assert_eq!(status_symbol(LineSource::Committed), "C");
-        assert_eq!(status_symbol(LineSource::DeletedBase), "C"); // committed deletion
-        assert_eq!(status_symbol(LineSource::CanceledCommitted), "C");
-
-        // Staged additions and deletions get "S"
-        assert_eq!(status_symbol(LineSource::Staged), "S");
-        assert_eq!(status_symbol(LineSource::DeletedCommitted), "S"); // staged deletion
-        assert_eq!(status_symbol(LineSource::CanceledStaged), "S");
-
-        // Unstaged and others get space (no symbol)
-        assert_eq!(status_symbol(LineSource::Unstaged), " ");
-        assert_eq!(status_symbol(LineSource::DeletedStaged), " "); // unstaged deletion
-        assert_eq!(status_symbol(LineSource::Base), " ");
-        assert_eq!(status_symbol(LineSource::FileHeader), " ");
-        assert_eq!(status_symbol(LineSource::Elided), " ");
-    }
+    // status_symbol tests are in src/ui/colors.rs
 
     #[test]
     fn test_ensure_contrast_adjusts_low_contrast_colors() {
