@@ -291,7 +291,7 @@ impl JjVcs {
     /// using `--ignore-working-copy` to avoid redundant auto-snapshots.
     /// Returns (change_id, display_label).
     fn rev_metadata_no_snapshot(&self, rev: &str) -> (String, String) {
-        let template = r#"bookmarks ++ "\0" ++ change_id.short(12)"#;
+        let template = r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
         let args = no_snapshot(&[
             "log", "-r", rev, "-T", template, "--no-graph", "--limit", "1",
         ]);
@@ -307,17 +307,22 @@ impl JjVcs {
     }
 }
 
-/// Parse combined `bookmarks ++ "\0" ++ change_id` template output.
-/// Returns (change_id, display_label) where label prefers bookmarks.
+/// Parse combined `bookmarks ++ "\0" ++ change_id ++ "\0" ++ shortest_id` template output.
+/// Returns (change_id, display_label) where label annotates bookmarks with the shortest
+/// unique change ID prefix: `"main (knmq)"`.
 fn parse_rev_metadata(raw: &str) -> (String, String) {
     let raw = raw.trim();
-    if let Some((bookmarks_raw, change_id)) = raw.split_once('\0') {
-        let bookmarks = bookmarks_raw.trim().trim_end_matches('*');
-        let change_id = change_id.trim().to_string();
+    let parts: Vec<&str> = raw.splitn(3, '\0').collect();
+    if parts.len() >= 2 {
+        let bookmarks = parts[0].trim().trim_end_matches('*');
+        let change_id = parts[1].trim().to_string();
+        let shortest_id = parts.get(2).map(|s| s.trim()).unwrap_or("");
         let label = if bookmarks.is_empty() {
-            change_id.clone()
-        } else {
+            if shortest_id.is_empty() { change_id.clone() } else { shortest_id.to_string() }
+        } else if shortest_id.is_empty() {
             bookmarks.to_string()
+        } else {
+            format!("{bookmarks} ({shortest_id})")
         };
         (change_id, label)
     } else {
@@ -419,7 +424,7 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
-        let template = r#"bookmarks ++ "\0" ++ change_id.short(12)"#;
+        let template = r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
         // First call triggers auto-snapshot to capture current working copy
         let from_output = run_jj_with_retry(
             &self.repo_path,
@@ -1294,7 +1299,11 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let result = vcs.refresh(&cancel).unwrap();
 
-        assert_eq!(result.base_label.as_deref(), Some("my-base"));
+        let base_label = result.base_label.expect("should have base_label");
+        assert!(base_label.starts_with("my-base ("),
+            "bookmark label should include change ID, got: {base_label}");
+        assert!(base_label.ends_with(')'),
+            "bookmark label should end with ), got: {base_label}");
     }
 
     #[test]
@@ -1315,7 +1324,8 @@ mod tests {
 
         let base_label = result.base_label.expect("should have base_label");
         assert!(!base_label.is_empty());
-        assert_eq!(base_label, result.base_identifier, "without bookmark, base_label should match change_id");
+        assert!(result.base_identifier.starts_with(&base_label),
+            "without bookmark, base_label should be a prefix of base_identifier: label={base_label}, id={}", result.base_identifier);
     }
 
     #[test]
@@ -1375,7 +1385,10 @@ mod tests {
         let (change_id, label) = vcs.rev_metadata_no_snapshot("@-");
 
         assert!(!change_id.is_empty());
-        assert_eq!(label, "test-bm");
+        assert!(label.starts_with("test-bm ("),
+            "bookmark label should include change ID, got: {label}");
+        assert!(label.ends_with(')'),
+            "bookmark label should end with ), got: {label}");
     }
 
     #[test]
@@ -1393,7 +1406,9 @@ mod tests {
         let (change_id, label) = vcs.rev_metadata_no_snapshot("@-");
 
         assert!(!change_id.is_empty());
-        assert_eq!(label, change_id, "without bookmark, label should be change_id");
+        assert!(change_id.starts_with(&label),
+            "without bookmark, label should be shortest prefix of change_id: label={label}, id={change_id}");
+        assert!(label.len() >= 4, "shortest ID should be at least 4 chars, got: {label}");
     }
 
     // === resolve_base_rev tests ===
@@ -1745,5 +1760,49 @@ mod tests {
             "deleted file should have deletion header, got: {}", header.content);
         let has_deleted = result.lines.iter().any(|l| l.source == LineSource::DeletedCommitted);
         assert!(has_deleted, "file deleted in current commit should have DeletedCommitted source");
+    }
+
+    // === parse_rev_metadata unit tests ===
+
+    #[test]
+    fn test_parse_rev_metadata_bookmark_with_shortest_id() {
+        let (id, label) = parse_rev_metadata("main\0knmqypts1234\0knmq");
+        assert_eq!(id, "knmqypts1234");
+        assert_eq!(label, "main (knmq)");
+    }
+
+    #[test]
+    fn test_parse_rev_metadata_no_bookmark() {
+        let (id, label) = parse_rev_metadata("\0knmqypts1234\0knmq");
+        assert_eq!(id, "knmqypts1234");
+        assert_eq!(label, "knmq", "no bookmark → shortest change_id");
+    }
+
+    #[test]
+    fn test_parse_rev_metadata_tracking_marker_with_shortest_id() {
+        let (id, label) = parse_rev_metadata("feat*\0abcd1234efgh\0abcd");
+        assert_eq!(id, "abcd1234efgh");
+        assert_eq!(label, "feat (abcd)");
+    }
+
+    #[test]
+    fn test_parse_rev_metadata_two_field_fallback() {
+        let (id, label) = parse_rev_metadata("main\0knmqypts1234");
+        assert_eq!(id, "knmqypts1234");
+        assert_eq!(label, "main", "2-field format falls back to bookmark only");
+    }
+
+    #[test]
+    fn test_parse_rev_metadata_multiple_bookmarks() {
+        let (id, label) = parse_rev_metadata("b1 b2\0xvryypywztmm\0xvry");
+        assert_eq!(id, "xvryypywztmm");
+        assert_eq!(label, "b1 b2 (xvry)");
+    }
+
+    #[test]
+    fn test_parse_rev_metadata_no_delimiter() {
+        let (id, label) = parse_rev_metadata("rawvalue");
+        assert_eq!(id, "rawvalue");
+        assert_eq!(label, "rawvalue");
     }
 }
