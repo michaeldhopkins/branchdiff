@@ -147,4 +147,18 @@ impl Vcs for GitVcs {
     fn vcs_name(&self) -> &str {
         "git"
     }
+
+    fn current_revision_id(&self) -> Result<String> {
+        let output = commands::run_git_with_retry(|| {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["rev-parse", "--short", "HEAD"])
+                .current_dir(&self.repo_path);
+            cmd
+        })?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            anyhow::bail!("git rev-parse HEAD failed")
+        }
+    }
 }

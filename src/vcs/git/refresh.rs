@@ -230,5 +230,6 @@ pub(super) fn git_compute_refresh(
         metrics,
         file_links,
         stack_position: None,
+        revision_id: None,
     })
 }

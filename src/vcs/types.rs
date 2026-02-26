@@ -42,6 +42,9 @@ pub struct RefreshResult {
     pub metrics: DiffMetrics,
     pub file_links: HashMap<String, String>,
     pub stack_position: Option<StackPosition>,
+    /// Working revision ID at the time the refresh completed.
+    /// Populated by the spawn function, not the VCS backend.
+    pub revision_id: Option<String>,
 }
 
 /// Paths a VCS backend wants watched for change detection.

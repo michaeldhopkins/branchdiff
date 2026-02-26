@@ -32,7 +32,7 @@ pub enum RefreshOutcome {
     /// Full refresh completed successfully.
     Success(RefreshResult),
     /// Single file refresh completed.
-    SingleFile { path: String, diff: Option<FileDiff> },
+    SingleFile { path: String, diff: Option<FileDiff>, revision_id: Option<String> },
     /// Refresh was cancelled (e.g., by watchdog restart). Not a user-facing error.
     Cancelled,
     /// Refresh failed with an error.
@@ -45,7 +45,7 @@ pub enum Message {
     /// User input (keyboard, mouse).
     Input(AppAction),
     /// Background refresh completed.
-    RefreshCompleted(RefreshOutcome),
+    RefreshCompleted(Box<RefreshOutcome>),
     /// File system change detected.
     FileChanged(Vec<DebouncedEvent>),
     /// Remote fetch completed.
@@ -108,7 +108,7 @@ mod tests {
     fn test_message_variants() {
         // Verify all message variants can be constructed
         let _input = Message::Input(AppAction::Quit);
-        let _refresh = Message::RefreshCompleted(RefreshOutcome::Error("test".to_string()));
+        let _refresh = Message::RefreshCompleted(Box::new(RefreshOutcome::Error("test".to_string())));
         let _file = Message::FileChanged(vec![]);
         let _fetch = Message::FetchCompleted(FetchResult {
             has_conflicts: false,
@@ -122,6 +122,7 @@ mod tests {
         let _single = RefreshOutcome::SingleFile {
             path: "test.rs".to_string(),
             diff: None,
+            revision_id: None,
         };
         let _cancelled = RefreshOutcome::Cancelled;
         let _error = RefreshOutcome::Error("something failed".to_string());
