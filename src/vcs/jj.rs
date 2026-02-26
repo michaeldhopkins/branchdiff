@@ -574,6 +574,7 @@ impl crate::vcs::Vcs for JjVcs {
             metrics,
             file_links,
             stack_position,
+            revision_id: None,
         })
     }
 
@@ -627,6 +628,15 @@ impl crate::vcs::Vcs for JjVcs {
 
     fn base_identifier(&self) -> Result<String> {
         self.get_change_id(&self.from_rev)
+    }
+
+    fn current_revision_id(&self) -> Result<String> {
+        self.run_jj(&[
+            "--ignore-working-copy",
+            "log", "-r", "@", "--no-graph", "--limit", "1",
+            "-T", "change_id.short(12)",
+        ])
+        .map(|s| s.trim().to_string())
     }
 
     fn base_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {

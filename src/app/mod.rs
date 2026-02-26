@@ -1280,6 +1280,7 @@ mod tests {
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
             stack_position: None,
+            revision_id: None,
         };
 
         app.apply_refresh_result(result);
@@ -1482,6 +1483,7 @@ mod tests {
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
             stack_position: None,
+            revision_id: None,
         };
         app.apply_refresh_result(result);
         assert!(app.needs_inline_spans(), "apply_refresh_result should mark dirty");
@@ -1714,6 +1716,7 @@ mod tests {
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
             stack_position: None,
+            revision_id: None,
         };
         app.apply_refresh_result(result);
 
@@ -1735,6 +1738,7 @@ mod tests {
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
             stack_position: None,
+            revision_id: None,
         };
         app.apply_refresh_result(result);
 

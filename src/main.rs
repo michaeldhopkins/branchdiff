@@ -478,7 +478,8 @@ fn spawn_single_file_refresh(
 ) {
     thread::spawn(move || {
         let diff = vcs.single_file_diff(&file_path);
-        let _ = refresh_tx.send(RefreshOutcome::SingleFile { path: file_path, diff });
+        let revision_id = vcs.current_revision_id().ok();
+        let _ = refresh_tx.send(RefreshOutcome::SingleFile { path: file_path, diff, revision_id });
     });
 }
 
@@ -489,7 +490,8 @@ fn spawn_refresh(
 ) {
     thread::spawn(move || {
         match vcs.refresh(&cancel_flag) {
-            Ok(result) => {
+            Ok(mut result) => {
+                result.revision_id = vcs.current_revision_id().ok();
                 let _ = refresh_tx.send(RefreshOutcome::Success(result));
             }
             Err(e) => {
@@ -665,7 +667,7 @@ fn collect_messages(
 
     // Check for completed refresh (non-blocking)
     if let Ok(outcome) = refresh_rx.try_recv() {
-        messages.push(Message::RefreshCompleted(outcome));
+        messages.push(Message::RefreshCompleted(Box::new(outcome)));
     }
 
     // Check for file change events

@@ -122,7 +122,13 @@ pub(super) fn handle_file_change(
         if has_only_vcs_changes {
             if has_vcs_change {
                 if !refresh_state.is_idle() {
-                    refresh_state.cancel_and_mark_pending();
+                    // Suppress VCS-only RevisionChange during active refresh.
+                    // Almost always self-triggered by our own jj/git commands
+                    // (e.g., jj auto-snapshot modifying .jj/working_copy/).
+                    // Using mark_pending() here would cause infinite Full refresh
+                    // loops since each Full's jj commands trigger auto-snapshot.
+                    // Trade-off: a real concurrent `jj new` during the 1-3s refresh
+                    // window is missed until the next file edit or manual 'r'.
                     return result;
                 }
                 if let Some(completed) = timers.last_refresh_completed
@@ -620,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn test_revision_change_during_refresh_cancels_and_marks_pending() {
+    fn test_revision_change_during_refresh_suppressed() {
         use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
@@ -646,8 +652,14 @@ mod tests {
         );
 
         assert_eq!(result.refresh, RefreshTrigger::None);
-        assert!(matches!(refresh_state, RefreshState::InProgressPending { .. }));
-        assert!(cancel_flag.load(Ordering::Relaxed));
+        assert!(
+            matches!(refresh_state, RefreshState::InProgress { .. }),
+            "should remain InProgress — VCS events during refresh are suppressed"
+        );
+        assert!(
+            !cancel_flag.load(Ordering::Relaxed),
+            "cancel flag should not be set"
+        );
     }
 
     #[test]
@@ -799,6 +811,57 @@ mod tests {
             result.refresh,
             RefreshTrigger::Full,
             ".git/HEAD should bypass gitignore filter and trigger refresh"
+        );
+    }
+
+    #[test]
+    fn test_single_file_cooldown_suppresses_post_completion_vcs_event() {
+        use tempfile::TempDir;
+
+        use crate::message::RefreshOutcome;
+        use crate::update::refresh::handle_refresh;
+        use crate::update::UpdateConfig;
+
+        let temp = TempDir::new().unwrap();
+        let git_dir = temp.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            started_at: Instant::now(),
+        };
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        let vcs = StubVcs::new(temp.path().to_path_buf());
+        let config = UpdateConfig::default();
+
+        // Step 1: SingleFile refresh completes (sets cooldown timer)
+        let outcome = RefreshOutcome::SingleFile {
+            path: "src/main.rs".to_string(),
+            diff: None,
+            revision_id: None,
+        };
+        let refresh_result = handle_refresh(
+            outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs,
+        );
+        assert_eq!(refresh_result.refresh, RefreshTrigger::None);
+        assert!(timers.last_refresh_completed.is_some());
+
+        // Step 2: Self-triggered VCS event arrives within cooldown window
+        // (simulates jj auto-snapshot event arriving after SingleFile completes)
+        let events = vec![DebouncedEvent::new(
+            git_dir.join("HEAD"),
+            DebouncedEventKind::Any,
+        )];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
+
+        assert_eq!(
+            result.refresh,
+            RefreshTrigger::None,
+            "VCS event within cooldown after SingleFile should be suppressed"
         );
     }
 }

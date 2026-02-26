@@ -48,12 +48,30 @@ pub(super) fn handle_refresh(
                 app.performance_warning = diff_warning;
             }
 
+            // Detect external VCS operations (e.g., jj new) that happened during refresh
+            if let Some(rev_id) = &refresh_result.revision_id {
+                if timers.last_known_revision.as_ref().is_some_and(|prev| prev != rev_id) {
+                    result.refresh = RefreshTrigger::Full;
+                }
+                timers.last_known_revision = Some(rev_id.clone());
+            }
+
             app.apply_refresh_result(refresh_result);
             app.load_images_for_markers(vcs);
             timers.last_refresh = Instant::now();
             result.needs_redraw = true;
         }
-        RefreshOutcome::SingleFile { path, diff } => {
+        RefreshOutcome::SingleFile { path, diff, revision_id } => {
+            timers.pending_vcs_event = None;
+            timers.last_refresh_completed = Some(Instant::now());
+
+            if let Some(rev_id) = &revision_id {
+                if timers.last_known_revision.as_ref().is_some_and(|prev| prev != rev_id) {
+                    result.refresh = RefreshTrigger::Full;
+                }
+                timers.last_known_revision = Some(rev_id.clone());
+            }
+
             app.update_single_file(&path, diff);
             timers.last_refresh = Instant::now();
             result.needs_redraw = true;
@@ -199,6 +217,7 @@ mod tests {
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
             stack_position: None,
+            revision_id: None,
         });
 
         let config = UpdateConfig::default();
@@ -248,6 +267,7 @@ mod tests {
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
             stack_position: None,
+            revision_id: None,
         });
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
@@ -268,10 +288,65 @@ mod tests {
         let outcome = RefreshOutcome::SingleFile {
             path: "test.rs".to_string(),
             diff: None,
+            revision_id: None,
         };
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
         assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_refresh_single_file_sets_last_refresh_completed() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        assert!(timers.last_refresh_completed.is_none());
+
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::SingleFile {
+            path: "test.rs".to_string(),
+            diff: None,
+            revision_id: None,
+        };
+
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(
+            timers.last_refresh_completed.is_some(),
+            "SingleFile completion should set last_refresh_completed for cooldown"
+        );
+    }
+
+    #[test]
+    fn test_handle_refresh_single_file_clears_pending_vcs_event() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        timers.pending_vcs_event = Some(Instant::now() - Duration::from_millis(100));
+
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::SingleFile {
+            path: "test.rs".to_string(),
+            diff: None,
+            revision_id: None,
+        };
+
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(
+            timers.pending_vcs_event.is_none(),
+            "SingleFile completion should clear pending VCS events (likely self-triggered)"
+        );
     }
 
     #[test]
@@ -295,6 +370,7 @@ mod tests {
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
             stack_position: None,
+            revision_id: None,
         });
 
         let config = UpdateConfig::default();
@@ -352,6 +428,7 @@ mod tests {
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
             stack_position: None,
+            revision_id: None,
         });
 
         handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
@@ -710,5 +787,122 @@ mod tests {
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
         assert_eq!(result.loop_action, LoopAction::Continue);
+    }
+
+    #[test]
+    fn test_handle_refresh_detects_revision_change() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        timers.last_known_revision = Some("old_rev".to_string());
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+            files: vec![],
+            lines: vec![base_line("content")],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None,
+            revision_id: Some("new_rev".to_string()),
+        });
+
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert_eq!(result.refresh, RefreshTrigger::Full,
+            "revision change should trigger follow-up Full refresh");
+        assert_eq!(timers.last_known_revision.as_deref(), Some("new_rev"));
+    }
+
+    #[test]
+    fn test_handle_refresh_same_revision_no_followup() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        timers.last_known_revision = Some("same_rev".to_string());
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+            files: vec![],
+            lines: vec![base_line("content")],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None,
+            revision_id: Some("same_rev".to_string()),
+        });
+
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert_eq!(result.refresh, RefreshTrigger::None,
+            "same revision should not trigger follow-up refresh");
+    }
+
+    #[test]
+    fn test_handle_refresh_single_file_detects_revision_change() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        timers.last_known_revision = Some("old_rev".to_string());
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::SingleFile {
+            path: "test.rs".to_string(),
+            diff: None,
+            revision_id: Some("new_rev".to_string()),
+        };
+
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert_eq!(result.refresh, RefreshTrigger::Full,
+            "SingleFile with revision change should trigger Full refresh");
+        assert_eq!(timers.last_known_revision.as_deref(), Some("new_rev"));
+    }
+
+    #[test]
+    fn test_handle_refresh_first_refresh_sets_revision() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        assert!(timers.last_known_revision.is_none());
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+            files: vec![],
+            lines: vec![base_line("content")],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None,
+            revision_id: Some("first_rev".to_string()),
+        });
+
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert_eq!(result.refresh, RefreshTrigger::None,
+            "first refresh should just store revision, not trigger follow-up");
+        assert_eq!(timers.last_known_revision.as_deref(), Some("first_rev"));
     }
 }
