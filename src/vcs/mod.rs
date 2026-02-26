@@ -103,4 +103,12 @@ pub trait Vcs: Send + Sync {
 
     /// Human-readable VCS name (e.g., "git", "jj").
     fn vcs_name(&self) -> &str;
+
+    /// Current working revision identifier, without triggering side effects.
+    ///
+    /// For jj: `@`'s change_id (uses `--ignore-working-copy` to avoid auto-snapshot).
+    /// For git: short HEAD SHA.
+    /// Used for post-refresh staleness checks — detects external VCS operations
+    /// (e.g., `jj new`) that happened during an active refresh.
+    fn current_revision_id(&self) -> Result<String>;
 }

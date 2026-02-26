@@ -32,6 +32,8 @@ pub struct Timers {
     pub jj_present: bool,
     /// When the last refresh completed (for suppressing self-triggered events)
     pub last_refresh_completed: Option<Instant>,
+    /// Working revision ID from the last completed refresh (for staleness checks)
+    pub last_known_revision: Option<String>,
 }
 
 impl Timers {
@@ -44,6 +46,7 @@ impl Timers {
             last_vcs_check: Instant::now(),
             jj_present,
             last_refresh_completed: None,
+            last_known_revision: None,
         }
     }
 }
@@ -186,6 +189,7 @@ pub fn update(
     match msg {
         Message::Input(action) => input::handle_input(action, app, refresh_state),
         Message::RefreshCompleted(outcome) => {
+            let outcome = *outcome;
             refresh::handle_refresh(outcome, app, refresh_state, timers, config, vcs)
         }
         Message::FileChanged(events) => {
