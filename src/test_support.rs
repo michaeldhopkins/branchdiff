@@ -250,4 +250,6 @@ impl crate::vcs::Vcs for StubVcs {
     }
 
     fn vcs_name(&self) -> &str { "stub" }
+
+    fn current_revision_id(&self) -> Result<String> { Ok("stub_revision".to_string()) }
 }
