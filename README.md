@@ -1,6 +1,7 @@
 # branchdiff
 
 Terminal UI showing unified diff of current branch vs its base.
+<img width="693" height="1180" alt="Screenshot 2026-02-25 at 22 10 59" src="https://github.com/user-attachments/assets/00345f3f-1405-48c2-826d-42f96ebe78b3" />
 
 <img width="692" height="1177" alt="Screenshot 2026-02-25 at 20 56 05" src="https://github.com/user-attachments/assets/bb796025-8036-49e8-8c3c-d6dd0b136858" />
 
