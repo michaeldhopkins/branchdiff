@@ -15,7 +15,7 @@ Terminal UI showing unified diff of current branch vs its base.
 
 - **Git and Jujutsu (jj)** support with automatic backend detection
 - **Auto-switching**: detects `jj init` or `.jj` removal at runtime and seamlessly restarts
-- Color-coded diff view with distinct colors for committed, staged, and unstaged changes
+- Color-coded diff view with distinct colors per change layer (git: committed/staged/unstaged; jj: earlier/current/later commits)
 - Inline diff highlighting showing exactly which characters changed
 - Three view modes: context (default), changes-only, and full file
 - Image diffs with side-by-side before/after panels
