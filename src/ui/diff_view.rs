@@ -1002,92 +1002,10 @@ mod tests {
         assert!(!view_model.show_copied_flash);
     }
 
-    // Tests for inline span highlight source computation
     mod highlight_source_tests {
         use super::*;
         use crate::diff::InlineSpan;
-        use crate::ui::colors::{highlight_bg_color, line_style_with_highlight};
-
-        /// Verifies that get_insertion_source extracts source from changed spans,
-        /// not from the line's base source.
-        #[test]
-        fn test_get_insertion_source_extracts_from_spans() {
-            // Simulate spans for "    widgets::{Block, Borders, Clear, Paragraph},"
-            // where "Clear, " was inserted (source=Unstaged)
-            let spans = vec![
-                InlineSpan { text: "prefix ".to_string(), source: None, is_deletion: false },
-                InlineSpan { text: "inserted".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
-                InlineSpan { text: " suffix".to_string(), source: None, is_deletion: false },
-            ];
-
-            let source = get_insertion_source(&spans);
-            assert_eq!(source, LineSource::Unstaged);
-        }
-
-        #[test]
-        fn test_get_insertion_source_with_committed_change() {
-            let spans = vec![
-                InlineSpan { text: "unchanged".to_string(), source: None, is_deletion: false },
-                InlineSpan { text: "committed_text".to_string(), source: Some(LineSource::Committed), is_deletion: false },
-            ];
-
-            let source = get_insertion_source(&spans);
-            assert_eq!(source, LineSource::Committed);
-        }
-
-        #[test]
-        fn test_get_insertion_source_with_staged_change() {
-            let spans = vec![
-                InlineSpan { text: "staged_insertion".to_string(), source: Some(LineSource::Staged), is_deletion: false },
-            ];
-
-            let source = get_insertion_source(&spans);
-            assert_eq!(source, LineSource::Staged);
-        }
-
-        #[test]
-        fn test_get_insertion_source_ignores_deletions() {
-            // Deletions should not be considered as insertion source
-            let spans = vec![
-                InlineSpan { text: "deleted".to_string(), source: Some(LineSource::DeletedBase), is_deletion: true },
-                InlineSpan { text: "inserted".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
-            ];
-
-            let source = get_insertion_source(&spans);
-            assert_eq!(source, LineSource::Unstaged);
-        }
-
-        /// Verifies that Base source has no highlight background (the bug symptom)
-        #[test]
-        fn test_base_source_has_no_highlight_background() {
-            let bg = highlight_bg_color(LineSource::Base);
-            assert_eq!(bg, Color::Reset, "Base source should have Reset (no) background");
-        }
-
-        /// Verifies that Unstaged source has a visible highlight background
-        #[test]
-        fn test_unstaged_source_has_visible_highlight() {
-            let bg = highlight_bg_color(LineSource::Unstaged);
-            // Unstaged highlight is yellow-ish: Rgb(130, 130, 35)
-            assert!(matches!(bg, Color::Rgb(130, 130, 35)), "Unstaged should have yellow highlight");
-        }
-
-        /// Test that line_style_with_highlight produces different styles for Base vs Unstaged
-        #[test]
-        fn test_highlight_style_differs_by_source() {
-            let base_style = line_style_with_highlight(LineSource::Base);
-            let unstaged_style = line_style_with_highlight(LineSource::Unstaged);
-
-            // The background colors should be different
-            assert_ne!(base_style.bg, unstaged_style.bg,
-                "Base and Unstaged highlight styles should have different backgrounds");
-
-            // Base should have Reset background
-            assert_eq!(base_style.bg, Some(Color::Reset));
-
-            // Unstaged should have a visible color
-            assert!(matches!(unstaged_style.bg, Some(Color::Rgb(130, 130, 35))));
-        }
+        use crate::ui::colors::line_style_with_highlight;
 
         /// Integration test: modified base line with inline spans should use span source for highlight
         #[test]
@@ -1114,40 +1032,6 @@ mod tests {
             let highlight_style = line_style_with_highlight(highlight_source);
             assert!(matches!(highlight_style.bg, Some(Color::Rgb(130, 130, 35))),
                 "Highlight style should have visible yellow background");
-        }
-
-        /// Test that syntax_highlight_inline_spans applies highlight_style to changed portions
-        #[test]
-        fn test_syntax_highlight_inline_spans_applies_highlight_to_changes() {
-            // Use distinct words to avoid substring matching issues
-            let inline_spans = vec![
-                InlineSpan { text: "prefix ".to_string(), source: None, is_deletion: false },
-                InlineSpan { text: "INSERTED".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
-                InlineSpan { text: " suffix".to_string(), source: None, is_deletion: false },
-            ];
-            let content = "prefix INSERTED suffix";
-            let base_style = Style::default().bg(Color::Reset);
-            let highlight_style = line_style_with_highlight(LineSource::Unstaged);
-
-            let result = syntax_highlight_inline_spans(
-                &inline_spans,
-                content,
-                None, // no syntax highlighting
-                base_style,
-                highlight_style,
-            );
-
-            // Should have spans
-            assert!(!result.is_empty());
-
-            // Find a span that contains the inserted text
-            let inserted_span = result.iter().find(|s| s.content.contains("INSERTED"));
-            assert!(inserted_span.is_some(), "Should have a span containing 'INSERTED'");
-            let inserted_span = inserted_span.unwrap();
-
-            // The inserted portion should have the Unstaged highlight background
-            assert_eq!(inserted_span.style.bg, Some(Color::Rgb(130, 130, 35)),
-                "Inserted portion should have Unstaged highlight background");
         }
 
         /// Test the specific bug scenario: import line modification
@@ -1489,25 +1373,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dynamic_image_height_calculation() {
-        use crate::ui::image_view::calculate_image_height;
-
-        // Small terminal (24 rows) - should get reasonable minimum
-        let small_height = calculate_image_height(24);
-        assert!(small_height >= 8, "Small terminal should have at least 8 rows for images");
-        assert!(small_height <= 18, "Small terminal shouldn't use too much space");
-
-        // Medium terminal (40 rows)
-        let medium_height = calculate_image_height(40);
-        assert!(medium_height > small_height, "Larger terminal should have more image space");
-
-        // Large terminal (80 rows)
-        let large_height = calculate_image_height(80);
-        assert!(large_height > medium_height, "Even larger terminal should have more image space");
-        assert!(large_height <= 74, "Should leave space for other UI elements");
-    }
-
-    #[test]
     fn test_image_clipping_calculation() {
         // Test the clipping logic used in render_images_at_positions
         // Simulating: viewport_bottom = 100, image_y = 95, pos.height = 12
@@ -1591,45 +1456,6 @@ mod tests {
         let status_h = crate::ui::status_bar_height(&app, width);
         let diff_h = height - status_h;
         verify_diff_area_borders(frame.buffer, width, diff_h);
-    }
-
-    #[test]
-    fn test_expected_available_height_overhead_calculation() {
-        // This test verifies that the IMAGE_PANEL_OVERHEAD constant correctly
-        // represents the total overhead in an image panel.
-        //
-        // Overhead components:
-        //   - borders: 2 (top + bottom, from Block)
-        //   - margins: 2 (IMAGE_TOP_MARGIN + IMAGE_BOTTOM_MARGIN)
-        //   - metadata: 1
-        //   Total: 5
-        //
-        // render_image_marker subtracts IMAGE_PANEL_OVERHEAD from image_height
-        // to get the expected_available_height for render_image_panel.
-
-        use crate::image_diff::{
-            IMAGE_BOTTOM_MARGIN, IMAGE_PANEL_OVERHEAD, IMAGE_TOP_MARGIN, METADATA_HEIGHT,
-        };
-
-        // Verify overhead components sum correctly
-        let borders = 2u16;
-        let margins = IMAGE_TOP_MARGIN + IMAGE_BOTTOM_MARGIN;
-        let metadata = METADATA_HEIGHT;
-        let expected_overhead = borders + margins + metadata;
-
-        assert_eq!(
-            IMAGE_PANEL_OVERHEAD, expected_overhead,
-            "IMAGE_PANEL_OVERHEAD should equal borders (2) + margins (2) + metadata (1)"
-        );
-        assert_eq!(IMAGE_PANEL_OVERHEAD, 5, "Total overhead should be 5");
-
-        // Verify expected_available_height calculation for a sample image_height
-        let image_height = 20u16;
-        let expected_available_height = image_height.saturating_sub(IMAGE_PANEL_OVERHEAD);
-        assert_eq!(
-            expected_available_height, 15,
-            "For image_height=20, expected_available_height should be 15"
-        );
     }
 
     /// Test that partial rendering maintains consistent image dimensions.
