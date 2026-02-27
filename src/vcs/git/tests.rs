@@ -1075,3 +1075,138 @@ fn test_watch_paths_includes_refs_dir() {
     let paths = vcs.watch_paths();
     assert!(paths.recursive_dirs.contains(&repo.join(".git/refs")));
 }
+
+// === batch_file_contents tests ===
+
+#[test]
+fn test_batch_file_contents_returns_existing_files() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    // Add a second file
+    fs::write(repo.join("second.txt"), "second content\n").unwrap();
+    git_cmd(repo, &["add", "second.txt"]);
+    git_cmd(repo, &["commit", "-m", "add second"]);
+
+    let result = commands::batch_file_contents(repo, &["file.txt", "second.txt"], "HEAD");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result["file.txt"], "initial\n");
+    assert_eq!(result["second.txt"], "second content\n");
+}
+
+#[test]
+fn test_batch_file_contents_handles_missing_files() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    let result = commands::batch_file_contents(repo, &["nonexistent.txt", "also_missing.txt"], "HEAD");
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_batch_file_contents_handles_index_ref() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    // Stage a new file (not yet committed)
+    fs::write(repo.join("staged.txt"), "staged content\n").unwrap();
+    git_cmd(repo, &["add", "staged.txt"]);
+
+    // Index ref uses empty string
+    let result = commands::batch_file_contents(repo, &["staged.txt"], "");
+    assert_eq!(result.len(), 1);
+    assert_eq!(result["staged.txt"], "staged content\n");
+}
+
+#[test]
+fn test_batch_file_contents_mix_of_existing_and_missing() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    let result = commands::batch_file_contents(repo, &["file.txt", "nonexistent.txt"], "HEAD");
+    assert_eq!(result.len(), 1);
+    assert_eq!(result["file.txt"], "initial\n");
+    assert!(!result.contains_key("nonexistent.txt"));
+}
+
+#[test]
+fn test_batch_file_contents_empty_paths() {
+    let temp = create_test_repo();
+    let result = commands::batch_file_contents(temp.path(), &[], "HEAD");
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_batch_file_contents_merge_base_ref() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    // Create a feature branch with changes
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "modified\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "modify"]);
+
+    let merge_base = commands::get_merge_base(repo, "main").unwrap();
+    let result = commands::batch_file_contents(repo, &["file.txt"], &merge_base);
+    assert_eq!(result["file.txt"], "initial\n", "merge base should have original content");
+
+    let head_result = commands::batch_file_contents(repo, &["file.txt"], "HEAD");
+    assert_eq!(head_result["file.txt"], "modified\n", "HEAD should have modified content");
+}
+
+// === collect_fetch_paths tests ===
+
+#[test]
+fn test_collect_fetch_paths_basic() {
+    use std::collections::HashSet;
+    let files = vec![
+        changed_files::ChangedFile { path: "a.rs".to_string(), old_path: None },
+        changed_files::ChangedFile { path: "b.rs".to_string(), old_path: None },
+    ];
+    let binary = HashSet::new();
+    let paths = refresh::collect_fetch_paths(&files, &binary);
+    assert_eq!(paths, vec!["a.rs", "b.rs"]);
+}
+
+#[test]
+fn test_collect_fetch_paths_excludes_binary() {
+    use std::collections::HashSet;
+    let files = vec![
+        changed_files::ChangedFile { path: "text.rs".to_string(), old_path: None },
+        changed_files::ChangedFile { path: "image.png".to_string(), old_path: None },
+    ];
+    let binary: HashSet<String> = ["image.png".to_string()].into();
+    let paths = refresh::collect_fetch_paths(&files, &binary);
+    assert_eq!(paths, vec!["text.rs"]);
+}
+
+#[test]
+fn test_collect_fetch_paths_includes_old_path_for_renames() {
+    use std::collections::HashSet;
+    let files = vec![
+        changed_files::ChangedFile {
+            path: "new_name.rs".to_string(),
+            old_path: Some("old_name.rs".to_string()),
+        },
+    ];
+    let binary = HashSet::new();
+    let paths = refresh::collect_fetch_paths(&files, &binary);
+    assert_eq!(paths, vec!["new_name.rs", "old_name.rs"]);
+}
+
+#[test]
+fn test_collect_fetch_paths_deduplicates() {
+    use std::collections::HashSet;
+    let files = vec![
+        changed_files::ChangedFile { path: "file.rs".to_string(), old_path: None },
+        changed_files::ChangedFile {
+            path: "renamed.rs".to_string(),
+            old_path: Some("file.rs".to_string()),
+        },
+    ];
+    let binary = HashSet::new();
+    let paths = refresh::collect_fetch_paths(&files, &binary);
+    // "file.rs" appears as both a primary path and a rename source — should be deduped
+    assert_eq!(paths, vec!["file.rs", "renamed.rs"]);
+}
