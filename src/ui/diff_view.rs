@@ -948,36 +948,6 @@ mod tests {
     }
 
     #[test]
-    fn test_render_output_fields() {
-        let output = RenderOutput {
-            row_map: vec![
-                ScreenRowInfo {
-                    content: "test".to_string(),
-                    is_file_header: false,
-                    file_path: None,
-                    is_continuation: false,
-                },
-            ],
-            content_offset: (1, 2),
-            line_num_width: 4,
-            content_width: 76,
-            image_positions: Vec::new(),
-        };
-
-        assert_eq!(output.row_map.len(), 1);
-        assert_eq!(output.content_offset, (1, 2));
-        assert_eq!(output.line_num_width, 4);
-        assert_eq!(output.content_width, 76);
-    }
-
-    #[test]
-    fn test_apply_selection_to_content_no_selection() {
-        let spans = vec![Span::raw("test content")];
-        let result = apply_selection_to_content(spans.clone(), &None, 0, 0);
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
     fn test_diff_view_model_show_copied_flash() {
         let mut app = TestAppBuilder::new()
             .with_lines(vec![DiffLine::file_header("test.rs")])
@@ -1648,5 +1618,300 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    /// Helper: render a DiffViewModel and return the RenderOutput.
+    fn render_to_output(app: &App, width: u16, height: u16) -> RenderOutput {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let ctx = FrameContext::new(app);
+        let area = Rect::new(0, 0, width, height);
+        let view_model = DiffViewModel::from_app(app, &ctx, area);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut output = None;
+        terminal
+            .draw(|f| {
+                output = Some(view_model.render(f));
+            })
+            .unwrap();
+        output.unwrap()
+    }
+
+    /// Helper: render with custom FrameContext items.
+    fn render_with_items(app: &App, items: Vec<DisplayableItem>, width: u16, height: u16) -> RenderOutput {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let ctx = FrameContext::with_items(items, app);
+        let area = Rect::new(0, 0, width, height);
+        let view_model = DiffViewModel::from_app(app, &ctx, area);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut output = None;
+        terminal
+            .draw(|f| {
+                output = Some(view_model.render(f));
+            })
+            .unwrap();
+        output.unwrap()
+    }
+
+    #[test]
+    fn test_render_plain_content_populates_row_map() {
+        let mut lines = vec![DiffLine::file_header("test.rs")];
+        for i in 1..=3 {
+            let mut line = base_line(&format!("line {}", i));
+            line.line_number = Some(i);
+            line.file_path = Some("test.rs".to_string());
+            lines.push(line);
+        }
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(80);
+
+        let output = render_to_output(&app, 80, 24);
+
+        assert_eq!(output.row_map.len(), 4, "1 header + 3 content lines");
+        assert!(output.row_map[0].is_file_header);
+        assert_eq!(output.row_map[0].file_path.as_deref(), Some("test.rs"));
+
+        for i in 1..=3 {
+            assert!(!output.row_map[i].is_file_header);
+            assert_eq!(output.row_map[i].content, format!("line {}", i));
+            assert!(!output.row_map[i].is_continuation);
+        }
+
+        assert!(output.line_num_width > 0);
+    }
+
+    #[test]
+    fn test_render_elided_marker_row_map() {
+        let app = TestAppBuilder::new()
+            .with_lines(vec![base_line("placeholder")])
+            .build();
+
+        let items = vec![DisplayableItem::Elided(42)];
+        let output = render_with_items(&app, items, 80, 24);
+
+        assert_eq!(output.row_map.len(), 1);
+        assert_eq!(output.row_map[0].content, "42 lines hidden");
+        assert!(!output.row_map[0].is_file_header);
+        assert!(!output.row_map[0].is_continuation);
+    }
+
+    #[test]
+    fn test_render_inline_spans_pure_deletion_splits_into_two_rows() {
+        use crate::diff::InlineSpan;
+
+        // PureDeletion: deletion spans exist, no insertion spans (unchanged has source: None)
+        let mut line = DiffLine::new(
+            LineSource::Committed,
+            "kept text".to_string(),
+            '+',
+            Some(1),
+        );
+        line.file_path = Some("test.rs".to_string());
+        line.old_content = Some("deleted prefix kept text".to_string());
+        line.change_source = Some(LineSource::Committed);
+        line.inline_spans = vec![
+            InlineSpan { text: "deleted prefix ".to_string(), source: Some(LineSource::Committed), is_deletion: true },
+            InlineSpan { text: "kept text".to_string(), source: None, is_deletion: false },
+        ];
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs"), line])
+            .build();
+        app.estimate_content_width(80);
+
+        let output = render_to_output(&app, 80, 24);
+
+        // Header + at least 2 rows (del + ins) for the split inline line
+        assert!(
+            output.row_map.len() >= 3,
+            "Expected header + del + ins rows, got {} rows",
+            output.row_map.len()
+        );
+    }
+
+    #[test]
+    fn test_render_inline_spans_fits_single_row() {
+        use crate::diff::InlineSpan;
+
+        let mut line = DiffLine::new(
+            LineSource::Committed,
+            "prefix inserted suffix".to_string(),
+            '+',
+            Some(1),
+        );
+        line.file_path = Some("test.rs".to_string());
+        line.inline_spans = vec![
+            InlineSpan { text: "prefix ".to_string(), source: None, is_deletion: false },
+            InlineSpan { text: "inserted ".to_string(), source: Some(LineSource::Committed), is_deletion: false },
+            InlineSpan { text: "suffix".to_string(), source: None, is_deletion: false },
+        ];
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs"), line])
+            .build();
+        app.estimate_content_width(80);
+
+        let output = render_to_output(&app, 80, 24);
+
+        // Header + exactly 1 row for the short inline line
+        assert_eq!(output.row_map.len(), 2, "header + 1 content row");
+        assert!(!output.row_map[1].is_file_header);
+        assert!(!output.row_map[1].is_continuation);
+    }
+
+    #[test]
+    fn test_render_plain_content_wrapping_sets_continuation() {
+        let long_content = "x".repeat(200);
+        let mut line = base_line(&long_content);
+        line.line_number = Some(1);
+        line.file_path = Some("test.rs".to_string());
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs"), line])
+            .build();
+        app.estimate_content_width(40);
+
+        let output = render_to_output(&app, 40, 24);
+
+        // Skip header row, check content rows
+        let content_rows: Vec<_> = output.row_map.iter().skip(1).collect();
+        assert!(content_rows.len() > 1, "line should wrap at 40 cols");
+        assert!(!content_rows[0].is_continuation, "first row is not a continuation");
+        for row in &content_rows[1..] {
+            assert!(row.is_continuation, "wrapped rows should be continuations");
+        }
+    }
+
+    #[test]
+    fn test_render_title_shows_current_file() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut line = base_line("content");
+        line.file_path = Some("src/main.rs".to_string());
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("src/main.rs"), line])
+            .build();
+        app.estimate_content_width(80);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let frame = terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(&app);
+                let area = Rect::new(0, 0, 80, 24);
+                let vm = DiffViewModel::from_app(&app, &ctx, area);
+                vm.render(f);
+            })
+            .unwrap();
+
+        let top_row: String = (0..80)
+            .map(|x| frame.buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(top_row.contains("src/main.rs"), "title should show current file, got: {}", top_row);
+    }
+
+    #[test]
+    fn test_render_title_shows_branchdiff_fallback() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![base_line("no file path")])
+            .build();
+        app.estimate_content_width(80);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let frame = terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(&app);
+                let area = Rect::new(0, 0, 80, 24);
+                let vm = DiffViewModel::from_app(&app, &ctx, area);
+                vm.render(f);
+            })
+            .unwrap();
+
+        let top_row: String = (0..80)
+            .map(|x| frame.buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(top_row.contains("branchdiff"), "title should show fallback, got: {}", top_row);
+    }
+
+    #[test]
+    fn test_apply_selection_with_active_selection() {
+        use crate::app::{Position, Selection};
+        use crate::ui::selection::SELECTION_BG_COLOR;
+
+        let spans = vec![Span::raw("hello world")];
+        let selection = Some(Selection {
+            start: Position { row: 0, col: 6 },
+            end: Position { row: 0, col: 11 },
+            active: false,
+        });
+
+        let result = apply_selection_to_content(spans, &selection, 0, 0);
+        assert!(result.len() > 1, "selection should split the span");
+        assert!(
+            result.iter().any(|s| s.style.bg == Some(SELECTION_BG_COLOR)),
+            "at least one span should have selection background"
+        );
+    }
+
+    #[test]
+    fn test_apply_selection_on_different_row() {
+        use crate::app::{Position, Selection};
+
+        let spans = vec![Span::raw("hello world")];
+        let selection = Some(Selection {
+            start: Position { row: 5, col: 0 },
+            end: Position { row: 5, col: 10 },
+            active: false,
+        });
+
+        let result = apply_selection_to_content(spans, &selection, 0, 0);
+        assert_eq!(result.len(), 1, "selection on different row should not split");
+    }
+
+    #[test]
+    fn test_line_num_width_scales_with_max_line_number() {
+        // 3-digit line numbers
+        let mut lines = vec![DiffLine::file_header("test.rs")];
+        let mut line = base_line("content");
+        line.line_number = Some(999);
+        line.file_path = Some("test.rs".to_string());
+        lines.push(line);
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(80);
+        let output = render_to_output(&app, 80, 24);
+        assert_eq!(output.line_num_width, 4, "999 = 3 digits + 1 space");
+
+        // 1-digit line numbers
+        let mut lines = vec![DiffLine::file_header("test.rs")];
+        let mut line = base_line("content");
+        line.line_number = Some(9);
+        line.file_path = Some("test.rs".to_string());
+        lines.push(line);
+
+        let app = TestAppBuilder::new().with_lines(lines).build();
+        let output = render_to_output(&app, 80, 24);
+        assert_eq!(output.line_num_width, 2, "9 = 1 digit + 1 space");
+
+        // No line numbers
+        let app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs")])
+            .build();
+        let output = render_to_output(&app, 80, 24);
+        assert_eq!(output.line_num_width, 0, "no line numbers = 0 width");
     }
 }
