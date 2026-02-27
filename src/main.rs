@@ -562,6 +562,7 @@ where
             &file_events,
             &refresh_rx,
             &fetch_rx,
+            app.is_search_input_active(),
         )?;
 
         // Process each message
@@ -653,15 +654,20 @@ fn collect_messages(
     file_events: &mpsc::Receiver<Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>>,
     refresh_rx: &mpsc::Receiver<RefreshOutcome>,
     fetch_rx: &mpsc::Receiver<FetchResult>,
+    search_input_active: bool,
 ) -> Result<Vec<Message>> {
     let mut messages = Vec::new();
 
     // Check for input with short timeout for responsiveness
     if event::poll(Duration::from_millis(10))? {
         let event = event::read()?;
-        let action = handle_event(event);
-        if action != AppAction::None {
-            messages.push(Message::Input(action));
+        if search_input_active {
+            messages.push(Message::SearchInput(event));
+        } else {
+            let action = handle_event(event);
+            if action != AppAction::None {
+                messages.push(Message::Input(action));
+            }
         }
     }
 

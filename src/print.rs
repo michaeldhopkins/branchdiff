@@ -232,6 +232,7 @@ mod tests {
             image_cache: ImageCache::new(),
             image_picker: None,
             font_size: (FONT_WIDTH_PX as u16, FONT_HEIGHT_PX as u16),
+            search: None,
             view: ViewState {
                 scroll_offset: 0,
                 viewport_height: 20,

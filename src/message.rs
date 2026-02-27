@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use crossterm::event::Event;
 use notify_debouncer_mini::DebouncedEvent;
 
 use crate::vcs::RefreshResult;
@@ -44,6 +45,8 @@ pub enum RefreshOutcome {
 pub enum Message {
     /// User input (keyboard, mouse).
     Input(AppAction),
+    /// Raw input event routed to the search handler when search bar is active.
+    SearchInput(Event),
     /// Background refresh completed.
     RefreshCompleted(Box<RefreshOutcome>),
     /// File system change detected.

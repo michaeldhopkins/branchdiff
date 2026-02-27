@@ -4,16 +4,18 @@ mod collapse;
 mod frame;
 mod navigation;
 mod refresh;
+pub mod search;
 mod selection;
 mod view_mode;
 mod view_state;
 
 pub use frame::{DisplayableItem, FrameContext};
 pub use crate::vcs::RefreshResult;
+pub use search::SearchState;
 pub use selection::{Position, Selection};
 pub use view_state::ViewState;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use ratatui_image::picker::Picker;
@@ -63,6 +65,8 @@ pub struct App {
     /// Font size in pixels (width, height) from the Picker, used for image height calculations.
     /// Defaults to (8, 16) but updated when set_image_picker() is called.
     pub font_size: (u16, u16),
+    /// Active search state (None when not searching)
+    pub search: Option<SearchState>,
 }
 
 impl App {
@@ -97,6 +101,7 @@ impl App {
             image_cache: ImageCache::new(),
             image_picker: None,
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
+            search: None,
         }
     }
 
@@ -128,6 +133,7 @@ impl App {
             image_cache: ImageCache::new(),
             image_picker: None,
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
+            search: None,
         };
 
         app.apply_refresh_result(initial);
@@ -181,6 +187,22 @@ impl App {
         self.auto_collapse_files();
         self.clamp_scroll();
         self.view.needs_inline_spans = true;
+        self.recompute_search_matches();
+    }
+
+    fn recompute_search_matches(&mut self) {
+        if let Some(search) = &mut self.search {
+            search.matches = search::compute_matches(&self.lines, &search.query);
+            if !search.matches.is_empty() {
+                search.current = search.current.min(search.matches.len() - 1);
+            } else {
+                search.current = 0;
+            }
+        }
+        let visible = self.visible_line_indices();
+        if let Some(search) = &mut self.search {
+            search.update_visibility(&visible);
+        }
     }
 
     /// Load images for any image marker lines into the cache.
@@ -277,11 +299,131 @@ impl App {
     }
 
     pub fn should_quit(&mut self) -> bool {
-        if self.view.show_help {
+        if self.search.is_some() {
+            self.close_search();
+            false
+        } else if self.view.show_help {
             self.view.show_help = false;
             false
         } else {
             true
+        }
+    }
+
+    pub fn is_search_input_active(&self) -> bool {
+        self.search.as_ref().is_some_and(|s| s.input_active)
+    }
+
+    pub fn open_search(&mut self) {
+        self.search = Some(SearchState::new());
+    }
+
+    pub fn close_search(&mut self) {
+        self.search = None;
+    }
+
+    pub fn search_insert_char(&mut self, c: char) {
+        if let Some(search) = &mut self.search {
+            search.query.push(c);
+            let matches = search::compute_matches(&self.lines, &search.query);
+            search.matches = matches;
+            search.current = 0;
+        }
+        self.snap_to_first_visible_match();
+        self.scroll_to_current_match();
+    }
+
+    pub fn search_delete_char(&mut self) {
+        if let Some(search) = &mut self.search {
+            search.query.pop();
+            let matches = search::compute_matches(&self.lines, &search.query);
+            search.matches = matches;
+            search.current = 0;
+        }
+        self.snap_to_first_visible_match();
+        self.scroll_to_current_match();
+    }
+
+    fn snap_to_first_visible_match(&mut self) {
+        let visible = self.visible_line_indices();
+        if let Some(search) = &mut self.search {
+            if let Some(pos) = search.matches.iter().position(|m| visible.contains(&m.line_idx)) {
+                search.current = pos;
+            }
+            search.update_visibility(&visible);
+        }
+    }
+
+    pub fn search_next(&mut self) {
+        let visible = self.visible_line_indices();
+        if let Some(search) = &mut self.search
+            && !search.matches.is_empty()
+        {
+            let start = search.current;
+            loop {
+                search.current = (search.current + 1) % search.matches.len();
+                if visible.contains(&search.matches[search.current].line_idx)
+                    || search.current == start
+                {
+                    break;
+                }
+            }
+            search.update_visibility(&visible);
+        }
+        self.scroll_to_current_match();
+    }
+
+    pub fn search_prev(&mut self) {
+        let visible = self.visible_line_indices();
+        if let Some(search) = &mut self.search
+            && !search.matches.is_empty()
+        {
+            let start = search.current;
+            loop {
+                search.current = if search.current == 0 {
+                    search.matches.len() - 1
+                } else {
+                    search.current - 1
+                };
+                if visible.contains(&search.matches[search.current].line_idx)
+                    || search.current == start
+                {
+                    break;
+                }
+            }
+            search.update_visibility(&visible);
+        }
+        self.scroll_to_current_match();
+    }
+
+    /// Line indices that are currently displayable (not collapsed/filtered).
+    fn visible_line_indices(&self) -> HashSet<usize> {
+        self.compute_displayable_items()
+            .iter()
+            .filter_map(|item| match item {
+                DisplayableItem::Line(i) => Some(*i),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn scroll_to_current_match(&mut self) {
+        let line_idx = match &self.search {
+            Some(s) => s.matches.get(s.current).map(|m| m.line_idx),
+            None => None,
+        };
+        let Some(line_idx) = line_idx else { return };
+
+        let items = self.compute_displayable_items();
+        if let Some(item_idx) = items.iter().position(|item| {
+            matches!(item, DisplayableItem::Line(i) if *i == line_idx)
+        }) {
+            let viewport_end = self.view.scroll_offset + self.view.viewport_height;
+            if item_idx < self.view.scroll_offset || item_idx >= viewport_end {
+                self.view.scroll_offset = item_idx.saturating_sub(self.view.viewport_height / 4);
+                self.clamp_scroll();
+            }
+            self.view.needs_inline_spans = true;
         }
     }
 
@@ -1743,5 +1885,38 @@ mod tests {
         app.apply_refresh_result(result);
 
         assert_eq!(app.comparison.from_label, "keep-this");
+    }
+
+    #[test]
+    fn test_refresh_recomputes_search_matches() {
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![base_line("hello world")])
+            .build();
+
+        app.open_search();
+        app.search_insert_char('h');
+        app.search_insert_char('e');
+        app.search_insert_char('l');
+        assert_eq!(app.search.as_ref().unwrap().matches.len(), 1);
+
+        let result = RefreshResult {
+            files: vec![],
+            lines: vec![
+                DiffLine::new(LineSource::Committed, "hello there".to_string(), '+', None),
+                DiffLine::new(LineSource::Committed, "help me".to_string(), '+', None),
+            ],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: None,
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None,
+            revision_id: None,
+        };
+        app.apply_refresh_result(result);
+
+        let search = app.search.as_ref().unwrap();
+        assert_eq!(search.query, "hel");
+        assert_eq!(search.matches.len(), 2, "should find 'hel' in both new lines");
     }
 }
