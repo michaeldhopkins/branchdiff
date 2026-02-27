@@ -287,7 +287,7 @@ fn parse_rev_metadata(raw: &str) -> (String, String) {
         } else if shortest_id.is_empty() {
             bookmarks.to_string()
         } else {
-            format!("{bookmarks} ({shortest_id})")
+            format!("{shortest_id} ({bookmarks})")
         };
         (change_id, label)
     } else {
@@ -1223,10 +1223,10 @@ mod tests {
         let result = vcs.refresh(&cancel).unwrap();
 
         let base_label = result.base_label.expect("should have base_label");
-        assert!(base_label.starts_with("my-base ("),
-            "bookmark label should include change ID, got: {base_label}");
+        assert!(base_label.contains("(my-base)"),
+            "label should contain bookmark in parens, got: {base_label}");
         assert!(base_label.ends_with(')'),
-            "bookmark label should end with ), got: {base_label}");
+            "label should end with ), got: {base_label}");
     }
 
     #[test]
@@ -1308,10 +1308,10 @@ mod tests {
         let (change_id, label) = vcs.rev_metadata_no_snapshot("@-");
 
         assert!(!change_id.is_empty());
-        assert!(label.starts_with("test-bm ("),
-            "bookmark label should include change ID, got: {label}");
+        assert!(label.contains("(test-bm)"),
+            "label should contain bookmark in parens, got: {label}");
         assert!(label.ends_with(')'),
-            "bookmark label should end with ), got: {label}");
+            "label should end with ), got: {label}");
     }
 
     #[test]
@@ -1691,7 +1691,7 @@ mod tests {
     fn test_parse_rev_metadata_bookmark_with_shortest_id() {
         let (id, label) = parse_rev_metadata("main\0knmqypts1234\0knmq");
         assert_eq!(id, "knmqypts1234");
-        assert_eq!(label, "main (knmq)");
+        assert_eq!(label, "knmq (main)");
     }
 
     #[test]
@@ -1705,7 +1705,7 @@ mod tests {
     fn test_parse_rev_metadata_tracking_marker_with_shortest_id() {
         let (id, label) = parse_rev_metadata("feat*\0abcd1234efgh\0abcd");
         assert_eq!(id, "abcd1234efgh");
-        assert_eq!(label, "feat (abcd)");
+        assert_eq!(label, "abcd (feat)");
     }
 
     #[test]
@@ -1719,7 +1719,7 @@ mod tests {
     fn test_parse_rev_metadata_multiple_bookmarks() {
         let (id, label) = parse_rev_metadata("b1 b2\0xvryypywztmm\0xvry");
         assert_eq!(id, "xvryypywztmm");
-        assert_eq!(label, "b1 b2 (xvry)");
+        assert_eq!(label, "xvry (b1 b2)");
     }
 
     #[test]
