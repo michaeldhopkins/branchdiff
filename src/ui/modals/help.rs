@@ -97,7 +97,7 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("    c           ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Cycle view mode"),
+            Span::raw("  Cycle view mode (full/ctx/chg/commit)"),
         ]),
         Line::from(vec![
             Span::styled("    Ctrl+c / y  ", Style::default().fg(Color::Cyan)),
