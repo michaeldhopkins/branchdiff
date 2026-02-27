@@ -31,6 +31,8 @@ pub enum ViewMode {
     #[default]
     Context,
     ChangesOnly,
+    /// jj only: show only current commit (@) changes with surrounding context
+    CommitOnly,
 }
 
 /// Application state
@@ -184,6 +186,12 @@ impl App {
         self.files = result.files;
         self.lines = result.lines;
         self.file_links = result.file_links;
+        // CommitOnly is jj-only; fall back if backend changed to git
+        if self.view.view_mode == ViewMode::CommitOnly
+            && self.comparison.vcs_backend == VcsBackend::Git
+        {
+            self.view.view_mode = ViewMode::Context;
+        }
         self.auto_collapse_files();
         self.clamp_scroll();
         self.view.needs_inline_spans = true;

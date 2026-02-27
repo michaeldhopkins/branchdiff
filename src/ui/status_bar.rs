@@ -48,6 +48,7 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
         crate::app::ViewMode::ChangesOnly => " [changes]",
+        crate::app::ViewMode::CommitOnly => " [commit]",
     };
 
     let stats = format!(
@@ -79,6 +80,7 @@ fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
         crate::app::ViewMode::ChangesOnly => " [changes]",
+        crate::app::ViewMode::CommitOnly => " [commit]",
     };
 
     let mut spans = vec![
@@ -117,6 +119,7 @@ fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
         crate::app::ViewMode::ChangesOnly => " [changes]",
+        crate::app::ViewMode::CommitOnly => " [commit]",
     };
 
     let mut spans = vec![
@@ -173,6 +176,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         crate::app::ViewMode::Full => "",
         crate::app::ViewMode::Context => " [context]",
         crate::app::ViewMode::ChangesOnly => " [changes]",
+        crate::app::ViewMode::CommitOnly => " [commit]",
     };
 
     let stats = format!(
