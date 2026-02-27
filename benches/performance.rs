@@ -68,8 +68,8 @@ fn bench_frame_context(c: &mut Criterion) {
             };
 
             let mut app = App::new_for_bench(diff.clone());
-            app.view_mode = mode;
-            app.viewport_height = 50;
+            app.view.view_mode = mode;
+            app.view.viewport_height = 50;
 
             group.bench_with_input(
                 BenchmarkId::new(mode_label, label),
@@ -90,7 +90,7 @@ fn bench_inline_spans(c: &mut Criterion) {
     // Create diff with inline diffs enabled
     let diff = create_test_diff(20, 200, true);
     let mut app = App::new_for_bench(diff);
-    app.viewport_height = 50;
+    app.view.viewport_height = 50;
 
     // Count lines that need inline spans
     let lines_with_old: usize = app.lines.iter()
@@ -124,14 +124,14 @@ fn bench_navigation(c: &mut Criterion) {
     // Scroll operations
     {
         let mut app = App::new_for_bench(diff.clone());
-        app.viewport_height = 50;
-        app.scroll_offset = 100;
+        app.view.viewport_height = 50;
+        app.view.scroll_offset = 100;
 
         group.bench_function("scroll_down_10", |b| {
             b.iter(|| {
                 app.scroll_down(10);
                 app.scroll_up(10); // Reset for next iteration
-                black_box(app.scroll_offset)
+                black_box(app.view.scroll_offset)
             })
         });
     }
@@ -139,14 +139,14 @@ fn bench_navigation(c: &mut Criterion) {
     // Page operations
     {
         let mut app = App::new_for_bench(diff.clone());
-        app.viewport_height = 50;
-        app.scroll_offset = 100;
+        app.view.viewport_height = 50;
+        app.view.scroll_offset = 100;
 
         group.bench_function("page_down", |b| {
             b.iter(|| {
                 app.page_down();
                 app.page_up(); // Reset
-                black_box(app.scroll_offset)
+                black_box(app.view.scroll_offset)
             })
         });
     }
@@ -154,13 +154,13 @@ fn bench_navigation(c: &mut Criterion) {
     // go_to_bottom (needs max_scroll computation)
     {
         let mut app = App::new_for_bench(diff.clone());
-        app.viewport_height = 50;
+        app.view.viewport_height = 50;
 
         group.bench_function("go_to_bottom", |b| {
             b.iter(|| {
-                app.scroll_offset = 0;
+                app.view.scroll_offset = 0;
                 app.go_to_bottom();
-                black_box(app.scroll_offset)
+                black_box(app.view.scroll_offset)
             })
         });
     }
@@ -168,13 +168,13 @@ fn bench_navigation(c: &mut Criterion) {
     // Next/prev file navigation
     {
         let mut app = App::new_for_bench(diff.clone());
-        app.viewport_height = 50;
-        app.scroll_offset = 0;
+        app.view.viewport_height = 50;
+        app.view.scroll_offset = 0;
 
         group.bench_function("next_file", |b| {
             b.iter(|| {
                 app.next_file();
-                black_box(app.scroll_offset)
+                black_box(app.view.scroll_offset)
             })
         });
     }
@@ -190,13 +190,13 @@ fn bench_view_mode(c: &mut Criterion) {
     let diff = create_test_diff(30, 300, false);
 
     let mut app = App::new_for_bench(diff);
-    app.viewport_height = 50;
-    app.scroll_offset = 150;
+    app.view.viewport_height = 50;
+    app.view.scroll_offset = 150;
 
     group.bench_function("cycle_view_mode", |b| {
         b.iter(|| {
             app.cycle_view_mode();
-            black_box((app.view_mode, app.scroll_offset))
+            black_box((app.view.view_mode, app.view.scroll_offset))
         })
     });
 
@@ -225,25 +225,47 @@ fn bench_context_mode(c: &mut Criterion) {
     group.finish();
 }
 
+/// Minimal Vcs stub for benchmarks (vcs is unused for Input/Tick messages).
+struct BenchVcs;
+
+impl branchdiff::vcs::Vcs for BenchVcs {
+    fn repo_path(&self) -> &std::path::Path { std::path::Path::new("/bench") }
+    fn comparison_context(&self) -> anyhow::Result<branchdiff::vcs::ComparisonContext> { unimplemented!() }
+    fn refresh(&self, _: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> anyhow::Result<branchdiff::vcs::RefreshResult> { unimplemented!() }
+    fn single_file_diff(&self, _: &str) -> Option<branchdiff::diff::FileDiff> { unimplemented!() }
+    fn base_identifier(&self) -> anyhow::Result<String> { unimplemented!() }
+    fn base_file_bytes(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> { unimplemented!() }
+    fn working_file_bytes(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> { unimplemented!() }
+    fn binary_files(&self) -> std::collections::HashSet<String> { unimplemented!() }
+    fn fetch(&self) -> anyhow::Result<()> { unimplemented!() }
+    fn has_conflicts(&self) -> anyhow::Result<bool> { unimplemented!() }
+    fn is_locked(&self) -> bool { false }
+    fn watch_paths(&self) -> branchdiff::vcs::VcsWatchPaths { unimplemented!() }
+    fn classify_event(&self, _: &std::path::Path) -> branchdiff::vcs::VcsEventType { unimplemented!() }
+    fn backend(&self) -> branchdiff::vcs::VcsBackend { branchdiff::vcs::VcsBackend::Git }
+    fn current_revision_id(&self) -> anyhow::Result<String> { unimplemented!() }
+}
+
 /// Benchmark message update handling
 fn bench_update(c: &mut Criterion) {
+    use branchdiff::file_events::VcsLockState;
     use branchdiff::input::AppAction;
     use branchdiff::message::Message;
     use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
-    use std::path::PathBuf;
 
     let mut group = c.benchmark_group("update");
     group.measurement_time(Duration::from_secs(2));
 
     let diff = create_test_diff(20, 200, false);
-    let repo_root = PathBuf::from("/tmp/test");
+    let bench_vcs = BenchVcs;
     let config = UpdateConfig::default();
 
     // Input message handling
     {
         let mut app = App::new_for_bench(diff.clone());
-        app.viewport_height = 50;
+        app.view.viewport_height = 50;
         let mut refresh_state = RefreshState::Idle;
+        let mut vcs_lock = VcsLockState::default();
         let mut timers = Timers::default();
 
         group.bench_function("handle_scroll_input", |b| {
@@ -252,9 +274,10 @@ fn bench_update(c: &mut Criterion) {
                     Message::Input(AppAction::ScrollDown(5)),
                     &mut app,
                     &mut refresh_state,
+                    &mut vcs_lock,
                     &mut timers,
                     &config,
-                    &repo_root,
+                    &bench_vcs,
                 );
                 app.scroll_up(5); // Reset
                 black_box(result)
@@ -266,6 +289,7 @@ fn bench_update(c: &mut Criterion) {
     {
         let mut app = App::new_for_bench(diff.clone());
         let mut refresh_state = RefreshState::Idle;
+        let mut vcs_lock = VcsLockState::default();
         let mut timers = Timers::default();
 
         group.bench_function("handle_tick", |b| {
@@ -274,9 +298,10 @@ fn bench_update(c: &mut Criterion) {
                     Message::Tick,
                     &mut app,
                     &mut refresh_state,
+                    &mut vcs_lock,
                     &mut timers,
                     &config,
-                    &repo_root,
+                    &bench_vcs,
                 );
                 black_box(result)
             })
