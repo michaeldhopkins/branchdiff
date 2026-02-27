@@ -1,6 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::diff::LineSource;
+use crate::vcs::VcsBackend;
 
 /// Default foreground color for text (neutral light gray)
 pub const DEFAULT_FG: Color = Color::Rgb(200, 200, 200);
@@ -136,18 +137,17 @@ pub fn line_style_with_highlight(source: LineSource) -> Style {
 ///
 /// git: C=committed, S=staged (traditional git terminology).
 /// jj: @=current commit (`@`), blank for earlier/later commits (color suffices).
-pub fn status_symbol(source: LineSource, vcs_name: &str) -> &'static str {
-    if vcs_name == "jj" {
-        match source {
+pub fn status_symbol(source: LineSource, backend: VcsBackend) -> &'static str {
+    match backend {
+        VcsBackend::Jj => match source {
             LineSource::Staged | LineSource::DeletedCommitted | LineSource::CanceledStaged => "@",
             _ => " ",
-        }
-    } else {
-        match source {
+        },
+        VcsBackend::Git => match source {
             LineSource::Committed | LineSource::DeletedBase | LineSource::CanceledCommitted => "C",
             LineSource::Staged | LineSource::DeletedCommitted | LineSource::CanceledStaged => "S",
             _ => " ",
-        }
+        },
     }
 }
 
@@ -431,55 +431,55 @@ mod tests {
 
     #[test]
     fn test_status_symbol_git_committed() {
-        assert_eq!(status_symbol(LineSource::Committed, "git"), "C");
+        assert_eq!(status_symbol(LineSource::Committed, VcsBackend::Git), "C");
     }
 
     #[test]
     fn test_status_symbol_git_staged() {
-        assert_eq!(status_symbol(LineSource::Staged, "git"), "S");
+        assert_eq!(status_symbol(LineSource::Staged, VcsBackend::Git), "S");
     }
 
     #[test]
     fn test_status_symbol_git_base() {
-        assert_eq!(status_symbol(LineSource::Base, "git"), " ");
+        assert_eq!(status_symbol(LineSource::Base, VcsBackend::Git), " ");
     }
 
     #[test]
     fn test_status_symbol_git_unstaged() {
-        assert_eq!(status_symbol(LineSource::Unstaged, "git"), " ");
+        assert_eq!(status_symbol(LineSource::Unstaged, VcsBackend::Git), " ");
     }
 
     #[test]
     fn test_status_symbol_git_deletions() {
-        assert_eq!(status_symbol(LineSource::DeletedBase, "git"), "C");
-        assert_eq!(status_symbol(LineSource::DeletedCommitted, "git"), "S");
-        assert_eq!(status_symbol(LineSource::DeletedStaged, "git"), " ");
+        assert_eq!(status_symbol(LineSource::DeletedBase, VcsBackend::Git), "C");
+        assert_eq!(status_symbol(LineSource::DeletedCommitted, VcsBackend::Git), "S");
+        assert_eq!(status_symbol(LineSource::DeletedStaged, VcsBackend::Git), " ");
     }
 
     #[test]
     fn test_status_symbol_git_canceled() {
-        assert_eq!(status_symbol(LineSource::CanceledCommitted, "git"), "C");
-        assert_eq!(status_symbol(LineSource::CanceledStaged, "git"), "S");
+        assert_eq!(status_symbol(LineSource::CanceledCommitted, VcsBackend::Git), "C");
+        assert_eq!(status_symbol(LineSource::CanceledStaged, VcsBackend::Git), "S");
     }
 
     #[test]
     fn test_status_symbol_jj_current_commit() {
-        assert_eq!(status_symbol(LineSource::Staged, "jj"), "@");
-        assert_eq!(status_symbol(LineSource::DeletedCommitted, "jj"), "@");
-        assert_eq!(status_symbol(LineSource::CanceledStaged, "jj"), "@");
+        assert_eq!(status_symbol(LineSource::Staged, VcsBackend::Jj), "@");
+        assert_eq!(status_symbol(LineSource::DeletedCommitted, VcsBackend::Jj), "@");
+        assert_eq!(status_symbol(LineSource::CanceledStaged, VcsBackend::Jj), "@");
     }
 
     #[test]
     fn test_status_symbol_jj_earlier_commits() {
-        assert_eq!(status_symbol(LineSource::Committed, "jj"), " ");
-        assert_eq!(status_symbol(LineSource::DeletedBase, "jj"), " ");
-        assert_eq!(status_symbol(LineSource::CanceledCommitted, "jj"), " ");
+        assert_eq!(status_symbol(LineSource::Committed, VcsBackend::Jj), " ");
+        assert_eq!(status_symbol(LineSource::DeletedBase, VcsBackend::Jj), " ");
+        assert_eq!(status_symbol(LineSource::CanceledCommitted, VcsBackend::Jj), " ");
     }
 
     #[test]
     fn test_status_symbol_jj_other() {
-        assert_eq!(status_symbol(LineSource::Base, "jj"), " ");
-        assert_eq!(status_symbol(LineSource::Unstaged, "jj"), " ");
+        assert_eq!(status_symbol(LineSource::Base, VcsBackend::Jj), " ");
+        assert_eq!(status_symbol(LineSource::Unstaged, VcsBackend::Jj), " ");
     }
 
     // === print_line_style tests ===

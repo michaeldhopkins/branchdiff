@@ -15,6 +15,13 @@ pub struct StackPosition {
     pub head_count: usize,
 }
 
+/// Which VCS backend is in use (for UI dispatch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VcsBackend {
+    Git,
+    Jj,
+}
+
 /// VCS-agnostic context describing what we're comparing.
 ///
 /// Contains only UI labels. The base identifier (merge-base SHA, change ID)
@@ -27,8 +34,8 @@ pub struct ComparisonContext {
     pub to_label: String,
     /// Position of `@` in the jj commit stack, if applicable.
     pub stack_position: Option<StackPosition>,
-    /// VCS backend name (e.g., "git", "jj") for UI label customization.
-    pub vcs_name: String,
+    /// VCS backend for UI label customization (gutter symbols, help text).
+    pub vcs_backend: VcsBackend,
 }
 
 /// Result of a full refresh from a VCS backend.

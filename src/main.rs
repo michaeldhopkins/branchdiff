@@ -290,7 +290,7 @@ fn run_main_app(
             from_label: "base".to_string(),
             to_label: "working copy".to_string(),
             stack_position: None,
-            vcs_name: vcs.vcs_name().to_string(),
+            vcs_backend: vcs.backend(),
         });
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let initial = vcs.refresh(&cancel_flag)?;

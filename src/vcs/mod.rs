@@ -3,7 +3,7 @@ pub mod jj;
 pub(crate) mod shared;
 pub mod types;
 
-pub use types::{ComparisonContext, RefreshResult, StackPosition, VcsEventType, VcsWatchPaths};
+pub use types::{ComparisonContext, RefreshResult, StackPosition, VcsBackend, VcsEventType, VcsWatchPaths};
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -102,8 +102,8 @@ pub trait Vcs: Send + Sync {
     /// Classify a file event for differentiated debouncing.
     fn classify_event(&self, path: &Path) -> VcsEventType;
 
-    /// Human-readable VCS name (e.g., "git", "jj").
-    fn vcs_name(&self) -> &str;
+    /// Which VCS backend this is (for UI dispatch).
+    fn backend(&self) -> VcsBackend;
 
     /// Current working revision identifier, without triggering side effects.
     ///

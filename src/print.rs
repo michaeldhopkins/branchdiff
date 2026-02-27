@@ -200,7 +200,7 @@ mod tests {
         use branchdiff::diff::FileDiff;
         use branchdiff::gitignore::GitignoreFilter;
         use branchdiff::image_diff::{ImageCache, FONT_WIDTH_PX, FONT_HEIGHT_PX};
-        use branchdiff::vcs::ComparisonContext;
+        use branchdiff::vcs::{ComparisonContext, VcsBackend};
 
         let repo_path = PathBuf::from("/tmp/test");
         let app = App {
@@ -210,7 +210,7 @@ mod tests {
                 from_label: "main".to_string(),
                 to_label: "feature".to_string(),
                 stack_position: None,
-                vcs_name: "git".to_string(),
+                vcs_backend: VcsBackend::Git,
             },
             base_identifier: "abc123".to_string(),
             files: vec![FileDiff {
