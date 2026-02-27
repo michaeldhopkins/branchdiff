@@ -7,9 +7,8 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rayon::prelude::*;
 
-use super::{vcs_thread_pool, PARALLEL_THRESHOLD};
+use super::shared::{assemble_results, process_files_parallel, FileProcessResult};
 
 const MAX_RETRIES: u32 = 2;
 const BASE_RETRY_DELAY_MS: u64 = 100;
@@ -61,7 +60,7 @@ fn run_jj_with_retry(repo_path: &Path, args: &[&str]) -> Result<Output> {
         .context("failed to run jj")
 }
 
-use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff, LineSource};
+use crate::diff::{compute_four_way_diff, DiffInput, FileDiff};
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
 use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsEventType, VcsWatchPaths};
@@ -346,12 +345,6 @@ fn file_content_no_snapshot(repo_path: &Path, file_path: &str, rev: &str) -> Opt
     }
 }
 
-enum FileProcessResult {
-    Diff(FileDiff),
-    Binary { path: String },
-    Image { path: String },
-}
-
 fn process_jj_file(
     repo_path: &Path,
     from_rev: &str,
@@ -475,71 +468,23 @@ impl crate::vcs::Vcs for JjVcs {
             anyhow::bail!("refresh cancelled");
         }
 
-        let results: Vec<FileProcessResult> = if changed_files.len() >= PARALLEL_THRESHOLD {
-            vcs_thread_pool().install(|| {
-                changed_files
-                    .par_iter()
-                    .map(|changed| {
-                        process_jj_file(
-                            &self.repo_path,
-                            &self.from_rev,
-                            changed,
-                            &binary_files,
-                            tip_rev,
-                        )
-                    })
-                    .collect()
-            })
-        } else {
-            changed_files
-                .iter()
-                .map(|changed| {
-                    process_jj_file(
-                        &self.repo_path,
-                        &self.from_rev,
-                        changed,
-                        &binary_files,
-                        tip_rev,
-                    )
-                })
-                .collect()
-        };
+        let results = process_files_parallel(&changed_files, |changed| {
+            process_jj_file(
+                &self.repo_path,
+                &self.from_rev,
+                changed,
+                &binary_files,
+                tip_rev,
+            )
+        });
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
         }
 
-        let mut files = Vec::new();
-        let mut all_lines = Vec::new();
-
-        for result in results {
-            match result {
-                FileProcessResult::Diff(file_diff) => {
-                    all_lines.extend(file_diff.lines.iter().cloned());
-                    all_lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
-                    files.push(file_diff);
-                }
-                FileProcessResult::Binary { path } => {
-                    let header = DiffLine::file_header(&path);
-                    let marker = DiffLine::new(
-                        LineSource::Base,
-                        "[binary file]".to_string(),
-                        ' ',
-                        None,
-                    );
-                    all_lines.push(header.clone());
-                    all_lines.push(marker.clone());
-                    files.push(FileDiff { lines: vec![header, marker] });
-                }
-                FileProcessResult::Image { path } => {
-                    let header = DiffLine::file_header(&path);
-                    let marker = DiffLine::image_marker(&path);
-                    all_lines.push(header.clone());
-                    all_lines.push(marker.clone());
-                    files.push(FileDiff { lines: vec![header, marker] });
-                }
-            }
-        }
+        let assembled = assemble_results(results);
+        let files = assembled.files;
+        let all_lines = assembled.lines;
 
         let stack_position = stack_tip.as_ref().and_then(|tip| {
             let (current, total) = compute_stack_position(&self.repo_path, &tip.change_id)?;
@@ -779,6 +724,7 @@ fn parse_binary_from_stat(output: &str) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diff::LineSource;
     use crate::vcs::Vcs;
 
     // === parse_jj_summary tests ===
