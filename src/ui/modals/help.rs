@@ -49,7 +49,7 @@ fn color_labels(backend: VcsBackend) -> ColorLabels {
 
 pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
     let modal_width = 54u16;
-    let modal_height = 49u16;
+    let modal_height = 52u16;
 
     let x = area.width.saturating_sub(modal_width) / 2;
     let y = area.height.saturating_sub(modal_height) / 2;
@@ -118,6 +118,18 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("    q / Esc     ", Style::default().fg(Color::Cyan)),
             Span::raw("  Quit"),
+        ]),
+        Line::from(vec![
+            Span::styled("    / or Ctrl+f ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Search in diff"),
+        ]),
+        Line::from(vec![
+            Span::styled("    Enter       ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Next search match"),
+        ]),
+        Line::from(vec![
+            Span::styled("    Shift+Enter ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Previous search match"),
         ]),
         Line::from(vec![
             Span::styled("    ?           ", Style::default().fg(Color::Cyan)),
@@ -221,29 +233,29 @@ mod tests {
     #[test]
     fn test_help_modal_dimensions() {
         let modal_width = 54u16;
-        let modal_height = 49u16;
+        let modal_height = 52u16;
         assert!(modal_width > 0);
         assert!(modal_height > 0);
     }
 
     #[test]
     fn test_help_modal_centering_large_area() {
-        let area = Rect::new(0, 0, 120, 52);
+        let area = Rect::new(0, 0, 120, 60);
         let modal_width = 54u16;
-        let modal_height = 49u16;
+        let modal_height = 52u16;
 
         let x = area.width.saturating_sub(modal_width) / 2;
         let y = area.height.saturating_sub(modal_height) / 2;
 
         assert_eq!(x, 33);
-        assert_eq!(y, 1);
+        assert_eq!(y, 4);
     }
 
     #[test]
     fn test_help_modal_centering_small_area() {
         let area = Rect::new(0, 0, 40, 20);
         let modal_width = 54u16;
-        let modal_height = 49u16;
+        let modal_height = 52u16;
 
         let x = area.width.saturating_sub(modal_width) / 2;
         let y = area.height.saturating_sub(modal_height) / 2;
@@ -256,7 +268,7 @@ mod tests {
     fn test_help_modal_clamps_to_area() {
         let area = Rect::new(0, 0, 30, 15);
         let modal_width = 54u16;
-        let modal_height = 49u16;
+        let modal_height = 52u16;
 
         let clamped_width = modal_width.min(area.width);
         let clamped_height = modal_height.min(area.height);
