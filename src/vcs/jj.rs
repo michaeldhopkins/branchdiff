@@ -28,7 +28,7 @@ fn no_snapshot<'a>(args: &[&'a str]) -> Vec<&'a str> {
 use crate::diff::{compute_four_way_diff, DiffInput, FileDiff};
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
-use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsEventType, VcsWatchPaths};
+use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsBackend, VcsEventType, VcsWatchPaths};
 
 /// Jujutsu (jj) backend for branchdiff.
 pub struct JjVcs {
@@ -409,7 +409,7 @@ impl crate::vcs::Vcs for JjVcs {
 
         // stack_position is computed by refresh() and applied via
         // apply_refresh_result — no need to resolve it here too.
-        Ok(ComparisonContext { from_label, to_label, stack_position: None, vcs_name: "jj".to_string() })
+        Ok(ComparisonContext { from_label, to_label, stack_position: None, vcs_backend: VcsBackend::Jj })
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
@@ -608,8 +608,8 @@ impl crate::vcs::Vcs for JjVcs {
         VcsEventType::Source
     }
 
-    fn vcs_name(&self) -> &str {
-        "jj"
+    fn backend(&self) -> VcsBackend {
+        VcsBackend::Jj
     }
 }
 

@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use ratatui_image::picker::Picker;
 
 use crate::diff::{DiffLine, FileDiff};
-use crate::vcs::ComparisonContext;
+use crate::vcs::{ComparisonContext, VcsBackend};
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
 
@@ -85,7 +85,7 @@ impl App {
                 from_label: "main".to_string(),
                 to_label: "feature".to_string(),
                 stack_position: None,
-                vcs_name: "git".to_string(),
+                vcs_backend: VcsBackend::Git,
             },
             base_identifier: "bench".to_string(),
             files: Vec::new(),

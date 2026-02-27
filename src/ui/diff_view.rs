@@ -17,6 +17,7 @@ use crate::app::{App, DisplayableItem, FrameContext, Selection};
 use crate::diff::{DiffLine, LineSource};
 use crate::image_diff::{ImageCache, IMAGE_PANEL_OVERHEAD};
 use crate::syntax::reset_highlight_state;
+use crate::vcs::VcsBackend;
 
 use super::colors::{line_style, status_symbol};
 use super::selection::{apply_selection_to_span, get_line_selection_range};
@@ -47,8 +48,8 @@ pub struct DiffViewModel<'a> {
     pub image_cache: &'a ImageCache,
     /// Font size in pixels (width, height) for image height calculations.
     pub font_size: (u16, u16),
-    /// VCS backend name for UI customization (e.g., gutter symbols).
-    pub vcs_name: &'a str,
+    /// VCS backend for UI customization (e.g., gutter symbols).
+    pub vcs_backend: VcsBackend,
 }
 
 /// Position where an image should be rendered after text render
@@ -90,7 +91,7 @@ impl<'a> DiffViewModel<'a> {
             show_copied_flash: app.should_show_copied_flash(),
             image_cache: &app.image_cache,
             font_size: app.font_size,
-            vcs_name: &app.comparison.vcs_name,
+            vcs_backend: app.comparison.vcs_backend,
         }
     }
 
@@ -559,7 +560,7 @@ impl<'a> DiffViewModel<'a> {
                     prefix_width,
                 );
 
-                let del_prefix_char = format!("- {} ", status_symbol(del_source, self.vcs_name));
+                let del_prefix_char = format!("- {} ", status_symbol(del_source, self.vcs_backend));
                 let (del_lines, del_row_infos) = wrap_content(
                     del_spans,
                     old_content,
@@ -590,7 +591,7 @@ impl<'a> DiffViewModel<'a> {
                 prefix_width,
             );
 
-            let ins_prefix_char = format!("+ {} ", status_symbol(ins_source, self.vcs_name));
+            let ins_prefix_char = format!("+ {} ", status_symbol(ins_source, self.vcs_backend));
             let (ins_lines, ins_row_infos) = wrap_content(
                 ins_spans,
                 new_content,
@@ -627,7 +628,7 @@ impl<'a> DiffViewModel<'a> {
                         prefix_width,
                     );
 
-                    let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_name));
+                    let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_backend));
                     let (lines, row_infos) = wrap_content(
                         content_spans,
                         &diff_line.content,
@@ -662,7 +663,7 @@ impl<'a> DiffViewModel<'a> {
         let content_spans =
             apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
 
-        let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_name));
+        let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_backend));
         let (lines, row_infos) = wrap_content(
             content_spans,
             &diff_line.content,
@@ -690,7 +691,7 @@ impl<'a> DiffViewModel<'a> {
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) -> usize {
-        let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_name));
+        let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_backend));
 
         // Apply syntax highlighting - foreground from syntax, background from diff style
         let content_spans = syntax_highlight_content(

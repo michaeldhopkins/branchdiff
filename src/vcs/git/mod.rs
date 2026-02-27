@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::diff::FileDiff;
-use crate::vcs::{ComparisonContext, RefreshResult, Vcs};
+use crate::vcs::{ComparisonContext, RefreshResult, Vcs, VcsBackend};
 
 pub use changed_files::ChangedFile;
 pub use commands::{
@@ -58,7 +58,7 @@ impl Vcs for GitVcs {
             from_label: self.base_branch.clone(),
             to_label,
             stack_position: None,
-            vcs_name: "git".to_string(),
+            vcs_backend: VcsBackend::Git,
         })
     }
 
@@ -144,8 +144,8 @@ impl Vcs for GitVcs {
         }
     }
 
-    fn vcs_name(&self) -> &str {
-        "git"
+    fn backend(&self) -> VcsBackend {
+        VcsBackend::Git
     }
 
     fn current_revision_id(&self) -> Result<String> {
