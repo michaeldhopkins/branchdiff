@@ -1,5 +1,6 @@
 pub mod git;
 pub mod jj;
+pub(crate) mod shared;
 pub mod types;
 
 pub use types::{ComparisonContext, RefreshResult, StackPosition, VcsEventType, VcsWatchPaths};
@@ -14,7 +15,7 @@ use rayon::ThreadPoolBuilder;
 
 use crate::diff::FileDiff;
 
-const PARALLEL_THRESHOLD: usize = 4;
+pub(crate) const PARALLEL_THRESHOLD: usize = 4;
 const MAX_VCS_THREADS: usize = 16;
 
 static VCS_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();

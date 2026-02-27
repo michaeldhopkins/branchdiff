@@ -4,25 +4,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use rayon::prelude::*;
 
-use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff, LineSource};
+use crate::diff::{compute_four_way_diff, DiffInput, FileDiff};
 use crate::file_links::compute_file_links;
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
-use crate::vcs::{vcs_thread_pool, RefreshResult, PARALLEL_THRESHOLD};
+use crate::vcs::shared::{assemble_results, process_files_parallel, FileProcessResult};
+use crate::vcs::RefreshResult;
 
 use super::changed_files::get_all_changed_files;
 use super::commands::{
     get_binary_files, get_current_branch, get_file_at_ref, get_merge_base_preferring_origin,
     get_working_tree_file, is_binary_file,
 };
-
-enum FileProcessResult {
-    Diff(FileDiff),
-    Binary { path: String },
-    Image { path: String },
-}
 
 struct FileContents {
     base: Option<String>,
@@ -153,59 +147,17 @@ pub(super) fn git_compute_refresh(
 
     let changed_files = changed_files_result.context("Failed to get changed files")?;
 
-    let results: Vec<FileProcessResult> = if changed_files.len() >= PARALLEL_THRESHOLD {
-        vcs_thread_pool().install(|| {
-            changed_files
-                .par_iter()
-                .map(|file| process_single_file(repo_path, &file.path, file.old_path.as_deref(), &merge_base, &binary_files))
-                .collect()
-        })
-    } else {
-        changed_files
-            .iter()
-            .map(|file| process_single_file(repo_path, &file.path, file.old_path.as_deref(), &merge_base, &binary_files))
-            .collect()
-    };
+    let results = process_files_parallel(&changed_files, |file| {
+        process_single_file(repo_path, &file.path, file.old_path.as_deref(), &merge_base, &binary_files)
+    });
 
     if cancel_flag.load(Ordering::Relaxed) {
         return Err(anyhow!("refresh cancelled"));
     }
 
-    let mut files = Vec::new();
-    let mut lines = Vec::new();
-
-    for result in results {
-        match result {
-            FileProcessResult::Diff(file_diff) => {
-                lines.extend(file_diff.lines.iter().cloned());
-                lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
-                files.push(file_diff);
-            }
-            FileProcessResult::Binary { path } => {
-                let header = DiffLine::file_header(&path);
-                let marker = DiffLine::new(
-                    LineSource::Base,
-                    "[binary file]".to_string(),
-                    ' ',
-                    None,
-                );
-                lines.push(header.clone());
-                lines.push(marker.clone());
-                files.push(FileDiff {
-                    lines: vec![header, marker],
-                });
-            }
-            FileProcessResult::Image { path } => {
-                let header = DiffLine::file_header(&path);
-                let marker = DiffLine::image_marker(&path);
-                lines.push(header.clone());
-                lines.push(marker.clone());
-                files.push(FileDiff {
-                    lines: vec![header, marker],
-                });
-            }
-        }
-    }
+    let assembled = assemble_results(results);
+    let files = assembled.files;
+    let lines = assembled.lines;
 
     let current_branch = get_current_branch(repo_path).unwrap_or(None);
 
