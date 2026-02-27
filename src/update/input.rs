@@ -384,4 +384,42 @@ mod tests {
 
         assert!(result.needs_redraw);
     }
+
+    #[test]
+    fn test_handle_input_cycle_view_mode() {
+        use crate::app::ViewMode;
+
+        let mut app = TestAppBuilder::new()
+            .with_view_mode(ViewMode::Full)
+            .build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::CycleViewMode, &mut app, &mut refresh_state);
+        assert_ne!(app.view.view_mode, ViewMode::Full, "view mode should have cycled");
+        assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_input_toggle_help() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        assert!(!app.view.show_help);
+        handle_input(AppAction::ToggleHelp, &mut app, &mut refresh_state);
+        assert!(app.view.show_help);
+        handle_input(AppAction::ToggleHelp, &mut app, &mut refresh_state);
+        assert!(!app.view.show_help);
+    }
+
+    #[test]
+    fn test_handle_input_quit_with_help_open_closes_help() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        app.view.show_help = true;
+        assert!(app.view.show_help);
+        let result = handle_input(AppAction::Quit, &mut app, &mut refresh_state);
+        assert_ne!(result.loop_action, LoopAction::Quit, "should close help, not quit");
+        assert!(!app.view.show_help);
+    }
 }
