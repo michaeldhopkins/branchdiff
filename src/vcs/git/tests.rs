@@ -1,5 +1,5 @@
 use super::*;
-use super::commands::run_git_with_retry;
+use crate::vcs::shared::run_vcs_with_retry;
 use crate::vcs::VcsEventType;
 use std::fs;
 use std::path::Path;
@@ -497,13 +497,10 @@ fn test_is_transient_error_not_lock() {
 }
 
 #[test]
-fn test_run_git_with_retry_succeeds_on_first_attempt() {
-    // A simple git command that should succeed immediately
-    let output = run_git_with_retry(|| {
-        let mut cmd = Command::new("git");
-        cmd.args(["--version"]);
-        cmd
-    })
+fn test_run_vcs_with_retry_git_succeeds_on_first_attempt() {
+    let output = run_vcs_with_retry(
+        "git", Path::new("."), &["--version"], commands::is_transient_error,
+    )
     .unwrap();
 
     assert!(output.status.success());
@@ -512,16 +509,14 @@ fn test_run_git_with_retry_succeeds_on_first_attempt() {
 }
 
 #[test]
-fn test_run_git_with_retry_returns_failure_for_permanent_error() {
-    // A command that fails permanently (not transient) should return the error
-    let output = run_git_with_retry(|| {
-        let mut cmd = Command::new("git");
-        cmd.args(["rev-parse", "--verify", "nonexistent-branch-12345"]);
-        cmd
-    })
+fn test_run_vcs_with_retry_git_returns_failure_for_permanent_error() {
+    let output = run_vcs_with_retry(
+        "git", Path::new("."),
+        &["rev-parse", "--verify", "nonexistent-branch-12345"],
+        commands::is_transient_error,
+    )
     .unwrap();
 
-    // Should fail because branch doesn't exist
     assert!(!output.status.success());
 }
 

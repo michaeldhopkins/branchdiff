@@ -149,12 +149,11 @@ impl Vcs for GitVcs {
     }
 
     fn current_revision_id(&self) -> Result<String> {
-        let output = commands::run_git_with_retry(|| {
-            let mut cmd = std::process::Command::new("git");
-            cmd.args(["rev-parse", "--short", "HEAD"])
-                .current_dir(&self.repo_path);
-            cmd
-        })?;
+        let output = crate::vcs::shared::run_vcs_with_retry(
+            "git", &self.repo_path,
+            &["rev-parse", "--short", "HEAD"],
+            commands::is_transient_error,
+        )?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
