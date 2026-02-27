@@ -1,17 +1,12 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use super::shared::{assemble_results, process_files_parallel, FileProcessResult};
-
-const MAX_RETRIES: u32 = 2;
-const BASE_RETRY_DELAY_MS: u64 = 100;
+use super::shared::{assemble_results, process_files_parallel, run_vcs_with_retry, FileProcessResult};
 
 /// Detect transient jj errors worth retrying.
 /// "stale" matches "The working copy is stale" (exit code 1), which resolves
@@ -28,36 +23,6 @@ fn no_snapshot<'a>(args: &[&'a str]) -> Vec<&'a str> {
     full.push("--ignore-working-copy");
     full.extend_from_slice(args);
     full
-}
-
-/// Run a jj command with exponential backoff on transient errors.
-fn run_jj_with_retry(repo_path: &Path, args: &[&str]) -> Result<Output> {
-    for attempt in 0..=MAX_RETRIES {
-        let output = Command::new("jj")
-            .args(args)
-            .current_dir(repo_path)
-            .output()
-            .context("failed to run jj")?;
-
-        if output.status.success() {
-            return Ok(output);
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !is_transient_jj_error(&stderr) || attempt == MAX_RETRIES {
-            return Ok(output);
-        }
-
-        let delay = Duration::from_millis(BASE_RETRY_DELAY_MS * (1 << attempt));
-        thread::sleep(delay);
-    }
-
-    // Unreachable due to loop structure, but satisfies the compiler
-    Command::new("jj")
-        .args(args)
-        .current_dir(repo_path)
-        .output()
-        .context("failed to run jj")
 }
 
 use crate::diff::{compute_four_way_diff, DiffInput, FileDiff};
@@ -236,9 +201,10 @@ impl JjVcs {
     /// This is the first command per refresh and triggers the working copy
     /// auto-snapshot — all subsequent commands use `--ignore-working-copy`.
     fn get_changed_files(&self, effective_to: &str) -> Result<Vec<ChangedFile>> {
-        let output = run_jj_with_retry(
-            &self.repo_path,
+        let output = run_vcs_with_retry(
+            "jj", &self.repo_path,
             &["diff", "--from", &self.from_rev, "--to", effective_to, "--summary"],
+            is_transient_jj_error,
         )?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -254,7 +220,7 @@ impl JjVcs {
         let args = no_snapshot(&[
             "diff", "--from", &self.from_rev, "--to", effective_to, "--stat",
         ]);
-        let Ok(output) = run_jj_with_retry(&self.repo_path, &args) else {
+        let Ok(output) = run_vcs_with_retry("jj", &self.repo_path, &args, is_transient_jj_error) else {
             return HashSet::new();
         };
         if !output.status.success() {
@@ -419,9 +385,10 @@ impl crate::vcs::Vcs for JjVcs {
     fn comparison_context(&self) -> Result<ComparisonContext> {
         let template = r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
         // First call triggers auto-snapshot to capture current working copy
-        let from_output = run_jj_with_retry(
-            &self.repo_path,
+        let from_output = run_vcs_with_retry(
+            "jj", &self.repo_path,
             &["log", "-r", &self.from_rev, "-T", template, "--no-graph", "--limit", "1"],
+            is_transient_jj_error,
         )?;
         let from_label = if from_output.status.success() {
             parse_rev_metadata(&String::from_utf8_lossy(&from_output.stdout)).1
@@ -433,7 +400,7 @@ impl crate::vcs::Vcs for JjVcs {
         let to_args = no_snapshot(&[
             "log", "-r", "@", "-T", template, "--no-graph", "--limit", "1",
         ]);
-        let to_output = run_jj_with_retry(&self.repo_path, &to_args)?;
+        let to_output = run_vcs_with_retry("jj", &self.repo_path, &to_args, is_transient_jj_error)?;
         let to_label = if to_output.status.success() {
             parse_rev_metadata(&String::from_utf8_lossy(&to_output.stdout)).1
         } else {
@@ -1051,27 +1018,27 @@ mod tests {
         assert!(!is_transient_jj_error(""));
     }
 
-    // === run_jj_with_retry tests ===
+    // === run_vcs_with_retry tests (jj) ===
 
     #[test]
-    fn test_run_jj_with_retry_succeeds_on_first_attempt() {
+    fn test_run_vcs_with_retry_jj_succeeds_on_first_attempt() {
         if !jj_available() { return; }
 
         let temp = tempfile::TempDir::new().unwrap();
         Command::new("jj").args(["git", "init"]).current_dir(temp.path()).output().unwrap();
 
-        let output = run_jj_with_retry(temp.path(), &["log", "--limit", "1"]).unwrap();
+        let output = run_vcs_with_retry("jj", temp.path(), &["log", "--limit", "1"], is_transient_jj_error).unwrap();
         assert!(output.status.success());
     }
 
     #[test]
-    fn test_run_jj_with_retry_returns_failure_for_permanent_error() {
+    fn test_run_vcs_with_retry_jj_returns_failure_for_permanent_error() {
         if !jj_available() { return; }
 
         let temp = tempfile::TempDir::new().unwrap();
         Command::new("jj").args(["git", "init"]).current_dir(temp.path()).output().unwrap();
 
-        let output = run_jj_with_retry(temp.path(), &["log", "-r", "nonexistent_rev_xyz"]).unwrap();
+        let output = run_vcs_with_retry("jj", temp.path(), &["log", "-r", "nonexistent_rev_xyz"], is_transient_jj_error).unwrap();
         assert!(!output.status.success());
     }
 

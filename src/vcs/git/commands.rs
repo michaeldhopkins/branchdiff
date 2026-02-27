@@ -1,17 +1,10 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::thread;
-use std::time::Duration;
+use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 
-use std::collections::HashSet;
-
-/// Maximum number of retries for transient git errors
-const MAX_RETRIES: u32 = 3;
-
-/// Base delay for exponential backoff (doubles each retry)
-const BASE_RETRY_DELAY_MS: u64 = 100;
+use crate::vcs::shared::run_vcs_with_retry;
 
 /// Git version required for merge-tree --write-tree (conflict detection)
 const MERGE_TREE_MIN_VERSION: (u32, u32) = (2, 38);
@@ -71,36 +64,6 @@ pub(super) fn is_transient_error(stderr: &str) -> bool {
 /// When locked, branchdiff should defer refresh to avoid lock collisions.
 pub fn is_index_locked(repo_path: &Path) -> bool {
     repo_path.join(".git/index.lock").exists()
-}
-
-/// Run a git command with retry logic for transient errors.
-/// Uses exponential backoff: 100ms, 200ms, 400ms between retries.
-///
-/// Takes a closure that builds a fresh Command on each attempt, since Command
-/// is consumed by output().
-pub(super) fn run_git_with_retry<F>(build_command: F) -> std::io::Result<Output>
-where
-    F: Fn() -> Command,
-{
-    for attempt in 0..=MAX_RETRIES {
-        let output = build_command().output()?;
-
-        if output.status.success() {
-            return Ok(output);
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !is_transient_error(&stderr) || attempt == MAX_RETRIES {
-            return Ok(output);
-        }
-
-        // Exponential backoff before retry
-        let delay = Duration::from_millis(BASE_RETRY_DELAY_MS * (1 << attempt));
-        thread::sleep(delay);
-    }
-
-    // This is unreachable due to the loop structure, but satisfies the compiler
-    build_command().output()
 }
 
 /// Parse git version from "git version X.Y.Z" string
@@ -212,19 +175,12 @@ pub(super) fn get_file_at_ref(repo_path: &Path, file_path: &str, git_ref: &str) 
         format!("{}:{}", git_ref, file_path)
     };
 
-    let output = run_git_with_retry(|| {
-        let mut cmd = Command::new("git");
-        cmd.args(["show", &ref_path]).current_dir(repo_path);
-        cmd
-    })
-    .context("Failed to run git show")?;
+    let output = run_vcs_with_retry("git", repo_path, &["show", &ref_path], is_transient_error)?;
 
     if !output.status.success() {
-        // File doesn't exist at this ref
         return Ok(None);
     }
 
-    // Handle non-UTF8 content with lossy conversion
     Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
 }
 
@@ -256,15 +212,9 @@ pub fn get_file_bytes_at_ref(
         format!("{}:{}", git_ref, file_path)
     };
 
-    let output = run_git_with_retry(|| {
-        let mut cmd = Command::new("git");
-        cmd.args(["show", &ref_path]).current_dir(repo_path);
-        cmd
-    })
-    .context("Failed to run git show")?;
+    let output = run_vcs_with_retry("git", repo_path, &["show", &ref_path], is_transient_error)?;
 
     if !output.status.success() {
-        // File doesn't exist at this ref
         return Ok(None);
     }
 
