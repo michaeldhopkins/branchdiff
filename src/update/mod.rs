@@ -250,4 +250,43 @@ mod tests {
         assert!(!new_flag.load(Ordering::Relaxed), "new cancel flag should be fresh");
         assert!(!state.has_pending());
     }
+
+    #[test]
+    fn test_start_single_file_transitions_from_idle() {
+        let mut state = RefreshState::Idle;
+        state.start_single_file();
+        assert!(!state.is_idle());
+        assert!(state.started_at().is_some());
+        assert!(!state.has_pending());
+    }
+
+    #[test]
+    fn test_start_single_file_replaces_without_cancelling() {
+        let mut state = RefreshState::Idle;
+        let old_flag = state.start();
+        assert!(!old_flag.load(Ordering::Relaxed));
+
+        state.start_single_file();
+        assert!(!old_flag.load(Ordering::Relaxed), "start_single_file should not cancel previous");
+        assert!(!state.is_idle());
+    }
+
+    #[test]
+    fn test_cancel_and_mark_pending_from_idle_is_noop() {
+        let mut state = RefreshState::Idle;
+        state.cancel_and_mark_pending();
+        assert!(state.is_idle());
+    }
+
+    #[test]
+    fn test_cancel_and_mark_pending_from_in_progress_pending() {
+        let mut state = RefreshState::Idle;
+        let flag = state.start();
+        state.mark_pending();
+        assert!(state.has_pending());
+
+        state.cancel_and_mark_pending();
+        assert!(flag.load(Ordering::Relaxed), "cancel flag should be set");
+        assert!(state.has_pending(), "should remain InProgressPending");
+    }
 }
