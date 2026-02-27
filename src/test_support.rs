@@ -14,7 +14,7 @@ use crate::app::{App, ViewMode, ViewState};
 use crate::diff::{DiffLine, FileDiff, LineSource};
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
-use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsEventType, VcsWatchPaths};
+use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsBackend, VcsEventType, VcsWatchPaths};
 
 /// Builder for creating test App instances with sensible defaults.
 ///
@@ -34,7 +34,7 @@ pub struct TestAppBuilder {
     base_branch: String,
     current_branch: Option<String>,
     stack_position: Option<StackPosition>,
-    vcs_name: String,
+    vcs_backend: VcsBackend,
 }
 
 impl Default for TestAppBuilder {
@@ -54,7 +54,7 @@ impl TestAppBuilder {
             base_branch: "main".to_string(),
             current_branch: Some("feature".to_string()),
             stack_position: None,
-            vcs_name: "stub".to_string(),
+            vcs_backend: VcsBackend::Git,
         }
     }
 
@@ -99,8 +99,8 @@ impl TestAppBuilder {
         self
     }
 
-    pub fn with_vcs_name(mut self, name: &str) -> Self {
-        self.vcs_name = name.to_string();
+    pub fn with_vcs_backend(mut self, backend: VcsBackend) -> Self {
+        self.vcs_backend = backend;
         self
     }
 
@@ -114,7 +114,7 @@ impl TestAppBuilder {
                 from_label: self.base_branch,
                 to_label,
                 stack_position: self.stack_position,
-                vcs_name: self.vcs_name,
+                vcs_backend: self.vcs_backend,
             },
             base_identifier: "abc123".to_string(),
             files: self.files,
@@ -249,7 +249,7 @@ impl crate::vcs::Vcs for StubVcs {
         }
     }
 
-    fn vcs_name(&self) -> &str { "stub" }
+    fn backend(&self) -> VcsBackend { VcsBackend::Git }
 
     fn current_revision_id(&self) -> Result<String> { Ok("stub_revision".to_string()) }
 }
