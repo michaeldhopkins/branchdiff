@@ -2,6 +2,7 @@ use super::prelude::*;
 use crate::app::App;
 use crate::diff::LineSource;
 use crate::ui::colors::{highlight_bg_color, line_bg_color};
+use crate::vcs::VcsBackend;
 
 /// VCS-specific label and symbol set for the color legend.
 struct ColorLabels {
@@ -17,9 +18,9 @@ struct ColorLabels {
     del_unstaged: &'static str,
 }
 
-fn color_labels(vcs_name: &str) -> ColorLabels {
-    if vcs_name == "jj" {
-        ColorLabels {
+fn color_labels(backend: VcsBackend) -> ColorLabels {
+    match backend {
+        VcsBackend::Jj => ColorLabels {
             committed: "Added (earlier commits)",
             committed_sym: " ",
             staged: "Added (current commit)",
@@ -30,9 +31,8 @@ fn color_labels(vcs_name: &str) -> ColorLabels {
             del_staged: "Deleted (current commit)",
             del_staged_sym: "@",
             del_unstaged: "Deleted (later commits)",
-        }
-    } else {
-        ColorLabels {
+        },
+        VcsBackend::Git => ColorLabels {
             committed: "Added (committed)",
             committed_sym: "C",
             staged: "Added (staged)",
@@ -43,7 +43,7 @@ fn color_labels(vcs_name: &str) -> ColorLabels {
             del_staged: "Deleted (staged)",
             del_staged_sym: "S",
             del_unstaged: "Deleted (unstaged)",
-        }
+        },
     }
 }
 
@@ -58,7 +58,7 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
 
     frame.render_widget(Clear, modal_area);
 
-    let labels = color_labels(&app.comparison.vcs_name);
+    let labels = color_labels(app.comparison.vcs_backend);
 
     let help_lines = vec![
         Line::from(""),
@@ -202,8 +202,8 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 #[cfg(test)]
-fn build_color_labels(vcs_name: &str) -> Vec<String> {
-    let labels = color_labels(vcs_name);
+fn build_color_labels(backend: VcsBackend) -> Vec<String> {
+    let labels = color_labels(backend);
     vec![
         labels.committed.to_string(),
         labels.staged.to_string(),
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_help_labels_git_mode() {
-        let labels = build_color_labels("git");
+        let labels = build_color_labels(VcsBackend::Git);
         assert_eq!(labels[0], "Added (committed)");
         assert_eq!(labels[1], "Added (staged)");
         assert_eq!(labels[2], "Added (unstaged)");
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_help_labels_jj_mode() {
-        let labels = build_color_labels("jj");
+        let labels = build_color_labels(VcsBackend::Jj);
         assert_eq!(labels[0], "Added (earlier commits)");
         assert_eq!(labels[1], "Added (current commit)");
         assert_eq!(labels[2], "Added (later commits)");
@@ -288,15 +288,8 @@ mod tests {
     }
 
     #[test]
-    fn test_help_labels_unknown_vcs_defaults_to_git() {
-        let labels = build_color_labels("stub");
-        assert_eq!(labels[0], "Added (committed)");
-        assert_eq!(labels[2], "Added (unstaged)");
-    }
-
-    #[test]
     fn test_help_symbols_git_mode() {
-        let labels = color_labels("git");
+        let labels = color_labels(VcsBackend::Git);
         assert_eq!(labels.committed_sym, "C");
         assert_eq!(labels.staged_sym, "S");
         assert_eq!(labels.del_committed_sym, "C");
@@ -305,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_help_symbols_jj_mode() {
-        let labels = color_labels("jj");
+        let labels = color_labels(VcsBackend::Jj);
         assert_eq!(labels.committed_sym, " ");
         assert_eq!(labels.staged_sym, "@");
         assert_eq!(labels.del_committed_sym, " ");
