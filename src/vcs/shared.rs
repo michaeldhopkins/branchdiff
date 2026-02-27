@@ -1,0 +1,177 @@
+use rayon::prelude::*;
+
+use crate::diff::{DiffLine, FileDiff, LineSource};
+
+use super::{vcs_thread_pool, PARALLEL_THRESHOLD};
+
+/// Result of processing a single file in a VCS refresh.
+pub(crate) enum FileProcessResult {
+    Diff(FileDiff),
+    Binary { path: String },
+    Image { path: String },
+}
+
+/// Assembled output from converting `FileProcessResult`s into flat lines + grouped files.
+pub(crate) struct AssembledDiff {
+    pub files: Vec<FileDiff>,
+    pub lines: Vec<DiffLine>,
+}
+
+/// Convert per-file processing results into the flat line list and grouped file diffs
+/// needed by `RefreshResult`.
+pub(crate) fn assemble_results(results: Vec<FileProcessResult>) -> AssembledDiff {
+    let mut files = Vec::new();
+    let mut lines = Vec::new();
+
+    for result in results {
+        match result {
+            FileProcessResult::Diff(file_diff) => {
+                lines.extend(file_diff.lines.iter().cloned());
+                lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
+                files.push(file_diff);
+            }
+            FileProcessResult::Binary { path } => {
+                let header = DiffLine::file_header(&path);
+                let marker = DiffLine::new(
+                    LineSource::Base,
+                    "[binary file]".to_string(),
+                    ' ',
+                    None,
+                );
+                lines.push(header.clone());
+                lines.push(marker.clone());
+                files.push(FileDiff {
+                    lines: vec![header, marker],
+                });
+            }
+            FileProcessResult::Image { path } => {
+                let header = DiffLine::file_header(&path);
+                let marker = DiffLine::image_marker(&path);
+                lines.push(header.clone());
+                lines.push(marker.clone());
+                files.push(FileDiff {
+                    lines: vec![header, marker],
+                });
+            }
+        }
+    }
+
+    AssembledDiff { files, lines }
+}
+
+/// Process files using the thread pool when the count exceeds `PARALLEL_THRESHOLD`,
+/// falling back to serial iteration for small batches.
+pub(crate) fn process_files_parallel<T, F>(items: &[T], process: F) -> Vec<FileProcessResult>
+where
+    T: Sync,
+    F: Fn(&T) -> FileProcessResult + Sync,
+{
+    if items.len() >= PARALLEL_THRESHOLD {
+        vcs_thread_pool().install(|| items.par_iter().map(&process).collect())
+    } else {
+        items.iter().map(process).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::{DiffLine, FileDiff, LineSource};
+
+    fn diff_result(path: &str) -> FileProcessResult {
+        FileProcessResult::Diff(FileDiff {
+            lines: vec![
+                DiffLine::file_header(path),
+                DiffLine::new(
+                    LineSource::Base,
+                    "content".to_string(),
+                    ' ',
+                    None,
+                ),
+            ],
+        })
+    }
+
+    #[test]
+    fn test_assemble_diff_results() {
+        let results = vec![
+            diff_result("src/a.rs"),
+            FileProcessResult::Binary {
+                path: "data.bin".to_string(),
+            },
+            FileProcessResult::Image {
+                path: "logo.png".to_string(),
+            },
+        ];
+
+        let assembled = assemble_results(results);
+        assert_eq!(assembled.files.len(), 3);
+        // Diff file: header + content + trailing blank = 3 lines
+        // Binary: header + marker = 2 lines
+        // Image: header + marker = 2 lines
+        assert_eq!(assembled.lines.len(), 7);
+    }
+
+    #[test]
+    fn test_assemble_empty_results() {
+        let assembled = assemble_results(vec![]);
+        assert!(assembled.files.is_empty());
+        assert!(assembled.lines.is_empty());
+    }
+
+    #[test]
+    fn test_assemble_binary_creates_header_and_marker() {
+        let results = vec![FileProcessResult::Binary {
+            path: "data.bin".to_string(),
+        }];
+
+        let assembled = assemble_results(results);
+        assert_eq!(assembled.files.len(), 1);
+        assert_eq!(assembled.lines.len(), 2);
+
+        let file = &assembled.files[0];
+        assert_eq!(file.lines.len(), 2);
+        assert_eq!(
+            file.lines[0].file_path.as_deref(),
+            Some("data.bin"),
+        );
+        assert_eq!(file.lines[1].content, "[binary file]");
+    }
+
+    #[test]
+    fn test_assemble_image_creates_header_and_marker() {
+        let results = vec![FileProcessResult::Image {
+            path: "logo.png".to_string(),
+        }];
+
+        let assembled = assemble_results(results);
+        assert_eq!(assembled.files.len(), 1);
+        assert_eq!(assembled.lines.len(), 2);
+
+        let file = &assembled.files[0];
+        assert_eq!(file.lines.len(), 2);
+        assert_eq!(
+            file.lines[0].file_path.as_deref(),
+            Some("logo.png"),
+        );
+        assert_eq!(file.lines[1].content, "[image]");
+    }
+
+    #[test]
+    fn test_process_files_parallel_serial_path() {
+        let items = vec!["a.rs", "b.rs"];
+        let results = process_files_parallel(&items, |path| {
+            diff_result(path)
+        });
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_process_files_parallel_parallel_path() {
+        let items: Vec<String> = (0..5).map(|i| format!("file{i}.rs")).collect();
+        let results = process_files_parallel(&items, |path| {
+            diff_result(path)
+        });
+        assert_eq!(results.len(), 5);
+    }
+}
