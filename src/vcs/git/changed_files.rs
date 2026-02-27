@@ -4,7 +4,8 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 
-use super::commands::run_git_with_retry;
+use super::commands::is_transient_error;
+use crate::vcs::shared::run_vcs_with_retry;
 
 /// A file that has changes
 #[derive(Debug, Clone)]
@@ -144,13 +145,11 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
     // 2. Get staged changes (HEAD to index) and unstaged changes (index to working tree)
     // Use -uall to show individual files in untracked directories
     // Use retry logic to handle transient index.lock contention
-    let status_output = run_git_with_retry(|| {
-        let mut cmd = Command::new("git");
-        cmd.args(["status", "--porcelain=v1", "-uall"])
-            .current_dir(repo_path);
-        cmd
-    })
-    .context("Failed to run git status")?;
+    let status_output = run_vcs_with_retry(
+        "git", repo_path,
+        &["status", "--porcelain=v1", "-uall"],
+        is_transient_error,
+    )?;
 
     if status_output.status.success() {
         let status_str = String::from_utf8_lossy(&status_output.stdout);
@@ -251,13 +250,11 @@ pub(super) fn parse_diff_line(line: &str) -> Option<FileTransition> {
 
 /// Get file transitions between two refs with rename detection enabled
 pub(super) fn get_diff_transitions(repo_path: &Path, from: &str, to: &str) -> Result<Vec<FileTransition>> {
-    let output = run_git_with_retry(|| {
-        let mut cmd = Command::new("git");
-        cmd.args(["diff", "--name-status", "-M", from, to])
-            .current_dir(repo_path);
-        cmd
-    })
-    .context("Failed to run git diff --name-status -M")?;
+    let output = run_vcs_with_retry(
+        "git", repo_path,
+        &["diff", "--name-status", "-M", from, to],
+        is_transient_error,
+    )?;
 
     if !output.status.success() {
         return Err(anyhow!(

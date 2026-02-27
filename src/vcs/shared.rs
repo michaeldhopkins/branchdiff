@@ -1,8 +1,55 @@
+use std::path::Path;
+use std::process::{Command, Output};
+use std::thread;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 use crate::diff::{DiffLine, FileDiff, LineSource};
 
 use super::{vcs_thread_pool, PARALLEL_THRESHOLD};
+
+const MAX_RETRIES: u32 = 3;
+const BASE_RETRY_DELAY_MS: u64 = 100;
+
+/// Run a VCS command with exponential backoff on transient errors.
+///
+/// Retries up to `MAX_RETRIES` times with 100ms/200ms/400ms delays when
+/// `is_transient` returns true for the stderr output.
+pub(crate) fn run_vcs_with_retry(
+    program: &str,
+    repo_path: &Path,
+    args: &[&str],
+    is_transient: fn(&str) -> bool,
+) -> Result<Output> {
+    let context_msg = format!("failed to run {program}");
+    for attempt in 0..=MAX_RETRIES {
+        let output = Command::new(program)
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .context(context_msg.clone())?;
+
+        if output.status.success() {
+            return Ok(output);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !is_transient(&stderr) || attempt == MAX_RETRIES {
+            return Ok(output);
+        }
+
+        let delay = Duration::from_millis(BASE_RETRY_DELAY_MS * (1 << attempt));
+        thread::sleep(delay);
+    }
+
+    Command::new(program)
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .context(context_msg)
+}
 
 /// Result of processing a single file in a VCS refresh.
 pub(crate) enum FileProcessResult {
