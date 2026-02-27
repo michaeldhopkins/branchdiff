@@ -23,6 +23,7 @@ pub enum AppAction {
     CopyDiff,
     CopyPatch,
     CopyOrQuit,
+    OpenSearch,
     Resize,
     None,
 }
@@ -90,6 +91,10 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         // Copy git patch format with 'D'
         (KeyCode::Char('D'), KeyModifiers::SHIFT) => AppAction::CopyPatch,
         (KeyCode::Char('D'), KeyModifiers::NONE) => AppAction::CopyPatch,
+
+        // Search
+        (KeyCode::Char('/'), _) => AppAction::OpenSearch,
+        (KeyCode::Char('f'), KeyModifiers::CONTROL) => AppAction::OpenSearch,
 
         _ => AppAction::None,
     }
@@ -314,7 +319,18 @@ mod tests {
         assert_eq!(handle_event(event), AppAction::CopyPatch);
     }
 
-    // Unknown input test
+    #[test]
+    fn test_search_with_slash() {
+        let event = key_event(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert_eq!(handle_event(event), AppAction::OpenSearch);
+    }
+
+    #[test]
+    fn test_search_with_ctrl_f() {
+        let event = key_event(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        assert_eq!(handle_event(event), AppAction::OpenSearch);
+    }
+
     #[test]
     fn test_unknown_key_is_none() {
         let event = key_event(KeyCode::Char('x'), KeyModifiers::NONE);

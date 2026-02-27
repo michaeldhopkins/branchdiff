@@ -71,7 +71,8 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
         }
     }
 
-    let content_height = diff_area.height.saturating_sub(2) as usize;
+    let search_bar_rows = u16::from(app.search.is_some());
+    let content_height = diff_area.height.saturating_sub(2 + search_bar_rows) as usize;
     app.set_viewport_height(content_height);
 
     diff_view::draw_diff_view_with_frame(frame, app, diff_area, ctx);
