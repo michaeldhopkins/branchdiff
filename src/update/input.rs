@@ -154,6 +154,9 @@ pub(super) fn handle_input(
             }
         }
 
+        // Search
+        AppAction::OpenSearch => app.open_search(),
+
         // No-op actions
         AppAction::Resize | AppAction::None => {}
     }
@@ -421,5 +424,49 @@ mod tests {
         let result = handle_input(AppAction::Quit, &mut app, &mut refresh_state);
         assert_ne!(result.loop_action, LoopAction::Quit, "should close help, not quit");
         assert!(!app.view.show_help);
+    }
+
+    #[test]
+    fn test_handle_input_quit_with_search_open_closes_search() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        app.open_search();
+        assert!(app.search.is_some());
+        let result = handle_input(AppAction::Quit, &mut app, &mut refresh_state);
+        assert_ne!(result.loop_action, LoopAction::Quit);
+        assert!(app.search.is_none());
+    }
+
+    #[test]
+    fn test_handle_input_open_search() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        assert!(app.search.is_none());
+        handle_input(AppAction::OpenSearch, &mut app, &mut refresh_state);
+        assert!(app.search.is_some());
+        assert!(app.is_search_input_active());
+    }
+
+    #[test]
+    fn test_quit_cascade_search_then_help_then_quit() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        app.open_search();
+        app.view.show_help = true;
+
+        let r1 = handle_input(AppAction::Quit, &mut app, &mut refresh_state);
+        assert_ne!(r1.loop_action, LoopAction::Quit);
+        assert!(app.search.is_none(), "first Quit closes search");
+        assert!(app.view.show_help, "help still open");
+
+        let r2 = handle_input(AppAction::Quit, &mut app, &mut refresh_state);
+        assert_ne!(r2.loop_action, LoopAction::Quit);
+        assert!(!app.view.show_help, "second Quit closes help");
+
+        let r3 = handle_input(AppAction::Quit, &mut app, &mut refresh_state);
+        assert_eq!(r3.loop_action, LoopAction::Quit, "third Quit actually quits");
     }
 }

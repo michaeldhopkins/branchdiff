@@ -13,13 +13,14 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DisplayableItem, FrameContext, Selection};
+use crate::app::{App, DisplayableItem, FrameContext, SearchState, Selection};
+use crate::app::search::SearchMatch;
 use crate::diff::{DiffLine, LineSource};
 use crate::image_diff::{ImageCache, IMAGE_PANEL_OVERHEAD};
 use crate::syntax::reset_highlight_state;
 use crate::vcs::VcsBackend;
 
-use super::colors::{line_style, status_symbol};
+use super::colors::{line_style, status_symbol, SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
 use super::selection::{apply_selection_to_span, get_line_selection_range};
 use super::colors::line_style_with_highlight;
 use super::spans::{
@@ -50,6 +51,8 @@ pub struct DiffViewModel<'a> {
     pub font_size: (u16, u16),
     /// VCS backend for UI customization (e.g., gutter symbols).
     pub vcs_backend: VcsBackend,
+    /// Active search state (for highlighting matches).
+    pub search: &'a Option<SearchState>,
 }
 
 /// Position where an image should be rendered after text render
@@ -92,6 +95,7 @@ impl<'a> DiffViewModel<'a> {
             image_cache: &app.image_cache,
             font_size: app.font_size,
             vcs_backend: app.comparison.vcs_backend,
+            search: &app.search,
         }
     }
 
@@ -151,6 +155,7 @@ impl<'a> DiffViewModel<'a> {
                 DisplayableItem::Line(idx) => {
                     let rows_added = self.render_diff_line(
                         &self.lines[*idx],
+                        *idx,
                         line_num_width,
                         prefix_width,
                         content_width,
@@ -192,6 +197,18 @@ impl<'a> DiffViewModel<'a> {
         frame.render_widget(Clear, self.area);
         let paragraph = Paragraph::new(all_lines).block(block);
         frame.render_widget(paragraph, self.area);
+
+        if let Some(search) = self.search {
+            let inner = Rect::new(
+                self.area.x + 1,
+                self.area.y + self.area.height.saturating_sub(2),
+                self.area.width.saturating_sub(2),
+                1,
+            );
+            if inner.width > 2 {
+                render_search_bar(frame, search, inner);
+            }
+        }
 
         RenderOutput {
             row_map: all_row_infos,
@@ -253,6 +270,7 @@ impl<'a> DiffViewModel<'a> {
     fn render_diff_line(
         &self,
         diff_line: &DiffLine,
+        line_idx: usize,
         line_num_width: usize,
         prefix_width: usize,
         content_width: usize,
@@ -309,6 +327,7 @@ impl<'a> DiffViewModel<'a> {
         if !diff_line.inline_spans.is_empty() {
             return self.render_inline_spans(
                 diff_line,
+                line_idx,
                 &prefix_str,
                 style,
                 prefix_width,
@@ -322,6 +341,7 @@ impl<'a> DiffViewModel<'a> {
         // Plain content
         self.render_plain_content(
             diff_line,
+            line_idx,
             &prefix_str,
             style,
             prefix_width,
@@ -514,6 +534,7 @@ impl<'a> DiffViewModel<'a> {
     fn render_inline_spans(
         &self,
         diff_line: &DiffLine,
+        line_idx: usize,
         prefix_str: &str,
         style: Style,
         prefix_width: usize,
@@ -559,6 +580,7 @@ impl<'a> DiffViewModel<'a> {
                     screen_row_idx,
                     prefix_width,
                 );
+                let del_spans = apply_search_to_content(del_spans, self.search, line_idx);
 
                 let del_prefix_char = format!("- {} ", status_symbol(del_source, self.vcs_backend));
                 let (del_lines, del_row_infos) = wrap_content(
@@ -590,6 +612,7 @@ impl<'a> DiffViewModel<'a> {
                 screen_row_idx,
                 prefix_width,
             );
+            let ins_spans = apply_search_to_content(ins_spans, self.search, line_idx);
 
             let ins_prefix_char = format!("+ {} ", status_symbol(ins_source, self.vcs_backend));
             let (ins_lines, ins_row_infos) = wrap_content(
@@ -627,6 +650,7 @@ impl<'a> DiffViewModel<'a> {
                         screen_row_idx,
                         prefix_width,
                     );
+                    let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
 
                     let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_backend));
                     let (lines, row_infos) = wrap_content(
@@ -662,6 +686,7 @@ impl<'a> DiffViewModel<'a> {
 
         let content_spans =
             apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
+        let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
 
         let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_backend));
         let (lines, row_infos) = wrap_content(
@@ -683,6 +708,7 @@ impl<'a> DiffViewModel<'a> {
     fn render_plain_content(
         &self,
         diff_line: &DiffLine,
+        line_idx: usize,
         prefix_str: &str,
         style: Style,
         prefix_width: usize,
@@ -702,6 +728,7 @@ impl<'a> DiffViewModel<'a> {
 
         let content_spans =
             apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
+        let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
 
         let (lines, row_infos) = wrap_content(
             content_spans,
@@ -744,6 +771,127 @@ fn apply_selection_to_content(
     } else {
         content_spans
     }
+}
+
+/// Apply search match highlighting to content spans for a given line.
+///
+/// Byte offsets from search matches are converted to char offsets since spans
+/// use character indexing. Spans may already be fragmented by syntax highlighting
+/// or selection, so we reconstruct the full text for offset conversion.
+/// Overlay search match highlights on content spans.
+///
+/// SearchMatch stores char offsets (not byte offsets) so this works correctly
+/// with multi-byte UTF-8 content.
+fn apply_search_to_content(
+    content_spans: Vec<Span<'static>>,
+    search: &Option<SearchState>,
+    line_idx: usize,
+) -> Vec<Span<'static>> {
+    let Some(search) = search else {
+        return content_spans;
+    };
+    if search.matches.is_empty() {
+        return content_spans;
+    }
+
+    let line_matches: Vec<&SearchMatch> = search
+        .matches
+        .iter()
+        .filter(|m| m.line_idx == line_idx)
+        .collect();
+
+    if line_matches.is_empty() {
+        return content_spans;
+    }
+
+    let mut result = content_spans;
+
+    for m in line_matches.iter().rev() {
+        let char_start = m.char_start;
+        let char_end = m.char_start + m.char_len;
+
+        let is_current = search.matches.get(search.current)
+            .is_some_and(|cur| cur.line_idx == m.line_idx && cur.char_start == m.char_start);
+        let bg = if is_current { SEARCH_CURRENT_BG } else { SEARCH_MATCH_BG };
+
+        let mut new_result = Vec::new();
+        let mut char_offset = 0;
+
+        for span in result {
+            let span_char_len = span.content.chars().count();
+            let span_end = char_offset + span_char_len;
+
+            if span_end <= char_start || char_offset >= char_end {
+                new_result.push(span);
+            } else {
+                let base_style = span.style;
+                let text: Vec<char> = span.content.chars().collect();
+
+                let rel_start = char_start.saturating_sub(char_offset);
+                let rel_end = (char_end - char_offset).min(span_char_len);
+
+                if rel_start > 0 {
+                    let before: String = text[..rel_start].iter().collect();
+                    new_result.push(Span::styled(before, base_style));
+                }
+
+                let matched: String = text[rel_start..rel_end].iter().collect();
+                new_result.push(Span::styled(matched, base_style.bg(bg)));
+
+                if rel_end < span_char_len {
+                    let after: String = text[rel_end..].iter().collect();
+                    new_result.push(Span::styled(after, base_style));
+                }
+            }
+            char_offset = span_end;
+        }
+
+        result = new_result;
+    }
+
+    result
+}
+
+fn render_search_bar(frame: &mut Frame, search: &SearchState, area: Rect) {
+    let bar_bg = Color::Rgb(40, 42, 54);
+    let bar_style = Style::default().fg(Color::White).bg(bar_bg);
+
+    let counter = if search.matches.is_empty() && !search.query.is_empty() {
+        "[no matches]".to_string()
+    } else if !search.matches.is_empty() {
+        let total = search.match_count();
+        if search.visible_count < total {
+            format!("[{}/{}]", search.current_display(), search.visible_count)
+        } else {
+            format!("[{}/{}]", search.current_display(), total)
+        }
+    } else {
+        String::new()
+    };
+
+    let counter_width = counter.len();
+    let available_for_query = (area.width as usize).saturating_sub(counter_width + 2);
+
+    let query_char_count = search.query.chars().count();
+    let display_query: String = if query_char_count > available_for_query {
+        let skip = query_char_count - available_for_query + 1;
+        format!("…{}", search.query.chars().skip(skip).collect::<String>())
+    } else {
+        search.query.clone()
+    };
+
+    let cursor_char = if search.input_active { "█" } else { "" };
+    let left_text = format!("/{}{}", display_query, cursor_char);
+    let padding = (area.width as usize).saturating_sub(left_text.chars().count() + counter_width);
+
+    let line = Line::from(vec![
+        Span::styled(left_text, bar_style),
+        Span::styled(" ".repeat(padding), bar_style),
+        Span::styled(counter, Style::default().fg(Color::DarkGray).bg(bar_bg)),
+    ]);
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(vec![line]), area);
 }
 
 /// Draw the diff view using a pre-computed frame context.
@@ -1914,5 +2062,88 @@ mod tests {
             .build();
         let output = render_to_output(&app, 80, 24);
         assert_eq!(output.line_num_width, 0, "no line numbers = 0 width");
+    }
+
+    #[test]
+    fn search_highlight_no_search_returns_original() {
+        let spans = vec![Span::styled("hello world", Style::default())];
+        let result = apply_search_to_content(spans.clone(), &None, 0);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "hello world");
+    }
+
+    #[test]
+    fn search_highlight_no_matches_on_line() {
+        let search = SearchState {
+            matches: vec![SearchMatch { line_idx: 5, char_start: 0, char_len: 3 }],
+            current: 0,
+            ..Default::default()
+        };
+        let spans = vec![Span::styled("hello", Style::default())];
+        let result = apply_search_to_content(spans, &Some(search), 0);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "hello");
+    }
+
+    #[test]
+    fn search_highlight_single_match() {
+        let search = SearchState {
+            matches: vec![SearchMatch { line_idx: 0, char_start: 6, char_len: 5 }],
+            current: 0,
+            ..Default::default()
+        };
+        let spans = vec![Span::styled("hello world", Style::default())];
+        let result = apply_search_to_content(spans, &Some(search), 0);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content, "hello ");
+        assert_eq!(result[1].content, "world");
+        assert_eq!(result[1].style.bg, Some(SEARCH_CURRENT_BG));
+    }
+
+    #[test]
+    fn search_highlight_non_current_match_uses_match_bg() {
+        let search = SearchState {
+            matches: vec![
+                SearchMatch { line_idx: 0, char_start: 0, char_len: 5 },
+                SearchMatch { line_idx: 1, char_start: 0, char_len: 5 },
+            ],
+            current: 1, // Current is on line 1, not line 0
+            ..Default::default()
+        };
+        let spans = vec![Span::styled("hello world", Style::default())];
+        let result = apply_search_to_content(spans, &Some(search), 0);
+        assert_eq!(result[0].content, "hello");
+        assert_eq!(result[0].style.bg, Some(SEARCH_MATCH_BG));
+    }
+
+    #[test]
+    fn search_highlight_multiple_matches_same_line() {
+        let search = SearchState {
+            matches: vec![
+                SearchMatch { line_idx: 0, char_start: 0, char_len: 2 },
+                SearchMatch { line_idx: 0, char_start: 4, char_len: 2 },
+            ],
+            current: 0,
+            ..Default::default()
+        };
+        let spans = vec![Span::styled("ab cd ef", Style::default())];
+        let result = apply_search_to_content(spans, &Some(search), 0);
+        let highlighted: Vec<_> = result.iter().filter(|s| s.style.bg.is_some()).collect();
+        assert_eq!(highlighted.len(), 2);
+    }
+
+    #[test]
+    fn search_highlight_multibyte_unicode() {
+        let search = SearchState {
+            matches: vec![SearchMatch { line_idx: 0, char_start: 5, char_len: 6 }],
+            current: 0,
+            ..Default::default()
+        };
+        let spans = vec![Span::styled("café résumé", Style::default())];
+        let result = apply_search_to_content(spans, &Some(search), 0);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].content, "café ");
+        assert_eq!(result[1].content, "résumé");
+        assert_eq!(result[1].style.bg, Some(SEARCH_CURRENT_BG));
     }
 }

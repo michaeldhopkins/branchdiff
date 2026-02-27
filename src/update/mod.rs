@@ -7,6 +7,7 @@
 mod file_change;
 mod input;
 mod refresh;
+mod search;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -188,6 +189,7 @@ pub fn update(
 ) -> UpdateResult {
     match msg {
         Message::Input(action) => input::handle_input(action, app, refresh_state),
+        Message::SearchInput(event) => search::handle_search_input(event, app),
         Message::RefreshCompleted(outcome) => {
             let outcome = *outcome;
             refresh::handle_refresh(outcome, app, refresh_state, timers, config, vcs)

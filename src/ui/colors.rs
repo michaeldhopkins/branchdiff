@@ -151,6 +151,11 @@ pub fn status_symbol(source: LineSource, backend: VcsBackend) -> &'static str {
     }
 }
 
+/// Background for search matches (muted amber).
+pub const SEARCH_MATCH_BG: Color = Color::Rgb(100, 80, 20);
+/// Background for the currently-active search match (bright amber).
+pub const SEARCH_CURRENT_BG: Color = Color::Rgb(180, 140, 30);
+
 /// Foreground-only style for non-TUI output (print.rs)
 /// Uses the original color scheme without backgrounds
 pub fn print_line_style(source: LineSource) -> Style {

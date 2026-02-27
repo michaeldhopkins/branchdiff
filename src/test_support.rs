@@ -126,6 +126,7 @@ impl TestAppBuilder {
             image_cache: ImageCache::new(),
             image_picker: None,
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
+            search: None,
             view: ViewState {
                 scroll_offset: self.scroll_offset,
                 viewport_height: self.viewport_height,
