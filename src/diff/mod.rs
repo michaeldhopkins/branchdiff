@@ -71,6 +71,16 @@ impl LineSource {
     pub fn is_header(self) -> bool {
         matches!(self, Self::FileHeader)
     }
+
+    /// True for lines belonging to jj's current commit (@).
+    /// In jj, Staged = current commit additions, DeletedCommitted = current commit deletions,
+    /// CanceledStaged = added in current commit then removed in child.
+    pub fn is_current_commit(self) -> bool {
+        matches!(
+            self,
+            Self::Staged | Self::DeletedCommitted | Self::CanceledStaged
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +121,13 @@ impl DiffLine {
 
     pub fn is_change(&self) -> bool {
         self.source.is_change() || self.change_source.is_some_and(|cs| cs.is_change())
+    }
+
+    /// True if this line belongs to jj's current commit (@).
+    /// Catches both direct current-commit lines and Base lines with inline modifications from @.
+    pub fn is_current_commit(&self) -> bool {
+        self.source.is_current_commit()
+            || self.change_source.is_some_and(|cs| cs.is_current_commit())
     }
 
     pub fn ensure_inline_spans(&mut self) {
@@ -208,6 +225,52 @@ mod tests {
         assert!(!LineSource::Base.is_header());
         assert!(!LineSource::Committed.is_header());
         assert!(!LineSource::Elided.is_header());
+    }
+
+    #[test]
+    fn test_line_source_is_current_commit() {
+        assert!(LineSource::Staged.is_current_commit());
+        assert!(LineSource::DeletedCommitted.is_current_commit());
+        assert!(LineSource::CanceledStaged.is_current_commit());
+
+        assert!(!LineSource::Base.is_current_commit());
+        assert!(!LineSource::Committed.is_current_commit());
+        assert!(!LineSource::Unstaged.is_current_commit());
+        assert!(!LineSource::DeletedBase.is_current_commit());
+        assert!(!LineSource::DeletedStaged.is_current_commit());
+        assert!(!LineSource::CanceledCommitted.is_current_commit());
+        assert!(!LineSource::FileHeader.is_current_commit());
+        assert!(!LineSource::Elided.is_current_commit());
+    }
+
+    #[test]
+    fn test_diff_line_is_current_commit_via_source() {
+        let staged = DiffLine::new(LineSource::Staged, "added".to_string(), '+', None);
+        assert!(staged.is_current_commit());
+
+        let del = DiffLine::new(LineSource::DeletedCommitted, "removed".to_string(), '-', None);
+        assert!(del.is_current_commit());
+
+        let base = DiffLine::new(LineSource::Base, "context".to_string(), ' ', None);
+        assert!(!base.is_current_commit());
+
+        let committed = DiffLine::new(LineSource::Committed, "earlier".to_string(), '+', None);
+        assert!(!committed.is_current_commit());
+    }
+
+    #[test]
+    fn test_diff_line_is_current_commit_via_change_source() {
+        let mut base_with_staged_mod = DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
+        base_with_staged_mod.change_source = Some(LineSource::Staged);
+        assert!(base_with_staged_mod.is_current_commit());
+
+        let mut base_with_committed_mod = DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
+        base_with_committed_mod.change_source = Some(LineSource::Committed);
+        assert!(!base_with_committed_mod.is_current_commit());
+
+        let mut base_with_unstaged_mod = DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
+        base_with_unstaged_mod.change_source = Some(LineSource::Unstaged);
+        assert!(!base_with_unstaged_mod.is_current_commit());
     }
 
     fn compute_diff_with_inline(

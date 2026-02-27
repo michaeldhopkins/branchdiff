@@ -60,11 +60,12 @@ fn bench_frame_context(c: &mut Criterion) {
     ] {
         let diff = create_test_diff(files, lines_per_file, false);
 
-        for mode in [ViewMode::Full, ViewMode::Context, ViewMode::ChangesOnly] {
+        for mode in [ViewMode::Full, ViewMode::Context, ViewMode::ChangesOnly, ViewMode::CommitOnly] {
             let mode_label = match mode {
                 ViewMode::Full => "full",
                 ViewMode::Context => "context",
                 ViewMode::ChangesOnly => "changes",
+                ViewMode::CommitOnly => "commit_only",
             };
 
             let mut app = App::new_for_bench(diff.clone());
