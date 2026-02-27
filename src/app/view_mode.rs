@@ -24,24 +24,17 @@ impl App {
             .count()
     }
 
-    /// Compute which original line indices are visible in context mode
-    fn compute_context_visibility(&self) -> Vec<bool> {
+    /// Compute visibility using a predicate to determine "interesting" lines.
+    /// Lines within CONTEXT_LINES of interesting lines are shown; headers always show.
+    fn compute_visibility_with_predicate(&self, is_interesting: impl Fn(&DiffLine) -> bool) -> Vec<bool> {
         const CONTEXT_LINES: usize = 5;
 
-        // First pass: mark which lines are "interesting" (changes or headers)
         let interesting: Vec<bool> = self
             .lines
             .iter()
-            .map(|line| {
-                // Lines with modifications are always interesting
-                line.old_content.is_some()
-                    || !line.inline_spans.is_empty()
-                    || line.source.is_change()
-                    || line.source.is_header()
-            })
+            .map(|line| line.source.is_header() || is_interesting(line))
             .collect();
 
-        // Second pass: mark lines within CONTEXT_LINES of interesting lines
         let mut show = vec![false; self.lines.len()];
         for (i, &is_interesting) in interesting.iter().enumerate() {
             if is_interesting {
@@ -55,11 +48,23 @@ impl App {
         show
     }
 
-    /// Build filtered lines with elided markers for context-only mode
-    /// Returns (filtered_lines, mapping from filtered index to original index)
-    pub fn build_context_lines_with_mapping(&self) -> (Vec<DiffLine>, Vec<Option<usize>>) {
-        let show = self.compute_context_visibility();
+    /// Compute which original line indices are visible in context mode
+    fn compute_context_visibility(&self) -> Vec<bool> {
+        self.compute_visibility_with_predicate(|line| {
+            line.old_content.is_some()
+                || !line.inline_spans.is_empty()
+                || line.source.is_change()
+        })
+    }
 
+    /// Compute which original line indices are visible in commit-only mode (jj @)
+    fn compute_commit_only_visibility(&self) -> Vec<bool> {
+        self.compute_visibility_with_predicate(|line| line.is_current_commit())
+    }
+
+    /// Build filtered lines with elided markers for a visibility-based mode.
+    /// Returns (filtered_lines, mapping from filtered index to original index)
+    fn build_lines_with_mapping_from_visibility(&self, show: &[bool]) -> (Vec<DiffLine>, Vec<Option<usize>>) {
         // Build result with elided markers between gaps
         let mut result = Vec::new();
         let mut index_map = Vec::new(); // Maps filtered index -> original index (None for elided)
@@ -96,6 +101,18 @@ impl App {
         (result, index_map)
     }
 
+    /// Build filtered lines with elided markers for context mode
+    pub fn build_context_lines_with_mapping(&self) -> (Vec<DiffLine>, Vec<Option<usize>>) {
+        let show = self.compute_context_visibility();
+        self.build_lines_with_mapping_from_visibility(&show)
+    }
+
+    /// Build filtered lines with elided markers for commit-only mode
+    fn build_commit_only_lines_with_mapping(&self) -> (Vec<DiffLine>, Vec<Option<usize>>) {
+        let show = self.compute_commit_only_visibility();
+        self.build_lines_with_mapping_from_visibility(&show)
+    }
+
     pub(super) fn build_changes_only_lines(&self) -> Vec<DiffLine> {
         self.lines
             .iter()
@@ -110,6 +127,7 @@ impl App {
             ViewMode::Full => self.compute_full_items(),
             ViewMode::Context => self.compute_context_items(),
             ViewMode::ChangesOnly => self.compute_changes_only_items(),
+            ViewMode::CommitOnly => self.compute_commit_only_items(),
         };
         self.filter_collapsed_items(items)
     }
@@ -135,30 +153,28 @@ impl App {
             .collect()
     }
 
-    /// Context mode: show context around changes with Elided markers
-    fn compute_context_items(&self) -> Vec<super::DisplayableItem> {
+    /// Build displayable items from a visibility array, inserting Elided markers for gaps
+    fn build_items_from_visibility(&self, show: &[bool]) -> Vec<super::DisplayableItem> {
         use super::DisplayableItem;
-
-        let show = self.compute_context_visibility();
 
         let mut result = Vec::new();
         let mut last_shown: Option<usize> = None;
 
         for (i, &is_shown) in show.iter().enumerate() {
             if is_shown {
-                // Check if there's a gap since last shown line
                 if let Some(last) = last_shown {
                     let gap = i - last - 1;
                     if gap > 0 {
                         result.push(DisplayableItem::Elided(gap));
                     }
+                } else if i > 0 {
+                    result.push(DisplayableItem::Elided(i));
                 }
                 result.push(DisplayableItem::Line(i));
                 last_shown = Some(i);
             }
         }
 
-        // Handle trailing gap
         if let Some(last) = last_shown {
             let trailing_hidden: usize = (last + 1..self.lines.len())
                 .filter(|&i| !show[i])
@@ -169,6 +185,18 @@ impl App {
         }
 
         result
+    }
+
+    /// Context mode: show context around changes with Elided markers
+    fn compute_context_items(&self) -> Vec<super::DisplayableItem> {
+        let show = self.compute_context_visibility();
+        self.build_items_from_visibility(&show)
+    }
+
+    /// Commit-only mode (jj): show only current commit changes with context
+    fn compute_commit_only_items(&self) -> Vec<super::DisplayableItem> {
+        let show = self.compute_commit_only_visibility();
+        self.build_items_from_visibility(&show)
     }
 
     /// Filter out items belonging to collapsed files (keep headers)
@@ -227,11 +255,17 @@ impl App {
     }
 
     pub fn cycle_view_mode(&mut self) {
+        use crate::vcs::VcsBackend;
+
+        let is_jj = self.comparison.vcs_backend == VcsBackend::Jj;
+
         if self.lines.is_empty() {
             self.view.view_mode = match self.view.view_mode {
                 ViewMode::Full => ViewMode::Context,
                 ViewMode::Context => ViewMode::ChangesOnly,
+                ViewMode::ChangesOnly if is_jj => ViewMode::CommitOnly,
                 ViewMode::ChangesOnly => ViewMode::Full,
+                ViewMode::CommitOnly => ViewMode::Full,
             };
             self.view.needs_inline_spans = true;
             return;
@@ -243,7 +277,9 @@ impl App {
         self.view.view_mode = match self.view.view_mode {
             ViewMode::Full => ViewMode::Context,
             ViewMode::Context => ViewMode::ChangesOnly,
+            ViewMode::ChangesOnly if is_jj => ViewMode::CommitOnly,
             ViewMode::ChangesOnly => ViewMode::Full,
+            ViewMode::CommitOnly => ViewMode::Full,
         };
 
         if let Some(anchor_idx) = anchor_original_idx {
@@ -268,8 +304,12 @@ impl App {
                     None
                 }
             }
-            ViewMode::Context => {
-                let (_, index_map) = self.build_context_lines_with_mapping();
+            ViewMode::Context | ViewMode::CommitOnly => {
+                let (_, index_map) = if self.view.view_mode == ViewMode::Context {
+                    self.build_context_lines_with_mapping()
+                } else {
+                    self.build_commit_only_lines_with_mapping()
+                };
                 if target_pos < index_map.len() {
                     if let Some(idx) = index_map[target_pos] {
                         return Some(idx);
@@ -308,9 +348,17 @@ impl App {
     pub fn find_position_for_original_index(&self, original_idx: usize) -> usize {
         match self.view.view_mode {
             ViewMode::Full => original_idx.min(self.lines.len().saturating_sub(1)),
-            ViewMode::Context => {
-                let (_, index_map) = self.build_context_lines_with_mapping();
-                let visibility = self.compute_context_visibility();
+            ViewMode::Context | ViewMode::CommitOnly => {
+                let (_, index_map) = if self.view.view_mode == ViewMode::Context {
+                    self.build_context_lines_with_mapping()
+                } else {
+                    self.build_commit_only_lines_with_mapping()
+                };
+                let visibility = if self.view.view_mode == ViewMode::Context {
+                    self.compute_context_visibility()
+                } else {
+                    self.compute_commit_only_visibility()
+                };
 
                 if original_idx < visibility.len() && visibility[original_idx] {
                     for (pos, mapped_idx) in index_map.iter().enumerate() {
@@ -356,8 +404,10 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::app::{DisplayableItem, ViewMode};
     use crate::diff::{DiffLine, LineSource};
-    use crate::test_support::TestAppBuilder;
+    use crate::test_support::{base_line, TestAppBuilder};
+    use crate::vcs::VcsBackend;
 
     #[test]
     fn test_additions_count() {
@@ -394,5 +444,320 @@ mod tests {
         let app = TestAppBuilder::new().with_lines(lines).build();
         assert_eq!(app.additions_count(), 1);
         assert_eq!(app.deletions_count(), 1);
+    }
+
+    // === CommitOnly view mode tests ===
+
+    fn collect_visible_lines<'a>(app: &'a crate::app::App, items: &[DisplayableItem]) -> Vec<&'a DiffLine> {
+        items.iter().filter_map(|item| match item {
+            DisplayableItem::Line(idx) => Some(&app.lines[*idx]),
+            DisplayableItem::Elided(_) => None,
+        }).collect()
+    }
+
+    #[test]
+    fn test_cycle_jj_includes_commit_only() {
+        let lines = vec![base_line("ctx"), DiffLine::new(LineSource::Staged, "current".to_string(), '+', None)];
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::Full;
+
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::Context);
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::ChangesOnly);
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::Full);
+    }
+
+    #[test]
+    fn test_cycle_git_skips_commit_only() {
+        let lines = vec![base_line("ctx"), DiffLine::new(LineSource::Staged, "staged".to_string(), '+', None)];
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Git)
+            .build();
+        app.view.view_mode = ViewMode::Full;
+
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::Context);
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::ChangesOnly);
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::Full);
+    }
+
+    #[test]
+    fn test_cycle_jj_empty_lines_includes_commit_only() {
+        let mut app = TestAppBuilder::new()
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::ChangesOnly;
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::Full);
+    }
+
+    #[test]
+    fn test_commit_only_shows_staged_with_context() {
+        // 20 base lines, then a Staged line (current commit), then 20 base lines
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(base_line(&format!("before{}", i)));
+        }
+        lines.push(DiffLine::new(LineSource::Staged, "current_commit_add".to_string(), '+', Some(21)));
+        for i in 0..20 {
+            lines.push(base_line(&format!("after{}", i)));
+        }
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        assert!(visible.iter().any(|l| l.content == "current_commit_add"),
+            "Staged line should be visible in CommitOnly mode");
+
+        // Context lines within ±5 should be visible
+        assert!(visible.iter().any(|l| l.content == "before15"),
+            "Context before should be visible");
+        assert!(visible.iter().any(|l| l.content == "after4"),
+            "Context after should be visible");
+
+        // Lines far from the change should not be visible
+        assert!(!visible.iter().any(|l| l.content == "before0"),
+            "Far-away lines should be hidden");
+    }
+
+    #[test]
+    fn test_commit_only_hides_committed_only_lines() {
+        // Committed (earlier commits) line should NOT trigger visibility
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(base_line(&format!("before{}", i)));
+        }
+        lines.push(DiffLine::new(LineSource::Committed, "earlier_commit".to_string(), '+', Some(21)));
+        for i in 0..20 {
+            lines.push(base_line(&format!("after{}", i)));
+        }
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        // The Committed line should NOT be visible (it's not current commit)
+        assert!(!visible.iter().any(|l| l.content == "earlier_commit"),
+            "Committed (earlier commit) line should be hidden in CommitOnly mode");
+    }
+
+    #[test]
+    fn test_commit_only_shows_deleted_committed_with_context() {
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(base_line(&format!("before{}", i)));
+        }
+        lines.push(DiffLine::new(LineSource::DeletedCommitted, "deleted_in_current".to_string(), '-', None));
+        for i in 0..20 {
+            lines.push(base_line(&format!("after{}", i)));
+        }
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        assert!(visible.iter().any(|l| l.content == "deleted_in_current"),
+            "DeletedCommitted should be visible in CommitOnly mode");
+    }
+
+    #[test]
+    fn test_commit_only_shows_base_with_staged_change_source() {
+        // Base line with change_source=Staged (inline modification in current commit)
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(base_line(&format!("before{}", i)));
+        }
+        let mut modified = DiffLine::new(LineSource::Base, "modified_content".to_string(), ' ', Some(21));
+        modified.change_source = Some(LineSource::Staged);
+        modified.old_content = Some("old_content".to_string());
+        lines.push(modified);
+        for i in 0..20 {
+            lines.push(base_line(&format!("after{}", i)));
+        }
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        assert!(visible.iter().any(|l| l.content == "modified_content"),
+            "Base line with change_source=Staged should be visible in CommitOnly mode");
+    }
+
+    #[test]
+    fn test_commit_only_context_preserves_other_commit_lines() {
+        // A Committed line (earlier commit) within ±5 of a Staged line should be
+        // visible as context, with its original source preserved
+        let mut lines = Vec::new();
+        lines.push(base_line("before"));
+        lines.push(DiffLine::new(LineSource::Committed, "earlier_nearby".to_string(), '+', Some(2)));
+        lines.push(base_line("between"));
+        lines.push(DiffLine::new(LineSource::Staged, "current_commit".to_string(), '+', Some(4)));
+        lines.push(base_line("after"));
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        let earlier = visible.iter().find(|l| l.content == "earlier_nearby");
+        assert!(earlier.is_some(), "Nearby Committed line should be visible as context");
+        assert_eq!(earlier.unwrap().source, LineSource::Committed,
+            "Committed line should retain its original source");
+    }
+
+    #[test]
+    fn test_backend_switch_falls_back_from_commit_only() {
+        let mut app = TestAppBuilder::new()
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        // Simulate a refresh that switches backend to Git
+        let result = crate::app::RefreshResult {
+            files: vec![],
+            lines: vec![],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None,
+            revision_id: None,
+        };
+        app.comparison.vcs_backend = VcsBackend::Git;
+        app.apply_refresh_result(result);
+
+        assert_eq!(app.view.view_mode, ViewMode::Context,
+            "Should fall back from CommitOnly to Context when backend switches to Git");
+    }
+
+    #[test]
+    fn test_commit_only_shows_canceled_staged() {
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(base_line(&format!("before{}", i)));
+        }
+        lines.push(DiffLine::new(LineSource::CanceledStaged, "canceled_in_child".to_string(), '±', None));
+        for i in 0..20 {
+            lines.push(base_line(&format!("after{}", i)));
+        }
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        assert!(visible.iter().any(|l| l.content == "canceled_in_child"),
+            "CanceledStaged should be visible in CommitOnly mode");
+        assert!(visible.iter().any(|l| l.content == "before15"),
+            "Context before CanceledStaged should be visible");
+    }
+
+    #[test]
+    fn test_commit_only_no_current_commit_lines() {
+        // Empty @ change: only earlier-commit and base lines, no current-commit lines
+        let mut lines = Vec::new();
+        lines.push(DiffLine::file_header("test.rs"));
+        for i in 0..20 {
+            lines.push(base_line(&format!("base{}", i)));
+        }
+        lines.push(DiffLine::new(LineSource::Committed, "earlier".to_string(), '+', Some(21)));
+        for i in 0..10 {
+            lines.push(base_line(&format!("more{}", i)));
+        }
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        // No current-commit lines, so only file header + its context should show
+        assert!(visible.iter().any(|l| l.source == LineSource::FileHeader),
+            "File header should be visible even with no current-commit changes");
+        assert!(!visible.iter().any(|l| l.content == "earlier"),
+            "Committed line far from header should not be visible");
+    }
+
+    #[test]
+    fn test_commit_only_produces_elided_markers() {
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(base_line(&format!("before{}", i)));
+        }
+        lines.push(DiffLine::new(LineSource::Staged, "current_add".to_string(), '+', Some(21)));
+        for i in 0..20 {
+            lines.push(base_line(&format!("after{}", i)));
+        }
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let items = app.compute_displayable_items();
+
+        let elided_count = items.iter()
+            .filter(|item| matches!(item, DisplayableItem::Elided(_)))
+            .count();
+        assert!(elided_count >= 1,
+            "Should have at least one Elided marker for hidden lines, got {}", elided_count);
+
+        // Verify the elided marker has a reasonable count
+        let total_elided_lines: usize = items.iter()
+            .filter_map(|item| match item {
+                DisplayableItem::Elided(n) => Some(*n),
+                _ => None,
+            })
+            .sum();
+        // 41 total lines, ~11 visible (5 context before + staged + 5 context after),
+        // so ~30 lines should be elided
+        assert!(total_elided_lines > 20,
+            "Elided markers should account for hidden lines, got {}", total_elided_lines);
     }
 }
