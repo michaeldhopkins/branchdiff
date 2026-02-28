@@ -24,8 +24,13 @@ jobs:
       - name: cargo check
         run: cargo check --locked
 
+      - name: cargo build
+        run: cargo build --locked
+
       - name: cargo test
         run: cargo test --locked
+        env:
+          PATH: ${{ github.workspace }}/target/debug:${{ env.PATH }}
 
       - name: cargo clippy
         run: cargo clippy --locked -- -D warnings
