@@ -52,8 +52,13 @@ impl SearchState {
 
     /// Update `visible_count` and `visible_position` from a set of visible line indices.
     pub fn update_visibility(&mut self, visible_lines: &std::collections::HashSet<usize>) {
+        if self.matches.is_empty() {
+            self.visible_count = 0;
+            self.visible_position = 0;
+            return;
+        }
         self.visible_count = self.matches.iter().filter(|m| visible_lines.contains(&m.line_idx)).count();
-        self.visible_position = self.matches[..=self.current.min(self.matches.len().saturating_sub(1))]
+        self.visible_position = self.matches[..=self.current.min(self.matches.len() - 1)]
             .iter()
             .filter(|m| visible_lines.contains(&m.line_idx))
             .count()
@@ -218,5 +223,17 @@ mod tests {
         s.current = 2;
         s.update_visibility(&visible);
         assert_eq!(s.current_display(), 2);
+    }
+
+    #[test]
+    fn update_visibility_empty_matches_does_not_panic() {
+        use std::collections::HashSet;
+
+        let mut s = SearchState::new();
+        let visible: HashSet<usize> = [0, 1, 2].into();
+        s.update_visibility(&visible);
+        assert_eq!(s.visible_count, 0);
+        assert_eq!(s.visible_position, 0);
+        assert_eq!(s.current_display(), 0);
     }
 }
