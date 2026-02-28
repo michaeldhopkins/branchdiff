@@ -128,6 +128,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -155,10 +162,3 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.zip
             artifacts/SHA256SUMS.txt
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Publish to crates.io
-        run: cargo publish --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
