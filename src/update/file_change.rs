@@ -80,10 +80,14 @@ pub(super) fn handle_file_change(
         app.gitignore_filter.rebuild();
     }
 
+    let repo_root = vcs.repo_path();
     let filtered_paths: Vec<_> = unique_paths
         .into_iter()
-        .filter(|p| !is_noisy_path(&p.to_string_lossy()))
-        .filter(|p| is_vcs_path(p, vcs.repo_path()) || !app.gitignore_filter.is_ignored(p))
+        .filter(|p| {
+            let relative = p.strip_prefix(repo_root).unwrap_or(p);
+            !is_noisy_path(&relative.to_string_lossy())
+        })
+        .filter(|p| is_vcs_path(p, repo_root) || !app.gitignore_filter.is_ignored(p))
         .collect();
 
     let mut should_refresh = false;
