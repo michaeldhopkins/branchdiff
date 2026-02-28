@@ -384,7 +384,9 @@ pub fn syntax_highlight_inline_spans(
 
     for span in coalesced {
         if span.is_deletion {
-            // Skip deletions - they're shown on a separate line
+            let del_source = span.source.unwrap_or(LineSource::DeletedBase);
+            let del_style = line_style_with_highlight(del_source);
+            result.push(Span::styled(span.text.clone(), del_style));
             continue;
         }
 
@@ -540,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn test_syntax_highlight_inline_spans_skips_deletions() {
+    fn test_syntax_highlight_inline_spans_renders_deletions_inline() {
         reset_highlight_state();
         let inline_spans = vec![
             InlineSpan {
@@ -566,9 +568,40 @@ mod tests {
             highlight_style,
         );
 
-        // Should only contain "new", not "old"
         let all_text: String = spans.iter().map(|s| s.content.to_string()).collect();
-        assert_eq!(all_text, "new");
+        assert_eq!(all_text, "oldnew", "Should render both deleted and inserted text inline");
+
+        // Deletion span should use deletion highlight style
+        let del_style = line_style_with_highlight(LineSource::DeletedBase);
+        let has_deletion_styled = spans.iter().any(|s| s.style == del_style);
+        assert!(has_deletion_styled, "Deletion text should use deletion highlight style");
+    }
+
+    #[test]
+    fn test_inline_deletion_with_unchanged_context() {
+        reset_highlight_state();
+        // Simulates: "pub mod gh;" → "pub mod forges;"
+        let inline_result = compute_inline_diff_merged(
+            "pub mod gh;",
+            "pub mod forges;",
+            LineSource::Committed,
+        );
+        assert!(inline_result.is_meaningful);
+
+        let base_style = line_style(LineSource::Base);
+        let highlight_style = line_style_with_highlight(LineSource::Committed);
+
+        let spans = syntax_highlight_inline_spans(
+            &inline_result.spans,
+            "pub mod forges;",
+            Some("mod.rs"),
+            base_style,
+            highlight_style,
+        );
+
+        let all_text: String = spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(all_text.contains("gh"), "Should contain deleted text 'gh', got: {all_text}");
+        assert!(all_text.contains("forges"), "Should contain inserted text 'forges', got: {all_text}");
     }
 
     #[test]
