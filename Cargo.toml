@@ -1,6 +1,6 @@
 [package]
 name = "branchdiff"
-version = "0.54.4"
+version = "0.55.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Terminal UI showing unified diff of current branch vs its base"
@@ -49,6 +49,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 portable-pty = "0.8"
 vt100 = "0.15"
 insta = "1.40"
+
+# Asset generation (man pages, shell completions)
+clap_mangen = "0.2"
+clap_complete = "4"
 
 [[bench]]
 name = "performance"

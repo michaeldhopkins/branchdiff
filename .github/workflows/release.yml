@@ -59,6 +59,18 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --locked -- -D warnings
 
+      - name: Generate distribution assets
+        run: cargo run --locked --example generate_assets
+
+      - name: Upload distribution assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-assets
+          path: |
+            target/assets/branchdiff.1
+            target/assets/completions/
+          retention-days: 1
+
   build:
     name: Build ${{ matrix.target }}
     needs: ci
@@ -101,12 +113,22 @@ jobs:
           fi
         shell: bash
 
+      - name: Download distribution assets
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-assets
+          path: dist-assets
+
       - name: Package binary (unix)
         if: runner.os != 'Windows'
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.archive }} branchdiff
-          cd ../../..
+          mkdir -p staging/completions
+          cp target/${{ matrix.target }}/release/branchdiff staging/
+          cp dist-assets/target/assets/branchdiff.1 staging/
+          cp dist-assets/target/assets/completions/* staging/completions/
+          cp README.md LICENSE-MIT LICENSE-APACHE staging/
+          cd staging
+          tar czf ../${{ matrix.archive }} branchdiff branchdiff.1 completions/ README.md LICENSE-MIT LICENSE-APACHE
 
       - name: Package binary (windows)
         if: runner.os == 'Windows'
@@ -127,6 +149,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -146,6 +170,11 @@ jobs:
           git tag "v${{ needs.check-version.outputs.version }}"
           git push origin "v${{ needs.check-version.outputs.version }}"
 
+      - name: Generate release notes
+        run: |
+          cargo install git-cliff
+          git cliff --latest --strip all > RELEASE_NOTES.md
+
       - name: Generate checksums
         run: |
           cd artifacts
@@ -157,8 +186,19 @@ jobs:
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
           name: v${{ needs.check-version.outputs.version }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           files: |
             artifacts/*.tar.gz
             artifacts/*.zip
             artifacts/SHA256SUMS.txt
+
+      - name: Trigger Homebrew tap update
+        if: env.TAP_TOKEN != ''
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          repository: michaeldhopkins/homebrew-tap
+          event-type: update-formula
+          client-payload: '{"version": "${{ needs.check-version.outputs.version }}"}'

@@ -32,6 +32,13 @@ Terminal UI showing unified diff of current branch vs its base.
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
+```bash
+brew tap michaeldhopkins/tap
+brew install branchdiff
+```
+
 ### Shell installer (macOS/Linux)
 
 ```bash
@@ -147,4 +154,6 @@ cargo clippy -- -D warnings
 
 ## License
 
-All rights reserved. Copyright (c) 2025-2026 Michael Hopkins.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
+
+Copyright (c) 2025-2026 Michael Hopkins.
