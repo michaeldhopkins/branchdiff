@@ -1,6 +1,7 @@
 //! branchdiff library - exposes types for benchmarking and testing
 
 pub mod app;
+pub mod cli;
 pub mod diff;
 pub mod file_events;
 pub mod file_links;
