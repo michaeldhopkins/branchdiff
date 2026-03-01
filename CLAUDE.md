@@ -5,6 +5,7 @@ Before every commit, verify:
 2. [ ] `cargo test` passes
 3. [ ] Version bumped in `Cargo.toml` (patch for fixes, minor for features)
 4. [ ] `cargo install --path .` run after version bump
+5. [ ] `git cliff --output CHANGELOG.md` to regenerate changelog
 
 After building or making changes, always run `cargo install --path .` to install the binary.
 
