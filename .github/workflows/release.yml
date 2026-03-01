@@ -66,9 +66,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dist-assets
-          path: |
-            target/assets/branchdiff.1
-            target/assets/completions/
+          path: target/assets/
           retention-days: 1
 
   build:
@@ -124,8 +122,8 @@ jobs:
         run: |
           mkdir -p staging/completions
           cp target/${{ matrix.target }}/release/branchdiff staging/
-          cp dist-assets/target/assets/branchdiff.1 staging/
-          cp dist-assets/target/assets/completions/* staging/completions/
+          cp dist-assets/branchdiff.1 staging/
+          cp dist-assets/completions/* staging/completions/
           cp README.md LICENSE-MIT LICENSE-APACHE staging/
           cd staging
           tar czf ../${{ matrix.archive }} branchdiff branchdiff.1 completions/ README.md LICENSE-MIT LICENSE-APACHE
