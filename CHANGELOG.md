@@ -1,3 +1,16 @@
+## [unreleased]
+
+### Features
+
+- Add Homebrew tap, man pages, shell completions, and changelog
+
+### Bug Fixes
+
+- Correct artifact download paths in release workflow
+
+### Miscellaneous
+
+- Add formula and repo fields to tap dispatch payload
 ## [0.54.4] - 2026-02-28
 
 ### Bug Fixes
