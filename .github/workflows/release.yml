@@ -79,9 +79,11 @@ jobs:
           - target: x86_64-apple-darwin
             runner: macos-14
             archive: branchdiff-x86_64-apple-darwin.tar.gz
+            is_macos: true
           - target: aarch64-apple-darwin
             runner: macos-14
             archive: branchdiff-aarch64-apple-darwin.tar.gz
+            is_macos: true
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             archive: branchdiff-x86_64-unknown-linux-gnu.tar.gz
@@ -110,6 +112,57 @@ jobs:
             cargo build --release --locked --target ${{ matrix.target }}
           fi
         shell: bash
+
+      - name: Import Apple certificate
+        if: matrix.is_macos && env.APPLE_CERT != ''
+        env:
+          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+          echo "$APPLE_CERT" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+          rm "$RUNNER_TEMP/certificate.p12"
+
+      - name: Sign binary
+        if: matrix.is_macos && env.APPLE_CERT != ''
+        env:
+          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        run: |
+          BINARY="target/${{ matrix.target }}/release/branchdiff"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Signing with identity: $IDENTITY"
+          codesign --force --options=runtime --sign "$IDENTITY" --timestamp "$BINARY"
+          codesign -v --verify --deep --strict "$BINARY"
+
+      - name: Notarize binary
+        if: matrix.is_macos && env.APPLE_CERT != ''
+        env:
+          APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          BINARY="target/${{ matrix.target }}/release/branchdiff"
+          ditto -c -k --keepParent "$BINARY" "$RUNNER_TEMP/branchdiff.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/branchdiff.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          rm "$RUNNER_TEMP/branchdiff.zip"
 
       - name: Download distribution assets
         uses: actions/download-artifact@v4
@@ -140,6 +193,10 @@ jobs:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
           retention-days: 1
+
+      - name: Cleanup keychain
+        if: always() && matrix.is_macos && env.KEYCHAIN_PATH != ''
+        run: security delete-keychain "$KEYCHAIN_PATH"
 
   release:
     name: Create release and publish
