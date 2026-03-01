@@ -199,4 +199,4 @@ jobs:
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           repository: michaeldhopkins/homebrew-tap
           event-type: update-formula
-          client-payload: '{"version": "${{ needs.check-version.outputs.version }}"}'
+          client-payload: '{"formula": "branchdiff", "repo": "michaeldhopkins/branchdiff", "version": "${{ needs.check-version.outputs.version }}"}'
