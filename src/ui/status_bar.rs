@@ -6,7 +6,17 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::App;
+use crate::app::{App, ViewMode};
+
+/// View mode indicator for the status bar (e.g., " [context]", " [commit knmq]")
+fn view_mode_label(app: &App) -> String {
+    match app.view.view_mode {
+        ViewMode::Full => String::new(),
+        ViewMode::Context => " [context]".to_string(),
+        ViewMode::ChangesOnly => " [changes]".to_string(),
+        ViewMode::CommitOnly => format!(" [commit {}]", app.comparison.to_label),
+    }
+}
 
 /// Get the repo directory name for display
 fn repo_name(app: &App) -> String {
@@ -41,22 +51,13 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
 
     let branch_info = branch_info(app);
 
-    let file_count = app.files.len();
-    let additions = app.additions_count();
-    let deletions = app.deletions_count();
-    let mode = match app.view.view_mode {
-        crate::app::ViewMode::Full => "",
-        crate::app::ViewMode::Context => " [context]",
-        crate::app::ViewMode::ChangesOnly => " [changes]",
-        crate::app::ViewMode::CommitOnly => " [commit]",
-    };
-
+    let mode = view_mode_label(app);
     let stats = format!(
         "{} file{} | +{} -{}{} | {}%",
-        file_count,
-        if file_count == 1 { "" } else { "s" },
-        additions,
-        deletions,
+        app.files.len(),
+        if app.files.len() == 1 { "" } else { "s" },
+        app.additions_count(),
+        app.deletions_count(),
         mode,
         app.scroll_percentage()
     );
@@ -74,23 +75,16 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
 /// Build stats spans with colored +/- counts
 fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
     let file_count = app.files.len();
-    let additions = app.additions_count();
-    let deletions = app.deletions_count();
-    let mode = match app.view.view_mode {
-        crate::app::ViewMode::Full => "",
-        crate::app::ViewMode::Context => " [context]",
-        crate::app::ViewMode::ChangesOnly => " [changes]",
-        crate::app::ViewMode::CommitOnly => " [commit]",
-    };
+    let mode = view_mode_label(app);
 
     let mut spans = vec![
         Span::styled(
             format!("{} file{} | ", file_count, if file_count == 1 { "" } else { "s" }),
             Style::default().fg(Color::Cyan),
         ),
-        Span::styled(format!("+{}", additions), Style::default().fg(Color::LightGreen)),
+        Span::styled(format!("+{}", app.additions_count()), Style::default().fg(Color::LightGreen)),
         Span::styled(" ", Style::default().fg(Color::Cyan)),
-        Span::styled(format!("-{}", deletions), Style::default().fg(Color::Red)),
+        Span::styled(format!("-{}", app.deletions_count()), Style::default().fg(Color::Red)),
         Span::styled(
             format!("{} | {}%", mode, app.scroll_percentage()),
             Style::default().fg(Color::Cyan),
@@ -111,25 +105,17 @@ fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
 /// Build full status spans (branch info + stats) with colored +/- counts
 fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
     let branch_info = branch_info(app);
-
     let file_count = app.files.len();
-    let additions = app.additions_count();
-    let deletions = app.deletions_count();
-    let mode = match app.view.view_mode {
-        crate::app::ViewMode::Full => "",
-        crate::app::ViewMode::Context => " [context]",
-        crate::app::ViewMode::ChangesOnly => " [changes]",
-        crate::app::ViewMode::CommitOnly => " [commit]",
-    };
+    let mode = view_mode_label(app);
 
     let mut spans = vec![
         Span::styled(
             format!("{} | {} file{} | ", branch_info, file_count, if file_count == 1 { "" } else { "s" }),
             Style::default().fg(Color::Cyan),
         ),
-        Span::styled(format!("+{}", additions), Style::default().fg(Color::LightGreen)),
+        Span::styled(format!("+{}", app.additions_count()), Style::default().fg(Color::LightGreen)),
         Span::styled(" ", Style::default().fg(Color::Cyan)),
-        Span::styled(format!("-{}", deletions), Style::default().fg(Color::Red)),
+        Span::styled(format!("-{}", app.deletions_count()), Style::default().fg(Color::Red)),
         Span::styled(
             format!("{} | {}%", mode, app.scroll_percentage()),
             Style::default().fg(Color::Cyan),
@@ -169,22 +155,13 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let help_short = " ?:help ";
 
     // Get status components
-    let file_count = app.files.len();
-    let additions = app.additions_count();
-    let deletions = app.deletions_count();
-    let mode = match app.view.view_mode {
-        crate::app::ViewMode::Full => "",
-        crate::app::ViewMode::Context => " [context]",
-        crate::app::ViewMode::ChangesOnly => " [changes]",
-        crate::app::ViewMode::CommitOnly => " [commit]",
-    };
-
+    let mode = view_mode_label(app);
     let stats = format!(
         "{} file{} | +{} -{}{} | {}%",
-        file_count,
-        if file_count == 1 { "" } else { "s" },
-        additions,
-        deletions,
+        app.files.len(),
+        if app.files.len() == 1 { "" } else { "s" },
+        app.additions_count(),
+        app.deletions_count(),
         mode,
         app.scroll_percentage()
     );
@@ -403,6 +380,45 @@ mod tests {
         assert_eq!(truncate_with_ellipsis("hello日本語", 10), "hello日本語");
         assert_eq!(truncate_with_ellipsis("hello日本語", 8), "hello日本語");
         assert_eq!(truncate_with_ellipsis("hello日本語", 7), "hell...");
+    }
+
+    #[test]
+    fn test_view_mode_label_commit_only_includes_to_label() {
+        let mut app = TestAppBuilder::new()
+            .with_current_branch(Some("knmq"))
+            .build();
+        app.view.view_mode = crate::app::ViewMode::CommitOnly;
+
+        assert_eq!(view_mode_label(&app), " [commit knmq]");
+    }
+
+    #[test]
+    fn test_view_mode_label_full_mode_is_empty() {
+        let app = TestAppBuilder::new().build();
+        assert_eq!(view_mode_label(&app), "");
+    }
+
+    #[test]
+    fn test_view_mode_label_context_mode() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.view_mode = crate::app::ViewMode::Context;
+        assert_eq!(view_mode_label(&app), " [context]");
+    }
+
+    #[test]
+    fn test_view_mode_label_changes_only_mode() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.view_mode = crate::app::ViewMode::ChangesOnly;
+        assert_eq!(view_mode_label(&app), " [changes]");
+    }
+
+    #[test]
+    fn test_view_mode_label_commit_only_with_bookmarks() {
+        let mut app = TestAppBuilder::new()
+            .with_current_branch(Some("knmq (main)"))
+            .build();
+        app.view.view_mode = crate::app::ViewMode::CommitOnly;
+        assert_eq!(view_mode_label(&app), " [commit knmq (main)]");
     }
 
     fn create_status_bar_test_app(
