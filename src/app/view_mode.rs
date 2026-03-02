@@ -57,9 +57,40 @@ impl App {
         })
     }
 
-    /// Compute which original line indices are visible in commit-only mode (jj @)
+    /// Compute which original line indices are visible in commit-only mode (jj @).
+    /// After the base visibility pass, suppress entire file sections where @
+    /// made no changes — otherwise file headers (always "interesting") would
+    /// pull in context lines for files touched only by earlier stack commits.
     fn compute_commit_only_visibility(&self) -> Vec<bool> {
-        self.compute_visibility_with_predicate(|line| line.is_current_commit())
+        let mut show = self.compute_visibility_with_predicate(|line| line.is_current_commit());
+
+        let mut file_start: Option<usize> = None;
+        let mut has_commit_lines = false;
+
+        for (i, line) in self.lines.iter().enumerate() {
+            if line.source.is_header() {
+                if let Some(start) = file_start
+                    && !has_commit_lines
+                {
+                    for s in &mut show[start..i] {
+                        *s = false;
+                    }
+                }
+                file_start = Some(i);
+                has_commit_lines = false;
+            } else if line.is_current_commit() {
+                has_commit_lines = true;
+            }
+        }
+        if let Some(start) = file_start
+            && !has_commit_lines
+        {
+            for s in &mut show[start..] {
+                *s = false;
+            }
+        }
+
+        show
     }
 
     /// Build filtered lines with elided markers for a visibility-based mode.
@@ -196,7 +227,13 @@ impl App {
     /// Commit-only mode (jj): show only current commit changes with context
     fn compute_commit_only_items(&self) -> Vec<super::DisplayableItem> {
         let show = self.compute_commit_only_visibility();
-        self.build_items_from_visibility(&show)
+        let items = self.build_items_from_visibility(&show);
+        if items.is_empty() {
+            return vec![super::DisplayableItem::Message(
+                "No changes in current commit (@)",
+            )];
+        }
+        items
     }
 
     /// Filter out items belonging to collapsed files (keep headers)
@@ -247,6 +284,9 @@ impl App {
                     if should_show {
                         result.push(item);
                     }
+                }
+                DisplayableItem::Message(_) => {
+                    result.push(item);
                 }
             }
         }
@@ -451,7 +491,7 @@ mod tests {
     fn collect_visible_lines<'a>(app: &'a crate::app::App, items: &[DisplayableItem]) -> Vec<&'a DiffLine> {
         items.iter().filter_map(|item| match item {
             DisplayableItem::Line(idx) => Some(&app.lines[*idx]),
-            DisplayableItem::Elided(_) => None,
+            _ => None,
         }).collect()
     }
 
@@ -695,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn test_commit_only_no_current_commit_lines() {
+    fn test_commit_only_no_current_commit_lines_shows_message() {
         // Empty @ change: only earlier-commit and base lines, no current-commit lines
         let mut lines = Vec::new();
         lines.push(DiffLine::file_header("test.rs"));
@@ -714,13 +754,13 @@ mod tests {
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
-        let visible = collect_visible_lines(&app, &items);
 
-        // No current-commit lines, so only file header + its context should show
-        assert!(visible.iter().any(|l| l.source == LineSource::FileHeader),
-            "File header should be visible even with no current-commit changes");
-        assert!(!visible.iter().any(|l| l.content == "earlier"),
-            "Committed line far from header should not be visible");
+        assert_eq!(items.len(), 1, "Should have exactly one item (the message)");
+        assert_eq!(
+            items[0],
+            DisplayableItem::Message("No changes in current commit (@)"),
+            "Should show empty-state message when @ has no changes"
+        );
     }
 
     #[test]
@@ -759,5 +799,42 @@ mod tests {
         // so ~30 lines should be elided
         assert!(total_elided_lines > 20,
             "Elided markers should account for hidden lines, got {}", total_elided_lines);
+    }
+
+    #[test]
+    fn test_commit_only_hides_files_with_no_current_commit_changes() {
+        // Two files: file1 has Staged lines (current commit), file2 has only Committed lines
+        let mut lines = Vec::new();
+
+        // File 1: has current-commit changes
+        lines.push(DiffLine::file_header("current.rs"));
+        lines.push(base_line("unchanged"));
+        lines.push(DiffLine::new(LineSource::Staged, "new_in_current".to_string(), '+', Some(2)));
+        lines.push(base_line("more_unchanged"));
+
+        // File 2: only earlier-commit changes (no current-commit lines)
+        lines.push(DiffLine::file_header("earlier.rs"));
+        for i in 0..10 {
+            lines.push(base_line(&format!("base{}", i)));
+        }
+        lines.push(DiffLine::new(LineSource::Committed, "from_parent".to_string(), '+', Some(11)));
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        assert!(visible.iter().any(|l| l.content == "current.rs"),
+            "File with current-commit changes should be visible");
+        assert!(visible.iter().any(|l| l.content == "new_in_current"),
+            "Current-commit line should be visible");
+        assert!(!visible.iter().any(|l| l.content == "earlier.rs"),
+            "File with no current-commit changes should be hidden");
+        assert!(!visible.iter().any(|l| l.content == "from_parent"),
+            "Committed-only line should be hidden");
     }
 }
