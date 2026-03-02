@@ -605,6 +605,9 @@ impl App {
                     };
                     result.push_str(&format!("{}... {} lines hidden ...\n", padding, count));
                 }
+                DisplayableItem::Message(msg) => {
+                    result.push_str(&format!("{}\n", msg));
+                }
                 DisplayableItem::Line(idx) => {
                     let line = &self.lines[*idx];
 

@@ -152,6 +152,15 @@ impl<'a> DiffViewModel<'a> {
                     );
                     screen_row_idx += 1;
                 }
+                DisplayableItem::Message(msg) => {
+                    self.render_message(
+                        msg,
+                        line_num_width,
+                        &mut all_lines,
+                        &mut all_row_infos,
+                    );
+                    screen_row_idx += 1;
+                }
                 DisplayableItem::Line(idx) => {
                     let rows_added = self.render_diff_line(
                         &self.lines[*idx],
@@ -260,6 +269,39 @@ impl<'a> DiffViewModel<'a> {
         all_lines.push(Line::from(spans));
         all_row_infos.push(ScreenRowInfo {
             content: elided_text,
+            is_file_header: false,
+            file_path: None,
+            is_continuation: false,
+        });
+    }
+
+    /// Render an informational message (e.g., empty-state text).
+    fn render_message(
+        &self,
+        msg: &str,
+        line_num_width: usize,
+        all_lines: &mut Vec<Line<'static>>,
+        all_row_infos: &mut Vec<ScreenRowInfo>,
+    ) {
+        let prefix_str = if line_num_width > 0 {
+            " ".repeat(line_num_width + 1)
+        } else {
+            String::new()
+        };
+        let style = line_style(LineSource::Elided);
+
+        let mut spans = Vec::new();
+        if !prefix_str.is_empty() {
+            spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
+        }
+        spans.push(Span::styled(
+            format!("┈┈ ⋮ {} ⋮ ┈┈", msg),
+            style,
+        ));
+
+        all_lines.push(Line::from(spans));
+        all_row_infos.push(ScreenRowInfo {
+            content: msg.to_string(),
             is_file_header: false,
             file_path: None,
             is_continuation: false,

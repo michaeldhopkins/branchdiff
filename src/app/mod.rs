@@ -538,7 +538,7 @@ mod tests {
     fn item_to_line<'a>(app: &'a App, item: &DisplayableItem) -> Option<&'a DiffLine> {
         match item {
             DisplayableItem::Line(idx) => Some(&app.lines[*idx]),
-            DisplayableItem::Elided(_) => None,
+            _ => None,
         }
     }
 

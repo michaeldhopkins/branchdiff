@@ -19,6 +19,8 @@ pub enum DisplayableItem {
     Line(usize),
     /// Count of elided/hidden lines (Context mode only)
     Elided(usize),
+    /// Informational message (e.g., empty-state text)
+    Message(&'static str),
 }
 
 impl DisplayableItem {
@@ -26,7 +28,7 @@ impl DisplayableItem {
     pub fn as_line_index(&self) -> Option<usize> {
         match self {
             DisplayableItem::Line(idx) => Some(*idx),
-            DisplayableItem::Elided(_) => None,
+            _ => None,
         }
     }
 
@@ -39,7 +41,7 @@ impl DisplayableItem {
     pub fn elided_count(&self) -> Option<usize> {
         match self {
             DisplayableItem::Elided(count) => Some(*count),
-            DisplayableItem::Line(_) => None,
+            _ => None,
         }
     }
 }
@@ -100,19 +102,19 @@ impl FrameContext {
         &self.items
     }
 
-    /// Get line at display index (panics if Elided)
+    /// Get line at display index (panics if not a Line)
     pub fn line<'a>(&self, app: &'a App, display_idx: usize) -> &'a DiffLine {
         match self.items[display_idx] {
             DisplayableItem::Line(idx) => &app.lines[idx],
-            DisplayableItem::Elided(_) => panic!("Called line() on Elided item at index {}", display_idx),
+            _ => panic!("Called line() on non-Line item at index {}", display_idx),
         }
     }
 
-    /// Try to get line at display index (None if Elided)
+    /// Try to get line at display index (None if not a Line)
     pub fn try_line<'a>(&self, app: &'a App, display_idx: usize) -> Option<&'a DiffLine> {
         match self.items[display_idx] {
             DisplayableItem::Line(idx) => Some(&app.lines[idx]),
-            DisplayableItem::Elided(_) => None,
+            _ => None,
         }
     }
 
@@ -257,7 +259,7 @@ impl FrameContext {
                     let line = &app.lines[*idx];
                     self.wrapped_line_height(line, app)
                 }
-                DisplayableItem::Elided(_) => 1, // Elided markers are always 1 row
+                DisplayableItem::Elided(_) | DisplayableItem::Message(_) => 1,
             }
         }).collect()
     }
