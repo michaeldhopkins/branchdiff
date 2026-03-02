@@ -2,18 +2,28 @@
 
 ### Features
 
-- Add Homebrew tap, man pages, shell completions, and changelog
+- Show commit short hash in CommitOnly view mode label
+## [0.55.2] - 2026-03-02
 
 ### Bug Fixes
 
-- Correct artifact download paths in release workflow
 - Remove --keepParent from ditto to fix notarization ticket registration
 - Remove --keepParent from ditto to fix notarization ticket registration
+## [0.55.1] - 2026-03-02
 
 ### Miscellaneous
 
 - Add formula and repo fields to tap dispatch payload
 - Add Apple code signing and notarization for macOS binaries
+## [0.55.0] - 2026-03-01
+
+### Features
+
+- Add Homebrew tap, man pages, shell completions, and changelog
+
+### Bug Fixes
+
+- Correct artifact download paths in release workflow
 ## [0.54.4] - 2026-02-28
 
 ### Bug Fixes
