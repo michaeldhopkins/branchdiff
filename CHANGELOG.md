@@ -3,6 +3,10 @@
 ### Features
 
 - Show commit short hash in CommitOnly view mode label
+
+### Bug Fixes
+
+- Hide files with no current-commit changes in CommitOnly view
 ## [0.55.2] - 2026-03-02
 
 ### Bug Fixes
