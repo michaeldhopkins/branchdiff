@@ -7,10 +7,13 @@
 ### Bug Fixes
 
 - Correct artifact download paths in release workflow
+- Remove --keepParent from ditto to fix notarization ticket registration
+- Remove --keepParent from ditto to fix notarization ticket registration
 
 ### Miscellaneous
 
 - Add formula and repo fields to tap dispatch payload
+- Add Apple code signing and notarization for macOS binaries
 ## [0.54.4] - 2026-02-28
 
 ### Bug Fixes
