@@ -143,7 +143,7 @@ impl App {
             .iter()
             .map(|item| match item {
                 DisplayableItem::Line(idx) => self.wrapped_line_height(&self.lines[*idx]),
-                DisplayableItem::Elided(_) => 1,
+                DisplayableItem::Elided(_) | DisplayableItem::Message(_) => 1,
             })
             .sum();
 
@@ -158,7 +158,7 @@ impl App {
         for item in items.iter().rev() {
             let height = match item {
                 DisplayableItem::Line(idx) => self.wrapped_line_height(&self.lines[*idx]),
-                DisplayableItem::Elided(_) => 1,
+                DisplayableItem::Elided(_) | DisplayableItem::Message(_) => 1,
             };
             if rows_from_end + height > self.view.viewport_height {
                 break;
