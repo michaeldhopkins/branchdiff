@@ -156,7 +156,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           BINARY="target/${{ matrix.target }}/release/branchdiff"
-          ditto -c -k --keepParent "$BINARY" "$RUNNER_TEMP/branchdiff.zip"
+          /usr/bin/ditto -c -k "$BINARY" "$RUNNER_TEMP/branchdiff.zip"
           xcrun notarytool submit "$RUNNER_TEMP/branchdiff.zip" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
