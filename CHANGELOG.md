@@ -7,6 +7,7 @@
 ### Bug Fixes
 
 - Hide files with no current-commit changes in CommitOnly view
+- Rename [changes] view mode label to [changed lines only]
 ## [0.55.2] - 2026-03-02
 
 ### Bug Fixes

@@ -11,7 +11,7 @@ use crate::app::{App, ViewMode};
 /// View mode indicator for the status bar (e.g., " [context]", " [commit knmq]")
 fn view_mode_label(app: &App) -> String {
     match app.view.view_mode {
-        ViewMode::Full => String::new(),
+        ViewMode::Full => " [all lines]".to_string(),
         ViewMode::Context => " [context]".to_string(),
         ViewMode::ChangesOnly => " [changed lines only]".to_string(),
         ViewMode::CommitOnly => format!(" [commit {}]", app.comparison.to_label),
@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn test_view_mode_label_full_mode_is_empty() {
         let app = TestAppBuilder::new().build();
-        assert_eq!(view_mode_label(&app), "");
+        assert_eq!(view_mode_label(&app), " [all lines]");
     }
 
     #[test]
@@ -482,7 +482,7 @@ mod tests {
             if app.files.len() == 1 { "" } else { "s" },
             app.additions_count(),
             app.deletions_count(),
-            "",
+            " [all lines]",
             app.scroll_percentage()
         );
         let full_status = format!("{} | {}", branch_info, stats);
