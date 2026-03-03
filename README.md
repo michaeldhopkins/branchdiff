@@ -1,14 +1,10 @@
 # branchdiff
 
 Terminal UI showing unified diff of current branch vs its base.
-<img width="693" height="1180" alt="Screenshot 2026-02-25 at 22 10 59" src="https://github.com/user-attachments/assets/00345f3f-1405-48c2-826d-42f96ebe78b3" />
 
-<img width="692" height="1177" alt="Screenshot 2026-02-25 at 20 56 05" src="https://github.com/user-attachments/assets/bb796025-8036-49e8-8c3c-d6dd0b136858" />
-
-
-<img width="987" height="1172" alt="Screenshot 2026-01-26 at 22 30 08" src="https://github.com/user-attachments/assets/d5301f02-bb6e-4ba2-b15d-c5e1af7e165f" />
-
-<img width="742" height="1144" alt="Screenshot 2026-01-21 at 22 39 43" src="https://github.com/user-attachments/assets/afc453b4-5b43-458e-91ae-7f739ff97f8e" />
+<img width="651" height="1180" alt="Screenshot 2026-03-02 at 21 00 12" src="https://github.com/user-attachments/assets/a30290ff-116b-44d3-826d-11024a6265f8" />
+<img width="654" height="1178" alt="Screenshot 2026-03-02 at 21 10 11" src="https://github.com/user-attachments/assets/d9d0fa61-16a2-4283-8f6c-ca50fb23effc" />
+<img width="651" height="1177" alt="Screenshot 2026-03-02 at 21 12 38" src="https://github.com/user-attachments/assets/b5a52f92-8a3c-4dc5-af49-dbd5c157d84e" />
 
 ![branchdiff screenshot](assets/screenshot.png)
 
