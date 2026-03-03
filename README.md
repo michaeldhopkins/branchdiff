@@ -6,8 +6,6 @@ Terminal UI showing unified diff of current branch vs its base.
 <img width="654" height="1178" alt="Screenshot 2026-03-02 at 21 10 11" src="https://github.com/user-attachments/assets/d9d0fa61-16a2-4283-8f6c-ca50fb23effc" />
 <img width="651" height="1177" alt="Screenshot 2026-03-02 at 21 12 38" src="https://github.com/user-attachments/assets/b5a52f92-8a3c-4dc5-af49-dbd5c157d84e" />
 
-![branchdiff screenshot](assets/screenshot.png)
-
 ## Features
 
 - **Git and Jujutsu (jj)** support with automatic backend detection
