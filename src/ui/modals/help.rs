@@ -97,7 +97,7 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("    c           ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Cycle view mode (full/ctx/chg/commit)"),
+            Span::raw("  Cycle view (full/ctx/chg/cmt)"),
         ]),
         Line::from(vec![
             Span::styled("    Ctrl+c / y  ", Style::default().fg(Color::Cyan)),
@@ -141,36 +141,36 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled("     Base (unchanged context)          ", Style::default()),
+            Span::raw("   "),
+            Span::styled("     Base (unchanged context)        ", Style::default()),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" + {} {:<34}", labels.committed_sym, labels.committed), Style::default().bg(line_bg_color(LineSource::Committed))),
+            Span::raw("   "),
+            Span::styled(format!(" + {} {:<32}", labels.committed_sym, labels.committed), Style::default().bg(line_bg_color(LineSource::Committed))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" + {} {:<34}", labels.staged_sym, labels.staged), Style::default().bg(line_bg_color(LineSource::Staged))),
+            Span::raw("   "),
+            Span::styled(format!(" + {} {:<32}", labels.staged_sym, labels.staged), Style::default().bg(line_bg_color(LineSource::Staged))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" +   {:<34}", labels.unstaged), Style::default().bg(line_bg_color(LineSource::Unstaged))),
+            Span::raw("   "),
+            Span::styled(format!(" +   {:<32}", labels.unstaged), Style::default().bg(line_bg_color(LineSource::Unstaged))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" - {} {:<34}", labels.del_committed_sym, labels.del_committed), Style::default().bg(line_bg_color(LineSource::DeletedBase))),
+            Span::raw("   "),
+            Span::styled(format!(" - {} {:<32}", labels.del_committed_sym, labels.del_committed), Style::default().bg(line_bg_color(LineSource::DeletedBase))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" - {} {:<34}", labels.del_staged_sym, labels.del_staged), Style::default().bg(line_bg_color(LineSource::DeletedCommitted))),
+            Span::raw("   "),
+            Span::styled(format!(" - {} {:<32}", labels.del_staged_sym, labels.del_staged), Style::default().bg(line_bg_color(LineSource::DeletedCommitted))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" -   {:<34}", labels.del_unstaged), Style::default().bg(line_bg_color(LineSource::DeletedStaged))),
+            Span::raw("   "),
+            Span::styled(format!(" -   {:<32}", labels.del_unstaged), Style::default().bg(line_bg_color(LineSource::DeletedStaged))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(" ±   Canceled (added then removed)     ", Style::default().bg(line_bg_color(LineSource::CanceledCommitted))),
+            Span::raw("   "),
+            Span::styled(" ±   Canceled (added then removed)   ", Style::default().bg(line_bg_color(LineSource::CanceledCommitted))),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -178,28 +178,28 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" + {} {:<34}", labels.committed_sym, format!("{} highlight", labels.committed)), Style::default().bg(highlight_bg_color(LineSource::Committed))),
+            Span::raw("   "),
+            Span::styled(format!(" + {} {:<32}", labels.committed_sym, format!("{} highlight", labels.committed)), Style::default().bg(highlight_bg_color(LineSource::Committed))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" + {} {:<34}", labels.staged_sym, format!("{} highlight", labels.staged)), Style::default().bg(highlight_bg_color(LineSource::Staged))),
+            Span::raw("   "),
+            Span::styled(format!(" + {} {:<32}", labels.staged_sym, format!("{} highlight", labels.staged)), Style::default().bg(highlight_bg_color(LineSource::Staged))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" +   {:<34}", format!("{} highlight", labels.unstaged)), Style::default().bg(highlight_bg_color(LineSource::Unstaged))),
+            Span::raw("   "),
+            Span::styled(format!(" +   {:<32}", format!("{} highlight", labels.unstaged)), Style::default().bg(highlight_bg_color(LineSource::Unstaged))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" - {} {:<34}", labels.del_committed_sym, format!("{} highlight", labels.del_committed)), Style::default().bg(highlight_bg_color(LineSource::DeletedBase))),
+            Span::raw("   "),
+            Span::styled(format!(" - {} {:<32}", labels.del_committed_sym, format!("{} highlight", labels.del_committed)), Style::default().bg(highlight_bg_color(LineSource::DeletedBase))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" - {} {:<34}", labels.del_staged_sym, format!("{} highlight", labels.del_staged)), Style::default().bg(highlight_bg_color(LineSource::DeletedCommitted))),
+            Span::raw("   "),
+            Span::styled(format!(" - {} {:<32}", labels.del_staged_sym, format!("{} highlight", labels.del_staged)), Style::default().bg(highlight_bg_color(LineSource::DeletedCommitted))),
         ]),
         Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!(" -   {:<34}", format!("{} highlight", labels.del_unstaged)), Style::default().bg(highlight_bg_color(LineSource::DeletedStaged))),
+            Span::raw("   "),
+            Span::styled(format!(" -   {:<32}", format!("{} highlight", labels.del_unstaged)), Style::default().bg(highlight_bg_color(LineSource::DeletedStaged))),
         ]),
     ];
 
