@@ -265,6 +265,7 @@ pub(super) fn git_compute_refresh(
         metrics,
         file_links,
         stack_position: None,
+        bookmark_name: None,
         revision_id: None,
     })
 }
