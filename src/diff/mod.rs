@@ -93,6 +93,9 @@ pub struct DiffLine {
     pub inline_spans: Vec<InlineSpan>,
     pub old_content: Option<String>,
     pub change_source: Option<LineSource>,
+    /// Whether this line belongs to the current jj bookmark's scope.
+    /// `None` when bookmark boundary info is unavailable.
+    pub in_current_bookmark: Option<bool>,
 }
 
 impl DiffLine {
@@ -106,6 +109,7 @@ impl DiffLine {
             inline_spans: Vec::new(),
             old_content: None,
             change_source: None,
+            in_current_bookmark: None,
         }
     }
 
@@ -128,6 +132,11 @@ impl DiffLine {
     pub fn is_current_commit(&self) -> bool {
         self.source.is_current_commit()
             || self.change_source.is_some_and(|cs| cs.is_current_commit())
+    }
+
+    /// True if this line belongs to the current jj bookmark's scope.
+    pub fn is_current_bookmark(&self) -> bool {
+        self.in_current_bookmark == Some(true)
     }
 
     pub fn ensure_inline_spans(&mut self) {
@@ -271,6 +280,18 @@ mod tests {
         let mut base_with_unstaged_mod = DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
         base_with_unstaged_mod.change_source = Some(LineSource::Unstaged);
         assert!(!base_with_unstaged_mod.is_current_commit());
+    }
+
+    #[test]
+    fn test_is_current_bookmark() {
+        let mut line = DiffLine::new(LineSource::Committed, "test".to_string(), '+', None);
+        assert!(!line.is_current_bookmark(), "None should be false");
+
+        line.in_current_bookmark = Some(true);
+        assert!(line.is_current_bookmark(), "Some(true) should be true");
+
+        line.in_current_bookmark = Some(false);
+        assert!(!line.is_current_bookmark(), "Some(false) should be false");
     }
 
     fn compute_diff_with_inline(

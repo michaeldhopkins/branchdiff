@@ -59,6 +59,7 @@ impl Vcs for GitVcs {
             to_label,
             stack_position: None,
             vcs_backend: VcsBackend::Git,
+            bookmark_name: None,
         })
     }
 

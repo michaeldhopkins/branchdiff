@@ -15,6 +15,10 @@ fn view_mode_label(app: &App) -> String {
         ViewMode::Context => " [context]".to_string(),
         ViewMode::ChangesOnly => " [changed lines only]".to_string(),
         ViewMode::CommitOnly => format!(" [commit {}]", app.comparison.to_label),
+        ViewMode::BookmarkOnly => match &app.comparison.bookmark_name {
+            Some(name) => format!(" [bookmark {}]", name),
+            None => " [bookmark]".to_string(),
+        },
     }
 }
 
@@ -419,6 +423,22 @@ mod tests {
             .build();
         app.view.view_mode = crate::app::ViewMode::CommitOnly;
         assert_eq!(view_mode_label(&app), " [commit knmq (main)]");
+    }
+
+    #[test]
+    fn test_view_mode_label_bookmark_only_with_name() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.view_mode = crate::app::ViewMode::BookmarkOnly;
+        app.comparison.bookmark_name = Some("feat/abc".to_string());
+        assert_eq!(view_mode_label(&app), " [bookmark feat/abc]");
+    }
+
+    #[test]
+    fn test_view_mode_label_bookmark_only_without_name() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.view_mode = crate::app::ViewMode::BookmarkOnly;
+        app.comparison.bookmark_name = None;
+        assert_eq!(view_mode_label(&app), " [bookmark]");
     }
 
     fn create_status_bar_test_app(

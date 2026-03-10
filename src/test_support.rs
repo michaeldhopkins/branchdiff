@@ -115,6 +115,7 @@ impl TestAppBuilder {
                 to_label,
                 stack_position: self.stack_position,
                 vcs_backend: self.vcs_backend,
+                bookmark_name: None,
             },
             base_identifier: "abc123".to_string(),
             files: self.files,
