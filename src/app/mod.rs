@@ -33,6 +33,8 @@ pub enum ViewMode {
     ChangesOnly,
     /// jj only: show only current commit (@) changes with surrounding context
     CommitOnly,
+    /// jj only: show only current bookmark's changes with surrounding context
+    BookmarkOnly,
 }
 
 /// Application state
@@ -92,6 +94,7 @@ impl App {
                 to_label: "feature".to_string(),
                 stack_position: None,
                 vcs_backend: VcsBackend::Git,
+                bookmark_name: None,
             },
             base_identifier: "bench".to_string(),
             files: Vec::new(),
@@ -186,8 +189,9 @@ impl App {
         self.files = result.files;
         self.lines = result.lines;
         self.file_links = result.file_links;
-        // CommitOnly is jj-only; fall back if backend changed to git
-        if self.view.view_mode == ViewMode::CommitOnly
+        self.comparison.bookmark_name = result.bookmark_name;
+        // CommitOnly/BookmarkOnly are jj-only; fall back if backend changed to git
+        if matches!(self.view.view_mode, ViewMode::CommitOnly | ViewMode::BookmarkOnly)
             && self.comparison.vcs_backend == VcsBackend::Git
         {
             self.view.view_mode = ViewMode::Context;
@@ -1429,7 +1433,7 @@ mod tests {
             current_branch: Some("new-branch".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         };
 
@@ -1632,7 +1636,7 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         };
         app.apply_refresh_result(result);
@@ -1865,7 +1869,7 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         };
         app.apply_refresh_result(result);
@@ -1887,7 +1891,7 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         };
         app.apply_refresh_result(result);
@@ -1918,7 +1922,7 @@ mod tests {
             current_branch: None,
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         };
         app.apply_refresh_result(result);

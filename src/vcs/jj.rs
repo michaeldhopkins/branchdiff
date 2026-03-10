@@ -108,6 +108,140 @@ fn resolve_stack_tip(repo_path: &Path, from_rev: &str) -> Option<StackTip> {
     })
 }
 
+/// Info about the bookmark boundary for the current stack position.
+struct BookmarkBoundary {
+    /// Name of the current bookmark.
+    bookmark_name: String,
+    /// Files changed between the boundary and @, used to filter which files
+    /// belong to the current bookmark vs earlier bookmarks.
+    changed_files: HashSet<String>,
+}
+
+/// Find the bookmark boundary: the nearest ancestor bookmark below the current
+/// bookmark's scope. Returns the boundary revision and current bookmark name.
+///
+/// Strategy:
+/// 1. Find the bookmark at or above @ (the bookmark @ belongs to).
+/// 2. Find the nearest ancestor bookmark below that one.
+fn resolve_bookmark_boundary(repo_path: &Path, from_rev: &str) -> Option<BookmarkBoundary> {
+    if from_rev != "trunk()" {
+        return None;
+    }
+
+    // Step 1: Find the current bookmark — at @ or the nearest descendant with a bookmark
+    let template = r#"bookmarks.join(",") ++ "\0" ++ change_id.short(12)"#;
+    let args = no_snapshot(&[
+        "log", "-r", "latest((@:: | @) & bookmarks())", "--no-graph", "--limit", "1",
+        "-T", template,
+    ]);
+    let output = Command::new("jj")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = trimmed.splitn(2, '\0').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let bookmark_name = parts[0].trim().trim_end_matches('*').to_string();
+    let current_bm_id = parts[1].trim().to_string();
+
+    if bookmark_name.is_empty() {
+        return None;
+    }
+
+    // Step 2: Find the previous bookmark (nearest ancestor bookmark below the current one)
+    // Use both local and remote bookmarks — stacks often have only remote-tracking bookmarks
+    // for already-pushed segments.
+    let revset = format!(
+        "latest((trunk()..\"{}\"-) & (bookmarks() | remote_bookmarks()))",
+        current_bm_id
+    );
+    let prev_args = no_snapshot(&[
+        "log", "-r", &revset, "--no-graph", "--limit", "1",
+        "-T", "change_id.short(12)",
+    ]);
+    let prev_output = Command::new("jj")
+        .args(&prev_args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    let boundary_id = if prev_output.status.success() {
+        let prev_id = String::from_utf8_lossy(&prev_output.stdout).trim().to_string();
+        if prev_id.is_empty() {
+            // No previous bookmark — boundary is trunk
+            from_rev.to_string()
+        } else {
+            prev_id
+        }
+    } else {
+        from_rev.to_string()
+    };
+
+    // Step 3: Get the list of files changed between boundary and @
+    let range = format!("\"{}\"..@", boundary_id);
+    let diff_args = no_snapshot(&[
+        "diff", "-r", &range, "--name-only",
+    ]);
+    let diff_output = Command::new("jj")
+        .args(&diff_args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    let changed_files: HashSet<String> = if diff_output.status.success() {
+        String::from_utf8_lossy(&diff_output.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    } else {
+        HashSet::new()
+    };
+
+    Some(BookmarkBoundary {
+        bookmark_name,
+        changed_files,
+    })
+}
+
+/// Mark each DiffLine in a FileDiff with bookmark provenance.
+///
+/// Uses the file content at the bookmark boundary revision to determine which
+/// lines were introduced before vs. after the boundary.
+/// Mark each line's bookmark provenance based on whether the file was changed
+/// in the current bookmark's scope (between the previous bookmark and @).
+fn mark_bookmark_provenance(file_diff: &mut crate::diff::FileDiff, file_in_current_bookmark: bool) {
+    use crate::diff::LineSource;
+
+    for line in &mut file_diff.lines {
+        line.in_current_bookmark = Some(match line.source {
+            // Change lines: belong to the current bookmark only if the file was
+            // modified between the previous bookmark boundary and @.
+            LineSource::Committed | LineSource::CanceledCommitted
+            | LineSource::DeletedBase | LineSource::Staged
+            | LineSource::DeletedCommitted | LineSource::CanceledStaged
+            | LineSource::Unstaged | LineSource::DeletedStaged => file_in_current_bookmark,
+
+            LineSource::Base if line.change_source.is_some() => file_in_current_bookmark,
+
+            LineSource::Base | LineSource::FileHeader | LineSource::Elided => false,
+        });
+    }
+}
+
 /// Get a change_id without requiring a JjVcs instance.
 fn get_change_id_static(repo_path: &Path, rev: &str) -> Option<String> {
     let args = no_snapshot(&[
@@ -317,6 +451,7 @@ fn process_jj_file(
     changed: &ChangedFile,
     binary_files: &HashSet<String>,
     tip_rev: Option<&str>,
+    bookmark_changed_files: Option<&HashSet<String>>,
 ) -> FileProcessResult {
     if binary_files.contains(&changed.path) {
         if is_image_file(&changed.path) {
@@ -351,14 +486,21 @@ fn process_jj_file(
         None => index.as_deref(),
     };
 
-    FileProcessResult::Diff(compute_four_way_diff(DiffInput {
+    let mut file_diff = compute_four_way_diff(DiffInput {
         path: &changed.path,
         base: base.as_deref(),
         head: parent.as_deref(),
         index: index.as_deref(),
         working,
         old_path: changed.old_path.as_deref(),
-    }))
+    });
+
+    if let Some(bm_files) = bookmark_changed_files {
+        let in_bookmark = bm_files.contains(&changed.path);
+        mark_bookmark_provenance(&mut file_diff, in_bookmark);
+    }
+
+    FileProcessResult::Diff(file_diff)
 }
 
 /// Get the jj repo root from a path.
@@ -409,7 +551,7 @@ impl crate::vcs::Vcs for JjVcs {
 
         // stack_position is computed by refresh() and applied via
         // apply_refresh_result — no need to resolve it here too.
-        Ok(ComparisonContext { from_label, to_label, stack_position: None, vcs_backend: VcsBackend::Jj })
+        Ok(ComparisonContext { from_label, to_label, stack_position: None, vcs_backend: VcsBackend::Jj, bookmark_name: None })
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
@@ -420,6 +562,10 @@ impl crate::vcs::Vcs for JjVcs {
             .map(|t| t.change_id.as_str())
             .unwrap_or("@");
         let tip_rev = stack_tip.as_ref().map(|t| t.change_id.as_str());
+
+        // Resolve bookmark boundary for BookmarkOnly view mode
+        let bookmark_boundary = resolve_bookmark_boundary(&self.repo_path, &self.from_rev);
+        let bookmark_changed_files = bookmark_boundary.as_ref().map(|b| &b.changed_files);
 
         // First command — triggers working copy auto-snapshot
         let changed_files = self.get_changed_files(effective_to)?;
@@ -442,6 +588,7 @@ impl crate::vcs::Vcs for JjVcs {
                 changed,
                 &binary_files,
                 tip_rev,
+                bookmark_changed_files,
             )
         });
 
@@ -486,6 +633,7 @@ impl crate::vcs::Vcs for JjVcs {
             metrics,
             file_links,
             stack_position,
+            bookmark_name: bookmark_boundary.map(|b| b.bookmark_name),
             revision_id: None,
         })
     }
@@ -528,14 +676,22 @@ impl crate::vcs::Vcs for JjVcs {
 
         let working = if has_tip { tip_content.as_deref() } else { index.as_deref() };
 
-        Some(compute_four_way_diff(DiffInput {
+        let mut file_diff = compute_four_way_diff(DiffInput {
             path: file_path,
             base: base.as_deref(),
             head: parent.as_deref(),
             index: index.as_deref(),
             working,
             old_path,
-        }))
+        });
+
+        // Mark bookmark provenance for BookmarkOnly view mode
+        if let Some(boundary) = resolve_bookmark_boundary(&self.repo_path, &self.from_rev) {
+            let in_bookmark = boundary.changed_files.contains(file_path);
+            mark_bookmark_provenance(&mut file_diff, in_bookmark);
+        }
+
+        Some(file_diff)
     }
 
     fn base_identifier(&self) -> Result<String> {
@@ -1727,5 +1883,89 @@ mod tests {
         let (id, label) = parse_rev_metadata("rawvalue");
         assert_eq!(id, "rawvalue");
         assert_eq!(label, "rawvalue");
+    }
+
+    // === mark_bookmark_provenance tests ===
+
+    fn make_file_diff(lines: Vec<crate::diff::DiffLine>) -> crate::diff::FileDiff {
+        crate::diff::FileDiff { lines }
+    }
+
+    #[test]
+    fn test_mark_bookmark_provenance_file_in_bookmark() {
+        let lines = vec![
+            crate::diff::DiffLine::new(LineSource::Committed, "added".to_string(), '+', None),
+            crate::diff::DiffLine::new(LineSource::DeletedBase, "removed".to_string(), '-', None),
+            crate::diff::DiffLine::new(LineSource::Staged, "staged".to_string(), '+', None),
+            crate::diff::DiffLine::new(LineSource::Base, "context".to_string(), ' ', None),
+        ];
+        let mut fd = make_file_diff(lines);
+
+        mark_bookmark_provenance(&mut fd, true);
+
+        assert_eq!(fd.lines[0].in_current_bookmark, Some(true),
+            "Committed lines in a bookmark file should be marked true");
+        assert_eq!(fd.lines[1].in_current_bookmark, Some(true),
+            "DeletedBase lines in a bookmark file should be marked true");
+        assert_eq!(fd.lines[2].in_current_bookmark, Some(true),
+            "Staged lines in a bookmark file should be marked true");
+        assert_eq!(fd.lines[3].in_current_bookmark, Some(false),
+            "Base context lines are never in current bookmark");
+    }
+
+    #[test]
+    fn test_mark_bookmark_provenance_file_not_in_bookmark() {
+        let lines = vec![
+            crate::diff::DiffLine::new(LineSource::Committed, "added".to_string(), '+', None),
+            crate::diff::DiffLine::new(LineSource::DeletedBase, "removed".to_string(), '-', None),
+            crate::diff::DiffLine::new(LineSource::Staged, "staged".to_string(), '+', None),
+            crate::diff::DiffLine::new(LineSource::Base, "context".to_string(), ' ', None),
+        ];
+        let mut fd = make_file_diff(lines);
+
+        mark_bookmark_provenance(&mut fd, false);
+
+        assert_eq!(fd.lines[0].in_current_bookmark, Some(false),
+            "Committed lines NOT in bookmark file should be marked false");
+        assert_eq!(fd.lines[1].in_current_bookmark, Some(false),
+            "DeletedBase lines NOT in bookmark file should be marked false");
+        assert_eq!(fd.lines[2].in_current_bookmark, Some(false),
+            "Staged lines NOT in bookmark file should be marked false");
+        assert_eq!(fd.lines[3].in_current_bookmark, Some(false),
+            "Base context lines are never in current bookmark");
+    }
+
+    #[test]
+    fn test_mark_bookmark_provenance_base_with_change_source() {
+        let mut line = crate::diff::DiffLine::new(LineSource::Base, "modified".to_string(), ' ', None);
+        line.change_source = Some(LineSource::Committed);
+        let mut fd = make_file_diff(vec![line]);
+
+        mark_bookmark_provenance(&mut fd, true);
+        assert_eq!(fd.lines[0].in_current_bookmark, Some(true),
+            "Base with change_source in bookmark file should be marked true");
+
+        let mut line2 = crate::diff::DiffLine::new(LineSource::Base, "modified".to_string(), ' ', None);
+        line2.change_source = Some(LineSource::Committed);
+        let mut fd2 = make_file_diff(vec![line2]);
+
+        mark_bookmark_provenance(&mut fd2, false);
+        assert_eq!(fd2.lines[0].in_current_bookmark, Some(false),
+            "Base with change_source NOT in bookmark file should be marked false");
+    }
+
+    /// Verify the boundary revset format includes remote_bookmarks() so that
+    /// stacks with only remote-tracking bookmarks for pushed segments are handled.
+    #[test]
+    fn test_boundary_revset_includes_remote_bookmarks() {
+        let change_id = "abc123def456";
+        let revset = format!(
+            "latest((trunk()..\"{}\"-) & (bookmarks() | remote_bookmarks()))",
+            change_id
+        );
+        assert!(revset.contains("remote_bookmarks()"),
+            "Boundary revset must include remote_bookmarks() for pushed bookmark segments");
+        assert!(revset.contains(&format!("\"{}\"", change_id)),
+            "Boundary revset must reference the current bookmark's change ID");
     }
 }

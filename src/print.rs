@@ -211,6 +211,7 @@ mod tests {
                 to_label: "feature".to_string(),
                 stack_position: None,
                 vcs_backend: VcsBackend::Git,
+                bookmark_name: None,
             },
             base_identifier: "abc123".to_string(),
             files: vec![FileDiff {

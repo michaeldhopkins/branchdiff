@@ -1,5 +1,17 @@
 ## [unreleased]
 
+### Bug Fixes
+
+- Align help modal color legend indentation and shorten view mode label
+## [0.56.2] - 2026-03-02
+
+### Bug Fixes
+
+- Rename [changes] view mode label to [changed lines only]
+- Show [all lines] label for Full view mode in status bar
+- Update Cargo.lock for v0.56.2
+## [0.56.0] - 2026-03-02
+
 ### Features
 
 - Show commit short hash in CommitOnly view mode label
@@ -7,7 +19,6 @@
 ### Bug Fixes
 
 - Hide files with no current-commit changes in CommitOnly view
-- Rename [changes] view mode label to [changed lines only]
 ## [0.55.2] - 2026-03-02
 
 ### Bug Fixes
