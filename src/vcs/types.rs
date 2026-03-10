@@ -36,6 +36,8 @@ pub struct ComparisonContext {
     pub stack_position: Option<StackPosition>,
     /// VCS backend for UI label customization (gutter symbols, help text).
     pub vcs_backend: VcsBackend,
+    /// Name of the current jj bookmark (for BookmarkOnly view mode label).
+    pub bookmark_name: Option<String>,
 }
 
 /// Result of a full refresh from a VCS backend.
@@ -49,6 +51,8 @@ pub struct RefreshResult {
     pub metrics: DiffMetrics,
     pub file_links: HashMap<String, String>,
     pub stack_position: Option<StackPosition>,
+    /// Name of the current jj bookmark (for BookmarkOnly view mode).
+    pub bookmark_name: Option<String>,
     /// Working revision ID at the time the refresh completed.
     /// Populated by the spawn function, not the VCS backend.
     pub revision_id: Option<String>,

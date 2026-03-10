@@ -216,7 +216,7 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         });
 
@@ -266,7 +266,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         });
 
@@ -369,7 +369,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         });
 
@@ -427,7 +427,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         });
 
@@ -809,7 +809,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: Some("new_rev".to_string()),
         });
 
@@ -840,7 +840,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: Some("same_rev".to_string()),
         });
 
@@ -895,7 +895,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: Some("first_rev".to_string()),
         });
 

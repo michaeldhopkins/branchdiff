@@ -12,7 +12,7 @@ Terminal UI showing unified diff of current branch vs its base.
 - **Auto-switching**: detects `jj init` or `.jj` removal at runtime and seamlessly restarts
 - Color-coded diff view with distinct colors per change layer (git: committed/staged/unstaged; jj: earlier/current/later commits)
 - Inline diff highlighting showing exactly which characters changed
-- Three view modes: context (default), changes-only, and full file
+- Multiple view modes: context (default), changes-only, full file, and jj-specific commit-only and bookmark-only modes
 - Image diffs with side-by-side before/after panels
 - Live file watching with auto-refresh on changes
 - Mouse support: scrolling, click-to-collapse file sections, text selection (double-click word, triple-click line)
@@ -98,7 +98,7 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 | `Ctrl+u` / `PgUp` | Page up |
 | `g` / `Home` | Go to top |
 | `G` / `End` | Go to bottom |
-| `c` | Cycle view mode (context → changes → full) |
+| `c` | Cycle view mode (context → changes → full; jj adds commit → bookmark) |
 | `r` | Refresh |
 | `y` | Copy selection |
 | `p` | Copy current file path |

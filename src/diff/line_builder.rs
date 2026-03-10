@@ -17,6 +17,7 @@ impl DiffLine {
             inline_spans: Vec::new(),
             old_content: None,
             change_source: None,
+            in_current_bookmark: None,
         }
     }
 
@@ -31,6 +32,7 @@ impl DiffLine {
             inline_spans: Vec::new(),
             old_content: None,
             change_source: None,
+            in_current_bookmark: None,
         }
     }
 
@@ -45,6 +47,7 @@ impl DiffLine {
             inline_spans: Vec::new(),
             old_content: None,
             change_source: None,
+            in_current_bookmark: None,
         }
     }
 
@@ -59,6 +62,7 @@ impl DiffLine {
             inline_spans: Vec::new(),
             old_content: None,
             change_source: None,
+            in_current_bookmark: None,
         }
     }
 
@@ -73,6 +77,7 @@ impl DiffLine {
             inline_spans: Vec::new(),
             old_content: None,
             change_source: None,
+            in_current_bookmark: None,
         }
     }
 }

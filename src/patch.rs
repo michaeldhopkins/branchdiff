@@ -365,6 +365,7 @@ mod tests {
             inline_spans: Vec::new(),
             old_content: None,
             change_source: None,
+            in_current_bookmark: None,
         }
     }
 
@@ -694,6 +695,7 @@ mod tests {
                 inline_spans: Vec::new(),
                 old_content: None,
                 change_source: None,
+                in_current_bookmark: None,
             }
         }
 
@@ -723,6 +725,7 @@ mod tests {
                 inline_spans: Vec::new(),
                 old_content: None,
                 change_source: None,
+                in_current_bookmark: None,
             }
         }
 

@@ -144,6 +144,12 @@ impl App {
         self.build_lines_with_mapping_from_visibility(&show)
     }
 
+    /// Build filtered lines with elided markers for bookmark-only mode
+    fn build_bookmark_only_lines_with_mapping(&self) -> (Vec<DiffLine>, Vec<Option<usize>>) {
+        let show = self.compute_bookmark_only_visibility();
+        self.build_lines_with_mapping_from_visibility(&show)
+    }
+
     pub(super) fn build_changes_only_lines(&self) -> Vec<DiffLine> {
         self.lines
             .iter()
@@ -159,6 +165,7 @@ impl App {
             ViewMode::Context => self.compute_context_items(),
             ViewMode::ChangesOnly => self.compute_changes_only_items(),
             ViewMode::CommitOnly => self.compute_commit_only_items(),
+            ViewMode::BookmarkOnly => self.compute_bookmark_only_items(),
         };
         self.filter_collapsed_items(items)
     }
@@ -236,6 +243,52 @@ impl App {
         items
     }
 
+    /// Compute which line indices are visible in bookmark-only mode (jj).
+    /// Similar to commit-only but uses `is_current_bookmark()` as the predicate.
+    fn compute_bookmark_only_visibility(&self) -> Vec<bool> {
+        let mut show = self.compute_visibility_with_predicate(|line| line.is_current_bookmark());
+
+        let mut file_start: Option<usize> = None;
+        let mut has_bookmark_lines = false;
+
+        for (i, line) in self.lines.iter().enumerate() {
+            if line.source.is_header() {
+                if let Some(start) = file_start
+                    && !has_bookmark_lines
+                {
+                    for s in &mut show[start..i] {
+                        *s = false;
+                    }
+                }
+                file_start = Some(i);
+                has_bookmark_lines = false;
+            } else if line.is_current_bookmark() {
+                has_bookmark_lines = true;
+            }
+        }
+        if let Some(start) = file_start
+            && !has_bookmark_lines
+        {
+            for s in &mut show[start..] {
+                *s = false;
+            }
+        }
+
+        show
+    }
+
+    /// Bookmark-only mode (jj): show only current bookmark's changes with context
+    fn compute_bookmark_only_items(&self) -> Vec<super::DisplayableItem> {
+        let show = self.compute_bookmark_only_visibility();
+        let items = self.build_items_from_visibility(&show);
+        if items.is_empty() {
+            return vec![super::DisplayableItem::Message(
+                "No changes in current bookmark",
+            )];
+        }
+        items
+    }
+
     /// Filter out items belonging to collapsed files (keep headers)
     fn filter_collapsed_items(&self, items: Vec<super::DisplayableItem>) -> Vec<super::DisplayableItem> {
         use super::DisplayableItem;
@@ -305,7 +358,9 @@ impl App {
                 ViewMode::Context => ViewMode::ChangesOnly,
                 ViewMode::ChangesOnly if is_jj => ViewMode::CommitOnly,
                 ViewMode::ChangesOnly => ViewMode::Full,
+                ViewMode::CommitOnly if is_jj => ViewMode::BookmarkOnly,
                 ViewMode::CommitOnly => ViewMode::Full,
+                ViewMode::BookmarkOnly => ViewMode::Full,
             };
             self.view.needs_inline_spans = true;
             return;
@@ -319,7 +374,9 @@ impl App {
             ViewMode::Context => ViewMode::ChangesOnly,
             ViewMode::ChangesOnly if is_jj => ViewMode::CommitOnly,
             ViewMode::ChangesOnly => ViewMode::Full,
+            ViewMode::CommitOnly if is_jj => ViewMode::BookmarkOnly,
             ViewMode::CommitOnly => ViewMode::Full,
+            ViewMode::BookmarkOnly => ViewMode::Full,
         };
 
         if let Some(anchor_idx) = anchor_original_idx {
@@ -344,11 +401,11 @@ impl App {
                     None
                 }
             }
-            ViewMode::Context | ViewMode::CommitOnly => {
-                let (_, index_map) = if self.view.view_mode == ViewMode::Context {
-                    self.build_context_lines_with_mapping()
-                } else {
-                    self.build_commit_only_lines_with_mapping()
+            ViewMode::Context | ViewMode::CommitOnly | ViewMode::BookmarkOnly => {
+                let (_, index_map) = match self.view.view_mode {
+                    ViewMode::Context => self.build_context_lines_with_mapping(),
+                    ViewMode::BookmarkOnly => self.build_bookmark_only_lines_with_mapping(),
+                    _ => self.build_commit_only_lines_with_mapping(),
                 };
                 if target_pos < index_map.len() {
                     if let Some(idx) = index_map[target_pos] {
@@ -388,16 +445,16 @@ impl App {
     pub fn find_position_for_original_index(&self, original_idx: usize) -> usize {
         match self.view.view_mode {
             ViewMode::Full => original_idx.min(self.lines.len().saturating_sub(1)),
-            ViewMode::Context | ViewMode::CommitOnly => {
-                let (_, index_map) = if self.view.view_mode == ViewMode::Context {
-                    self.build_context_lines_with_mapping()
-                } else {
-                    self.build_commit_only_lines_with_mapping()
+            ViewMode::Context | ViewMode::CommitOnly | ViewMode::BookmarkOnly => {
+                let (_, index_map) = match self.view.view_mode {
+                    ViewMode::Context => self.build_context_lines_with_mapping(),
+                    ViewMode::BookmarkOnly => self.build_bookmark_only_lines_with_mapping(),
+                    _ => self.build_commit_only_lines_with_mapping(),
                 };
-                let visibility = if self.view.view_mode == ViewMode::Context {
-                    self.compute_context_visibility()
-                } else {
-                    self.compute_commit_only_visibility()
+                let visibility = match self.view.view_mode {
+                    ViewMode::Context => self.compute_context_visibility(),
+                    ViewMode::BookmarkOnly => self.compute_bookmark_only_visibility(),
+                    _ => self.compute_commit_only_visibility(),
                 };
 
                 if original_idx < visibility.len() && visibility[original_idx] {
@@ -511,6 +568,8 @@ mod tests {
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
         app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::BookmarkOnly);
+        app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::Full);
     }
 
@@ -539,6 +598,8 @@ mod tests {
         app.view.view_mode = ViewMode::ChangesOnly;
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
+        app.cycle_view_mode();
+        assert_eq!(app.view.view_mode, ViewMode::BookmarkOnly);
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::Full);
     }
@@ -698,7 +759,7 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None,
+            stack_position: None, bookmark_name: None,
             revision_id: None,
         };
         app.comparison.vcs_backend = VcsBackend::Git;
@@ -836,5 +897,174 @@ mod tests {
             "File with no current-commit changes should be hidden");
         assert!(!visible.iter().any(|l| l.content == "from_parent"),
             "Committed-only line should be hidden");
+    }
+
+    // === BookmarkOnly view mode tests ===
+
+    fn make_bookmark_line(source: LineSource, content: &str, in_bookmark: bool) -> DiffLine {
+        let prefix = match source {
+            LineSource::Committed | LineSource::Staged | LineSource::Unstaged => '+',
+            LineSource::DeletedBase | LineSource::DeletedCommitted | LineSource::DeletedStaged => '-',
+            _ => ' ',
+        };
+        let mut line = DiffLine::new(source, content.to_string(), prefix, None);
+        line.in_current_bookmark = Some(in_bookmark);
+        line
+    }
+
+    #[test]
+    fn test_bookmark_only_shows_current_bookmark_lines() {
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(base_line(&format!("before{}", i)));
+        }
+        lines.push(make_bookmark_line(LineSource::Committed, "in_bookmark", true));
+        for i in 0..20 {
+            lines.push(base_line(&format!("after{}", i)));
+        }
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::BookmarkOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        assert!(visible.iter().any(|l| l.content == "in_bookmark"),
+            "Current bookmark line should be visible");
+        assert!(visible.iter().any(|l| l.content == "before15"),
+            "Context before should be visible");
+    }
+
+    #[test]
+    fn test_bookmark_only_hides_earlier_bookmark_lines() {
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(base_line(&format!("before{}", i)));
+        }
+        lines.push(make_bookmark_line(LineSource::Committed, "earlier_bookmark", false));
+        for i in 0..20 {
+            lines.push(base_line(&format!("after{}", i)));
+        }
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::BookmarkOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        assert!(!visible.iter().any(|l| l.content == "earlier_bookmark"),
+            "Earlier bookmark line should be hidden");
+    }
+
+    #[test]
+    fn test_bookmark_only_shows_earlier_as_context() {
+        let mut lines = Vec::new();
+        lines.push(base_line("before"));
+        lines.push(make_bookmark_line(LineSource::Committed, "earlier_nearby", false));
+        lines.push(base_line("between"));
+        lines.push(make_bookmark_line(LineSource::Staged, "current_bookmark", true));
+        lines.push(base_line("after"));
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::BookmarkOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        let earlier = visible.iter().find(|l| l.content == "earlier_nearby");
+        assert!(earlier.is_some(), "Nearby earlier bookmark line should be visible as context");
+        assert_eq!(earlier.unwrap().source, LineSource::Committed,
+            "Earlier bookmark line should retain its original source");
+    }
+
+    #[test]
+    fn test_bookmark_only_hides_files_with_no_bookmark_changes() {
+        let mut lines = Vec::new();
+
+        // File 1: has current-bookmark changes
+        lines.push(DiffLine::file_header("current.rs"));
+        lines.push(base_line("unchanged"));
+        lines.push(make_bookmark_line(LineSource::Committed, "in_bookmark", true));
+
+        // File 2: only earlier-bookmark changes
+        let mut header = DiffLine::file_header("earlier.rs");
+        header.in_current_bookmark = Some(false);
+        lines.push(header);
+        for i in 0..10 {
+            lines.push(base_line(&format!("base{}", i)));
+        }
+        lines.push(make_bookmark_line(LineSource::Committed, "from_earlier", false));
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::BookmarkOnly;
+
+        let items = app.compute_displayable_items();
+        let visible = collect_visible_lines(&app, &items);
+
+        assert!(visible.iter().any(|l| l.content == "in_bookmark"),
+            "Current bookmark line should be visible");
+        assert!(!visible.iter().any(|l| l.content == "earlier.rs"),
+            "File with no bookmark changes should be hidden");
+    }
+
+    #[test]
+    fn test_bookmark_only_no_changes_shows_message() {
+        let mut lines = Vec::new();
+        lines.push(DiffLine::file_header("test.rs"));
+        for i in 0..20 {
+            lines.push(base_line(&format!("base{}", i)));
+        }
+        lines.push(make_bookmark_line(LineSource::Committed, "earlier", false));
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::BookmarkOnly;
+
+        let items = app.compute_displayable_items();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0],
+            DisplayableItem::Message("No changes in current bookmark"),
+        );
+    }
+
+    #[test]
+    fn test_backend_switch_falls_back_from_bookmark_only() {
+        let mut app = TestAppBuilder::new()
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::BookmarkOnly;
+
+        let result = crate::app::RefreshResult {
+            files: vec![],
+            lines: vec![],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None, bookmark_name: None,
+            revision_id: None,
+        };
+        app.comparison.vcs_backend = VcsBackend::Git;
+        app.apply_refresh_result(result);
+
+        assert_eq!(app.view.view_mode, ViewMode::Context,
+            "Should fall back from BookmarkOnly to Context when backend switches to Git");
     }
 }

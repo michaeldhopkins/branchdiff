@@ -235,6 +235,7 @@ fn run_main_app(
             to_label: "working copy".to_string(),
             stack_position: None,
             vcs_backend: vcs.backend(),
+            bookmark_name: None,
         });
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let initial = vcs.refresh(&cancel_flag)?;
