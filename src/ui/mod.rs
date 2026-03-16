@@ -16,7 +16,7 @@ pub mod wrapping;
 
 // Re-export commonly used items
 pub use modals::{draw_help_modal, draw_warning_banner};
-pub use status_bar::{draw_status_bar, status_bar_height};
+pub use status_bar::{draw_status_bar, status_bar_height, status_bar_plain_text};
 
 /// Width of the prefix after line numbers: prefix char + space + status symbol + trailing space
 pub const PREFIX_CHAR_WIDTH: usize = 4;
@@ -77,6 +77,10 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
 
     diff_view::draw_diff_view_with_frame(frame, app, diff_area, ctx);
     draw_status_bar(frame, app, status_area);
+
+    // Store status bar text and position for selection support
+    app.view.status_bar_lines = status_bar_plain_text(app, status_area.width);
+    app.view.status_bar_screen_y = status_area.y;
 
     if app.view.show_help {
         draw_help_modal(frame, size, app);

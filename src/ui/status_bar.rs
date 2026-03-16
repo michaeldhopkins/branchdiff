@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, ViewMode};
+use super::selection::{apply_selection_to_span, get_line_selection_range};
 
 /// View mode indicator for the status bar (e.g., " [context]", " [commit knmq]")
 fn view_mode_label(app: &App) -> String {
@@ -150,6 +151,24 @@ pub fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Apply selection highlighting to a status bar line.
+/// `virtual_row` is `row_map.len() + line_index` — the virtual row index used by the selection system.
+fn apply_status_bar_selection(line: Line<'static>, selection: &Option<crate::app::Selection>, virtual_row: usize) -> Line<'static> {
+    let Some((sel_start, sel_end)) = get_line_selection_range(selection, virtual_row) else {
+        return line;
+    };
+
+    let mut new_spans = Vec::new();
+    let mut char_offset = 0;
+    for span in line.spans {
+        let span_len = span.content.chars().count();
+        let result = apply_selection_to_span(span, char_offset, sel_start, sel_end);
+        new_spans.extend(result);
+        char_offset += span_len;
+    }
+    Line::from(new_spans)
+}
+
 /// Draw the status bar (may use 1 or 2 lines depending on available width)
 pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let width = area.width as usize;
@@ -181,7 +200,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             // Branch info + full help fit on line 1
             let padding = width.saturating_sub(branch_info.len() + help.len());
             Line::from(vec![
-                Span::styled(&branch_info, Style::default().fg(Color::Cyan)),
+                Span::styled(branch_info.clone(), Style::default().fg(Color::Cyan)),
                 Span::raw(" ".repeat(padding)),
                 Span::styled(help, Style::default().fg(Color::DarkGray)),
             ])
@@ -189,7 +208,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             // Branch info + short help fit
             let padding = width.saturating_sub(branch_info.len() + help_short.len());
             Line::from(vec![
-                Span::styled(&branch_info, Style::default().fg(Color::Cyan)),
+                Span::styled(branch_info.clone(), Style::default().fg(Color::Cyan)),
                 Span::raw(" ".repeat(padding)),
                 Span::styled(help_short, Style::default().fg(Color::DarkGray)),
             ])
@@ -211,6 +230,10 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             let truncated = truncate_with_ellipsis(&stats, width);
             Line::from(Span::styled(truncated, Style::default().fg(Color::Cyan)))
         };
+
+        let row_map_len = app.view.row_map.len();
+        let line1_content = apply_status_bar_selection(line1_content, &app.view.selection, row_map_len);
+        let line2_content = apply_status_bar_selection(line2_content, &app.view.selection, row_map_len + 1);
 
         let paragraph = Paragraph::new(vec![line1_content, line2_content]);
         frame.render_widget(paragraph, area);
@@ -248,8 +271,74 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             }
         };
 
+        let row_map_len = app.view.row_map.len();
+        let line = apply_status_bar_selection(line, &app.view.selection, row_map_len);
+
         let paragraph = Paragraph::new(line);
         frame.render_widget(paragraph, area);
+    }
+}
+
+/// Get the plain text content of the status bar for selection support.
+/// Returns one or two lines matching the same layout logic as `draw_status_bar`.
+pub fn status_bar_plain_text(app: &App, width: u16) -> Vec<String> {
+    let width = width as usize;
+    let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
+    let help_short = " ?:help ";
+
+    let mode = view_mode_label(app);
+    let stats = format!(
+        "{} file{} | +{} -{}{} | {}%",
+        app.files.len(),
+        if app.files.len() == 1 { "" } else { "s" },
+        app.additions_count(),
+        app.deletions_count(),
+        mode,
+        app.scroll_percentage()
+    );
+
+    let branch_info = branch_info(app);
+    let full_status = format!("{} | {}", branch_info, stats);
+
+    let height = status_bar_height(app, width as u16);
+    if height >= 2 {
+        let line1 = if branch_info.len() + help.len() + 2 <= width {
+            let padding = width.saturating_sub(branch_info.len() + help.len());
+            format!("{}{}{}", branch_info, " ".repeat(padding), help)
+        } else if branch_info.len() + help_short.len() + 2 <= width {
+            let padding = width.saturating_sub(branch_info.len() + help_short.len());
+            format!("{}{}{}", branch_info, " ".repeat(padding), help_short)
+        } else {
+            let max_branch_len = width.saturating_sub(help_short.len() + 1);
+            let truncated = truncate_with_ellipsis(&branch_info, max_branch_len);
+            let padding = width.saturating_sub(truncated.len() + help_short.len());
+            format!("{}{}{}", truncated, " ".repeat(padding), help_short)
+        };
+
+        let line2 = if stats.len() <= width {
+            stats
+        } else {
+            truncate_with_ellipsis(&stats, width)
+        };
+
+        vec![line1, line2]
+    } else {
+        let line = if full_status.len() + help.len() + 2 <= width {
+            let padding = width.saturating_sub(full_status.len() + help.len());
+            format!("{}{}{}", full_status, " ".repeat(padding), help)
+        } else if full_status.len() + help_short.len() + 2 <= width {
+            let padding = width.saturating_sub(full_status.len() + help_short.len());
+            format!("{}{}{}", full_status, " ".repeat(padding), help_short)
+        } else if full_status.len() <= width {
+            full_status
+        } else if stats.len() + 3 <= width {
+            let max_branch_len = width.saturating_sub(stats.len() + 4);
+            let truncated_branch = truncate_with_ellipsis(&branch_info, max_branch_len);
+            format!("{} | {}", truncated_branch, stats)
+        } else {
+            truncate_with_ellipsis(&full_status, width)
+        };
+        vec![line]
     }
 }
 

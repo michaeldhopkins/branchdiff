@@ -49,7 +49,7 @@ fn color_labels(backend: VcsBackend) -> ColorLabels {
 
 pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
     let modal_width = 54u16;
-    let modal_height = 52u16;
+    let modal_height = 51u16;
 
     let x = area.width.saturating_sub(modal_width) / 2;
     let y = area.height.saturating_sub(modal_height) / 2;
@@ -84,7 +84,7 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("    Mouse       ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Scroll, select, collapse"),
+            Span::raw("  Scroll, highlight to copy, collapse"),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -100,10 +100,6 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Cycle view (full/ctx/chg/cmt/bm)"),
         ]),
         Line::from(vec![
-            Span::styled("    Ctrl+c / y  ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Copy selection"),
-        ]),
-        Line::from(vec![
             Span::styled("    p           ", Style::default().fg(Color::Cyan)),
             Span::raw("  Copy current file path"),
         ]),
@@ -116,7 +112,7 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Copy git patch format"),
         ]),
         Line::from(vec![
-            Span::styled("    q / Esc     ", Style::default().fg(Color::Cyan)),
+            Span::styled("    q / Esc / ^c", Style::default().fg(Color::Cyan)),
             Span::raw("  Quit"),
         ]),
         Line::from(vec![
@@ -233,7 +229,7 @@ mod tests {
     #[test]
     fn test_help_modal_dimensions() {
         let modal_width = 54u16;
-        let modal_height = 52u16;
+        let modal_height = 51u16;
         assert!(modal_width > 0);
         assert!(modal_height > 0);
     }
@@ -242,7 +238,7 @@ mod tests {
     fn test_help_modal_centering_large_area() {
         let area = Rect::new(0, 0, 120, 60);
         let modal_width = 54u16;
-        let modal_height = 52u16;
+        let modal_height = 51u16;
 
         let x = area.width.saturating_sub(modal_width) / 2;
         let y = area.height.saturating_sub(modal_height) / 2;
@@ -255,7 +251,7 @@ mod tests {
     fn test_help_modal_centering_small_area() {
         let area = Rect::new(0, 0, 40, 20);
         let modal_width = 54u16;
-        let modal_height = 52u16;
+        let modal_height = 51u16;
 
         let x = area.width.saturating_sub(modal_width) / 2;
         let y = area.height.saturating_sub(modal_height) / 2;
@@ -268,7 +264,7 @@ mod tests {
     fn test_help_modal_clamps_to_area() {
         let area = Rect::new(0, 0, 30, 15);
         let modal_width = 54u16;
-        let modal_height = 52u16;
+        let modal_height = 51u16;
 
         let clamped_width = modal_width.min(area.width);
         let clamped_height = modal_height.min(area.height);
