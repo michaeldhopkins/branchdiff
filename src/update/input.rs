@@ -1,12 +1,11 @@
 use std::time::Instant;
 
 use crate::app::App;
+use crate::app::selection::MULTI_CLICK_MS;
 use crate::input::AppAction;
 use crate::message::{LoopAction, RefreshTrigger, UpdateResult};
 
 use super::RefreshState;
-
-const MULTI_CLICK_MS: u128 = 500;
 const POSITION_TOLERANCE: u16 = 2;
 
 /// Determine click count for multi-click detection (double/triple click).
@@ -67,9 +66,6 @@ fn handle_navigation(action: &AppAction, app: &mut App) {
 /// Handle clipboard operations.
 fn handle_clipboard(action: &AppAction, app: &mut App) -> Option<LoopAction> {
     match action {
-        AppAction::Copy => {
-            let _ = app.copy_selection();
-        }
         AppAction::CopyPath => {
             let _ = app.copy_current_path();
         }
@@ -133,6 +129,7 @@ pub(super) fn handle_input(
 
         // Selection actions
         AppAction::StartSelection(x, y) => {
+            app.cancel_pending_copy();
             let click_count = detect_click_count(app, *x, *y);
             app.view.last_click = Some((Instant::now(), *x, *y, click_count));
             handle_click(app, *x, *y, click_count);
@@ -141,11 +138,10 @@ pub(super) fn handle_input(
             app.update_selection(*x, *y);
             app.view.last_click = None; // Clear to prevent false double-clicks during drag
         }
-        AppAction::EndSelection => app.end_selection(),
+        AppAction::EndSelection => app.end_selection_with_auto_copy(),
 
         // Clipboard actions
-        AppAction::Copy
-        | AppAction::CopyPath
+        AppAction::CopyPath
         | AppAction::CopyDiff
         | AppAction::CopyPatch
         | AppAction::CopyOrQuit => {
@@ -468,5 +464,16 @@ mod tests {
 
         let r3 = handle_input(AppAction::Quit, &mut app, &mut refresh_state);
         assert_eq!(r3.loop_action, LoopAction::Quit, "third Quit actually quits");
+    }
+
+    #[test]
+    fn test_start_selection_cancels_pending_copy() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.pending_copy = Some(Instant::now());
+        let mut refresh_state = RefreshState::Idle;
+
+        handle_input(AppAction::StartSelection(10, 5), &mut app, &mut refresh_state);
+
+        assert!(app.view.pending_copy.is_none(), "StartSelection should cancel pending copy");
     }
 }

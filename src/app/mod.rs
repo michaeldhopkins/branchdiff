@@ -5,7 +5,7 @@ mod frame;
 mod navigation;
 mod refresh;
 pub mod search;
-mod selection;
+pub(crate) mod selection;
 mod view_mode;
 mod view_state;
 
