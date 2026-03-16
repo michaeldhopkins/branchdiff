@@ -200,7 +200,13 @@ pub fn update(
         Message::FetchCompleted(result) => {
             refresh::handle_fetch(result, app, refresh_state, timers)
         }
-        Message::Tick => refresh::handle_tick(refresh_state, timers, config),
+        Message::Tick => {
+            let mut result = refresh::handle_tick(refresh_state, timers, config);
+            if app.check_and_execute_pending_copy() {
+                result.needs_redraw = true;
+            }
+            result
+        }
     }
 }
 

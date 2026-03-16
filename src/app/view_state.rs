@@ -52,6 +52,13 @@ pub struct ViewState {
     pub needs_inline_spans: bool,
     pub path_copied_at: Option<Instant>,
     pub last_click: Option<(Instant, u16, u16, u8)>,
+
+    // Deferred auto-copy (waits for multi-click window to expire)
+    pub pending_copy: Option<Instant>,
+
+    // Status bar text for selection support
+    pub status_bar_lines: Vec<String>,
+    pub status_bar_screen_y: u16,
 }
 
 impl Default for ViewState {
@@ -74,6 +81,9 @@ impl Default for ViewState {
             needs_inline_spans: true,
             path_copied_at: None,
             last_click: None,
+            pending_copy: None,
+            status_bar_lines: Vec::new(),
+            status_bar_screen_y: 0,
         }
     }
 }
@@ -111,5 +121,12 @@ mod tests {
         // No UI feedback timestamps
         assert!(state.path_copied_at.is_none());
         assert!(state.last_click.is_none());
+
+        // No pending auto-copy
+        assert!(state.pending_copy.is_none());
+
+        // No status bar text
+        assert!(state.status_bar_lines.is_empty());
+        assert_eq!(state.status_bar_screen_y, 0);
     }
 }

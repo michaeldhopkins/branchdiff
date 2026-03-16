@@ -15,8 +15,8 @@ Terminal UI showing unified diff of current branch vs its base.
 - Multiple view modes: context (default), changes-only, full file, and jj-specific commit-only and bookmark-only modes
 - Image diffs with side-by-side before/after panels
 - Live file watching with auto-refresh on changes
-- Mouse support: scrolling, click-to-collapse file sections, text selection (double-click word, triple-click line)
-- Copy to clipboard: selection, file path, entire diff, or git patch format
+- Mouse support: scrolling, click-to-collapse file sections, text selection with auto-copy (double-click word, triple-click line)
+- Copy to clipboard: auto-copy on selection, file path, entire diff, or git patch format
 - Non-interactive output modes for scripting (`--print`, `--diff`)
 
 ## Requirements
@@ -100,20 +100,18 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 | `G` / `End` | Go to bottom |
 | `c` | Cycle view mode (context → changes → full; jj adds commit → bookmark) |
 | `r` | Refresh |
-| `y` | Copy selection |
 | `p` | Copy current file path |
 | `Y` | Copy entire diff |
 | `D` | Copy git patch format |
 | `?` | Toggle help |
-| `q` / `Esc` | Quit |
-| `Ctrl+c` | Copy selection (or quit if nothing selected) |
+| `q` / `Esc` / `Ctrl+c` | Quit |
 
 ### Mouse
 
 - Scroll wheel to scroll
 - Click file headers to collapse/expand
-- Click and drag to select text
-- Double-click to select word, triple-click to select line
+- Click and drag to select text (auto-copies to clipboard on release)
+- Double-click to select word, triple-click to select line (auto-copies to clipboard)
 
 ## Contributing
 

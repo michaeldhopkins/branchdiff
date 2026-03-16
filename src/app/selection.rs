@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use anyhow::Result;
 use arboard::Clipboard;
 
@@ -5,6 +7,10 @@ use super::{App, DisplayableItem};
 use crate::diff::LineSource;
 use crate::patch;
 use crate::ui::{ScreenRowInfo, PREFIX_CHAR_WIDTH};
+
+/// Multi-click detection window in milliseconds.
+/// Shared between click detection and deferred copy timeout.
+pub(crate) const MULTI_CLICK_MS: u128 = 500;
 
 /// Get substring by character positions (not byte positions)
 fn char_slice(s: &str, start: usize, end: usize) -> &str {
@@ -268,6 +274,60 @@ impl App {
         }
     }
 
+    /// End selection and auto-copy based on how the selection was made.
+    ///
+    /// - Drag (last_click cleared): copy immediately if non-empty
+    /// - Multi-click (count >= 2): defer copy until multi-click window expires
+    /// - Single click without drag: no copy (nothing meaningful selected)
+    pub fn end_selection_with_auto_copy(&mut self) {
+        let click_info = self.view.last_click;
+        self.end_selection();
+
+        match click_info {
+            None => {
+                // Drag happened (UpdateSelection clears last_click).
+                // Copy immediately if there's a real selection.
+                if self.has_non_empty_selection() {
+                    let _ = self.copy_selection();
+                }
+            }
+            Some((_, _, _, count)) if count >= 2 => {
+                // Multi-click (double/triple). Defer copy to allow higher click counts.
+                if self.has_non_empty_selection() {
+                    self.view.pending_copy = Some(Instant::now());
+                }
+            }
+            _ => {
+                // Single click without drag. Nothing to copy.
+            }
+        }
+    }
+
+    /// Cancel any pending deferred copy (called when a new click arrives).
+    pub fn cancel_pending_copy(&mut self) {
+        self.view.pending_copy = None;
+    }
+
+    /// Execute pending copy if the multi-click window has expired.
+    /// Returns true if a copy was executed (caller should trigger redraw).
+    pub fn check_and_execute_pending_copy(&mut self) -> bool {
+        if let Some(pending_time) = self.view.pending_copy
+            && pending_time.elapsed().as_millis() >= MULTI_CLICK_MS
+        {
+            self.view.pending_copy = None;
+            let _ = self.copy_selection();
+            return true;
+        }
+        false
+    }
+
+    /// Check if there's a selection with actual content (not just a point click).
+    pub fn has_non_empty_selection(&self) -> bool {
+        self.view.selection.as_ref().is_some_and(|sel| {
+            sel.start.row != sel.end.row || sel.start.col != sel.end.col
+        })
+    }
+
     /// Select the word at the given screen coordinates (for double-click)
     /// If clicking past end of line, selects the entire logical line (including wrapped segments)
     pub fn select_word_at(&mut self, screen_x: u16, screen_y: u16) {
@@ -276,20 +336,26 @@ impl App {
             None => return,
         };
 
-        if pos.row >= self.view.row_map.len() {
-            return;
-        }
+        let is_status_bar = pos.row >= self.view.row_map.len();
 
-        let content = &self.view.row_map[pos.row].content;
-        let prefix_len = self.prefix_len();
+        let (content, prefix_len) = match self.row_content(pos.row) {
+            Some(r) => (r.0.to_string(), r.1),
+            None => return,
+        };
+
         let content_col = pos.col.saturating_sub(prefix_len);
         let content_len = content.chars().count();
 
         // Determine selection bounds
         if content_col >= content_len {
-            // Clicking past end of line - select entire logical line (including wrapped segments)
-            self.select_logical_line(pos.row, prefix_len);
-        } else if let Some((start, end)) = find_selection_boundaries(content, content_col) {
+            if is_status_bar {
+                // Select entire status bar line
+                self.select_status_bar_line(pos.row, &content);
+            } else {
+                // Clicking past end of line - select entire logical line (including wrapped segments)
+                self.select_logical_line(pos.row, prefix_len);
+            }
+        } else if let Some((start, end)) = find_selection_boundaries(&content, content_col) {
             let sel_start = start + prefix_len;
             let sel_end = end + prefix_len;
 
@@ -318,7 +384,13 @@ impl App {
             None => return,
         };
 
-        if pos.row >= self.view.row_map.len() {
+        let is_status_bar = pos.row >= self.view.row_map.len();
+
+        if is_status_bar {
+            if let Some((content, _)) = self.row_content(pos.row) {
+                let content = content.to_string();
+                self.select_status_bar_line(pos.row, &content);
+            }
             return;
         }
 
@@ -334,6 +406,20 @@ impl App {
         self.view.selection = Some(Selection {
             start: Position { row: start_row, col: prefix_len },
             end: Position { row: end_row, col: end_content_len + prefix_len },
+            active: true,
+        });
+    }
+
+    /// Select an entire status bar line (no prefix, no continuation logic)
+    fn select_status_bar_line(&mut self, row: usize, content: &str) {
+        let content_len = content.chars().count();
+
+        self.view.line_selection_anchor = Some((row, row));
+        self.view.word_selection_anchor = None;
+
+        self.view.selection = Some(Selection {
+            start: Position { row, col: 0 },
+            end: Position { row, col: content_len },
             active: true,
         });
     }
@@ -406,31 +492,60 @@ impl App {
         self.view.selection.is_some()
     }
 
-    /// Convert screen coordinates to content position
-    /// Now uses row_map to correctly handle wrapped lines and split inline diffs
+    /// Convert screen coordinates to content position.
+    /// Handles both the diff content area and the status bar area.
     fn screen_to_content_position(&self, screen_x: u16, screen_y: u16) -> Option<Position> {
         let (offset_x, offset_y) = self.view.content_offset;
 
-        // Check if within content area
-        if screen_x < offset_x || screen_y < offset_y {
-            return None;
+        // Check status bar first (more specific bounds)
+        let sb_y = self.view.status_bar_screen_y;
+        let sb_lines = &self.view.status_bar_lines;
+        if !sb_lines.is_empty()
+            && sb_y > 0
+            && screen_y >= sb_y
+            && (screen_y - sb_y) < sb_lines.len() as u16
+        {
+            let virtual_row = self.view.row_map.len() + (screen_y - sb_y) as usize;
+            return Some(Position {
+                row: virtual_row,
+                col: screen_x as usize,
+            });
         }
 
-        let content_x = (screen_x - offset_x) as usize;
-        let content_y = (screen_y - offset_y) as usize;
+        // Check if within diff content area
+        if screen_x >= offset_x && screen_y >= offset_y {
+            let content_x = (screen_x - offset_x) as usize;
+            let content_y = (screen_y - offset_y) as usize;
+            return Some(Position {
+                row: content_y,
+                col: content_x,
+            });
+        }
 
-        // Use row_map to find the correct screen row
-        // row_map is indexed by screen row, so content_y is the index
-        // The row field in Position now refers to screen row, not logical line
-        // This allows selection to work correctly with wrapped/split lines
-        Some(Position {
-            row: content_y,
-            col: content_x,
-        })
+        None
     }
 
-    /// Get selected text (content only, without line numbers or prefixes)
-    /// Now uses row_map to correctly handle wrapped lines and split inline diffs
+    /// Get the text content and prefix length for a given row index.
+    /// Returns None if the row is out of bounds for both row_map and status bar.
+    fn row_content(&self, screen_row: usize) -> Option<(&str, usize)> {
+        let row_map_len = self.view.row_map.len();
+        if screen_row < row_map_len {
+            Some((&self.view.row_map[screen_row].content, self.prefix_len()))
+        } else {
+            let sb_idx = screen_row - row_map_len;
+            self.view.status_bar_lines.get(sb_idx).map(|s| (s.as_str(), 0))
+        }
+    }
+
+    /// Check if the next row is a continuation of a wrapped line.
+    fn is_next_row_continuation(&self, screen_row: usize) -> bool {
+        let next = screen_row + 1;
+        next < self.view.row_map.len()
+            && self.view.row_map[next].is_continuation
+    }
+
+    /// Get selected text (content only, without line numbers or prefixes).
+    /// Handles both diff content rows and status bar rows.
     pub fn get_selected_text(&self) -> Option<String> {
         let sel = self.view.selection.as_ref()?;
 
@@ -443,23 +558,13 @@ impl App {
             (sel.end, sel.start)
         };
 
-        // Selection row/col now refer to screen rows, not logical lines
-        // Use row_map to get the actual content for each screen row
         let mut result = String::new();
 
-        // Calculate the prefix length to skip (line number + prefix char + spaces)
-        // Format: "{line_num:>width} {prefix} {content}"
-        let prefix_len = self.prefix_len();
-
         for screen_row in start.row..=end.row {
-            if screen_row >= self.view.row_map.len() {
-                break;
-            }
-
-            let row_info = &self.view.row_map[screen_row];
-
-            // Get content from the row_map (already has the correct content for this screen row)
-            let content = &row_info.content;
+            let (content, prefix_len) = match self.row_content(screen_row) {
+                Some(r) => r,
+                None => break,
+            };
 
             let char_count = content.chars().count();
 
@@ -479,10 +584,7 @@ impl App {
                 if start_in_content < char_count {
                     result.push_str(char_slice_from(content, start_in_content));
                 }
-                // Only add newline if next row is a new logical line (not a wrapped continuation)
-                if screen_row + 1 < self.view.row_map.len()
-                    && !self.view.row_map[screen_row + 1].is_continuation
-                {
+                if !self.is_next_row_continuation(screen_row) {
                     result.push('\n');
                 }
             } else if screen_row == end.row {
@@ -493,10 +595,7 @@ impl App {
             } else {
                 // Middle rows - take entire content
                 result.push_str(content);
-                // Only add newline if next row is a new logical line (not a wrapped continuation)
-                if screen_row + 1 < self.view.row_map.len()
-                    && !self.view.row_map[screen_row + 1].is_continuation
-                {
+                if !self.is_next_row_continuation(screen_row) {
                     result.push('\n');
                 }
             }
@@ -1219,5 +1318,250 @@ mod tests {
         let sel = app.view.selection.as_ref().expect("Should have selection");
         assert_eq!(sel.start.col, 10); // 6 + 4
         assert_eq!(sel.end.col, 15); // 11 + 4
+    }
+
+    // --- Auto-copy tests ---
+
+    #[test]
+    fn test_has_non_empty_selection_point() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 5 },
+            end: Position { row: 0, col: 5 },
+            active: false,
+        });
+        assert!(!app.has_non_empty_selection());
+    }
+
+    #[test]
+    fn test_has_non_empty_selection_range() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 5 },
+            end: Position { row: 0, col: 10 },
+            active: false,
+        });
+        assert!(app.has_non_empty_selection());
+    }
+
+    #[test]
+    fn test_has_non_empty_selection_none() {
+        let app = TestAppBuilder::new().build();
+        assert!(!app.has_non_empty_selection());
+    }
+
+    #[test]
+    fn test_end_selection_after_drag_clears_selection() {
+        // Simulate drag: set non-empty selection, clear last_click (drag clears it)
+        let mut app = TestAppBuilder::new().build();
+        app.view.line_num_width = 3;
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![make_row("hello world", false)];
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 8 },
+            end: Position { row: 0, col: 14 },
+            active: true,
+        });
+        app.view.last_click = None; // Drag clears last_click
+
+        app.end_selection_with_auto_copy();
+
+        // copy_selection clears the selection on success
+        // In test env clipboard may fail, but selection should still be processed
+        // Check that pending_copy was NOT set (drag = immediate copy)
+        assert!(app.view.pending_copy.is_none());
+    }
+
+    #[test]
+    fn test_end_selection_after_double_click_sets_pending_copy() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.line_num_width = 3;
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![make_row("hello world", false)];
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 8 },
+            end: Position { row: 0, col: 13 },
+            active: true,
+        });
+        app.view.last_click = Some((Instant::now(), 15, 1, 2)); // double-click
+
+        app.end_selection_with_auto_copy();
+
+        // Should defer copy for multi-click
+        assert!(app.view.pending_copy.is_some());
+        // Selection should still exist (not yet copied)
+        assert!(app.view.selection.is_some());
+    }
+
+    #[test]
+    fn test_end_selection_single_click_no_copy() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 5 },
+            end: Position { row: 0, col: 5 },
+            active: true,
+        });
+        app.view.last_click = Some((Instant::now(), 5, 0, 1)); // single click
+
+        app.end_selection_with_auto_copy();
+
+        assert!(app.view.pending_copy.is_none());
+    }
+
+    #[test]
+    fn test_cancel_pending_copy() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.pending_copy = Some(Instant::now());
+
+        app.cancel_pending_copy();
+
+        assert!(app.view.pending_copy.is_none());
+    }
+
+    #[test]
+    fn test_check_and_execute_pending_copy_too_soon() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.pending_copy = Some(Instant::now());
+        app.view.row_map = vec![make_row("hello", false)];
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 0 },
+            end: Position { row: 0, col: 5 },
+            active: false,
+        });
+
+        // Should NOT execute yet (just created)
+        let executed = app.check_and_execute_pending_copy();
+        assert!(!executed);
+        assert!(app.view.pending_copy.is_some());
+    }
+
+    #[test]
+    fn test_check_and_execute_pending_copy_after_timeout() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.line_num_width = 0;
+        app.view.content_offset = (0, 0);
+        // Set pending_copy to 600ms ago
+        app.view.pending_copy = Some(Instant::now() - std::time::Duration::from_millis(600));
+        app.view.row_map = vec![make_row("hello", false)];
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 4 },
+            end: Position { row: 0, col: 9 },
+            active: false,
+        });
+
+        let executed = app.check_and_execute_pending_copy();
+        assert!(executed);
+        assert!(app.view.pending_copy.is_none());
+    }
+
+    // --- Status bar selection tests ---
+
+    #[test]
+    fn test_screen_to_content_position_status_bar() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![make_row("line1", false), make_row("line2", false)];
+        app.view.status_bar_lines = vec!["status line".to_string()];
+        app.view.status_bar_screen_y = 10;
+
+        // Click in status bar area (screen_y=10)
+        let pos = app.screen_to_content_position(5, 10);
+        assert!(pos.is_some());
+        let pos = pos.unwrap();
+        // Virtual row = row_map.len() + (10 - 10) = 2
+        assert_eq!(pos.row, 2);
+        assert_eq!(pos.col, 5);
+    }
+
+    #[test]
+    fn test_screen_to_content_position_outside_all_areas() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![make_row("line1", false)];
+        app.view.status_bar_lines = vec!["status".to_string()];
+        app.view.status_bar_screen_y = 10;
+
+        // Click above content area and not in status bar
+        let pos = app.screen_to_content_position(0, 0);
+        assert!(pos.is_none());
+    }
+
+    #[test]
+    fn test_get_selected_text_from_status_bar() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.content_offset = (1, 1);
+        app.view.line_num_width = 0;
+        app.view.row_map = vec![make_row("diff content", false)];
+        app.view.status_bar_lines = vec!["repo | feat vs main".to_string()];
+        app.view.status_bar_screen_y = 10;
+
+        // Select "feat" from status bar (virtual row 1, cols 7..11, no prefix)
+        app.view.selection = Some(Selection {
+            start: Position { row: 1, col: 7 },
+            end: Position { row: 1, col: 11 },
+            active: false,
+        });
+
+        let text = app.get_selected_text();
+        assert_eq!(text, Some("feat".to_string()));
+    }
+
+    #[test]
+    fn test_double_click_status_bar_selects_word() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![make_row("diff line", false)];
+        app.view.status_bar_lines = vec!["repo | feature vs main".to_string()];
+        app.view.status_bar_screen_y = 5;
+
+        // Double-click on "feature" (starts at col 7, status bar screen_y=5)
+        // screen_to_content_position maps (10, 5) → virtual row 1, col 10
+        // "feature" spans cols 7..14 in the status bar text
+        app.select_word_at(10, 5);
+
+        let sel = app.view.selection.as_ref().expect("Should have selection");
+        assert_eq!(sel.start.row, 1); // virtual row (row_map.len() + 0)
+        assert_eq!(sel.start.col, 7); // "feature" starts at col 7 (no prefix)
+        assert_eq!(sel.end.col, 14);  // "feature" ends at col 14
+
+        let text = app.get_selected_text();
+        assert_eq!(text, Some("feature".to_string()));
+    }
+
+    #[test]
+    fn test_triple_click_status_bar_selects_line() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![make_row("diff line", false)];
+        app.view.status_bar_lines = vec!["repo | feat vs main".to_string()];
+        app.view.status_bar_screen_y = 5;
+
+        // Triple-click anywhere on the status bar line
+        app.select_line_at(10, 5);
+
+        let sel = app.view.selection.as_ref().expect("Should have selection");
+        assert_eq!(sel.start.row, 1); // virtual row
+        assert_eq!(sel.start.col, 0); // line select starts at 0 (no prefix)
+        assert_eq!(sel.end.col, 19);  // "repo | feat vs main" = 19 chars
+
+        let text = app.get_selected_text();
+        assert_eq!(text, Some("repo | feat vs main".to_string()));
+    }
+
+    #[test]
+    fn test_double_click_status_bar_past_end_selects_line() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![make_row("diff line", false)];
+        app.view.status_bar_lines = vec!["short".to_string()];
+        app.view.status_bar_screen_y = 5;
+
+        // Double-click past end of status bar content
+        app.select_word_at(50, 5);
+
+        let sel = app.view.selection.as_ref().expect("Should have selection");
+        // Should select entire line since click was past content
+        assert_eq!(sel.start.col, 0);
+        assert_eq!(sel.end.col, 5); // "short" = 5 chars
     }
 }
