@@ -252,6 +252,9 @@ mod tests {
                 needs_inline_spans: true,
                 path_copied_at: None,
                 last_click: None,
+                pending_copy: None,
+                status_bar_lines: Vec::new(),
+                status_bar_screen_y: 0,
             },
         };
 
