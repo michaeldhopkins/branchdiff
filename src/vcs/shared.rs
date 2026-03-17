@@ -13,6 +13,12 @@ use super::{vcs_thread_pool, PARALLEL_THRESHOLD};
 const MAX_RETRIES: u32 = 3;
 const BASE_RETRY_DELAY_MS: u64 = 100;
 
+/// Check whether a formatted VCS error message indicates a transient condition
+/// that may resolve on its own (e.g., "The working copy is stale").
+pub fn is_transient_vcs_error(error_msg: &str) -> bool {
+    error_msg.contains("stale")
+}
+
 /// Run a VCS command with exponential backoff on transient errors.
 ///
 /// Retries up to `MAX_RETRIES` times with 100ms/200ms/400ms delays when
@@ -220,5 +226,20 @@ mod tests {
             diff_result(path)
         });
         assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn test_is_transient_vcs_error_detects_stale() {
+        assert!(is_transient_vcs_error("The working copy is stale"));
+        assert!(is_transient_vcs_error(
+            "jj diff --summary failed: Error: The working copy is stale (not updated since op 291e6b6bf66c)"
+        ));
+    }
+
+    #[test]
+    fn test_is_transient_vcs_error_rejects_non_transient() {
+        assert!(!is_transient_vcs_error("Config error: no such revision"));
+        assert!(!is_transient_vcs_error(""));
+        assert!(!is_transient_vcs_error("jj not found"));
     }
 }
