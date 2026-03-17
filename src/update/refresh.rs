@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::message::{FetchResult, LoopAction, RefreshOutcome, RefreshTrigger, UpdateResult};
+use crate::vcs::shared::is_transient_vcs_error;
 use crate::vcs::Vcs;
 
 use super::{RefreshState, Timers, UpdateConfig};
@@ -11,6 +12,15 @@ const VCS_EVENT_DELAY_MS: u64 = 500;
 
 /// How often to check for VCS backend changes (e.g., .jj appearing or disappearing).
 const VCS_CHECK_INTERVAL_SECS: u64 = 2;
+
+/// Initial delay before retrying after a transient VCS error.
+const TRANSIENT_RETRY_BASE_MS: u64 = 1000;
+
+/// Maximum delay between transient error retries.
+const TRANSIENT_RETRY_MAX_MS: u64 = 5000;
+
+/// Stop auto-retrying after this many consecutive transient failures.
+const TRANSIENT_RETRY_MAX_ATTEMPTS: u32 = 10;
 
 /// Handle completed refresh operations.
 pub(super) fn handle_refresh(
@@ -29,6 +39,8 @@ pub(super) fn handle_refresh(
             // VCS commands during the refresh (e.g., jj auto-snapshot)
             timers.pending_vcs_event = None;
             timers.last_refresh_completed = Some(Instant::now());
+            timers.transient_retry_at = None;
+            timers.transient_retry_attempt = 0;
 
             // Check for diff-related warnings
             let diff_warning = config.diff_thresholds.check_diff_warning(&refresh_result.metrics);
@@ -64,6 +76,8 @@ pub(super) fn handle_refresh(
         RefreshOutcome::SingleFile { path, diff, revision_id } => {
             timers.pending_vcs_event = None;
             timers.last_refresh_completed = Some(Instant::now());
+            timers.transient_retry_at = None;
+            timers.transient_retry_attempt = 0;
 
             if let Some(rev_id) = &revision_id {
                 if timers.last_known_revision.as_ref().is_some_and(|prev| prev != rev_id) {
@@ -80,7 +94,22 @@ pub(super) fn handle_refresh(
             result.needs_redraw = true;
         }
         RefreshOutcome::Error(msg) => {
-            app.error = Some(msg);
+            if is_transient_vcs_error(&msg)
+                && timers.transient_retry_attempt < TRANSIENT_RETRY_MAX_ATTEMPTS
+            {
+                let delay_ms = (TRANSIENT_RETRY_BASE_MS << timers.transient_retry_attempt)
+                    .min(TRANSIENT_RETRY_MAX_MS);
+                timers.transient_retry_at =
+                    Some(Instant::now() + Duration::from_millis(delay_ms));
+                timers.transient_retry_attempt += 1;
+                app.error = Some(format!(
+                    "{msg} (retrying in {:.0}s...)",
+                    delay_ms as f64 / 1000.0
+                ));
+            } else {
+                timers.transient_retry_at = None;
+                app.error = Some(msg);
+            }
             result.needs_redraw = true;
         }
     }
@@ -165,6 +194,16 @@ pub(super) fn handle_tick(
         && refresh_state.is_idle()
     {
         timers.pending_vcs_event = None;
+        result.refresh = RefreshTrigger::Full;
+        return result;
+    }
+
+    // Transient error retry
+    if let Some(retry_at) = timers.transient_retry_at
+        && Instant::now() >= retry_at
+        && refresh_state.is_idle()
+    {
+        timers.transient_retry_at = None;
         result.refresh = RefreshTrigger::Full;
         return result;
     }
@@ -904,5 +943,194 @@ mod tests {
         assert_eq!(result.refresh, RefreshTrigger::None,
             "first refresh should just store revision, not trigger follow-up");
         assert_eq!(timers.last_known_revision.as_deref(), Some("first_rev"));
+    }
+
+    #[test]
+    fn test_transient_error_schedules_retry() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Error(
+            "jj diff --summary failed: The working copy is stale".to_string(),
+        );
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(result.needs_redraw);
+        assert!(timers.transient_retry_at.is_some());
+        assert_eq!(timers.transient_retry_attempt, 1);
+        assert!(app.error.as_ref().unwrap().contains("retrying"));
+    }
+
+    #[test]
+    fn test_non_transient_error_no_retry() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Error("Config error: no such revision".to_string());
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(timers.transient_retry_at.is_none());
+        assert_eq!(timers.transient_retry_attempt, 0);
+        assert!(!app.error.as_ref().unwrap().contains("retrying"));
+    }
+
+    #[test]
+    fn test_transient_retry_backoff_increases() {
+        let mut app = TestAppBuilder::new().build();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+        let mut timers = Timers::default();
+
+        let mut delays = Vec::new();
+        for _ in 0..5 {
+            let mut refresh_state = RefreshState::InProgress {
+                started_at: Instant::now(),
+                cancel_flag: Arc::new(AtomicBool::new(false)),
+            };
+            let outcome = RefreshOutcome::Error(
+                "The working copy is stale".to_string(),
+            );
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+            let retry_at = timers.transient_retry_at.unwrap();
+            let delay = retry_at.duration_since(Instant::now());
+            delays.push(delay);
+        }
+
+        // Delays should increase: 1s, 2s, 4s, 5s(cap), 5s(cap)
+        assert!(delays[1] > delays[0], "second delay should exceed first");
+        assert!(delays[2] > delays[1], "third delay should exceed second");
+        // 4th and 5th should be capped at 5s
+        let cap = Duration::from_millis(TRANSIENT_RETRY_MAX_MS + 100);
+        assert!(delays[3] < cap, "delay should be capped");
+        assert!(delays[4] < cap, "delay should be capped");
+    }
+
+    #[test]
+    fn test_transient_retry_max_attempts_exceeded() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        timers.transient_retry_attempt = TRANSIENT_RETRY_MAX_ATTEMPTS;
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Error(
+            "The working copy is stale".to_string(),
+        );
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(timers.transient_retry_at.is_none(), "should not schedule retry past max attempts");
+        assert!(!app.error.as_ref().unwrap().contains("retrying"));
+    }
+
+    #[test]
+    fn test_handle_tick_fires_transient_retry() {
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::default();
+        timers.transient_retry_at = Some(Instant::now() - Duration::from_millis(100));
+        let config = UpdateConfig::default();
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+
+        assert_eq!(result.refresh, RefreshTrigger::Full);
+        assert!(timers.transient_retry_at.is_none());
+    }
+
+    #[test]
+    fn test_handle_tick_no_transient_retry_when_not_idle() {
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        timers.transient_retry_at = Some(Instant::now() - Duration::from_millis(100));
+        let config = UpdateConfig::default();
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        assert!(timers.transient_retry_at.is_some(), "should preserve retry timer when busy");
+    }
+
+    #[test]
+    fn test_handle_tick_no_transient_retry_when_future() {
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::default();
+        timers.transient_retry_at = Some(Instant::now() + Duration::from_secs(60));
+        let config = UpdateConfig::default();
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        assert!(timers.transient_retry_at.is_some());
+    }
+
+    #[test]
+    fn test_success_clears_transient_retry_state() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        timers.transient_retry_at = Some(Instant::now() + Duration::from_secs(5));
+        timers.transient_retry_attempt = 3;
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+            files: vec![],
+            lines: vec![base_line("content")],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None, bookmark_name: None,
+            revision_id: None,
+        });
+
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(timers.transient_retry_at.is_none());
+        assert_eq!(timers.transient_retry_attempt, 0);
+    }
+
+    #[test]
+    fn test_cancelled_preserves_transient_retry_state() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(true)),
+        };
+        let mut timers = Timers::default();
+        let retry_at = Instant::now() + Duration::from_secs(2);
+        timers.transient_retry_at = Some(retry_at);
+        timers.transient_retry_attempt = 3;
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        handle_refresh(RefreshOutcome::Cancelled, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(
+            timers.transient_retry_at.is_some(),
+            "Cancelled should not clear transient retry timer"
+        );
+        assert_eq!(timers.transient_retry_attempt, 3);
     }
 }

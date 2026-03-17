@@ -35,6 +35,10 @@ pub struct Timers {
     pub last_refresh_completed: Option<Instant>,
     /// Working revision ID from the last completed refresh (for staleness checks)
     pub last_known_revision: Option<String>,
+    /// When to fire the next transient-error retry (None = no retry scheduled)
+    pub transient_retry_at: Option<Instant>,
+    /// Current backoff exponent for transient retries
+    pub transient_retry_attempt: u32,
 }
 
 impl Timers {
@@ -48,6 +52,8 @@ impl Timers {
             jj_present,
             last_refresh_completed: None,
             last_known_revision: None,
+            transient_retry_at: None,
+            transient_retry_attempt: 0,
         }
     }
 }
