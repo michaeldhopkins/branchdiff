@@ -1,5 +1,19 @@
 ## [unreleased]
 
+### Features
+
+- Auto-retry on transient VCS errors with exponential backoff
+## [0.58.0] - 2026-03-16
+
+### Features
+
+- Auto-copy on highlight and status bar selection
+## [0.57.0] - 2026-03-10
+
+### Features
+
+- Add BookmarkOnly view mode for jj stacked bookmarks
+
 ### Bug Fixes
 
 - Align help modal color legend indentation and shorten view mode label
