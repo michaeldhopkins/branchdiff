@@ -190,11 +190,25 @@ impl App {
         self.lines = result.lines;
         self.file_links = result.file_links;
         self.comparison.bookmark_name = result.bookmark_name;
-        // CommitOnly/BookmarkOnly are jj-only; fall back if backend changed to git
-        if matches!(self.view.view_mode, ViewMode::CommitOnly | ViewMode::BookmarkOnly)
-            && self.comparison.vcs_backend == VcsBackend::Git
-        {
-            self.view.view_mode = ViewMode::Context;
+        // Fall back from CommitOnly/BookmarkOnly when context is no longer valid
+        if matches!(self.view.view_mode, ViewMode::CommitOnly | ViewMode::BookmarkOnly) {
+            let should_fallback = match self.comparison.vcs_backend {
+                VcsBackend::Git => true,
+                VcsBackend::Jj => match self.view.view_mode {
+                    ViewMode::CommitOnly => {
+                        self.comparison.stack_position.is_none()
+                            && !self.lines.iter().any(|l| l.is_current_commit())
+                    }
+                    ViewMode::BookmarkOnly => {
+                        self.comparison.bookmark_name.is_none()
+                            && !self.lines.iter().any(|l| l.is_current_bookmark())
+                    }
+                    _ => false,
+                },
+            };
+            if should_fallback {
+                self.view.view_mode = ViewMode::Context;
+            }
         }
         self.auto_collapse_files();
         self.clamp_scroll();
@@ -1930,5 +1944,113 @@ mod tests {
         let search = app.search.as_ref().unwrap();
         assert_eq!(search.query, "hel");
         assert_eq!(search.matches.len(), 2, "should find 'hel' in both new lines");
+    }
+
+    fn empty_jj_refresh() -> RefreshResult {
+        RefreshResult {
+            files: vec![],
+            lines: vec![],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: None,
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None,
+            bookmark_name: None,
+            revision_id: None,
+        }
+    }
+
+    #[test]
+    fn test_commit_only_falls_back_when_no_commit_context() {
+        let mut app = TestAppBuilder::new().build();
+        app.comparison.vcs_backend = VcsBackend::Jj;
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        app.apply_refresh_result(empty_jj_refresh());
+
+        assert_eq!(app.view.view_mode, ViewMode::Context);
+    }
+
+    #[test]
+    fn test_commit_only_stays_when_lines_attributed() {
+        let mut app = TestAppBuilder::new().build();
+        app.comparison.vcs_backend = VcsBackend::Jj;
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let mut result = empty_jj_refresh();
+        result.lines = vec![
+            DiffLine::new(LineSource::Staged, "new line".to_string(), '+', None),
+        ];
+        app.apply_refresh_result(result);
+
+        assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
+    }
+
+    #[test]
+    fn test_commit_only_stays_when_stack_position_present() {
+        let mut app = TestAppBuilder::new().build();
+        app.comparison.vcs_backend = VcsBackend::Jj;
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let mut result = empty_jj_refresh();
+        result.stack_position = Some(crate::vcs::StackPosition {
+            current: 1,
+            total: 3,
+            head_count: 1,
+        });
+        app.apply_refresh_result(result);
+
+        assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
+    }
+
+    #[test]
+    fn test_bookmark_only_falls_back_when_no_bookmark_context() {
+        let mut app = TestAppBuilder::new().build();
+        app.comparison.vcs_backend = VcsBackend::Jj;
+        app.view.view_mode = ViewMode::BookmarkOnly;
+
+        app.apply_refresh_result(empty_jj_refresh());
+
+        assert_eq!(app.view.view_mode, ViewMode::Context);
+    }
+
+    #[test]
+    fn test_bookmark_only_stays_when_bookmark_name_present() {
+        let mut app = TestAppBuilder::new().build();
+        app.comparison.vcs_backend = VcsBackend::Jj;
+        app.view.view_mode = ViewMode::BookmarkOnly;
+
+        let mut result = empty_jj_refresh();
+        result.bookmark_name = Some("feat/abc".to_string());
+        app.apply_refresh_result(result);
+
+        assert_eq!(app.view.view_mode, ViewMode::BookmarkOnly);
+    }
+
+    #[test]
+    fn test_bookmark_only_stays_when_lines_have_bookmark_attribution() {
+        let mut app = TestAppBuilder::new().build();
+        app.comparison.vcs_backend = VcsBackend::Jj;
+        app.view.view_mode = ViewMode::BookmarkOnly;
+
+        let mut line = DiffLine::new(LineSource::Staged, "new line".to_string(), '+', None);
+        line.in_current_bookmark = Some(true);
+        let mut result = empty_jj_refresh();
+        result.lines = vec![line];
+        app.apply_refresh_result(result);
+
+        assert_eq!(app.view.view_mode, ViewMode::BookmarkOnly);
+    }
+
+    #[test]
+    fn test_git_backend_always_falls_back_from_commit_only() {
+        let mut app = TestAppBuilder::new().build();
+        app.comparison.vcs_backend = VcsBackend::Git;
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        app.apply_refresh_result(empty_jj_refresh());
+
+        assert_eq!(app.view.view_mode, ViewMode::Context);
     }
 }
