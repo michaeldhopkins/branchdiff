@@ -3,7 +3,7 @@ pub mod jj;
 pub(crate) mod shared;
 pub mod types;
 
-pub use types::{ComparisonContext, RefreshResult, StackPosition, VcsBackend, VcsEventType, VcsWatchPaths};
+pub use types::{ComparisonContext, DiffBase, RefreshResult, StackPosition, UpstreamDivergence, VcsBackend, VcsEventType, VcsWatchPaths};
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -112,4 +112,8 @@ pub trait Vcs: Send + Sync {
     /// Used for post-refresh staleness checks — detects external VCS operations
     /// (e.g., `jj new`) that happened during an active refresh.
     fn current_revision_id(&self) -> Result<String>;
+
+    /// Set the diff base mode (fork point vs trunk tip).
+    /// Only meaningful for jj — git always uses merge-base (fork point).
+    fn set_diff_base(&self, _base: DiffBase) {}
 }

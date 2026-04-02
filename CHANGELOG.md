@@ -1,8 +1,17 @@
-## [unreleased]
+## [0.59.1] - 2026-03-25
+
+### Bug Fixes
+
+- Gracefully fall back from CommitOnly/BookmarkOnly when revision context disappears
+## [0.59.0] - 2026-03-17
 
 ### Features
 
 - Auto-retry on transient VCS errors with exponential backoff
+
+### Miscellaneous
+
+- Regenerate changelog
 ## [0.58.0] - 2026-03-16
 
 ### Features
