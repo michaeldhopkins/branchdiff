@@ -23,6 +23,7 @@ pub enum AppAction {
     CopyPatch,
     CopyOrQuit,
     OpenSearch,
+    ToggleDiffBase,
     Resize,
     None,
 }
@@ -91,6 +92,9 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         // Search
         (KeyCode::Char('/'), _) => AppAction::OpenSearch,
         (KeyCode::Char('f'), KeyModifiers::CONTROL) => AppAction::OpenSearch,
+
+        // Toggle diff base (fork point vs trunk tip)
+        (KeyCode::Char('m'), KeyModifiers::NONE) => AppAction::ToggleDiffBase,
 
         _ => AppAction::None,
     }
@@ -295,6 +299,12 @@ mod tests {
     fn test_cycle_view_mode_with_c() {
         let event = key_event(KeyCode::Char('c'), KeyModifiers::NONE);
         assert_eq!(handle_event(event), AppAction::CycleViewMode);
+    }
+
+    #[test]
+    fn test_toggle_diff_base_with_m() {
+        let event = key_event(KeyCode::Char('m'), KeyModifiers::NONE);
+        assert_eq!(handle_event(event), AppAction::ToggleDiffBase);
     }
 
     #[test]

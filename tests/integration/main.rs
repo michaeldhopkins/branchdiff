@@ -52,17 +52,16 @@ fn test_view_mode_cycling() {
     // Should start in Context mode
     session.assert_status_bar_contains("[context]");
 
-    // Press 'c' to cycle to Changes
+    // Press 'c' to cycle to ChangesOnly
     session.press("c");
-    session.wait_for_text("[changes]");
-    session.assert_status_bar_contains("[changes]");
+    session.wait_for_text("[changed lines only]");
+    session.assert_status_bar_contains("[changed lines only]");
 
     // Press 'c' again to cycle to Full
-    // Full mode has no indicator - just verify [changes] is gone
     session.press("c");
     session
         .wait_for(
-            |contents| !contents.contains("[changes]") && !contents.contains("[context]"),
+            |contents| !contents.contains("[changed lines only]") && !contents.contains("[context]"),
             std::time::Duration::from_secs(5),
         )
         .expect("timeout waiting for Full mode");

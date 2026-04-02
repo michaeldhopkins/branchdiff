@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -28,13 +28,17 @@ fn no_snapshot<'a>(args: &[&'a str]) -> Vec<&'a str> {
 use crate::diff::{compute_four_way_diff, DiffInput, FileDiff};
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
-use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsBackend, VcsEventType, VcsWatchPaths};
+use crate::vcs::{ComparisonContext, DiffBase, RefreshResult, StackPosition, UpstreamDivergence, VcsBackend, VcsEventType, VcsWatchPaths};
 
 /// Jujutsu (jj) backend for branchdiff.
 pub struct JjVcs {
     repo_path: PathBuf,
     /// Revset for the base of comparison: `trunk()` when available, `@-` otherwise.
     from_rev: String,
+    /// Whether to diff from the fork point or the trunk tip.
+    /// Stored as AtomicU8 for interior mutability (Vcs trait uses &self).
+    /// 0 = ForkPoint, 1 = TrunkTip.
+    diff_base: AtomicU8,
 }
 
 /// Probe whether `trunk()` points to a real remote-tracking bookmark.
@@ -58,6 +62,106 @@ fn resolve_base_rev(repo_path: &Path) -> String {
         }
         _ => "@-".to_string(),
     }
+}
+
+/// Find the fork point: the most recent common ancestor of trunk() and @.
+/// Returns None if @ is already on top of trunk (no divergence) or if
+/// from_rev isn't trunk().
+fn resolve_fork_point(repo_path: &Path, from_rev: &str) -> Option<String> {
+    if from_rev != "trunk()" {
+        return None;
+    }
+
+    let args = no_snapshot(&[
+        "log", "-r", "heads(::trunk() & ::@)", "--no-graph",
+        "--limit", "1", "-T", "commit_id.short(12)",
+    ]);
+    let output = Command::new("jj")
+        .args(&args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let fork_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if fork_id.is_empty() {
+        return None;
+    }
+
+    // Check if fork point equals trunk tip — if so, no divergence
+    let trunk_commit = {
+        let args = no_snapshot(&[
+            "log", "-r", "trunk()", "--no-graph", "--limit", "1",
+            "-T", "commit_id.short(12)",
+        ]);
+        let out = Command::new("jj").args(&args).current_dir(repo_path).output().ok()?;
+        if !out.status.success() { return None; }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    if fork_id == trunk_commit {
+        // @ is already on top of trunk — no divergence
+        return None;
+    }
+
+    Some(fork_id)
+}
+
+/// Compute upstream divergence for jj: how many commits and which files
+/// changed between the fork point and trunk().
+fn compute_jj_divergence(
+    repo_path: &Path,
+    fork_point: &str,
+) -> Option<UpstreamDivergence> {
+    // Count commits between fork point and trunk
+    let revset = format!("\"{}\"..trunk()", fork_point);
+    let count_args = no_snapshot(&[
+        "log", "-r", &revset,
+        "--no-graph", "-T", r#""\n""#,
+    ]);
+    let count_output = Command::new("jj")
+        .args(&count_args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+    let behind_count = if count_output.status.success() {
+        String::from_utf8_lossy(&count_output.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .count()
+    } else {
+        0
+    };
+
+    if behind_count == 0 {
+        return None;
+    }
+
+    // Get files changed between fork point and trunk
+    let diff_args = no_snapshot(&[
+        "diff", "--from", fork_point, "--to", "trunk()", "--summary",
+    ]);
+    let diff_output = Command::new("jj")
+        .args(&diff_args)
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+    let upstream_files = if diff_output.status.success() {
+        parse_jj_summary(&String::from_utf8_lossy(&diff_output.stdout))
+            .into_iter()
+            .map(|f| f.path)
+            .collect()
+    } else {
+        HashSet::new()
+    };
+
+    Some(UpstreamDivergence {
+        behind_count,
+        upstream_files,
+    })
 }
 
 /// Info about the stack tip when @ is not at the top.
@@ -299,7 +403,15 @@ impl JjVcs {
         Ok(Self {
             repo_path,
             from_rev,
+            diff_base: AtomicU8::new(0),
         })
+    }
+
+    fn load_diff_base(&self) -> DiffBase {
+        match self.diff_base.load(Ordering::Relaxed) {
+            0 => DiffBase::ForkPoint,
+            _ => DiffBase::TrunkTip,
+        }
     }
 
     fn run_jj(&self, args: &[&str]) -> Result<String> {
@@ -331,13 +443,13 @@ impl JjVcs {
         }
     }
 
-    /// Get changed files between from_rev and effective_to.
-    /// This is the first command per refresh and triggers the working copy
-    /// auto-snapshot — all subsequent commands use `--ignore-working-copy`.
-    fn get_changed_files(&self, effective_to: &str) -> Result<Vec<ChangedFile>> {
+    /// Get changed files between a from revision and effective_to.
+    /// The first call per refresh triggers the working copy auto-snapshot;
+    /// all subsequent commands use `--ignore-working-copy`.
+    fn get_changed_files_with_from(&self, from: &str, effective_to: &str) -> Result<Vec<ChangedFile>> {
         let output = run_vcs_with_retry(
             "jj", &self.repo_path,
-            &["diff", "--from", &self.from_rev, "--to", effective_to, "--summary"],
+            &["diff", "--from", from, "--to", effective_to, "--summary"],
             is_transient_jj_error,
         )?;
         if !output.status.success() {
@@ -350,9 +462,9 @@ impl JjVcs {
     /// Detect binary files by checking --stat output for "(binary)" markers.
     /// Uses `--ignore-working-copy` since the snapshot is already fresh from
     /// `get_changed_files`.
-    fn get_binary_files_set(&self, effective_to: &str) -> HashSet<String> {
+    fn get_binary_files_set(&self, from: &str, effective_to: &str) -> HashSet<String> {
         let args = no_snapshot(&[
-            "diff", "--from", &self.from_rev, "--to", effective_to, "--stat",
+            "diff", "--from", from, "--to", effective_to, "--stat",
         ]);
         let Ok(output) = run_vcs_with_retry("jj", &self.repo_path, &args, is_transient_jj_error) else {
             return HashSet::new();
@@ -551,10 +663,21 @@ impl crate::vcs::Vcs for JjVcs {
 
         // stack_position is computed by refresh() and applied via
         // apply_refresh_result — no need to resolve it here too.
-        Ok(ComparisonContext { from_label, to_label, stack_position: None, vcs_backend: VcsBackend::Jj, bookmark_name: None })
+        Ok(ComparisonContext { from_label, to_label, stack_position: None, vcs_backend: VcsBackend::Jj, bookmark_name: None, divergence: None })
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
+        // Resolve fork point for divergence detection and fork-point mode
+        let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev);
+        let divergence = fork_point.as_deref()
+            .and_then(|fp| compute_jj_divergence(&self.repo_path, fp));
+
+        // Determine the effective --from rev based on diff_base mode
+        let effective_from = match self.load_diff_base() {
+            DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(&self.from_rev),
+            DiffBase::TrunkTip => &self.from_rev,
+        };
+
         // Resolve stack tip — determines if @ is mid-stack
         let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev);
         let effective_to = stack_tip
@@ -568,14 +691,14 @@ impl crate::vcs::Vcs for JjVcs {
         let bookmark_changed_files = bookmark_boundary.as_ref().map(|b| &b.changed_files);
 
         // First command — triggers working copy auto-snapshot
-        let changed_files = self.get_changed_files(effective_to)?;
+        let changed_files = self.get_changed_files_with_from(effective_from, effective_to)?;
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
         }
 
         // All subsequent commands use --ignore-working-copy
-        let binary_files = self.get_binary_files_set(effective_to);
+        let binary_files = self.get_binary_files_set(effective_from, effective_to);
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
@@ -584,7 +707,7 @@ impl crate::vcs::Vcs for JjVcs {
         let results = process_files_parallel(&changed_files, |changed| {
             process_jj_file(
                 &self.repo_path,
-                &self.from_rev,
+                effective_from,
                 changed,
                 &binary_files,
                 tip_rev,
@@ -614,7 +737,7 @@ impl crate::vcs::Vcs for JjVcs {
             file_count: files.len(),
         };
         let (base_identifier, base_label_str) =
-            self.rev_metadata_no_snapshot(&self.from_rev);
+            self.rev_metadata_no_snapshot(effective_from);
         let (_, current_branch_str) = self.rev_metadata_no_snapshot("@");
 
         let file_paths: Vec<&str> = files
@@ -635,10 +758,17 @@ impl crate::vcs::Vcs for JjVcs {
             stack_position,
             bookmark_name: bookmark_boundary.map(|b| b.bookmark_name),
             revision_id: None,
+            divergence,
         })
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
+        let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev);
+        let effective_from = match self.load_diff_base() {
+            DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(&self.from_rev),
+            DiffBase::TrunkTip => &self.from_rev,
+        };
+
         let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev);
         let effective_to = stack_tip
             .as_ref()
@@ -646,13 +776,13 @@ impl crate::vcs::Vcs for JjVcs {
             .unwrap_or("@");
 
         // First command triggers auto-snapshot
-        let changed_files = self.get_changed_files(effective_to).ok()?;
+        let changed_files = self.get_changed_files_with_from(effective_from, effective_to).ok()?;
         let changed = changed_files.iter().find(|f| f.path == file_path);
         let old_path = changed.and_then(|f| f.old_path.as_deref());
 
         // Subsequent commands skip snapshot
         let base_path = old_path.unwrap_or(file_path);
-        let base = file_content_no_snapshot(&self.repo_path, base_path, &self.from_rev);
+        let base = file_content_no_snapshot(&self.repo_path, base_path, effective_from);
 
         let parent = file_content_no_snapshot(&self.repo_path, file_path, "@-")
             .or_else(|| {
@@ -669,7 +799,7 @@ impl crate::vcs::Vcs for JjVcs {
             return None;
         }
 
-        let binary_files = self.get_binary_files_set(effective_to);
+        let binary_files = self.get_binary_files_set(effective_from, effective_to);
         if binary_files.contains(file_path) {
             return None;
         }
@@ -716,7 +846,7 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn binary_files(&self) -> HashSet<String> {
-        self.get_binary_files_set("@")
+        self.get_binary_files_set(&self.from_rev, "@")
     }
 
     fn fetch(&self) -> Result<()> {
@@ -766,6 +896,14 @@ impl crate::vcs::Vcs for JjVcs {
 
     fn backend(&self) -> VcsBackend {
         VcsBackend::Jj
+    }
+
+    fn set_diff_base(&self, base: DiffBase) {
+        let val = match base {
+            DiffBase::ForkPoint => 0,
+            DiffBase::TrunkTip => 1,
+        };
+        self.diff_base.store(val, Ordering::Relaxed);
     }
 }
 

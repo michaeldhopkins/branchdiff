@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::diff::{DiffLine, FileDiff};
@@ -22,6 +22,25 @@ pub enum VcsBackend {
     Jj,
 }
 
+/// Whether to diff from the fork point or the trunk/origin tip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffBase {
+    /// Diff from the merge-base / common ancestor. Stable: shows only our changes.
+    #[default]
+    ForkPoint,
+    /// Diff from the current trunk() / origin tip. Shows full divergence.
+    TrunkTip,
+}
+
+/// How far the current branch and upstream have diverged from their common ancestor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamDivergence {
+    /// Commits on the upstream branch since the fork point.
+    pub behind_count: usize,
+    /// Files changed on the upstream branch since the fork point.
+    pub upstream_files: HashSet<String>,
+}
+
 /// VCS-agnostic context describing what we're comparing.
 ///
 /// Contains only UI labels. The base identifier (merge-base SHA, change ID)
@@ -38,6 +57,8 @@ pub struct ComparisonContext {
     pub vcs_backend: VcsBackend,
     /// Name of the current jj bookmark (for BookmarkOnly view mode label).
     pub bookmark_name: Option<String>,
+    /// Upstream divergence info (behind count, upstream-changed files).
+    pub divergence: Option<UpstreamDivergence>,
 }
 
 /// Result of a full refresh from a VCS backend.
@@ -56,6 +77,8 @@ pub struct RefreshResult {
     /// Working revision ID at the time the refresh completed.
     /// Populated by the spawn function, not the VCS backend.
     pub revision_id: Option<String>,
+    /// Upstream divergence info (behind count, upstream-changed files).
+    pub divergence: Option<UpstreamDivergence>,
 }
 
 /// Paths a VCS backend wants watched for change detection.
