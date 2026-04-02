@@ -14,8 +14,8 @@ use crate::vcs::RefreshResult;
 
 use super::changed_files::get_all_changed_files;
 use super::commands::{
-    batch_file_contents, get_binary_files, get_current_branch, get_file_at_ref,
-    get_merge_base_preferring_origin, get_working_tree_file, is_binary_file,
+    batch_file_contents, compute_upstream_divergence, get_binary_files, get_current_branch,
+    get_file_at_ref, get_merge_base_preferring_origin, get_working_tree_file, is_binary_file,
 };
 
 struct FileContents {
@@ -243,6 +243,7 @@ pub(super) fn git_compute_refresh(
     let lines = assembled.lines;
 
     let current_branch = get_current_branch(repo_path).unwrap_or(None);
+    let divergence = compute_upstream_divergence(repo_path, &merge_base, base_branch);
 
     let metrics = DiffMetrics {
         total_lines: lines.len(),
@@ -267,5 +268,6 @@ pub(super) fn git_compute_refresh(
         stack_position: None,
         bookmark_name: None,
         revision_id: None,
+        divergence,
     })
 }

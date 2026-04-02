@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use anyhow::{anyhow, Context, Result};
 
 use crate::vcs::shared::run_vcs_with_retry;
+use crate::vcs::UpstreamDivergence;
 
 /// Git version required for merge-tree --write-tree (conflict detection)
 const MERGE_TREE_MIN_VERSION: (u32, u32) = (2, 38);
@@ -111,33 +112,35 @@ pub fn get_repo_root(path: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(root))
 }
 
-/// Detect whether the base branch is 'main' or 'master'
+/// Check whether a git ref exists in the repository.
+fn ref_exists(repo_path: &Path, git_ref: &str) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--verify", git_ref])
+        .current_dir(repo_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Detect whether the base branch is 'main' or 'master'.
+///
+/// Prefers origin remote-tracking refs so that a local branch tracking a
+/// non-origin remote (e.g. heroku) doesn't win over origin.
 pub fn detect_base_branch(repo_path: &Path) -> Result<String> {
-    // Try 'main' first
-    let main_exists = Command::new("git")
-        .args(["rev-parse", "--verify", "main"])
-        .current_dir(repo_path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if main_exists {
-        return Ok("main".to_string());
+    // Prefer origin remote-tracking refs
+    for branch in &["main", "master"] {
+        if ref_exists(repo_path, &format!("origin/{}", branch)) {
+            return Ok(branch.to_string());
+        }
     }
 
-    // Fall back to 'master'
-    let master_exists = Command::new("git")
-        .args(["rev-parse", "--verify", "master"])
-        .current_dir(repo_path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if master_exists {
-        return Ok("master".to_string());
+    // Fall back to local branches (repos without an origin remote)
+    for branch in &["main", "master"] {
+        if ref_exists(repo_path, branch) {
+            return Ok(branch.to_string());
+        }
     }
 
-    // Neither exists - might be a new repo or using different naming
     Err(anyhow!("Could not find 'main' or 'master' branch"))
 }
 
@@ -164,6 +167,79 @@ pub(super) fn get_merge_base(repo_path: &Path, base_branch: &str) -> Result<Stri
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Compute upstream divergence: how many commits and which files have changed
+/// on origin/{base_branch} since the merge-base.
+pub fn compute_upstream_divergence(
+    repo_path: &Path,
+    merge_base: &str,
+    base_branch: &str,
+) -> Option<UpstreamDivergence> {
+    if merge_base.is_empty() {
+        return None;
+    }
+
+    let remote_ref = format!("origin/{}", base_branch);
+    if !ref_exists(repo_path, &remote_ref) {
+        return None;
+    }
+
+    let behind_count = rev_list_count(repo_path, merge_base, &remote_ref).unwrap_or(0);
+    if behind_count == 0 {
+        return None;
+    }
+
+    let upstream_files = upstream_changed_files(repo_path, merge_base, &remote_ref)
+        .unwrap_or_default();
+
+    Some(UpstreamDivergence {
+        behind_count,
+        upstream_files,
+    })
+}
+
+/// Count commits reachable from `to` but not from `from`.
+fn rev_list_count(repo_path: &Path, from: &str, to: &str) -> Result<usize> {
+    let range = format!("{}..{}", from, to);
+    let output = Command::new("git")
+        .args(["rev-list", "--count", &range])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to run git rev-list --count")?;
+
+    if !output.status.success() {
+        return Err(anyhow!("git rev-list --count failed"));
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<usize>()
+        .context("Failed to parse rev-list count")
+}
+
+/// Get files changed between two refs.
+fn upstream_changed_files(
+    repo_path: &Path,
+    from: &str,
+    to: &str,
+) -> Result<HashSet<String>> {
+    let range = format!("{}..{}", from, to);
+    let output = Command::new("git")
+        .args(["diff", "--name-only", &range])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to run git diff --name-only")?;
+
+    if !output.status.success() {
+        return Err(anyhow!("git diff --name-only failed"));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect())
 }
 
 /// Get file content at a specific ref (commit, branch, or index)

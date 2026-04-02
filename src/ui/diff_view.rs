@@ -53,6 +53,8 @@ pub struct DiffViewModel<'a> {
     pub vcs_backend: VcsBackend,
     /// Active search state (for highlighting matches).
     pub search: &'a Option<SearchState>,
+    /// Files changed on upstream since fork point (for ↑ markers).
+    pub upstream_files: Option<&'a HashSet<String>>,
 }
 
 /// Position where an image should be rendered after text render
@@ -96,6 +98,7 @@ impl<'a> DiffViewModel<'a> {
             font_size: app.font_size,
             vcs_backend: app.comparison.vcs_backend,
             search: &app.search,
+            upstream_files: app.comparison.divergence.as_ref().map(|d| &d.upstream_files),
         }
     }
 
@@ -421,6 +424,14 @@ impl<'a> DiffViewModel<'a> {
         spans.push(Span::styled("── ", Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(diff_line.content.clone(), style));
         spans.push(Span::styled(" ──", Style::default().fg(Color::DarkGray)));
+
+        // Add ↑ marker if this file also changed upstream
+        if let Some(upstream) = &self.upstream_files
+            && let Some(ref path) = diff_line.file_path
+            && upstream.contains(path)
+        {
+            spans.push(Span::styled(" ↑", Style::default().fg(Color::Yellow)));
+        }
 
         all_lines.push(Line::from(spans));
         all_row_infos.push(ScreenRowInfo {

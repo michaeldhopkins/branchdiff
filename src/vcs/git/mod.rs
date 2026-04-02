@@ -60,6 +60,7 @@ impl Vcs for GitVcs {
             stack_position: None,
             vcs_backend: VcsBackend::Git,
             bookmark_name: None,
+            divergence: None,
         })
     }
 

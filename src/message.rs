@@ -31,13 +31,19 @@ pub struct FetchResult {
 #[derive(Debug)]
 pub enum RefreshOutcome {
     /// Full refresh completed successfully.
-    Success(RefreshResult),
+    Success(Box<RefreshResult>),
     /// Single file refresh completed.
     SingleFile { path: String, diff: Option<FileDiff>, revision_id: Option<String> },
     /// Refresh was cancelled (e.g., by watchdog restart). Not a user-facing error.
     Cancelled,
     /// Refresh failed with an error.
     Error(String),
+}
+
+impl RefreshOutcome {
+    pub fn success(result: RefreshResult) -> Self {
+        Self::Success(Box::new(result))
+    }
 }
 
 /// Unified message type for all application events.
