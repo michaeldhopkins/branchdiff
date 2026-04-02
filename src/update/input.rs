@@ -153,6 +153,16 @@ pub(super) fn handle_input(
         // Search
         AppAction::OpenSearch => app.open_search(),
 
+        // Toggle diff base (fork point vs trunk tip)
+        AppAction::ToggleDiffBase => {
+            app.toggle_diff_base();
+            if refresh_state.is_idle() {
+                result.refresh = RefreshTrigger::Full;
+            } else {
+                refresh_state.cancel_and_mark_pending();
+            }
+        }
+
         // No-op actions
         AppAction::Resize | AppAction::None => {}
     }
@@ -475,5 +485,30 @@ mod tests {
         handle_input(AppAction::StartSelection(10, 5), &mut app, &mut refresh_state);
 
         assert!(app.view.pending_copy.is_none(), "StartSelection should cancel pending copy");
+    }
+
+    #[test]
+    fn test_toggle_diff_base_triggers_refresh() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+        assert_eq!(app.diff_base, crate::vcs::DiffBase::ForkPoint);
+
+        let result = handle_input(AppAction::ToggleDiffBase, &mut app, &mut refresh_state);
+        assert_eq!(app.diff_base, crate::vcs::DiffBase::TrunkTip);
+        assert_eq!(result.refresh, RefreshTrigger::Full);
+    }
+
+    #[test]
+    fn test_toggle_diff_base_when_busy_marks_pending() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+
+        let result = handle_input(AppAction::ToggleDiffBase, &mut app, &mut refresh_state);
+        assert_eq!(app.diff_base, crate::vcs::DiffBase::TrunkTip);
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        assert!(refresh_state.has_pending());
     }
 }

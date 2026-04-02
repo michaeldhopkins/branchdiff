@@ -212,6 +212,7 @@ mod tests {
                 stack_position: None,
                 vcs_backend: VcsBackend::Git,
                 bookmark_name: None,
+                divergence: None,
             },
             base_identifier: "abc123".to_string(),
             files: vec![FileDiff {
@@ -234,6 +235,7 @@ mod tests {
             image_picker: None,
             font_size: (FONT_WIDTH_PX as u16, FONT_HEIGHT_PX as u16),
             search: None,
+            diff_base: crate::vcs::DiffBase::default(),
             view: ViewState {
                 scroll_offset: 0,
                 viewport_height: 20,

@@ -761,6 +761,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         };
         app.comparison.vcs_backend = VcsBackend::Git;
         app.apply_refresh_result(result);
@@ -1060,6 +1061,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         };
         app.comparison.vcs_backend = VcsBackend::Git;
         app.apply_refresh_result(result);

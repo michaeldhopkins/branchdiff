@@ -35,6 +35,7 @@ pub(super) fn handle_refresh(
 
     match outcome {
         RefreshOutcome::Success(refresh_result) => {
+            let refresh_result = *refresh_result;
             // Clear pending VCS events that are likely self-triggered by our own
             // VCS commands during the refresh (e.g., jj auto-snapshot)
             timers.pending_vcs_event = None;
@@ -247,7 +248,7 @@ mod tests {
         timers.last_refresh = Instant::now() - Duration::from_secs(60);
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+        let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
             files: vec![],
             lines: vec![base_line("new content")],
             base_identifier: "def456".to_string(),
@@ -257,6 +258,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         });
 
         let config = UpdateConfig::default();
@@ -297,7 +299,7 @@ mod tests {
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+        let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
             files: vec![],
             lines: vec![base_line("content")],
             base_identifier: "abc".to_string(),
@@ -307,6 +309,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         });
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
@@ -400,7 +403,7 @@ mod tests {
         timers.pending_vcs_event = Some(Instant::now() - Duration::from_millis(100));
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+        let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
             files: vec![],
             lines: vec![base_line("content")],
             base_identifier: "abc".to_string(),
@@ -410,6 +413,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         });
 
         let config = UpdateConfig::default();
@@ -458,7 +462,7 @@ mod tests {
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+        let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
             files: vec![],
             lines: vec![base_line("content")],
             base_identifier: "abc".to_string(),
@@ -468,6 +472,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         });
 
         handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
@@ -840,7 +845,7 @@ mod tests {
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+        let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
             files: vec![],
             lines: vec![base_line("content")],
             base_identifier: "abc".to_string(),
@@ -850,6 +855,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: Some("new_rev".to_string()),
+            divergence: None,
         });
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
@@ -871,7 +877,7 @@ mod tests {
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+        let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
             files: vec![],
             lines: vec![base_line("content")],
             base_identifier: "abc".to_string(),
@@ -881,6 +887,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: Some("same_rev".to_string()),
+            divergence: None,
         });
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
@@ -926,7 +933,7 @@ mod tests {
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+        let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
             files: vec![],
             lines: vec![base_line("content")],
             base_identifier: "abc".to_string(),
@@ -936,6 +943,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: Some("first_rev".to_string()),
+            divergence: None,
         });
 
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
@@ -1093,7 +1101,7 @@ mod tests {
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Success(crate::vcs::RefreshResult {
+        let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
             files: vec![],
             lines: vec![base_line("content")],
             base_identifier: "abc".to_string(),
@@ -1103,6 +1111,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         });
 
         handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);

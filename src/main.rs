@@ -236,6 +236,7 @@ fn run_main_app(
             stack_position: None,
             vcs_backend: vcs.backend(),
             bookmark_name: None,
+            divergence: None,
         });
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let initial = vcs.refresh(&cancel_flag)?;
@@ -437,7 +438,7 @@ fn spawn_refresh(
         match vcs.refresh(&cancel_flag) {
             Ok(mut result) => {
                 result.revision_id = vcs.current_revision_id().ok();
-                let _ = refresh_tx.send(RefreshOutcome::Success(result));
+                let _ = refresh_tx.send(RefreshOutcome::success(result));
             }
             Err(e) => {
                 let outcome = if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
@@ -549,6 +550,7 @@ where
 
             match result.refresh {
                 RefreshTrigger::Full => {
+                    vcs.set_diff_base(app.diff_base);
                     let cancel_flag = refresh_state.start();
                     spawn_refresh(
                         vcs.clone(),

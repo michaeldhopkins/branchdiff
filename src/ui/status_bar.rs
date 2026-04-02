@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, ViewMode};
+use crate::vcs::DiffBase;
 use super::selection::{apply_selection_to_span, get_line_selection_range};
 
 /// View mode indicator for the status bar (e.g., " [context]", " [commit knmq]")
@@ -33,18 +34,29 @@ fn repo_name(app: &App) -> String {
 }
 
 fn branch_info(app: &App) -> String {
+    let mode_suffix = match app.diff_base {
+        DiffBase::ForkPoint => " (fork)",
+        DiffBase::TrunkTip => " (tip)",
+    };
     let base = format!(
-        "{} | {} vs {}",
+        "{} | {} vs {}{}",
         repo_name(app),
         app.comparison.to_label,
-        app.comparison.from_label
+        app.comparison.from_label,
+        mode_suffix,
     );
-    match app.comparison.stack_position {
+    let with_stack = match app.comparison.stack_position {
         Some(pos) if pos.head_count > 1 => {
             format!("{base} [{}/{} head 1/{}]", pos.current, pos.total, pos.head_count)
         }
         Some(pos) => format!("{base} [{}/{}]", pos.current, pos.total),
         None => base,
+    };
+    match &app.comparison.divergence {
+        Some(div) if div.behind_count > 0 => {
+            format!("{with_stack} [↑{}]", div.behind_count)
+        }
+        _ => with_stack,
     }
 }
 
@@ -115,9 +127,27 @@ fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
 
     let mut spans = vec![
         Span::styled(
-            format!("{} | {} file{} | ", branch_info, file_count, if file_count == 1 { "" } else { "s" }),
+            branch_info.clone(),
             Style::default().fg(Color::Cyan),
         ),
+    ];
+    // Add colored behind-count if diverged
+    if let Some(ref div) = app.comparison.divergence
+        && div.behind_count > 0
+        && let Some(last) = spans.last_mut()
+    {
+        let content = last.content.to_string();
+        let marker = format!(" [↑{}]", div.behind_count);
+        if let Some(stripped) = content.strip_suffix(&marker) {
+            *last = Span::styled(stripped.to_string(), Style::default().fg(Color::Cyan));
+            spans.push(Span::styled(marker, Style::default().fg(Color::Yellow)));
+        }
+    }
+    spans.push(Span::styled(
+        format!(" | {} file{} | ", file_count, if file_count == 1 { "" } else { "s" }),
+        Style::default().fg(Color::Cyan),
+    ));
+    spans.extend([
         Span::styled(format!("+{}", app.additions_count()), Style::default().fg(Color::LightGreen)),
         Span::styled(" ", Style::default().fg(Color::Cyan)),
         Span::styled(format!("-{}", app.deletions_count()), Style::default().fg(Color::Red)),
@@ -125,7 +155,7 @@ fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
             format!("{} | {}%", mode, app.scroll_percentage()),
             Style::default().fg(Color::Cyan),
         ),
-    ];
+    ]);
 
     // Add performance warning if present
     if let Some(ref warning) = app.performance_warning {
@@ -583,7 +613,7 @@ mod tests {
         let app = create_status_bar_test_app(Some("feat"), "main", 1);
 
         let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
-        let branch_info = "test | feat vs main";
+        let branch_info = "test | feat vs main (fork)";
 
         let stats = format!(
             "{} file{} | +{} -{}{} | {}%",
@@ -603,5 +633,39 @@ mod tests {
 
         assert_eq!(status_bar_height(&app, (threshold - 1) as u16), 2,
             "At width {} (one below threshold) should use 2 lines", threshold - 1);
+    }
+
+    #[test]
+    fn test_branch_info_shows_fork_mode_by_default() {
+        let app = create_status_bar_test_app(Some("feat"), "main", 1);
+        let info = branch_info(&app);
+        assert!(info.contains("(fork)"), "Should show fork mode: {}", info);
+    }
+
+    #[test]
+    fn test_branch_info_shows_tip_mode_after_toggle() {
+        let mut app = create_status_bar_test_app(Some("feat"), "main", 1);
+        app.toggle_diff_base();
+        let info = branch_info(&app);
+        assert!(info.contains("(tip)"), "Should show tip mode: {}", info);
+    }
+
+    #[test]
+    fn test_branch_info_shows_behind_count_when_diverged() {
+        use std::collections::HashSet;
+        let mut app = create_status_bar_test_app(Some("feat"), "main", 1);
+        app.comparison.divergence = Some(crate::vcs::UpstreamDivergence {
+            behind_count: 7,
+            upstream_files: HashSet::new(),
+        });
+        let info = branch_info(&app);
+        assert!(info.contains("[↑7]"), "Should show behind count: {}", info);
+    }
+
+    #[test]
+    fn test_branch_info_no_behind_count_when_zero() {
+        let app = create_status_bar_test_app(Some("feat"), "main", 1);
+        let info = branch_info(&app);
+        assert!(!info.contains("[↑"), "Should not show behind count: {}", info);
     }
 }

@@ -116,6 +116,7 @@ impl TestAppBuilder {
                 stack_position: self.stack_position,
                 vcs_backend: self.vcs_backend,
                 bookmark_name: None,
+                divergence: None,
             },
             base_identifier: "abc123".to_string(),
             files: self.files,
@@ -128,6 +129,7 @@ impl TestAppBuilder {
             image_picker: None,
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
             search: None,
+            diff_base: crate::vcs::DiffBase::default(),
             view: ViewState {
                 scroll_offset: self.scroll_offset,
                 viewport_height: self.viewport_height,

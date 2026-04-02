@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use ratatui_image::picker::Picker;
 
 use crate::diff::{DiffLine, FileDiff};
-use crate::vcs::{ComparisonContext, VcsBackend};
+use crate::vcs::{ComparisonContext, DiffBase, VcsBackend};
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
 
@@ -71,6 +71,8 @@ pub struct App {
     pub font_size: (u16, u16),
     /// Active search state (None when not searching)
     pub search: Option<SearchState>,
+    /// Whether to diff from the fork point (stable) or trunk tip (full divergence).
+    pub diff_base: DiffBase,
 }
 
 impl App {
@@ -95,6 +97,7 @@ impl App {
                 stack_position: None,
                 vcs_backend: VcsBackend::Git,
                 bookmark_name: None,
+                divergence: None,
             },
             base_identifier: "bench".to_string(),
             files: Vec::new(),
@@ -107,6 +110,7 @@ impl App {
             image_picker: None,
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
             search: None,
+            diff_base: DiffBase::default(),
         }
     }
 
@@ -139,10 +143,19 @@ impl App {
             image_picker: None,
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
             search: None,
+            diff_base: DiffBase::default(),
         };
 
         app.apply_refresh_result(initial);
         app
+    }
+
+    /// Toggle between fork-point and trunk-tip diff base.
+    pub fn toggle_diff_base(&mut self) {
+        self.diff_base = match self.diff_base {
+            DiffBase::ForkPoint => DiffBase::TrunkTip,
+            DiffBase::TrunkTip => DiffBase::ForkPoint,
+        };
     }
 
     /// Set the image picker for terminal image rendering.
@@ -190,6 +203,7 @@ impl App {
         self.lines = result.lines;
         self.file_links = result.file_links;
         self.comparison.bookmark_name = result.bookmark_name;
+        self.comparison.divergence = result.divergence;
         // Fall back from CommitOnly/BookmarkOnly when context is no longer valid
         if matches!(self.view.view_mode, ViewMode::CommitOnly | ViewMode::BookmarkOnly) {
             let should_fallback = match self.comparison.vcs_backend {
@@ -1449,6 +1463,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         };
 
         app.apply_refresh_result(result);
@@ -1652,6 +1667,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         };
         app.apply_refresh_result(result);
         assert!(app.needs_inline_spans(), "apply_refresh_result should mark dirty");
@@ -1885,6 +1901,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         };
         app.apply_refresh_result(result);
 
@@ -1907,6 +1924,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         };
         app.apply_refresh_result(result);
 
@@ -1938,6 +1956,7 @@ mod tests {
             file_links: std::collections::HashMap::new(),
             stack_position: None, bookmark_name: None,
             revision_id: None,
+            divergence: None,
         };
         app.apply_refresh_result(result);
 
@@ -1958,6 +1977,7 @@ mod tests {
             stack_position: None,
             bookmark_name: None,
             revision_id: None,
+            divergence: None,
         }
     }
 
@@ -2052,5 +2072,35 @@ mod tests {
         app.apply_refresh_result(empty_jj_refresh());
 
         assert_eq!(app.view.view_mode, ViewMode::Context);
+    }
+
+    #[test]
+    fn test_toggle_diff_base_cycles() {
+        let mut app = TestAppBuilder::new().build();
+        assert_eq!(app.diff_base, DiffBase::ForkPoint);
+
+        app.toggle_diff_base();
+        assert_eq!(app.diff_base, DiffBase::TrunkTip);
+
+        app.toggle_diff_base();
+        assert_eq!(app.diff_base, DiffBase::ForkPoint);
+    }
+
+    #[test]
+    fn test_apply_refresh_propagates_divergence() {
+        use std::collections::HashSet;
+        let mut app = TestAppBuilder::new().build();
+        assert!(app.comparison.divergence.is_none());
+
+        let mut result = empty_jj_refresh();
+        result.divergence = Some(crate::vcs::UpstreamDivergence {
+            behind_count: 5,
+            upstream_files: HashSet::from(["foo.rs".to_string()]),
+        });
+        app.apply_refresh_result(result);
+
+        let div = app.comparison.divergence.as_ref().unwrap();
+        assert_eq!(div.behind_count, 5);
+        assert!(div.upstream_files.contains("foo.rs"));
     }
 }

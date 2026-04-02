@@ -49,7 +49,7 @@ fn color_labels(backend: VcsBackend) -> ColorLabels {
 
 pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
     let modal_width = 54u16;
-    let modal_height = 51u16;
+    let modal_height = 53u16;
 
     let x = area.width.saturating_sub(modal_width) / 2;
     let y = area.height.saturating_sub(modal_height) / 2;
@@ -98,6 +98,10 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("    c           ", Style::default().fg(Color::Cyan)),
             Span::raw("  Cycle view (full/ctx/chg/cmt/bm)"),
+        ]),
+        Line::from(vec![
+            Span::styled("    m           ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Toggle diff base (fork/tip)"),
         ]),
         Line::from(vec![
             Span::styled("    p           ", Style::default().fg(Color::Cyan)),
