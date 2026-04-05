@@ -3,8 +3,8 @@ use std::io::{self, Write};
 use anyhow::Result;
 use ratatui::style::{Color, Modifier, Style};
 
-use branchdiff::app::App;
 use branchdiff::diff::LineSource;
+use branchdiff::output::{OutputData, OutputFile};
 use branchdiff::ui::colors::print_line_style as line_style;
 use branchdiff::ui::spans::coalesce_spans;
 
@@ -51,13 +51,12 @@ fn style_to_ansi(style: Style) -> String {
     codes.join("")
 }
 
-pub fn print_diff(app: &App) -> Result<()> {
+pub fn print_diff(data: &OutputData) -> Result<()> {
     let mut stdout = io::stdout().lock();
 
-    let branch_info = format!("{} vs {}", app.comparison.to_label, app.comparison.from_label);
-
-    let file_count = app.files.len();
-    let line_count = app.changed_line_count();
+    let branch_info = format!("{} | {} vs {}", data.repo_name, data.to_label, data.from_label);
+    let file_count = data.files.len();
+    let line_count = data.total_additions + data.total_deletions;
 
     let status = format!(
         "{} | {} file{} | {} line{}",
@@ -71,19 +70,27 @@ pub fn print_diff(app: &App) -> Result<()> {
     writeln!(stdout, "\x1b[36m{}{}", status, RESET)?;
     writeln!(stdout)?;
 
-    let max_line_num = app
-        .lines
+    let line_num_width = max_line_num_width(&data.files);
+
+    for file in &data.files {
+        print_file(&mut stdout, file, line_num_width)?;
+    }
+
+    Ok(())
+}
+
+fn max_line_num_width(files: &[OutputFile]) -> usize {
+    files
         .iter()
+        .flat_map(|f| &f.lines)
         .filter_map(|l| l.line_number)
         .max()
-        .unwrap_or(0);
-    let line_num_width = if max_line_num > 0 {
-        max_line_num.to_string().len()
-    } else {
-        0
-    };
+        .map(|n| n.to_string().len())
+        .unwrap_or(0)
+}
 
-    for line in &app.lines {
+fn print_file(stdout: &mut impl Write, file: &OutputFile, line_num_width: usize) -> Result<()> {
+    for line in &file.lines {
         let style = line_style(line.source);
         let ansi = style_to_ansi(style);
 
@@ -99,11 +106,7 @@ pub fn print_diff(app: &App) -> Result<()> {
             if !line_num_str.is_empty() {
                 write!(stdout, "\x1b[90m{} {}", line_num_str, RESET)?;
             }
-            writeln!(
-                stdout,
-                "{}── {} ──{}",
-                ansi, line.content, RESET
-            )?;
+            writeln!(stdout, "{}── {} ──{}", ansi, line.content, RESET)?;
             continue;
         }
 
@@ -111,11 +114,7 @@ pub fn print_diff(app: &App) -> Result<()> {
             if !line_num_str.is_empty() {
                 write!(stdout, "\x1b[90m{} {}", line_num_str, RESET)?;
             }
-            writeln!(
-                stdout,
-                "{}┈┈ ⋮ {} ⋮ ┈┈{}",
-                ansi, line.content, RESET
-            )?;
+            writeln!(stdout, "{}┈┈ ⋮ {} ⋮ ┈┈{}", ansi, line.content, RESET)?;
             continue;
         }
 
@@ -194,73 +193,26 @@ mod tests {
 
     #[test]
     fn test_print_diff_produces_output() {
-        use std::collections::HashMap;
-        use std::path::PathBuf;
-        use branchdiff::app::{App, ViewMode, ViewState};
-        use branchdiff::diff::FileDiff;
-        use branchdiff::gitignore::GitignoreFilter;
-        use branchdiff::image_diff::{ImageCache, FONT_WIDTH_PX, FONT_HEIGHT_PX};
-        use branchdiff::vcs::{ComparisonContext, VcsBackend};
-
-        let repo_path = PathBuf::from("/tmp/test");
-        let app = App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            comparison: ComparisonContext {
-                from_label: "main".to_string(),
-                to_label: "feature".to_string(),
-                stack_position: None,
-                vcs_backend: VcsBackend::Git,
-                bookmark_name: None,
-                divergence: None,
-            },
-            base_identifier: "abc123".to_string(),
-            files: vec![FileDiff {
+        let data = OutputData {
+            repo_name: "test".to_string(),
+            to_label: "feature".to_string(),
+            from_label: "main".to_string(),
+            files: vec![OutputFile {
+                path: "test.rs".to_string(),
                 lines: vec![
                     DiffLine::file_header("test.rs"),
                     DiffLine::new(LineSource::Base, "unchanged".to_string(), ' ', Some(1)),
                     DiffLine::new(LineSource::Committed, "added".to_string(), '+', Some(2)),
                 ],
+                additions: 1,
+                deletions: 0,
+                collapsed: false,
             }],
-            lines: vec![
-                DiffLine::file_header("test.rs"),
-                DiffLine::new(LineSource::Base, "unchanged".to_string(), ' ', Some(1)),
-                DiffLine::new(LineSource::Committed, "added".to_string(), '+', Some(2)),
-            ],
-            error: None,
-            conflict_warning: None,
-            performance_warning: None,
-            file_links: HashMap::new(),
-            image_cache: ImageCache::new(),
-            image_picker: None,
-            font_size: (FONT_WIDTH_PX as u16, FONT_HEIGHT_PX as u16),
-            search: None,
-            diff_base: crate::vcs::DiffBase::default(),
-            view: ViewState {
-                scroll_offset: 0,
-                viewport_height: 20,
-                view_mode: ViewMode::Full,
-                content_offset: (1, 1),
-                line_num_width: 0,
-                content_width: 80,
-                panel_width: 80,
-                show_help: false,
-                selection: None,
-                word_selection_anchor: None,
-                line_selection_anchor: None,
-                row_map: Vec::new(),
-                collapsed_files: Default::default(),
-                manually_toggled: Default::default(),
-                needs_inline_spans: true,
-                path_copied_at: None,
-                last_click: None,
-                pending_copy: None,
-                status_bar_lines: Vec::new(),
-                status_bar_screen_y: 0,
-            },
+            total_additions: 1,
+            total_deletions: 0,
         };
 
-        let result = print_diff(&app);
+        let result = print_diff(&data);
         assert!(result.is_ok());
     }
 
