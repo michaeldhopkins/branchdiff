@@ -18,7 +18,7 @@ Terminal UI showing unified diff of current branch vs its base.
 - Live file watching with auto-refresh on changes
 - Mouse support: scrolling, click-to-collapse file sections, text selection with auto-copy (double-click word, triple-click line)
 - Copy to clipboard: auto-copy on selection, file path, entire diff, or git patch format
-- Non-interactive output modes for scripting (`--print`, `--diff`)
+- Non-interactive output modes for scripting (`--print`, `--diff`, `--html`)
 
 ## Requirements
 
@@ -64,6 +64,7 @@ If no repository is found, branchdiff waits and automatically starts when `git i
 |------|-------------|
 | `-p`, `--print` | Print diff to stdout and exit (non-interactive mode) |
 | `-d`, `--diff` | Output unified patch format to stdout (for `git apply` / `patch`) |
+| `--html` | Output self-contained styled HTML to stdout (great for iPad review) |
 | `--no-auto-fetch` | Disable automatic fetching of base branch |
 | `--benchmark N` | Run stress test rendering N frames (for profiling) |
 | `-h`, `--help` | Print help |

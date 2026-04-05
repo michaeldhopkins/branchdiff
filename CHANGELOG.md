@@ -1,8 +1,12 @@
-## [unreleased]
+## [0.60.1] - 2026-04-05
 
 ### Bug Fixes
 
 - Consistent bracket notation for status bar toggles
+
+### Miscellaneous
+
+- Regenerate changelog
 ## [0.60.0] - 2026-04-03
 
 ### Features
