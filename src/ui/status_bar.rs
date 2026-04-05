@@ -35,8 +35,8 @@ fn repo_name(app: &App) -> String {
 
 fn branch_info(app: &App) -> String {
     let mode_suffix = match app.diff_base {
-        DiffBase::ForkPoint => " (fork)",
-        DiffBase::TrunkTip => " (tip)",
+        DiffBase::ForkPoint => " [fork]",
+        DiffBase::TrunkTip => " [tip]",
     };
     let base = format!(
         "{} | {} vs {}{}",
@@ -459,8 +459,8 @@ mod tests {
             .build();
 
         let info = branch_info(&app);
-        assert!(!info.contains('['),
-            "no stack position should show no brackets, got: {info}");
+        assert!(info.ends_with("[fork]") || info.ends_with("[tip]"),
+            "without stack position, branch info should end with diff base indicator, got: {info}");
     }
 
     #[test]
@@ -613,7 +613,7 @@ mod tests {
         let app = create_status_bar_test_app(Some("feat"), "main", 1);
 
         let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
-        let branch_info = "test | feat vs main (fork)";
+        let branch_info = "test | feat vs main [fork]";
 
         let stats = format!(
             "{} file{} | +{} -{}{} | {}%",
@@ -639,7 +639,7 @@ mod tests {
     fn test_branch_info_shows_fork_mode_by_default() {
         let app = create_status_bar_test_app(Some("feat"), "main", 1);
         let info = branch_info(&app);
-        assert!(info.contains("(fork)"), "Should show fork mode: {}", info);
+        assert!(info.contains("[fork]"), "Should show fork mode: {}", info);
     }
 
     #[test]
@@ -647,7 +647,7 @@ mod tests {
         let mut app = create_status_bar_test_app(Some("feat"), "main", 1);
         app.toggle_diff_base();
         let info = branch_info(&app);
-        assert!(info.contains("(tip)"), "Should show tip mode: {}", info);
+        assert!(info.contains("[tip]"), "Should show tip mode: {}", info);
     }
 
     #[test]
