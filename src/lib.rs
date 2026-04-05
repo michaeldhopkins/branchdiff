@@ -11,6 +11,7 @@ pub mod vcs;
 pub mod input;
 pub mod limits;
 pub mod message;
+pub mod output;
 pub mod patch;
 pub mod syntax;
 pub mod update;

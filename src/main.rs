@@ -6,6 +6,7 @@
     clippy::excessive_nesting,  // Flag deeply nested code
 )]
 
+mod html;
 mod print;
 
 use branchdiff::app::{self, App, FrameContext};
@@ -80,35 +81,53 @@ fn main() -> Result<()> {
 
     // Non-interactive modes (detected is always Some here due to bail above)
     if let Some(vcs) = &detected {
-        match cli.output.mode() {
-            OutputMode::Print => {
-                let repo_root = vcs.repo_path().to_path_buf();
-                let comparison = vcs.comparison_context()?;
-                let cancel_flag = Arc::new(AtomicBool::new(false));
-                let initial = vcs.refresh(&cancel_flag)?;
-                let mut app = app::App::new(repo_root, comparison, initial);
-                app.view.collapsed_files.clear();
-                app.view.view_mode = app::ViewMode::Full;
+        let mode = cli.output.mode();
+        if mode != OutputMode::Tui {
+            let repo_root = vcs.repo_path().to_path_buf();
+            let comparison = vcs.comparison_context()?;
+            let cancel_flag = Arc::new(AtomicBool::new(false));
+            let initial = vcs.refresh(&cancel_flag)?;
+            let mut app = app::App::new(repo_root, comparison, initial);
 
-                for line in &mut app.lines {
-                    if line.old_content.is_some() {
-                        line.ensure_inline_spans();
+            match mode {
+                OutputMode::Diff => {
+                    let patch = branchdiff::patch::generate_patch(&app.lines);
+                    print!("{}", patch);
+                }
+                OutputMode::Print | OutputMode::Html => {
+                    // Print shows everything; HTML defaults to context mode
+                    app.view.view_mode = match mode {
+                        OutputMode::Print => app::ViewMode::Full,
+                        _ => app::ViewMode::Context,
+                    };
+
+                    let data = branchdiff::output::prepare(&mut app);
+
+                    // Pre-load images for HTML embedding
+                    if mode == OutputMode::Html {
+                        for file in &data.files {
+                            for line in &file.lines {
+                                if line.is_image_marker()
+                                    && let Some(ref path) = line.file_path
+                                    && !app.image_cache.contains(path)
+                                    && let Some(state) = branchdiff::image_diff::load_image_diff(vcs.as_ref(), path)
+                                {
+                                    app.image_cache.insert(path.clone(), state);
+                                }
+                            }
+                        }
+                    }
+
+                    match mode {
+                        OutputMode::Print => print::print_diff(&data)?,
+                        OutputMode::Html => html::render_html(&data, &app.image_cache)?,
+                        _ => unreachable!(),
                     }
                 }
-                print::print_diff(&app)?;
-                return Ok(());
+                OutputMode::Tui => unreachable!(),
             }
-            OutputMode::Diff => {
-                let repo_root = vcs.repo_path().to_path_buf();
-                let comparison = vcs.comparison_context()?;
-                let cancel_flag = Arc::new(AtomicBool::new(false));
-                let initial = vcs.refresh(&cancel_flag)?;
-                let app = app::App::new(repo_root, comparison, initial);
-                let patch = branchdiff::patch::generate_patch(&app.lines);
-                print!("{}", patch);
-                return Ok(());
-            }
-            OutputMode::Tui => {}
+
+            return Ok(());
         }
     }
 

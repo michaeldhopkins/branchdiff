@@ -12,26 +12,37 @@ pub enum OutputMode {
     Print,
     /// Output git patch format to stdout
     Diff,
+    /// Output self-contained HTML to stdout
+    Html,
 }
 
-/// Output mode arguments (flattened into Cli to avoid excessive bools)
+/// Mutually exclusive output format flags.
+/// clap's `group(multiple = false)` enforces only one can be set.
 #[derive(clap::Args)]
-pub struct OutputArgs {
+#[group(multiple = false)]
+#[expect(clippy::struct_excessive_bools, reason = "mutually exclusive clap flags, not independent state")]
+pub struct OutputFlags {
     /// Print diff to stdout and exit (non-interactive mode)
-    #[arg(short = 'p', long = "print", conflicts_with = "diff")]
+    #[arg(short = 'p', long = "print")]
     print: bool,
 
     /// Output unified patch format to stdout (for use with git apply / patch)
-    #[arg(short = 'd', long = "diff", conflicts_with = "print")]
+    #[arg(short = 'd', long = "diff")]
     diff: bool,
+
+    /// Output self-contained styled HTML to stdout
+    #[arg(long = "html")]
+    html: bool,
 }
 
-impl OutputArgs {
+impl OutputFlags {
     pub fn mode(&self) -> OutputMode {
         if self.print {
             OutputMode::Print
         } else if self.diff {
             OutputMode::Diff
+        } else if self.html {
+            OutputMode::Html
         } else {
             OutputMode::Tui
         }
@@ -52,7 +63,7 @@ pub struct Cli {
     pub no_auto_fetch: bool,
 
     #[command(flatten)]
-    pub output: OutputArgs,
+    pub output: OutputFlags,
 
     /// Run stress test for profiling (renders N frames with simulated input)
     #[arg(long, value_name = "FRAMES")]

@@ -1,6 +1,6 @@
 [package]
 name = "branchdiff"
-version = "0.60.1"
+version = "0.61.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Terminal UI showing unified diff of current branch vs its base"
@@ -35,6 +35,7 @@ image = { version = "0.25", default-features = false, features = [
     "qoi",
 ] }
 resvg = "0.45"
+base64 = "0.22.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

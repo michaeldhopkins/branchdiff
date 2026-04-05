@@ -350,11 +350,12 @@ dependencies = [
 
 [[package]]
 name = "branchdiff"
-version = "0.60.1"
+version = "0.61.0"
 dependencies = [
  "anyhow",
  "arboard",
  "assert_cmd",
+ "base64",
  "clap",
  "clap_complete",
  "clap_mangen",
