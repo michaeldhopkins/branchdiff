@@ -1,3 +1,8 @@
+## [0.61.0] - 2026-04-05
+
+### Features
+
+- HTML output mode with shared rendering engine
 ## [0.60.1] - 2026-04-05
 
 ### Bug Fixes
