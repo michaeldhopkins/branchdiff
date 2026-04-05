@@ -1,3 +1,13 @@
+## [unreleased]
+
+### Bug Fixes
+
+- Consistent bracket notation for status bar toggles
+## [0.60.0] - 2026-04-03
+
+### Features
+
+- Upstream divergence awareness with fork-point/trunk-tip toggle
 ## [0.59.1] - 2026-03-25
 
 ### Bug Fixes
