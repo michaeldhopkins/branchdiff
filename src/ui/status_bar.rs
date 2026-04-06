@@ -568,9 +568,7 @@ mod tests {
         use crate::diff::{DiffLine, FileDiff};
 
         let files: Vec<FileDiff> = (0..file_count)
-            .map(|i| FileDiff {
-                lines: vec![DiffLine::file_header(&format!("file{}.rs", i))],
-            })
+            .map(|i| FileDiff::new(vec![DiffLine::file_header(&format!("file{}.rs", i))]))
             .collect();
 
         TestAppBuilder::new()

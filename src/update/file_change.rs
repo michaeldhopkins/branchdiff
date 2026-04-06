@@ -700,9 +700,7 @@ mod tests {
         let git_dir = temp.path().join(".git");
         std::fs::create_dir_all(&git_dir).unwrap();
 
-        let dummy = crate::diff::FileDiff {
-            lines: vec![crate::diff::DiffLine::file_header("src/lib.rs")],
-        };
+        let dummy = crate::diff::FileDiff::new(vec![crate::diff::DiffLine::file_header("src/lib.rs")]);
         let mut app = TestAppBuilder::new().with_files(vec![dummy]).build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
@@ -730,9 +728,7 @@ mod tests {
         let git_dir = temp.path().join(".git");
         std::fs::create_dir_all(&git_dir).unwrap();
 
-        let dummy = crate::diff::FileDiff {
-            lines: vec![crate::diff::DiffLine::file_header("src/lib.rs")],
-        };
+        let dummy = crate::diff::FileDiff::new(vec![crate::diff::DiffLine::file_header("src/lib.rs")]);
         let mut app = TestAppBuilder::new().with_files(vec![dummy]).build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();

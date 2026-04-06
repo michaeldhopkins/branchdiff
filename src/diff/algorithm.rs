@@ -47,7 +47,7 @@ fn build_deletion_diff(path: &str, content: &str, source: LineSource) -> FileDif
             DiffLine::new(source, line.to_string(), '-', Some(i + 1)).with_file_path(path),
         );
     }
-    FileDiff { lines }
+    FileDiff::new(lines)
 }
 
 fn check_file_deletion(input: &DiffInput<'_>) -> Option<FileDiff> {
@@ -118,7 +118,7 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
             path,
         ));
 
-        return FileDiff { lines };
+        return FileDiff::new(lines);
     }
 
     // Build provenance maps: provenance[new_idx] = Some(old_idx) if line came from old
@@ -385,7 +385,7 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
         &mut output_index_positions,
     );
 
-    FileDiff { lines }
+    FileDiff::new(lines)
 }
 
 #[cfg(test)]

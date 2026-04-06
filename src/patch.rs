@@ -366,6 +366,8 @@ mod tests {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         }
     }
 
@@ -696,6 +698,8 @@ mod tests {
                 old_content: None,
                 change_source: None,
                 in_current_bookmark: None,
+                block_idx: None,
+                move_target: None,
             }
         }
 
@@ -726,6 +730,8 @@ mod tests {
                 old_content: None,
                 change_source: None,
                 in_current_bookmark: None,
+                block_idx: None,
+                move_target: None,
             }
         }
 

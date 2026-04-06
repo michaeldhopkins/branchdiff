@@ -1,3 +1,12 @@
+## [0.61.1] - 2026-04-05
+
+### Bug Fixes
+
+- HTML output refinements — live-reload, collapsed files, styling
+
+### Miscellaneous
+
+- Regenerate Cargo.lock and changelog
 ## [0.61.0] - 2026-04-05
 
 ### Features
