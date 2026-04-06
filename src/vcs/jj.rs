@@ -2026,7 +2026,7 @@ mod tests {
     // === mark_bookmark_provenance tests ===
 
     fn make_file_diff(lines: Vec<crate::diff::DiffLine>) -> crate::diff::FileDiff {
-        crate::diff::FileDiff { lines }
+        crate::diff::FileDiff::new(lines)
     }
 
     #[test]

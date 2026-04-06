@@ -101,10 +101,26 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{branch_info} — branchdiff</title>
 <style>
+:root {{
+  --bg:      #002b36;
+  --bg-hl:   #073642;
+  --fg:      #839496;
+  --fg-em:   #93a1a1;
+  --fg-sec:  #586e75;
+  --border:  #073642;
+}}
+[data-theme="light"] {{
+  --bg:      #fdf6e3;
+  --bg-hl:   #eee8d5;
+  --fg:      #657b83;
+  --fg-em:   #586e75;
+  --fg-sec:  #93a1a1;
+  --border:  #eee8d5;
+}}
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{
-  background: #1a1a2e;
-  color: rgb(200,200,200);
+  background: var(--bg);
+  color: var(--fg);
   font-family: 'SF Mono','Menlo','Consolas','Liberation Mono',monospace;
   font-size: 14px;
   line-height: 1.5;
@@ -112,46 +128,55 @@ body {{
   padding: 16px;
 }}
 .header {{
-  color: rgb(100,200,200);
+  position: relative;
+  color: #2aa198;
   padding: 12px 0;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--border);
   margin-bottom: 16px;
 }}
 .header h1 {{ font-size: 16px; font-weight: 600; }}
-.header .stats {{ font-size: 13px; color: rgb(150,150,160); margin-top: 4px; }}
+.header .stats {{ font-size: 13px; color: var(--fg-sec); margin-top: 4px; }}
+.theme-toggle {{
+  position: absolute; right: 0; top: 4px;
+  background: none; border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 14px;
+  color: var(--fg-sec); cursor: pointer; font-size: 24px;
+  line-height: 1; min-width: 44px; min-height: 44px;
+}}
+.theme-toggle:hover {{ color: var(--fg-em); }}
 .toc {{
   margin-bottom: 20px;
   padding: 12px;
-  background: rgba(255,255,255,0.03);
+  background: var(--bg-hl);
   border-radius: 6px;
 }}
-.toc-title {{ font-size: 13px; color: rgb(150,150,160); margin-bottom: 8px; }}
+.toc-title {{ font-size: 13px; color: var(--fg-sec); margin-bottom: 8px; }}
 .toc a {{
   display: block;
-  color: rgb(100,200,200);
+  color: #2aa198;
   text-decoration: none;
   padding: 2px 0;
   font-size: 13px;
 }}
 .toc a:hover {{ text-decoration: underline; }}
-.adds {{ color: rgb(80,200,120); }}
-.dels {{ color: rgb(220,80,80); }}
+.adds {{ color: #859900; }}
+.dels {{ color: #dc322f; }}
 details {{
   margin-bottom: 12px;
-  border: 1px solid #2a2a3e;
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
 }}
 summary {{
   padding: 8px 12px;
-  background: rgba(255,255,255,0.05);
+  background: var(--bg-hl);
   cursor: pointer;
   font-weight: 600;
-  color: rgb(220,220,220);
+  color: var(--fg-em);
   font-size: 13px;
   user-select: none;
 }}
-summary:hover {{ background: rgba(255,255,255,0.08); }}
+summary:hover {{ background: var(--border); }}
 summary .adds {{ font-weight: 400; }}
 summary .dels {{ font-weight: 400; }}
 table {{
@@ -161,7 +186,7 @@ table {{
 }}
 td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
 .ln {{
-  color: rgb(90,90,95);
+  color: var(--fg-sec);
   user-select: none;
   text-align: right;
   padding: 0 8px 0 4px;
@@ -172,7 +197,7 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
 .gutter {{
   width: 1.5em;
   text-align: center;
-  color: rgb(130,130,140);
+  color: var(--fg-sec);
   user-select: none;
   padding: 0;
 }}
@@ -181,22 +206,23 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
   overflow-x: auto;
 }}
 .line-base {{ }}
-.line-committed {{ background: rgb(25,50,50); }}
-.line-staged {{ background: rgb(25,50,25); }}
-.line-unstaged {{ background: rgb(60,60,18); }}
-.line-del-base {{ background: rgb(50,30,30); }}
-.line-del-committed {{ background: rgb(58,30,28); }}
-.line-del-staged {{ background: rgb(65,30,25); }}
-.line-canceled {{ background: rgb(50,25,50); }}
-.line-header td {{ padding: 8px 12px; color: rgb(220,220,220); font-weight: bold; }}
-.line-elided td {{ color: rgb(90,90,95); opacity: 0.7; padding: 2px 12px; font-style: italic; }}
-.hl-committed {{ background: rgb(50,100,100); border-radius: 2px; }}
-.hl-staged {{ background: rgb(50,100,50); border-radius: 2px; }}
-.hl-unstaged {{ background: rgb(130,130,35); border-radius: 2px; }}
-.hl-del-base {{ background: rgb(95,55,55); border-radius: 2px; }}
-.hl-del-committed {{ background: rgb(105,52,52); border-radius: 2px; }}
-.hl-del-staged {{ background: rgb(115,55,45); border-radius: 2px; }}
-.hl-canceled {{ background: rgb(100,50,100); border-radius: 2px; }}
+.line-committed {{ background: rgba(42,161,152,0.08); }}
+.line-staged {{ background: rgba(133,153,0,0.08); }}
+.line-unstaged {{ background: rgba(181,137,0,0.08); }}
+.line-del-base {{ background: rgba(220,50,47,0.08); }}
+.line-del-committed {{ background: rgba(220,50,47,0.08); }}
+.line-del-staged {{ background: rgba(220,50,47,0.08); }}
+.line-canceled {{ background: rgba(211,54,130,0.08); }}
+.line-moved {{ background: rgba(211,54,130,0.08); }}
+.line-header td {{ padding: 8px 12px; color: var(--fg-em); font-weight: bold; }}
+.line-elided td {{ color: var(--fg-sec); opacity: 0.7; padding: 2px 12px; font-style: italic; }}
+.hl-committed {{ background: rgba(42,161,152,0.2); border-radius: 2px; }}
+.hl-staged {{ background: rgba(133,153,0,0.2); border-radius: 2px; }}
+.hl-unstaged {{ background: rgba(181,137,0,0.2); border-radius: 2px; }}
+.hl-del-base {{ background: rgba(220,50,47,0.2); border-radius: 2px; }}
+.hl-del-committed {{ background: rgba(220,50,47,0.2); border-radius: 2px; }}
+.hl-del-staged {{ background: rgba(220,50,47,0.2); border-radius: 2px; }}
+.hl-canceled {{ background: rgba(211,54,130,0.2); border-radius: 2px; }}
 .del {{ text-decoration: line-through; opacity: 0.7; }}
 .image-container {{
   display: flex;
@@ -208,17 +234,17 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
 .image-panel {{ text-align: center; }}
 .image-panel img {{
   max-width: 100%;
-  border: 1px solid #444;
+  border: 1px solid var(--border);
   border-radius: 4px;
 }}
 .image-panel .meta {{
   font-size: 12px;
-  color: rgb(150,150,160);
+  color: var(--fg-sec);
   margin-top: 4px;
 }}
 .image-label {{
   font-size: 12px;
-  color: rgb(150,150,160);
+  color: var(--fg-sec);
   margin-bottom: 4px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -226,10 +252,11 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
 .footer {{
   margin-top: 24px;
   padding-top: 12px;
-  border-top: 1px solid #2a2a3e;
+  border-top: 1px solid var(--border);
   font-size: 12px;
-  color: rgb(90,90,95);
+  color: var(--fg-sec);
 }}
+.footer a {{ color: #2aa198; }}
 @media (max-width: 768px) {{
   body {{ padding: 8px; font-size: 13px; }}
   .ln {{ width: 3em; min-width: 3em; font-size: 12px; }}
@@ -240,6 +267,7 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
 <div class="header">
   <h1>{branch_info}</h1>
   <div class="stats">{file_count} file{file_s} · <span class="adds">+{adds}</span> <span class="dels">-{dels}</span></div>
+  <button class="theme-toggle" aria-label="Toggle light/dark theme">☀</button>
 </div>
 "#,
         branch_info = html_escape(&branch_info),
@@ -366,7 +394,8 @@ fn write_file(out: &mut impl Write, file_index: usize, file: &OutputFile, images
             continue;
         }
 
-        let class = source_line_class(line.source);
+        let is_moved = line.move_target.is_some();
+        let class = if is_moved { "line-moved" } else { source_line_class(line.source) };
 
         if line.source == LineSource::Elided {
             writeln!(out, "<tr class=\"{class}\"><td colspan=\"3\">┈┈ ⋮ {} ⋮ ┈┈</td></tr>",
@@ -380,10 +409,11 @@ fn write_file(out: &mut impl Write, file_index: usize, file: &OutputFile, images
             " ".repeat(line_num_width)
         };
 
+        let prefix = if is_moved { 'M' } else { line.prefix };
         write!(out, "<tr class=\"{class}\"><td class=\"ln\">{ln}</td><td class=\"gutter\">{prefix}</td><td class=\"content\">",
             class = class,
             ln = ln,
-            prefix = line.prefix,
+            prefix = prefix,
         )?;
 
         if !line.inline_spans.is_empty() {
@@ -401,18 +431,34 @@ fn write_file(out: &mut impl Write, file_index: usize, file: &OutputFile, images
 }
 
 fn write_footer(out: &mut impl Write) -> Result<()> {
-    writeln!(out, "<div class=\"footer\">Generated by <a href=\"https://github.com/michaeldhopkins/branchdiff\" style=\"color:rgb(100,200,200)\">branchdiff</a></div>")?;
-    // Live-reload: fetch the page periodically and swap the body content,
-    // preserving scroll position. Only activates when served over HTTP.
+    writeln!(out, "<div class=\"footer\">Generated by <a href=\"https://github.com/michaeldhopkins/branchdiff\">branchdiff</a></div>")?;
     writeln!(out, r#"<script>
+function applyTheme(){{
+  const theme=localStorage.getItem('bd-theme')||'dark';
+  document.documentElement.dataset.theme=theme;
+  const btn=document.querySelector('.theme-toggle');
+  if(btn)btn.textContent=theme==='light'?'☾':'☀';
+}}
+function bindToggle(){{
+  document.querySelector('.theme-toggle')?.addEventListener('click',()=>{{
+    const next=document.documentElement.dataset.theme==='light'?'dark':'light';
+    localStorage.setItem('bd-theme',next);
+    applyTheme();
+  }});
+}}
+applyTheme();
+bindToggle();
 if(location.protocol!=='file:'){{let prev='';setInterval(()=>{{
-  fetch(location.href).then(r=>r.text()).then(h=>{{
-    if(h===prev)return;
-    prev=h;
+  fetch(location.href,{{cache:'no-store'}}).then(r=>r.text()).then(h=>{{
     const d=new DOMParser().parseFromString(h,'text/html');
+    const newBody=d.body.innerHTML;
+    if(newBody===prev||!newBody)return;
+    prev=newBody;
     const s=[window.scrollX,window.scrollY];
-    document.body.innerHTML=d.body.innerHTML;
+    document.body.innerHTML=newBody;
     window.scrollTo(...s);
+    applyTheme();
+    bindToggle();
   }}).catch(()=>{{}});
 }},2000)}}
 </script>"#)?;
@@ -494,6 +540,8 @@ mod tests {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         };
         let mut buf = Vec::new();
         write_inline_spans(&mut buf, &line).unwrap();
@@ -517,6 +565,8 @@ mod tests {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         };
         let mut buf = Vec::new();
         write_inline_spans(&mut buf, &line).unwrap();
@@ -538,6 +588,8 @@ mod tests {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         };
         let mut buf = Vec::new();
         write_inline_spans(&mut buf, &line).unwrap();

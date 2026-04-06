@@ -7,6 +7,7 @@
 //! - working (working tree)
 
 mod algorithm;
+pub mod block;
 mod cancellation;
 mod inline;
 mod line_builder;
@@ -14,6 +15,7 @@ mod output;
 mod provenance;
 
 pub use algorithm::{compute_four_way_diff, DiffInput};
+pub use block::{BlockKind, BlockMatch, ChangeBlock};
 pub use inline::InlineSpan;
 
 pub(crate) use inline::compute_inline_diff_merged;
@@ -96,6 +98,10 @@ pub struct DiffLine {
     /// Whether this line belongs to the current jj bookmark's scope.
     /// `None` when bookmark boundary info is unavailable.
     pub in_current_bookmark: Option<bool>,
+    /// Index into the parent FileDiff's `blocks` vec, if this line is part of a change block.
+    pub block_idx: Option<usize>,
+    /// If this line is part of a moved block, the file path of the matching block.
+    pub move_target: Option<String>,
 }
 
 impl DiffLine {
@@ -110,6 +116,8 @@ impl DiffLine {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         }
     }
 
@@ -171,6 +179,14 @@ impl DiffLine {
 #[derive(Debug)]
 pub struct FileDiff {
     pub lines: Vec<DiffLine>,
+    pub blocks: Vec<ChangeBlock>,
+}
+
+impl FileDiff {
+    pub fn new(mut lines: Vec<DiffLine>) -> Self {
+        let blocks = block::extract_blocks(&mut lines);
+        Self { lines, blocks }
+    }
 }
 
 #[cfg(test)]

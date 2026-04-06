@@ -18,6 +18,8 @@ impl DiffLine {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         }
     }
 
@@ -33,6 +35,8 @@ impl DiffLine {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         }
     }
 
@@ -48,6 +52,8 @@ impl DiffLine {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         }
     }
 
@@ -63,6 +69,8 @@ impl DiffLine {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         }
     }
 
@@ -78,6 +86,8 @@ impl DiffLine {
             old_content: None,
             change_source: None,
             in_current_bookmark: None,
+            block_idx: None,
+            move_target: None,
         }
     }
 }

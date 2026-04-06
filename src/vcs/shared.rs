@@ -71,16 +71,14 @@ pub(crate) struct AssembledDiff {
 }
 
 /// Convert per-file processing results into the flat line list and grouped file diffs
-/// needed by `RefreshResult`.
+/// needed by `RefreshResult`. Runs cross-file block matching before flattening so
+/// that `move_target` annotations propagate to the flat line list.
 pub(crate) fn assemble_results(results: Vec<FileProcessResult>) -> AssembledDiff {
     let mut files = Vec::new();
-    let mut lines = Vec::new();
 
     for result in results {
         match result {
             FileProcessResult::Diff(file_diff) => {
-                lines.extend(file_diff.lines.iter().cloned());
-                lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
                 files.push(file_diff);
             }
             FileProcessResult::Binary { path } => {
@@ -91,22 +89,24 @@ pub(crate) fn assemble_results(results: Vec<FileProcessResult>) -> AssembledDiff
                     ' ',
                     None,
                 );
-                lines.push(header.clone());
-                lines.push(marker.clone());
-                files.push(FileDiff {
-                    lines: vec![header, marker],
-                });
+                files.push(FileDiff::new(vec![header, marker]));
             }
             FileProcessResult::Image { path } => {
                 let header = DiffLine::file_header(&path);
                 let marker = DiffLine::image_marker(&path);
-                lines.push(header.clone());
-                lines.push(marker.clone());
-                files.push(FileDiff {
-                    lines: vec![header, marker],
-                });
+                files.push(FileDiff::new(vec![header, marker]));
             }
         }
+    }
+
+    // Match moved blocks across files before flattening
+    crate::diff::block::match_blocks(&mut files);
+
+    // Flatten into the line list (now includes move_target annotations)
+    let mut lines = Vec::new();
+    for file in &files {
+        lines.extend(file.lines.iter().cloned());
+        lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
     }
 
     AssembledDiff { files, lines }
@@ -132,8 +132,7 @@ mod tests {
     use crate::diff::{DiffLine, FileDiff, LineSource};
 
     fn diff_result(path: &str) -> FileProcessResult {
-        FileProcessResult::Diff(FileDiff {
-            lines: vec![
+        FileProcessResult::Diff(FileDiff::new(vec![
                 DiffLine::file_header(path),
                 DiffLine::new(
                     LineSource::Base,
@@ -141,8 +140,7 @@ mod tests {
                     ' ',
                     None,
                 ),
-            ],
-        })
+        ]))
     }
 
     #[test]
@@ -159,10 +157,9 @@ mod tests {
 
         let assembled = assemble_results(results);
         assert_eq!(assembled.files.len(), 3);
-        // Diff file: header + content + trailing blank = 3 lines
-        // Binary: header + marker = 2 lines
-        // Image: header + marker = 2 lines
-        assert_eq!(assembled.lines.len(), 7);
+        // Each file: its lines + 1 trailing separator
+        // Diff: header + content + sep = 3, Binary: header + marker + sep = 3, Image: same = 3
+        assert_eq!(assembled.lines.len(), 9);
     }
 
     #[test]
@@ -180,7 +177,7 @@ mod tests {
 
         let assembled = assemble_results(results);
         assert_eq!(assembled.files.len(), 1);
-        assert_eq!(assembled.lines.len(), 2);
+        assert_eq!(assembled.lines.len(), 3); // header + marker + trailing separator
 
         let file = &assembled.files[0];
         assert_eq!(file.lines.len(), 2);
@@ -199,7 +196,7 @@ mod tests {
 
         let assembled = assemble_results(results);
         assert_eq!(assembled.files.len(), 1);
-        assert_eq!(assembled.lines.len(), 2);
+        assert_eq!(assembled.lines.len(), 3); // header + marker + trailing separator
 
         let file = &assembled.files[0];
         assert_eq!(file.lines.len(), 2);

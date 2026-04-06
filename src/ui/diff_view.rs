@@ -107,6 +107,16 @@ impl<'a> DiffViewModel<'a> {
         self.collapsed_files.contains(path)
     }
 
+    /// Build the prefix string for a diff line (e.g. "+ C " or "M M ").
+    /// Moved lines always show "M M " regardless of source.
+    fn line_prefix(&self, line: &DiffLine, default_char: char, source: LineSource) -> String {
+        if line.move_target.is_some() {
+            "M   ".to_string()
+        } else {
+            format!("{} {} ", default_char, status_symbol(source, self.vcs_backend))
+        }
+    }
+
     /// Render the diff view and return output data.
     pub fn render(&self, frame: &mut Frame) -> RenderOutput {
         // Reset syntax highlight state at the start of each render to avoid
@@ -324,7 +334,12 @@ impl<'a> DiffViewModel<'a> {
         all_row_infos: &mut Vec<ScreenRowInfo>,
         image_positions: &mut Vec<ImageRenderPosition>,
     ) -> usize {
-        let style = line_style(diff_line.source);
+        let is_moved = diff_line.move_target.is_some();
+        let style = if is_moved {
+            line_style(LineSource::CanceledCommitted)
+        } else {
+            line_style(diff_line.source)
+        };
 
         let prefix_str = if let Some(num) = diff_line.line_number {
             format!("{:>width$} ", num, width = line_num_width)
@@ -635,7 +650,7 @@ impl<'a> DiffViewModel<'a> {
                 );
                 let del_spans = apply_search_to_content(del_spans, self.search, line_idx);
 
-                let del_prefix_char = format!("- {} ", status_symbol(del_source, self.vcs_backend));
+                let del_prefix_char = self.line_prefix(diff_line, '-', del_source);
                 let (del_lines, del_row_infos) = wrap_content(
                     del_spans,
                     old_content,
@@ -667,7 +682,7 @@ impl<'a> DiffViewModel<'a> {
             );
             let ins_spans = apply_search_to_content(ins_spans, self.search, line_idx);
 
-            let ins_prefix_char = format!("+ {} ", status_symbol(ins_source, self.vcs_backend));
+            let ins_prefix_char = self.line_prefix(diff_line, '+', ins_source);
             let (ins_lines, ins_row_infos) = wrap_content(
                 ins_spans,
                 new_content,
@@ -705,7 +720,7 @@ impl<'a> DiffViewModel<'a> {
                     );
                     let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
 
-                    let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_backend));
+                    let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
                     let (lines, row_infos) = wrap_content(
                         content_spans,
                         &diff_line.content,
@@ -741,7 +756,7 @@ impl<'a> DiffViewModel<'a> {
             apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
         let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
 
-        let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_backend));
+        let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
         let (lines, row_infos) = wrap_content(
             content_spans,
             &diff_line.content,
@@ -770,7 +785,7 @@ impl<'a> DiffViewModel<'a> {
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) -> usize {
-        let prefix_char = format!("{} {} ", diff_line.prefix, status_symbol(diff_line.source, self.vcs_backend));
+        let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
 
         // Apply syntax highlighting - foreground from syntax, background from diff style
         let content_spans = syntax_highlight_content(

@@ -91,7 +91,13 @@ fn max_line_num_width(files: &[OutputFile]) -> usize {
 
 fn print_file(stdout: &mut impl Write, file: &OutputFile, line_num_width: usize) -> Result<()> {
     for line in &file.lines {
-        let style = line_style(line.source);
+        let is_moved = line.move_target.is_some();
+        let style = if is_moved {
+            // Moved lines use magenta (same as canceled — lateral changes)
+            Style::default().fg(Color::Magenta)
+        } else {
+            line_style(line.source)
+        };
         let ansi = style_to_ansi(style);
 
         let line_num_str = if let Some(num) = line.line_number {
@@ -122,7 +128,8 @@ fn print_file(stdout: &mut impl Write, file: &OutputFile, line_num_width: usize)
             write!(stdout, "\x1b[90m{} {}", line_num_str, RESET)?;
         }
 
-        write!(stdout, "{}{} ", ansi, line.prefix)?;
+        let prefix = if is_moved { 'M' } else { line.prefix };
+        write!(stdout, "{}{} ", ansi, prefix)?;
 
         if !line.inline_spans.is_empty() {
             let display_spans = coalesce_spans(&line.inline_spans);

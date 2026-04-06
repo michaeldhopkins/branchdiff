@@ -588,24 +588,18 @@ mod tests {
 
     #[test]
     fn test_auto_collapse_lock_files() {
-        let gemfile_lock = FileDiff {
-            lines: vec![
+        let gemfile_lock = FileDiff::new(vec![
                 DiffLine::file_header("Gemfile.lock"),
                 change_line("some lock content"),
-            ],
-        };
-        let regular_file = FileDiff {
-            lines: vec![
+        ]);
+        let regular_file = FileDiff::new(vec![
                 DiffLine::file_header("src/main.rs"),
                 change_line("some code"),
-            ],
-        };
-        let cargo_lock = FileDiff {
-            lines: vec![
+        ]);
+        let cargo_lock = FileDiff::new(vec![
                 DiffLine::file_header("Cargo.lock"),
                 change_line("more lock content"),
-            ],
-        };
+        ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![gemfile_lock, regular_file, cargo_lock]).build();
 
@@ -622,18 +616,14 @@ mod tests {
 
     #[test]
     fn test_auto_collapse_deleted_files() {
-        let deleted_file = FileDiff {
-            lines: vec![
+        let deleted_file = FileDiff::new(vec![
                 DiffLine::deleted_file_header("src/old_file.rs"),
                 change_line("deleted content"),
-            ],
-        };
-        let regular_file = FileDiff {
-            lines: vec![
+        ]);
+        let regular_file = FileDiff::new(vec![
                 DiffLine::file_header("src/main.rs"),
                 change_line("some code"),
-            ],
-        };
+        ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![deleted_file, regular_file]).build();
 
@@ -648,12 +638,10 @@ mod tests {
 
     #[test]
     fn test_manually_toggled_files_not_auto_collapsed() {
-        let gemfile_lock = FileDiff {
-            lines: vec![
+        let gemfile_lock = FileDiff::new(vec![
                 DiffLine::file_header("Gemfile.lock"),
                 change_line("some lock content"),
-            ],
-        };
+        ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![gemfile_lock]).build();
 
@@ -669,12 +657,10 @@ mod tests {
 
     #[test]
     fn test_manually_toggled_deleted_files_not_auto_collapsed() {
-        let deleted_file = FileDiff {
-            lines: vec![
+        let deleted_file = FileDiff::new(vec![
                 DiffLine::deleted_file_header("src/old_file.rs"),
                 change_line("deleted content"),
-            ],
-        };
+        ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![deleted_file]).build();
 
@@ -691,24 +677,20 @@ mod tests {
     #[test]
     fn test_undeleted_file_uncollapses() {
         // Simulate a file that was deleted (auto-collapsed) then restored
-        let deleted_file = FileDiff {
-            lines: vec![
+        let deleted_file = FileDiff::new(vec![
                 DiffLine::deleted_file_header("src/restored.rs"),
                 change_line("content"),
-            ],
-        };
+        ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![deleted_file]).build();
         app.auto_collapse_files();
         assert!(app.is_file_collapsed("src/restored.rs"), "deleted file should be collapsed");
 
         // Simulate the file being restored (no longer deleted)
-        let restored_file = FileDiff {
-            lines: vec![
+        let restored_file = FileDiff::new(vec![
                 DiffLine::file_header("src/restored.rs"),
                 change_line("content"),
-            ],
-        };
+        ]);
         app.files = vec![restored_file];
 
         app.auto_collapse_files();
@@ -718,24 +700,20 @@ mod tests {
     #[test]
     fn test_undeleted_lock_file_stays_collapsed() {
         // Lock files should stay collapsed even after being "restored"
-        let deleted_lock = FileDiff {
-            lines: vec![
+        let deleted_lock = FileDiff::new(vec![
                 DiffLine::deleted_file_header("Gemfile.lock"),
                 change_line("content"),
-            ],
-        };
+        ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![deleted_lock]).build();
         app.auto_collapse_files();
         assert!(app.is_file_collapsed("Gemfile.lock"), "deleted lock file should be collapsed");
 
         // Simulate the lock file being restored
-        let restored_lock = FileDiff {
-            lines: vec![
+        let restored_lock = FileDiff::new(vec![
                 DiffLine::file_header("Gemfile.lock"),
                 change_line("content"),
-            ],
-        };
+        ]);
         app.files = vec![restored_lock];
 
         app.auto_collapse_files();
