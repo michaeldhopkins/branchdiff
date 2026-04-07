@@ -865,4 +865,158 @@ mod tests {
         assert!(input.working.is_none());
         assert!(input.old_path.is_none());
     }
+
+    /// Helper: build a 4-way diff where base→working is the only change
+    /// (head and index match working). Returns the FileDiff.
+    fn diff_base_to_working(base: &str, working: &str) -> FileDiff {
+        compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(working),
+            index: Some(working),
+            working: Some(working),
+            old_path: None,
+        })
+    }
+
+    /// Helper: extract (prefix, content) pairs, skipping the file header.
+    fn line_pairs(diff: &FileDiff) -> Vec<(char, &str)> {
+        diff.lines.iter()
+            .filter(|l| l.source != LineSource::FileHeader)
+            .map(|l| (l.prefix, l.content.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn test_deleted_function_has_clean_boundary() {
+        // Delete fn four between fn three and fn five.
+        // The deletion should be exactly: fn four() { ... }
+        // NOT: } \n \n fn four() { ... (stealing fn three's closing brace)
+        let base = "\
+fn three() {\n    println!(\"three\");\n}\n\n\
+fn four() {\n    println!(\"four\");\n}\n\n\
+fn five() {\n    println!(\"five\");\n}";
+
+        let working = "\
+fn three() {\n    println!(\"three\");\n}\n\n\
+fn five() {\n    println!(\"five\");\n}";
+
+        let diff = diff_base_to_working(base, working);
+        let deletions: Vec<&str> = diff.lines.iter()
+            .filter(|l| l.prefix == '-')
+            .map(|l| l.content.as_str())
+            .collect();
+
+        assert_eq!(deletions[0], "fn four() {",
+            "first deleted line should be 'fn four() {{', got: {deletions:?}");
+        assert!(deletions.contains(&"}"),
+            "deletion should include the closing '}}', got: {deletions:?}");
+    }
+
+    #[test]
+    fn test_added_function_has_clean_boundary() {
+        // Add fn new between fn six and fn seven.
+        // The addition should be exactly: fn new() { ... }
+        // NOT: } \n \n fn new() { ... (stealing fn six's closing brace)
+        let base = "\
+fn six() {\n    println!(\"six\");\n}\n\n\
+fn seven() {\n    println!(\"seven\");\n}";
+
+        let working = "\
+fn six() {\n    println!(\"six\");\n}\n\n\
+fn new_func() {\n    println!(\"new\");\n}\n\n\
+fn seven() {\n    println!(\"seven\");\n}";
+
+        let diff = diff_base_to_working(base, working);
+        let additions: Vec<&str> = diff.lines.iter()
+            .filter(|l| l.prefix == '+')
+            .map(|l| l.content.as_str())
+            .collect();
+
+        assert_eq!(additions[0], "fn new_func() {",
+            "first added line should be 'fn new_func() {{', got: {additions:?}");
+        assert!(additions.contains(&"}"),
+            "addition should include the closing '}}', got: {additions:?}");
+    }
+
+    #[test]
+    fn test_multiple_deleted_functions_each_have_clean_boundaries() {
+        // Delete fn two AND fn four from a file with five functions.
+        // Each deletion should be self-contained — no leaking braces.
+        let base = "\
+fn one() {\n    println!(\"one\");\n}\n\n\
+fn two() {\n    println!(\"two\");\n}\n\n\
+fn three() {\n    println!(\"three\");\n}\n\n\
+fn four() {\n    println!(\"four\");\n    println!(\"more\");\n}\n\n\
+fn five() {\n    println!(\"five\");\n}";
+
+        let working = "\
+fn one() {\n    println!(\"one\");\n}\n\n\
+fn three() {\n    println!(\"three\");\n}\n\n\
+fn five() {\n    println!(\"five\");\n}";
+
+        let diff = diff_base_to_working(base, working);
+        let pairs = line_pairs(&diff);
+
+        // Find all deletion runs (contiguous '-' lines)
+        let mut deletion_runs: Vec<Vec<&str>> = Vec::new();
+        let mut current_run: Vec<&str> = Vec::new();
+        for (prefix, content) in &pairs {
+            if *prefix == '-' {
+                current_run.push(content);
+            } else if !current_run.is_empty() {
+                deletion_runs.push(current_run.clone());
+                current_run.clear();
+            }
+        }
+        if !current_run.is_empty() {
+            deletion_runs.push(current_run);
+        }
+
+        assert_eq!(deletion_runs.len(), 2,
+            "should have 2 deletion runs, got {}: {deletion_runs:?}", deletion_runs.len());
+
+        // First deletion run should start with fn two
+        assert_eq!(deletion_runs[0][0], "fn two() {",
+            "first deletion should start with 'fn two() {{', got: {:?}", deletion_runs[0]);
+
+        // Second deletion run should start with fn four
+        assert_eq!(deletion_runs[1][0], "fn four() {",
+            "second deletion should start with 'fn four() {{', got: {:?}", deletion_runs[1]);
+    }
+
+    #[test]
+    fn test_deletion_with_adjacent_addition_has_clean_boundary() {
+        // Delete fn two, add fn new in a different spot.
+        // The deletion of fn two should still have a clean boundary.
+        let base = "\
+fn one() {\n    println!(\"one\");\n}\n\n\
+fn two() {\n    println!(\"two\");\n}\n\n\
+fn three() {\n    println!(\"three\");\n}";
+
+        let working = "\
+fn one() {\n    println!(\"one\");\n}\n\n\
+fn three() {\n    println!(\"three\");\n}\n\n\
+fn brand_new() {\n    println!(\"new\");\n}";
+
+        let diff = diff_base_to_working(base, working);
+        let deletions: Vec<&str> = diff.lines.iter()
+            .filter(|l| l.prefix == '-')
+            .map(|l| l.content.as_str())
+            .collect();
+        let additions: Vec<&str> = diff.lines.iter()
+            .filter(|l| l.prefix == '+')
+            .map(|l| l.content.as_str())
+            .collect();
+
+        assert_eq!(deletions[0], "fn two() {",
+            "deletion should start with 'fn two() {{', got: {deletions:?}");
+        // The blank line before fn brand_new is genuinely new content,
+        // so it's acceptable as the first addition line.
+        let first_nonblank_add = additions.iter()
+            .find(|l| !l.trim().is_empty())
+            .expect("should have non-blank additions");
+        assert_eq!(*first_nonblank_add, "fn brand_new() {",
+            "first non-blank addition should be 'fn brand_new() {{', got: {additions:?}");
+    }
 }
