@@ -3,6 +3,7 @@
 Terminal UI showing unified diff of current branch vs its base.
 
 <img width="651" height="1180" alt="Screenshot 2026-03-02 at 21 00 12" src="https://github.com/user-attachments/assets/a30290ff-116b-44d3-826d-11024a6265f8" />
+<img width="734" height="1179" alt="Screenshot 2026-04-06 at 22 48 29" src="https://github.com/user-attachments/assets/d388ee8c-23e1-4724-8d10-653e3306728e" />
 <img width="654" height="1178" alt="Screenshot 2026-03-02 at 21 10 11" src="https://github.com/user-attachments/assets/d9d0fa61-16a2-4283-8f6c-ca50fb23effc" />
 <img width="651" height="1177" alt="Screenshot 2026-03-02 at 21 12 38" src="https://github.com/user-attachments/assets/b5a52f92-8a3c-4dc5-af49-dbd5c157d84e" />
 
