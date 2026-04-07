@@ -145,6 +145,8 @@ impl TestAppBuilder {
                 row_map: Vec::new(),
                 collapsed_files: Default::default(),
                 manually_toggled: Default::default(),
+                reviewed_files: Default::default(),
+                reviewed_flash: None,
                 needs_inline_spans: true,
                 path_copied_at: None,
                 last_click: None,

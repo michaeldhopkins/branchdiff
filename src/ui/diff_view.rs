@@ -3,7 +3,7 @@
 //! The DiffViewModel provides a pure view model for rendering, enabling
 //! easier unit testing without requiring a full App instance.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     layout::Rect,
@@ -55,6 +55,8 @@ pub struct DiffViewModel<'a> {
     pub search: &'a Option<SearchState>,
     /// Files changed on upstream since fork point (for ↑ markers).
     pub upstream_files: Option<&'a HashSet<String>>,
+    /// Files marked as reviewed by the user.
+    pub reviewed_files: &'a HashMap<String, u64>,
 }
 
 /// Position where an image should be rendered after text render
@@ -99,6 +101,7 @@ impl<'a> DiffViewModel<'a> {
             vcs_backend: app.comparison.vcs_backend,
             search: &app.search,
             upstream_files: app.comparison.divergence.as_ref().map(|d| &d.upstream_files),
+            reviewed_files: &app.view.reviewed_files,
         }
     }
 
@@ -439,6 +442,13 @@ impl<'a> DiffViewModel<'a> {
         spans.push(Span::styled("── ", Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(diff_line.content.clone(), style));
         spans.push(Span::styled(" ──", Style::default().fg(Color::DarkGray)));
+
+        // Add ✓ marker if file is reviewed
+        if let Some(ref path) = diff_line.file_path
+            && self.reviewed_files.contains_key(path)
+        {
+            spans.push(Span::styled(" ✓", Style::default().fg(Color::Green)));
+        }
 
         // Add ↑ marker if this file also changed upstream
         if let Some(upstream) = &self.upstream_files

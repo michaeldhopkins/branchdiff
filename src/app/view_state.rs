@@ -2,7 +2,7 @@
 //!
 //! Handles scrolling, layout, selection, and display settings.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::ui::ScreenRowInfo;
@@ -48,6 +48,12 @@ pub struct ViewState {
     pub collapsed_files: HashSet<String>,
     pub manually_toggled: HashSet<String>,
 
+    // Review state
+    /// Files marked as reviewed. Maps file path → content hash at review time.
+    pub reviewed_files: HashMap<String, u64>,
+    /// Flash effect: (file path, timestamp) when a file was just reviewed or un-reviewed.
+    pub reviewed_flash: Option<(String, Instant)>,
+
     // Dirty flags & UI timing
     pub needs_inline_spans: bool,
     pub path_copied_at: Option<Instant>,
@@ -78,6 +84,8 @@ impl Default for ViewState {
             row_map: Vec::new(),
             collapsed_files: HashSet::new(),
             manually_toggled: HashSet::new(),
+            reviewed_files: HashMap::new(),
+            reviewed_flash: None,
             needs_inline_spans: true,
             path_copied_at: None,
             last_click: None,

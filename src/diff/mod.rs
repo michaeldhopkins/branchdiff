@@ -180,12 +180,30 @@ impl DiffLine {
 pub struct FileDiff {
     pub lines: Vec<DiffLine>,
     pub blocks: Vec<ChangeBlock>,
+    /// Hash of all change line content, for detecting when a file's diff changes.
+    pub content_hash: u64,
 }
 
 impl FileDiff {
     pub fn new(mut lines: Vec<DiffLine>) -> Self {
         let blocks = block::extract_blocks(&mut lines);
-        Self { lines, blocks }
+        let content_hash = Self::compute_content_hash(&lines);
+        Self { lines, blocks, content_hash }
+    }
+
+    fn compute_content_hash(lines: &[DiffLine]) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        for line in lines {
+            if line.source.is_change() || line.change_source.is_some() {
+                let trimmed = line.content.trim();
+                if !trimmed.is_empty() {
+                    trimmed.hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish()
     }
 }
 

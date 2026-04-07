@@ -84,17 +84,13 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("    Mouse       ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Scroll, highlight to copy, collapse"),
+            Span::raw("  Scroll, select, collapse"),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  Actions", Style::default().add_modifier(Modifier::BOLD).fg(Color::White)),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("    r           ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Refresh"),
-        ]),
         Line::from(vec![
             Span::styled("    c           ", Style::default().fg(Color::Cyan)),
             Span::raw("  Cycle view (full/ctx/chg/cmt/bm)"),
@@ -104,8 +100,16 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Toggle diff base (fork/tip)"),
         ]),
         Line::from(vec![
+            Span::styled("    r           ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Mark file reviewed"),
+        ]),
+        Line::from(vec![
+            Span::styled("    R           ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Review/unreview all files"),
+        ]),
+        Line::from(vec![
             Span::styled("    p           ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Copy current file path"),
+            Span::raw("  Copy file path"),
         ]),
         Line::from(vec![
             Span::styled("    Y           ", Style::default().fg(Color::Cyan)),

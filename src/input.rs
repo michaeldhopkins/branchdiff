@@ -12,7 +12,6 @@ pub enum AppAction {
     GoToBottom,
     NextFile,
     PrevFile,
-    Refresh,
     ToggleHelp,
     CycleViewMode,
     StartSelection(u16, u16),
@@ -24,6 +23,8 @@ pub enum AppAction {
     CopyOrQuit,
     OpenSearch,
     ToggleDiffBase,
+    ToggleReviewed,
+    ToggleAllReviewed,
     Resize,
     None,
 }
@@ -69,8 +70,8 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         (KeyCode::Home, _) => AppAction::GoToTop,
         (KeyCode::End, _) => AppAction::GoToBottom,
 
-        // Refresh
-        (KeyCode::Char('r'), _) => AppAction::Refresh,
+        // Review all / un-review all files
+        (KeyCode::Char('R'), _) => AppAction::ToggleAllReviewed,
 
         // Help
         (KeyCode::Char('?'), _) => AppAction::ToggleHelp,
@@ -95,6 +96,9 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
 
         // Toggle diff base (fork point vs trunk tip)
         (KeyCode::Char('m'), KeyModifiers::NONE) => AppAction::ToggleDiffBase,
+
+        // Toggle reviewed state for current file
+        (KeyCode::Char('r'), KeyModifiers::NONE) => AppAction::ToggleReviewed,
 
         _ => AppAction::None,
     }
@@ -233,11 +237,18 @@ mod tests {
         assert_eq!(handle_event(event), AppAction::GoToBottom);
     }
 
-    // Refresh test
+    // Review all test (Shift+R)
     #[test]
-    fn test_refresh_with_r() {
+    fn test_toggle_all_reviewed_with_shift_r() {
+        let event = key_event(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        assert_eq!(handle_event(event), AppAction::ToggleAllReviewed);
+    }
+
+    // Toggle reviewed test
+    #[test]
+    fn test_toggle_reviewed_with_r() {
         let event = key_event(KeyCode::Char('r'), KeyModifiers::NONE);
-        assert_eq!(handle_event(event), AppAction::Refresh);
+        assert_eq!(handle_event(event), AppAction::ToggleReviewed);
     }
 
     // Help test
