@@ -104,18 +104,24 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
 :root {{
   --bg:      #002b36;
   --bg-hl:   #073642;
-  --fg:      #839496;
-  --fg-em:   #93a1a1;
-  --fg-sec:  #586e75;
+  --fg:      #919EA1;
+  --fg-em:   #A1ACAF;
+  --fg-sec:  #79929A;
   --border:  #073642;
+  --red:     #ff4a47;
+  --green:   #829603;
+  --cyan:    #2a9d94;
 }}
 [data-theme="light"] {{
   --bg:      #fdf6e3;
   --bg-hl:   #eee8d5;
-  --fg:      #657b83;
-  --fg-em:   #586e75;
-  --fg-sec:  #93a1a1;
+  --fg:      #4F5F5F;
+  --fg-em:   #445050;
+  --fg-sec:  #617575;
   --border:  #eee8d5;
+  --red:     #DA2825;
+  --green:   #697807;
+  --cyan:    #207E77;
 }}
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 body {{
@@ -129,7 +135,7 @@ body {{
 }}
 .header {{
   position: relative;
-  color: #2aa198;
+  color: var(--cyan);
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
   margin-bottom: 16px;
@@ -153,14 +159,14 @@ body {{
 .toc-title {{ font-size: 13px; color: var(--fg-sec); margin-bottom: 8px; }}
 .toc a {{
   display: block;
-  color: #2aa198;
+  color: var(--cyan);
   text-decoration: none;
   padding: 2px 0;
   font-size: 13px;
 }}
 .toc a:hover {{ text-decoration: underline; }}
-.adds {{ color: #859900; }}
-.dels {{ color: #dc322f; }}
+.adds {{ color: var(--green); }}
+.dels {{ color: var(--red); }}
 details {{
   margin-bottom: 12px;
   border: 1px solid var(--border);
@@ -256,7 +262,8 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
   font-size: 12px;
   color: var(--fg-sec);
 }}
-.footer a {{ color: #2aa198; }}
+.footer a {{ color: var(--cyan); }}
+[data-theme="light"] .content span[style] {{ filter: brightness(0.5) saturate(1.3); }}
 @media (max-width: 768px) {{
   body {{ padding: 8px; font-size: 13px; }}
   .ln {{ width: 3em; min-width: 3em; font-size: 12px; }}

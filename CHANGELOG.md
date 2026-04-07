@@ -1,3 +1,8 @@
+## [0.62.1] - 2026-04-07
+
+### Bug Fixes
+
+- Hunk boundary sliding for cleaner function-level diffs
 ## [0.62.0] - 2026-04-07
 
 ### Features
