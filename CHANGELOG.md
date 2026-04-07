@@ -1,3 +1,8 @@
+## [0.62.0] - 2026-04-07
+
+### Features
+
+- Move detection with block matching across files
 ## [0.61.1] - 2026-04-05
 
 ### Bug Fixes

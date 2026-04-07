@@ -5,6 +5,121 @@ use std::ops::Range;
 use super::inline::compute_inline_diff_merged;
 use super::LineSource;
 
+/// Score a hunk boundary position. Higher is better.
+/// Prefers boundaries that land after a blank line (between logical blocks).
+fn boundary_score(line: &str) -> u32 {
+    if line.trim().is_empty() {
+        3 // blank line — ideal boundary (between functions/blocks)
+    } else if !line.starts_with(' ') && !line.starts_with('\t') {
+        2 // unindented line — likely a top-level declaration
+    } else {
+        0
+    }
+}
+
+/// Slide hunk boundaries to prefer landing on blank lines.
+///
+/// When a hunk can be shifted (the line leaving the top equals the line
+/// entering the bottom), try all equivalent positions and pick the one
+/// where the context line just before the hunk is a blank line.
+/// This produces cleaner diffs for function-oriented code.
+fn slide_hunks(
+    hunks: &mut [(Range<u32>, Range<u32>)],
+    old_lines: &[&str],
+    new_lines: &[&str],
+) {
+    let old_len = old_lines.len() as u32;
+    let new_len = new_lines.len() as u32;
+
+    for hunk in hunks.iter_mut() {
+        let (ref mut before, ref mut after) = *hunk;
+
+        // Only slide pure deletions or pure insertions, not mixed hunks.
+        // For mixed hunks, sliding is constrained by both sides needing
+        // identical boundary lines, which is rarely productive.
+        let before_len = before.end - before.start;
+        let after_len = after.end - after.start;
+        if before_len > 0 && after_len > 0 {
+            continue;
+        }
+
+        let mut best_score = 0u32;
+        let mut best_offset: i32 = 0;
+
+        // Try sliding down: line at before.start must equal line at before.end
+        let mut offset: i32 = 0;
+        loop {
+            let new_before_end = before.end as i32 + offset;
+            let new_after_end = after.end as i32 + offset;
+            let new_before_start = before.start as i32 + offset;
+
+            if new_before_end >= old_len as i32 || new_after_end >= new_len as i32 {
+                break;
+            }
+            if new_before_start < 0 {
+                break;
+            }
+
+            // Check the line just before the hunk start.
+            // For deletions, score using old_lines; for insertions, use new_lines.
+            let ctx_score = if before_len > 0 {
+                let ctx_idx = new_before_start - 1;
+                if ctx_idx >= 0 { boundary_score(old_lines[ctx_idx as usize]) } else { 0 }
+            } else {
+                let new_after_start = after.start as i32 + offset;
+                let ctx_idx = new_after_start - 1;
+                if ctx_idx >= 0 { boundary_score(new_lines[ctx_idx as usize]) } else { 0 }
+            };
+            if ctx_score > best_score {
+                best_score = ctx_score;
+                best_offset = offset;
+            }
+
+            // Can we slide further? The line exiting the top must equal the line entering the bottom.
+            if before_len > 0 {
+                // Pure deletion: check old lines
+                if old_lines[new_before_start as usize] == old_lines[new_before_end as usize] {
+                    offset += 1;
+                } else {
+                    break;
+                }
+            } else {
+                // Pure insertion: check new lines
+                let new_after_start = after.start as i32 + offset;
+                if new_after_start >= 0
+                    && (new_after_end as usize) < new_lines.len()
+                    && new_lines[new_after_start as usize] == new_lines[new_after_end as usize]
+                {
+                    offset += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Check final position after loop (the last valid slide)
+        let final_score = if before_len > 0 {
+            let ctx = before.start as i32 + offset - 1;
+            if ctx >= 0 { boundary_score(old_lines[ctx as usize]) } else { 0 }
+        } else {
+            let ctx = after.start as i32 + offset - 1;
+            if ctx >= 0 { boundary_score(new_lines[ctx as usize]) } else { 0 }
+        };
+        if final_score > best_score {
+            best_score = final_score;
+            best_offset = offset;
+        }
+
+        // Apply the best offset
+        if best_offset != 0 && best_score > 0 {
+            before.start = (before.start as i32 + best_offset) as u32;
+            before.end = (before.end as i32 + best_offset) as u32;
+            after.start = (after.start as i32 + best_offset) as u32;
+            after.end = (after.end as i32 + best_offset) as u32;
+        }
+    }
+}
+
 /// Build a provenance map from old_lines to new_lines using histogram diff algorithm.
 /// Returns a Vec where result[new_idx] = Some(old_idx) if new_lines[new_idx] came from old_lines[old_idx]
 /// or None if it was inserted (not present in old_lines).
@@ -34,6 +149,8 @@ pub(super) fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Ve
             hunks.push((before, after));
         },
     );
+
+    slide_hunks(&mut hunks, old_lines, new_lines);
 
     let mut result = vec![None; new_lines.len()];
     let mut old_idx = 0usize;
@@ -96,6 +213,8 @@ pub(super) fn build_modification_map<'a>(
             hunks.push((before, after));
         },
     );
+
+    slide_hunks(&mut hunks, old_lines, new_lines);
 
     for (before, after) in hunks {
         let old_start = before.start as usize;
@@ -294,5 +413,66 @@ mod tests {
         let intermediate_from_source = vec![Some(1), Some(2)];
         let final_from_intermediate = vec![Some(0), Some(1)];
         assert!(!survives_chain(99, &intermediate_from_source, &final_from_intermediate));
+    }
+
+    #[test]
+    fn test_hunk_boundary_multi_deletion_provenance() {
+        // Delete fn two and fn four from 5 functions.
+        // fn three's "}" must map to old fn three's "}", NOT old fn four's "}".
+        let old: Vec<&str> = "fn one() {\n    println!(\"one\");\n}\n\n\
+fn two() {\n    println!(\"two\");\n}\n\n\
+fn three() {\n    println!(\"three\");\n}\n\n\
+fn four() {\n    println!(\"four\");\n    println!(\"more\");\n}\n\n\
+fn five() {\n    println!(\"five\");\n}".lines().collect();
+
+        let new: Vec<&str> = "fn one() {\n    println!(\"one\");\n}\n\n\
+fn three() {\n    println!(\"three\");\n}\n\n\
+fn five() {\n    println!(\"five\");\n}".lines().collect();
+
+        let prov = build_provenance_map(&old, &new);
+
+        // new[6] is fn three's "}" — should map to old[10] (fn three's "}"),
+        // NOT old[15] (fn four's "}")
+        assert_eq!(prov[6], Some(10),
+            "fn three's '}}' (new[6]) should map to old[10], not old[{}]",
+            prov[6].unwrap_or(999));
+    }
+
+    #[test]
+    fn test_hunk_boundary_prefers_blank_line() {
+        // Provenance-level test: confirms histogram diff handles function
+        // deletion boundaries correctly at the line-matching level.
+        let old: &[&str] = &[
+            "fn three() {",             // 0
+            "    println!(\"three\");",  // 1
+            "}",                         // 2
+            "",                          // 3
+            "fn four() {",               // 4
+            "    println!(\"four\");",   // 5
+            "}",                         // 6
+            "",                          // 7
+            "fn five() {",               // 8
+            "    println!(\"five\");",   // 9
+            "}",                         // 10
+        ];
+        let new: &[&str] = &[
+            "fn three() {",             // 0
+            "    println!(\"three\");",  // 1
+            "}",                         // 2
+            "",                          // 3
+            "fn five() {",               // 4
+            "    println!(\"five\");",   // 5
+            "}",                         // 6
+        ];
+
+        let prov = build_provenance_map(old, new);
+
+        assert_eq!(prov[0], Some(0), "fn three");
+        assert_eq!(prov[1], Some(1));
+        assert_eq!(prov[2], Some(2), "three's }}");
+        assert_eq!(prov[3], Some(3), "blank line between three and five");
+        assert_eq!(prov[4], Some(8), "fn five should map to old[8]");
+        assert_eq!(prov[5], Some(9));
+        assert_eq!(prov[6], Some(10));
     }
 }
