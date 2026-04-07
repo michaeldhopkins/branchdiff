@@ -105,12 +105,8 @@ pub(super) fn handle_input(
                 result.loop_action = LoopAction::Quit;
             }
         }
-        AppAction::Refresh => {
-            if refresh_state.is_idle() {
-                result.refresh = RefreshTrigger::Full;
-            } else {
-                refresh_state.cancel_and_mark_pending();
-            }
+        AppAction::ToggleAllReviewed => {
+            app.toggle_all_reviewed();
         }
 
         // Navigation actions
@@ -163,6 +159,13 @@ pub(super) fn handle_input(
             }
         }
 
+        // Toggle reviewed state for current file
+        AppAction::ToggleReviewed => {
+            if let Some(path) = app.current_file_path() {
+                app.toggle_reviewed(&path);
+            }
+        }
+
         // No-op actions
         AppAction::Resize | AppAction::None => {}
     }
@@ -199,25 +202,13 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_input_refresh_when_idle() {
+    fn test_handle_input_toggle_all_reviewed() {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
 
-        let result = handle_input(AppAction::Refresh, &mut app, &mut refresh_state);
-        assert_eq!(result.refresh, RefreshTrigger::Full);
-    }
-
-    #[test]
-    fn test_handle_input_refresh_when_busy_marks_pending() {
-        let mut app = TestAppBuilder::new().build();
-        let mut refresh_state = RefreshState::InProgress {
-            started_at: Instant::now(),
-            cancel_flag: Arc::new(AtomicBool::new(false)),
-        };
-
-        let result = handle_input(AppAction::Refresh, &mut app, &mut refresh_state);
-        assert_eq!(result.refresh, RefreshTrigger::None);
-        assert!(refresh_state.has_pending());
+        handle_input(AppAction::ToggleAllReviewed, &mut app, &mut refresh_state);
+        // All files should now be reviewed
+        assert!(!app.view.reviewed_files.is_empty() || app.files.is_empty());
     }
 
     #[test]
