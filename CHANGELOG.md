@@ -1,3 +1,8 @@
+## [0.62.2] - 2026-04-07
+
+### Bug Fixes
+
+- WCAG AA contrast for solarized HTML theme
 ## [0.62.1] - 2026-04-07
 
 ### Bug Fixes
