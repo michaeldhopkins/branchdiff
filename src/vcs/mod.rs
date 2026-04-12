@@ -6,7 +6,7 @@ pub mod types;
 pub use types::{ComparisonContext, DiffBase, RefreshResult, StackPosition, UpstreamDivergence, VcsBackend, VcsEventType, VcsWatchPaths};
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 
@@ -32,6 +32,27 @@ pub(crate) fn vcs_thread_pool() -> &'static rayon::ThreadPool {
             .build()
             .expect("failed to build VCS thread pool")
     })
+}
+
+/// Check for VCS directory existence without running external commands.
+///
+/// Returns the VCS type name and repo root path if found. Unlike [`detect`],
+/// this never spawns subprocesses so it works even when `jj`/`git` aren't in
+/// PATH (e.g. Zellij command panes that don't source a shell profile).
+pub fn detect_repo_dir(path: &Path) -> Option<(&'static str, PathBuf)> {
+    if path.join(".jj").is_dir() {
+        return Some(("jj", path.to_path_buf()));
+    }
+    if let Some(ancestor) = path.ancestors().find(|p| p.join(".jj").is_dir()) {
+        return Some(("jj", ancestor.to_path_buf()));
+    }
+    if path.join(".git").exists() {
+        return Some(("git", path.to_path_buf()));
+    }
+    if let Some(ancestor) = path.ancestors().find(|p| p.join(".git").exists()) {
+        return Some(("git", ancestor.to_path_buf()));
+    }
+    None
 }
 
 /// Detect the VCS backend for a given path.
@@ -116,4 +137,61 @@ pub trait Vcs: Send + Sync {
     /// Set the diff base mode (fork point vs trunk tip).
     /// Only meaningful for jj — git always uses merge-base (fork point).
     fn set_diff_base(&self, _base: DiffBase) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn detect_repo_dir_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(detect_repo_dir(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn detect_repo_dir_jj() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(tmp.path().join(".jj")).expect("mkdir .jj");
+        let result = detect_repo_dir(tmp.path());
+        assert_eq!(result, Some(("jj", tmp.path().to_path_buf())));
+    }
+
+    #[test]
+    fn detect_repo_dir_git() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(tmp.path().join(".git")).expect("mkdir .git");
+        let result = detect_repo_dir(tmp.path());
+        assert_eq!(result, Some(("git", tmp.path().to_path_buf())));
+    }
+
+    #[test]
+    fn detect_repo_dir_jj_takes_precedence() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(tmp.path().join(".jj")).expect("mkdir .jj");
+        fs::create_dir(tmp.path().join(".git")).expect("mkdir .git");
+        let (vcs_type, _) = detect_repo_dir(tmp.path()).expect("should detect");
+        assert_eq!(vcs_type, "jj");
+    }
+
+    #[test]
+    fn detect_repo_dir_git_worktree_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Git worktrees use a .git file (not directory) pointing to the main repo.
+        fs::write(tmp.path().join(".git"), "gitdir: /some/other/repo/.git/worktrees/wt")
+            .expect("write .git file");
+        let result = detect_repo_dir(tmp.path());
+        assert_eq!(result, Some(("git", tmp.path().to_path_buf())));
+    }
+
+    #[test]
+    fn detect_repo_dir_ancestor() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(tmp.path().join(".jj")).expect("mkdir .jj");
+        let child = tmp.path().join("subdir");
+        fs::create_dir(&child).expect("mkdir subdir");
+        let result = detect_repo_dir(&child);
+        assert_eq!(result, Some(("jj", tmp.path().to_path_buf())));
+    }
 }
