@@ -1,3 +1,8 @@
+## [0.63.0] - 2026-04-07
+
+### Features
+
+- Mark files as reviewed with r/R keybindings
 ## [0.62.2] - 2026-04-07
 
 ### Bug Fixes

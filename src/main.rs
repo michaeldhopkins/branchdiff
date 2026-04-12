@@ -146,8 +146,10 @@ fn main() -> Result<()> {
 
 /// Run in "waiting for VCS" mode until a repository is detected.
 ///
-/// Displays a message and periodically checks if a VCS was initialized.
-/// When detected, transitions to normal app operation.
+/// Uses a filesystem watcher for instant detection of `.jj`/`.git` directory
+/// creation, with a polling fallback. Once a VCS directory is found, retries
+/// full `vcs::detect()` (which runs external commands) with backoff until it
+/// succeeds — surfacing errors on screen so PATH issues are visible.
 fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::widgets::{Block, Borders, Paragraph};
@@ -159,26 +161,60 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let check_interval = Duration::from_secs(1);
-    let mut last_check = Instant::now();
+    // Set up a filesystem watcher on the target directory for instant
+    // detection of .jj/ or .git/ creation.
+    let (watch_tx, watch_rx) = mpsc::channel();
+    let _watcher = {
+        use notify::{Watcher, RecursiveMode};
+        let mut watcher = notify::recommended_watcher(move |_res: notify::Result<notify::Event>| {
+            let _ = watch_tx.send(());
+        })?;
+        watcher.watch(path, RecursiveMode::NonRecursive)?;
+        watcher
+    };
+
+    let poll_interval = Duration::from_secs(2);
+    let mut last_poll = Instant::now();
+
+    // Two-phase state: first wait for directory, then wait for commands.
+    let mut repo_found: Option<&str> = None; // VCS type once directory detected
+    let mut last_error: Option<String> = None;
+    let mut retry_delay = Duration::from_millis(500);
+    let mut last_detect_attempt = Instant::now();
+    let max_retry_delay = Duration::from_secs(2);
+
+    // Check immediately in case the repo was created between startup detection
+    // and watcher setup.
+    if let Some((vcs_type, _)) = vcs::detect_repo_dir(path) {
+        repo_found = Some(vcs_type);
+    }
 
     loop {
+        let display_msg = match (&repo_found, &last_error) {
+            (None, _) => "Not a repository.\n\nWaiting for git init or jj init...".to_string(),
+            (Some(vcs_type), None) => format!("Repository found (.{vcs_type} detected)\n\nInitializing..."),
+            (Some(vcs_type), Some(err)) => format!("Repository found (.{vcs_type} detected)\n\nInitializing...\n\n{err}"),
+        };
+
         terminal.draw(|f| {
             let area = f.area();
-            let message = Paragraph::new("Not a repository.\n\nWaiting for git init or jj init...")
+            let message = Paragraph::new(display_msg.as_str())
                 .alignment(Alignment::Center)
                 .block(Block::default().borders(Borders::NONE));
 
             let y = area.height / 2;
+            let line_count: u16 = display_msg.lines().count().try_into().unwrap_or(4);
+            let box_height = (line_count + 2).min(area.height);
             let centered_area = ratatui::layout::Rect {
                 x: 0,
-                y: y.saturating_sub(2),
+                y: y.saturating_sub(line_count / 2),
                 width: area.width,
-                height: 4,
+                height: box_height,
             };
             f.render_widget(message, centered_area);
         })?;
 
+        // Handle keyboard events.
         if event::poll(Duration::from_millis(100))?
             && let crossterm::event::Event::Key(KeyEvent { code, modifiers, .. }) = event::read()?
         {
@@ -199,18 +235,44 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
             }
         }
 
-        if last_check.elapsed() >= check_interval {
-            last_check = Instant::now();
-            if let Ok(detected) = vcs::detect(path) {
-                let repo_root = detected.repo_path().to_path_buf();
-                disable_raw_mode()?;
-                execute!(
-                    terminal.backend_mut(),
-                    LeaveAlternateScreen,
-                    DisableMouseCapture
-                )?;
-                terminal.show_cursor()?;
-                return run_main_app(detected, repo_root, auto_fetch);
+        // Drain any watcher events (they signal potential directory creation).
+        let mut watcher_fired = false;
+        while watch_rx.try_recv().is_ok() {
+            watcher_fired = true;
+        }
+
+        // Phase 1: check for VCS directory existence (filesystem only, no commands).
+        if repo_found.is_none()
+            && (watcher_fired || last_poll.elapsed() >= poll_interval)
+        {
+            last_poll = Instant::now();
+            if let Some((vcs_type, _)) = vcs::detect_repo_dir(path) {
+                repo_found = Some(vcs_type);
+                last_detect_attempt = Instant::now() - retry_delay; // trigger immediate detect
+            }
+        }
+
+        // Phase 2: repo directory exists — try full detection with commands.
+        if repo_found.is_some()
+            && last_detect_attempt.elapsed() >= retry_delay
+        {
+            last_detect_attempt = Instant::now();
+            match vcs::detect(path) {
+                Ok(detected) => {
+                    let repo_root = detected.repo_path().to_path_buf();
+                    disable_raw_mode()?;
+                    execute!(
+                        terminal.backend_mut(),
+                        LeaveAlternateScreen,
+                        DisableMouseCapture
+                    )?;
+                    terminal.show_cursor()?;
+                    return run_main_app(detected, repo_root, auto_fetch);
+                }
+                Err(e) => {
+                    last_error = Some(format!("{e:#}"));
+                    retry_delay = (retry_delay * 2).min(max_retry_delay);
+                }
             }
         }
     }
