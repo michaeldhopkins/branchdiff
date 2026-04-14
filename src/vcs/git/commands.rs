@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::vcs::shared::run_vcs_with_retry;
+use vcs_runner::{run_cmd, run_git, run_git_with_retry, run_git_with_timeout, is_transient_error as vcs_is_transient};
 use crate::vcs::UpstreamDivergence;
 
 /// Git version required for merge-tree --write-tree (conflict detection)
@@ -34,29 +34,8 @@ impl std::fmt::Display for GitVersion {
 
 /// Detect the installed git version
 pub fn get_git_version() -> Result<GitVersion> {
-    let output = Command::new("git")
-        .args(["--version"])
-        .output()
-        .context("Failed to run git --version")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("git --version failed: {}", stderr.trim()));
-    }
-
-    let version_str = String::from_utf8_lossy(&output.stdout);
-    parse_git_version(&version_str)
-}
-
-/// Check if a git error is transient (retryable).
-/// Handles lock file contention which occurs when another git process is running.
-///
-/// We check for ".lock" in the error message because git lock filenames (like "index.lock",
-/// "HEAD.lock", "config.lock") are not localized - they're always in English regardless
-/// of the user's locale. The surrounding error text may be localized, but the filename isn't.
-pub(super) fn is_transient_error(stderr: &str) -> bool {
-    // Lock filenames are not localized, so this is safe across locales
-    stderr.contains(".lock")
+    let output = run_cmd("git", &["--version"])?;
+    parse_git_version(&output.stdout_lossy())
 }
 
 /// Check if an external process holds the git index lock.
@@ -93,33 +72,14 @@ pub(super) fn parse_git_version(s: &str) -> Result<GitVersion> {
 
 /// Get the root directory of the git repository
 pub fn get_repo_root(path: &Path) -> Result<PathBuf> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(path)
-        .output()
-        .context("Failed to run git rev-parse")?;
-
-    if !output.status.success() {
-        return Err(anyhow!(
-            "Not a git repository: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let root = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
+    let output = run_git(path, &["rev-parse", "--show-toplevel"])?;
+    let root = output.stdout_lossy().trim().to_string();
     Ok(PathBuf::from(root))
 }
 
 /// Check whether a git ref exists in the repository.
 fn ref_exists(repo_path: &Path, git_ref: &str) -> bool {
-    Command::new("git")
-        .args(["rev-parse", "--verify", git_ref])
-        .current_dir(repo_path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    run_git(repo_path, &["rev-parse", "--verify", git_ref]).is_ok()
 }
 
 /// Detect whether the base branch is 'main' or 'master'.
@@ -153,20 +113,8 @@ pub fn get_merge_base_preferring_origin(repo_path: &Path, base_branch: &str) -> 
 
 /// Get the merge-base between the base branch and HEAD
 pub(super) fn get_merge_base(repo_path: &Path, base_branch: &str) -> Result<String> {
-    let output = Command::new("git")
-        .args(["merge-base", base_branch, "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git merge-base")?;
-
-    if !output.status.success() {
-        return Err(anyhow!(
-            "Failed to find merge-base: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let output = run_git(repo_path, &["merge-base", base_branch, "HEAD"])?;
+    Ok(output.stdout_lossy().trim().to_string())
 }
 
 /// Compute upstream divergence: how many commits and which files have changed
@@ -202,17 +150,8 @@ pub fn compute_upstream_divergence(
 /// Count commits reachable from `to` but not from `from`.
 fn rev_list_count(repo_path: &Path, from: &str, to: &str) -> Result<usize> {
     let range = format!("{}..{}", from, to);
-    let output = Command::new("git")
-        .args(["rev-list", "--count", &range])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git rev-list --count")?;
-
-    if !output.status.success() {
-        return Err(anyhow!("git rev-list --count failed"));
-    }
-
-    String::from_utf8_lossy(&output.stdout)
+    let output = run_git(repo_path, &["rev-list", "--count", &range])?;
+    output.stdout_lossy()
         .trim()
         .parse::<usize>()
         .context("Failed to parse rev-list count")
@@ -225,17 +164,8 @@ fn upstream_changed_files(
     to: &str,
 ) -> Result<HashSet<String>> {
     let range = format!("{}..{}", from, to);
-    let output = Command::new("git")
-        .args(["diff", "--name-only", &range])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git diff --name-only")?;
-
-    if !output.status.success() {
-        return Err(anyhow!("git diff --name-only failed"));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout)
+    let output = run_git(repo_path, &["diff", "--name-only", &range])?;
+    Ok(output.stdout_lossy()
         .lines()
         .filter(|l| !l.is_empty())
         .map(|l| l.to_string())
@@ -252,13 +182,11 @@ pub(super) fn get_file_at_ref(repo_path: &Path, file_path: &str, git_ref: &str) 
         format!("{}:{}", git_ref, file_path)
     };
 
-    let output = run_vcs_with_retry("git", repo_path, &["show", &ref_path], is_transient_error)?;
-
-    if !output.status.success() {
-        return Ok(None);
+    match run_git_with_retry(repo_path, &["show", &ref_path], vcs_is_transient) {
+        Ok(output) => Ok(Some(output.stdout_lossy().into_owned())),
+        Err(e) if e.is_non_zero_exit() => Ok(None),
+        Err(e) => Err(e.into()),
     }
-
-    Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
 }
 
 /// Fetch content of multiple files at a given ref using `git cat-file --batch`.
@@ -395,13 +323,11 @@ pub fn get_file_bytes_at_ref(
         format!("{}:{}", git_ref, file_path)
     };
 
-    let output = run_vcs_with_retry("git", repo_path, &["show", &ref_path], is_transient_error)?;
-
-    if !output.status.success() {
-        return Ok(None);
+    match run_git_with_retry(repo_path, &["show", &ref_path], vcs_is_transient) {
+        Ok(output) => Ok(Some(output.stdout)),
+        Err(e) if e.is_non_zero_exit() => Ok(None),
+        Err(e) => Err(e.into()),
     }
-
-    Ok(Some(output.stdout))
 }
 
 /// Get working tree file content as raw bytes (for binary files like images)
@@ -420,19 +346,9 @@ pub fn get_working_tree_bytes(repo_path: &Path, file_path: &str) -> Result<Optio
 
 /// Check if a file is binary (single file check - prefer get_binary_files for batch operations)
 pub fn is_binary_file(repo_path: &Path, file_path: &str) -> bool {
-    let output = Command::new("git")
-        .args(["diff", "--numstat", "--", file_path])
-        .current_dir(repo_path)
-        .output();
-
-    match output {
-        Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            // Binary files show as "-\t-\t" in numstat
-            s.starts_with("-\t-\t")
-        }
-        Err(_) => false,
-    }
+    run_git(repo_path, &["diff", "--numstat", "--", file_path])
+        .map(|o| o.stdout_lossy().starts_with("-\t-\t"))
+        .unwrap_or(false)
 }
 
 /// Get all binary files in the diff between merge_base and working tree.
@@ -450,13 +366,8 @@ pub fn get_binary_files(repo_path: &Path, merge_base: &str) -> HashSet<String> {
     };
 
     // git diff --numstat <ref> (with no second ref) compares ref to working tree
-    let output = Command::new("git")
-        .args(["diff", "--numstat", base_ref])
-        .current_dir(repo_path)
-        .output();
-
-    if let Ok(o) = output {
-        let s = String::from_utf8_lossy(&o.stdout);
+    if let Ok(output) = run_git(repo_path, &["diff", "--numstat", base_ref]) {
+        let s = output.stdout_lossy();
         for line in s.lines() {
             // Binary files show as "-\t-\tfilename" in numstat output
             // Renames show as "-\t-\told => new"
@@ -476,48 +387,18 @@ pub fn get_binary_files(repo_path: &Path, merge_base: &str) -> HashSet<String> {
 }
 
 pub fn fetch_base_branch(repo_path: &Path, base_branch: &str) -> Result<()> {
-    use std::time::Duration;
-    use std::io::Read;
-
     let current = get_current_branch(repo_path).ok().flatten();
     let on_base_branch = current.as_deref() == Some(base_branch);
 
     let refspec = format!("{}:{}", base_branch, base_branch);
     let fetch_arg = if on_base_branch { base_branch } else { &refspec };
 
-    let mut child = Command::new("git")
-        .args(["-c", "gc.auto=0", "fetch", "--no-tags", "origin", fetch_arg])
-        .current_dir(repo_path)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("Failed to spawn git fetch")?;
-
-    let timeout = Duration::from_secs(30);
-    let start = std::time::Instant::now();
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    let mut stderr = String::new();
-                    if let Some(mut err) = child.stderr.take() {
-                        let _ = err.read_to_string(&mut stderr);
-                    }
-                    return Err(anyhow!("git fetch failed: {}", stderr));
-                }
-                return Ok(());
-            }
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    return Err(anyhow!("git fetch timed out"));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => return Err(anyhow!("Error waiting for git fetch: {}", e)),
-        }
-    }
+    run_git_with_timeout(
+        repo_path,
+        &["-c", "gc.auto=0", "fetch", "--no-tags", "origin", fetch_arg],
+        std::time::Duration::from_secs(30),
+    )?;
+    Ok(())
 }
 
 /// Check for merge conflicts using git merge-tree.
@@ -530,39 +411,27 @@ pub fn has_merge_conflicts(repo_path: &Path, base_branch: &str, git_version: &Gi
 
     let remote_ref = format!("origin/{}", base_branch);
 
-    let remote_exists = Command::new("git")
-        .args(["rev-parse", "--verify", &remote_ref])
-        .current_dir(repo_path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !remote_exists {
+    if !ref_exists(repo_path, &remote_ref) {
         return Ok(false);
     }
 
-    let output = Command::new("git")
-        .args(["merge-tree", "--write-tree", &remote_ref, "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git merge-tree")?;
-
-    Ok(!output.status.success())
+    // git merge-tree exits non-zero iff conflicts are detected. Distinguish
+    // "conflict reported" (non-zero exit) from "command couldn't run" (spawn).
+    match run_git(repo_path, &["merge-tree", "--write-tree", &remote_ref, "HEAD"]) {
+        Ok(_) => Ok(false),
+        Err(e) if e.is_non_zero_exit() => Ok(true),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Get the current branch name
 pub fn get_current_branch(repo_path: &Path) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to get current branch")?;
+    let output = match run_git(repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]) {
+        Ok(o) => o,
+        Err(_) => return Ok(None),
+    };
 
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let branch = output.stdout_lossy().trim().to_string();
     if branch == "HEAD" {
         Ok(None)
     } else {

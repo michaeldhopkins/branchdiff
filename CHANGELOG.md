@@ -1,3 +1,8 @@
+## [0.63.2] - 2026-04-14
+
+### Bug Fixes
+
+- Selection highlighting and copy on wrapped lines and wide characters
 ## [0.63.1] - 2026-04-12
 
 ### Bug Fixes

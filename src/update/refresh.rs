@@ -2,7 +2,14 @@ use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::message::{FetchResult, LoopAction, RefreshOutcome, RefreshTrigger, UpdateResult};
-use crate::vcs::shared::is_transient_vcs_error;
+/// Check if a formatted error message indicates a transient condition worth retrying.
+///
+/// The refresh pipeline flattens errors to strings at the thread boundary (see
+/// `spawn_refresh` in main.rs), so we can't inspect the structured `vcs_runner::RunError`
+/// here. Match the same patterns vcs_runner's `is_transient_error` does.
+fn is_transient_error_msg(msg: &str) -> bool {
+    msg.contains(".lock") || msg.contains("stale")
+}
 use crate::vcs::Vcs;
 
 use super::{RefreshState, Timers, UpdateConfig};
@@ -95,7 +102,7 @@ pub(super) fn handle_refresh(
             result.needs_redraw = true;
         }
         RefreshOutcome::Error(msg) => {
-            if is_transient_vcs_error(&msg)
+            if is_transient_error_msg(&msg)
                 && timers.transient_retry_attempt < TRANSIENT_RETRY_MAX_ATTEMPTS
             {
                 let delay_ms = (TRANSIENT_RETRY_BASE_MS << timers.transient_retry_attempt)
