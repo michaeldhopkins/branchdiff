@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use arboard::Clipboard;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::{App, DisplayableItem};
 use crate::diff::LineSource;
@@ -12,31 +13,60 @@ use crate::ui::{ScreenRowInfo, PREFIX_CHAR_WIDTH};
 /// Shared between click detection and deferred copy timeout.
 pub(crate) const MULTI_CLICK_MS: u128 = 500;
 
-/// Get substring by character positions (not byte positions)
-fn char_slice(s: &str, start: usize, end: usize) -> &str {
-    let mut char_indices = s.char_indices();
-    let start_byte = char_indices.nth(start).map(|(i, _)| i).unwrap_or(s.len());
-    let end_byte = if end <= start {
-        start_byte
-    } else {
-        char_indices
-            .nth(end - start - 1)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len())
-    };
+/// Get byte index at a display-width column boundary.
+/// Returns `s.len()` if the column is at or past the end.
+fn byte_at_display_col(s: &str, col: usize) -> usize {
+    let mut w = 0;
+    for (i, ch) in s.char_indices() {
+        if w >= col {
+            return i;
+        }
+        w += UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+    s.len()
+}
+
+/// Get substring by display-width column positions.
+fn display_slice(s: &str, start: usize, end: usize) -> &str {
+    let start_byte = byte_at_display_col(s, start);
+    let end_byte = byte_at_display_col(s, end);
     &s[start_byte..end_byte]
 }
 
-/// Get substring from character position to end
-fn char_slice_from(s: &str, start: usize) -> &str {
-    let start_byte = s.char_indices().nth(start).map(|(i, _)| i).unwrap_or(s.len());
-    &s[start_byte..]
+/// Get substring from a display-width column to the end.
+fn display_slice_from(s: &str, start: usize) -> &str {
+    &s[byte_at_display_col(s, start)..]
 }
 
-/// Get substring from start to character position
-fn char_slice_to(s: &str, end: usize) -> &str {
-    let end_byte = s.char_indices().nth(end).map(|(i, _)| i).unwrap_or(s.len());
-    &s[..end_byte]
+/// Get substring from the start to a display-width column.
+fn display_slice_to(s: &str, end: usize) -> &str {
+    &s[..byte_at_display_col(s, end)]
+}
+
+/// Display width of a string (number of terminal columns).
+fn display_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
+/// Convert a display-width column to the corresponding character index.
+/// Returns `chars.len()` if the column is past the end.
+fn display_col_to_char_idx(chars: &[char], col: usize) -> usize {
+    let mut w = 0;
+    for (idx, &ch) in chars.iter().enumerate() {
+        if w >= col {
+            return idx;
+        }
+        w += UnicodeWidthChar::width(ch).unwrap_or(0);
+    }
+    chars.len()
+}
+
+/// Convert a character index to its display-width column.
+fn char_idx_to_display_col(chars: &[char], idx: usize) -> usize {
+    chars[..idx]
+        .iter()
+        .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
+        .sum()
 }
 
 /// Check if a character is a word character (alphanumeric or underscore)
@@ -49,8 +79,8 @@ fn is_symbol_char(c: char) -> bool {
     !is_word_char(c) && !c.is_whitespace()
 }
 
-/// Find selection boundaries around a given column position.
-/// Returns (start_col, end_col) where end_col is exclusive.
+/// Find selection boundaries around a display-width column.
+/// Returns `(start_col, end_col)` in display-width columns where `end_col` is exclusive.
 ///
 /// Behavior:
 /// - On a word character: select the word
@@ -59,34 +89,38 @@ fn is_symbol_char(c: char) -> bool {
 /// - Past end of line: select entire line (handled by caller)
 fn find_selection_boundaries(s: &str, col: usize) -> Option<(usize, usize)> {
     let chars: Vec<char> = s.chars().collect();
+    let char_idx = display_col_to_char_idx(&chars, col);
 
-    if col >= chars.len() {
+    if char_idx >= chars.len() {
         return None;
     }
 
-    let c = chars[col];
+    let c = chars[char_idx];
 
-    if is_word_char(c) {
-        // Select word
-        find_word_boundaries_impl(&chars, col)
+    let (start_char, end_char) = if is_word_char(c) {
+        find_word_boundaries_impl(&chars, char_idx)?
     } else if is_symbol_char(c) {
-        // Select consecutive symbols
-        find_symbol_boundaries_impl(&chars, col)
+        find_symbol_boundaries_impl(&chars, char_idx)?
     } else {
         // Whitespace: find first non-whitespace to the right
-        let mut start = col;
-        while start < chars.len() && chars[start].is_whitespace() {
-            start += 1;
+        let mut scan = char_idx;
+        while scan < chars.len() && chars[scan].is_whitespace() {
+            scan += 1;
         }
-        if start >= chars.len() {
+        if scan >= chars.len() {
             return None;
         }
-        if is_word_char(chars[start]) {
-            find_word_boundaries_impl(&chars, start)
+        if is_word_char(chars[scan]) {
+            find_word_boundaries_impl(&chars, scan)?
         } else {
-            find_symbol_boundaries_impl(&chars, start)
+            find_symbol_boundaries_impl(&chars, scan)?
         }
-    }
+    };
+
+    Some((
+        char_idx_to_display_col(&chars, start_char),
+        char_idx_to_display_col(&chars, end_char),
+    ))
 }
 
 fn find_word_boundaries_impl(chars: &[char], col: usize) -> Option<(usize, usize)> {
@@ -200,7 +234,7 @@ impl App {
             let (new_start, new_end) = if pos.row < anchor_start_row {
                 // Dragging before anchor
                 let end_content_len = self.view.row_map.get(anchor_end_row)
-                    .map(|r| r.content.chars().count())
+                    .map(|r| display_width(&r.content))
                     .unwrap_or(0);
                 (
                     Position { row: drag_start_row, col: prefix_len },
@@ -209,7 +243,7 @@ impl App {
             } else {
                 // Dragging after or at anchor
                 let end_content_len = self.view.row_map.get(drag_end_row)
-                    .map(|r| r.content.chars().count())
+                    .map(|r| display_width(&r.content))
                     .unwrap_or(0);
                 (
                     Position { row: anchor_start_row, col: prefix_len },
@@ -344,7 +378,7 @@ impl App {
         };
 
         let content_col = pos.col.saturating_sub(prefix_len);
-        let content_len = content.chars().count();
+        let content_len = display_width(&content);
 
         // Determine selection bounds
         if content_col >= content_len {
@@ -401,7 +435,7 @@ impl App {
         self.view.line_selection_anchor = Some((start_row, end_row));
 
         // Calculate end column for the last row
-        let end_content_len = self.view.row_map[end_row].content.chars().count();
+        let end_content_len = display_width(&self.view.row_map[end_row].content);
 
         self.view.selection = Some(Selection {
             start: Position { row: start_row, col: prefix_len },
@@ -412,7 +446,7 @@ impl App {
 
     /// Select an entire status bar line (no prefix, no continuation logic)
     fn select_status_bar_line(&mut self, row: usize, content: &str) {
-        let content_len = content.chars().count();
+        let content_len = display_width(content);
 
         self.view.line_selection_anchor = Some((row, row));
         self.view.word_selection_anchor = None;
@@ -460,7 +494,7 @@ impl App {
         }
 
         // Calculate end column for the last row
-        let end_content_len = self.view.row_map[end_row].content.chars().count();
+        let end_content_len = display_width(&self.view.row_map[end_row].content);
 
         // Set anchor spanning the entire logical line
         let sel_start = prefix_len;
@@ -566,23 +600,23 @@ impl App {
                 None => break,
             };
 
-            let char_count = content.chars().count();
+            let content_width = display_width(content);
 
             if start.row == end.row {
                 // Single row selection
                 let start_in_content = start.col.saturating_sub(prefix_len);
                 let end_in_content = end.col.saturating_sub(prefix_len);
-                if start_in_content < char_count {
-                    let actual_end = end_in_content.min(char_count);
+                if start_in_content < content_width {
+                    let actual_end = end_in_content.min(content_width);
                     if actual_end > start_in_content {
-                        result.push_str(char_slice(content, start_in_content, actual_end));
+                        result.push_str(display_slice(content, start_in_content, actual_end));
                     }
                 }
             } else if screen_row == start.row {
                 // First row of multi-row selection
                 let start_in_content = start.col.saturating_sub(prefix_len);
-                if start_in_content < char_count {
-                    result.push_str(char_slice_from(content, start_in_content));
+                if start_in_content < content_width {
+                    result.push_str(display_slice_from(content, start_in_content));
                 }
                 if !self.is_next_row_continuation(screen_row) {
                     result.push('\n');
@@ -590,8 +624,8 @@ impl App {
             } else if screen_row == end.row {
                 // Last row of multi-row selection
                 let end_in_content = end.col.saturating_sub(prefix_len);
-                let actual_end = end_in_content.min(char_count);
-                result.push_str(char_slice_to(content, actual_end));
+                let actual_end = end_in_content.min(content_width);
+                result.push_str(display_slice_to(content, actual_end));
             } else {
                 // Middle rows - take entire content
                 result.push_str(content);
@@ -1563,5 +1597,102 @@ mod tests {
         // Should select entire line since click was past content
         assert_eq!(sel.start.col, 0);
         assert_eq!(sel.end.col, 5); // "short" = 5 chars
+    }
+
+    // ===== Display-width (CJK / wide character) tests =====
+    //
+    // These tests verify that selection coordinates use display-width columns
+    // (not byte offsets or char counts). CJK characters are 1 char, 3 bytes,
+    // but 2 display columns each.
+
+    #[test]
+    fn get_selected_text_cjk_single_row() {
+        // "hi你好" = 2 ASCII + 2 CJK = 6 display columns, 4 chars, 8 bytes
+        let mut app = TestAppBuilder::new().build();
+        app.view.line_num_width = 3; // prefix_len = 8
+        app.view.row_map = vec![make_row("hi你好", false)];
+
+        // Select display columns 2-4 within content = "你" (2 display cols)
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 10 }, // 8 + 2
+            end: Position { row: 0, col: 12 },   // 8 + 4
+            active: false,
+        });
+
+        let text = app.get_selected_text().unwrap();
+        assert_eq!(text, "你", "should select one CJK char at display cols 2-4");
+    }
+
+    #[test]
+    fn get_selected_text_cjk_from_start() {
+        // "你好world" = 2 CJK + 5 ASCII = 4+5 = 9 display columns
+        let mut app = TestAppBuilder::new().build();
+        app.view.line_num_width = 3;
+        app.view.row_map = vec![make_row("你好world", false)];
+
+        // Select first 4 display columns = "你好"
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 8 },
+            end: Position { row: 0, col: 12 },  // 8 + 4
+            active: false,
+        });
+
+        let text = app.get_selected_text().unwrap();
+        assert_eq!(text, "你好");
+    }
+
+    #[test]
+    fn get_selected_text_cjk_multirow() {
+        // Two rows: one with CJK, one ASCII
+        let mut app = TestAppBuilder::new().build();
+        app.view.line_num_width = 3;
+        app.view.row_map = vec![
+            make_row("你好world", false),   // 9 display cols
+            make_row("hello", false),        // 5 display cols
+        ];
+
+        // Select from CJK row (display col 4 = after "你好") to end of second row
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 12 }, // 8 + 4 (after "你好")
+            end: Position { row: 1, col: 13 },   // 8 + 5
+            active: false,
+        });
+
+        let text = app.get_selected_text().unwrap();
+        assert_eq!(text, "world\nhello");
+    }
+
+    #[test]
+    fn find_selection_boundaries_cjk_word() {
+        // "你好 world" — CJK chars are NOT word chars (not alphanumeric),
+        // so they're symbols. Double-clicking on "你" at display col 0
+        // should select consecutive CJK symbols "你好".
+        let result = find_selection_boundaries("你好 world", 0);
+        assert_eq!(result, Some((0, 4)), "CJK symbols 你好 span display cols 0-4");
+    }
+
+    #[test]
+    fn find_selection_boundaries_ascii_after_cjk() {
+        // "你好 world" — clicking on 'w' at display col 5
+        // (你=0-1, 好=2-3, space=4, w=5)
+        let result = find_selection_boundaries("你好 world", 5);
+        assert_eq!(result, Some((5, 10)), "word 'world' spans display cols 5-10");
+    }
+
+    #[test]
+    fn select_line_at_cjk_content_uses_display_width() {
+        let mut app = TestAppBuilder::new().build();
+        app.view.line_num_width = 3;
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![
+            make_row("你好世界", false),  // 8 display columns
+        ];
+
+        // Triple-click to select the line
+        app.select_line_at(5, 1);
+
+        let sel = app.view.selection.as_ref().expect("should have selection");
+        // End col should be prefix_len(8) + display_width("你好世界")(8) = 16
+        assert_eq!(sel.end.col, 16, "end col should use display width, not char count (4)");
     }
 }
