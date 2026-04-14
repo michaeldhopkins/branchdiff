@@ -1,19 +1,13 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use super::shared::{assemble_results, process_files_parallel, run_vcs_with_retry, FileProcessResult};
+use vcs_runner::{run_jj, run_jj_with_retry, is_transient_error};
 
-/// Detect transient jj errors worth retrying.
-/// "stale" matches "The working copy is stale" (exit code 1), which resolves
-/// after jj finishes its working copy update.
-fn is_transient_jj_error(stderr: &str) -> bool {
-    stderr.contains("stale")
-}
+use super::shared::{assemble_results, process_files_parallel, FileProcessResult};
 
 /// Prepend `--ignore-working-copy` to skip jj's auto-snapshot.
 /// Only the first command per refresh cycle needs to snapshot; subsequent
@@ -45,23 +39,18 @@ pub struct JjVcs {
 /// `trunk()` falls back to `root()` when no remote exists, which would diff
 /// the entire repo history — so only use it when it resolves to an actual branch.
 fn resolve_base_rev(repo_path: &Path) -> String {
-    let output = Command::new("jj")
-        .args([
-            "log", "-r", "trunk() ~ root()", "--no-graph",
-            "--limit", "1", "-T", "change_id.short(12)",
-        ])
-        .current_dir(repo_path)
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            if String::from_utf8_lossy(&o.stdout).trim().is_empty() {
-                "@-".to_string()
-            } else {
-                "trunk()".to_string()
-            }
+    run_jj(repo_path, &[
+        "log", "-r", "trunk() ~ root()", "--no-graph",
+        "--limit", "1", "-T", "change_id.short(12)",
+    ])
+    .map(|o| {
+        if o.stdout_lossy().trim().is_empty() {
+            "@-".to_string()
+        } else {
+            "trunk()".to_string()
         }
-        _ => "@-".to_string(),
-    }
+    })
+    .unwrap_or_else(|_| "@-".to_string())
 }
 
 /// Find the fork point: the most recent common ancestor of trunk() and @.
@@ -76,20 +65,9 @@ fn resolve_fork_point(repo_path: &Path, from_rev: &str) -> Option<String> {
         "log", "-r", "heads(::trunk() & ::@)", "--no-graph",
         "--limit", "1", "-T", "commit_id.short(12)",
     ]);
-    let output = Command::new("jj")
-        .args(&args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let fork_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if fork_id.is_empty() {
-        return None;
-    }
+    let fork_id = run_jj(repo_path, &args).ok()
+        .map(|o| o.stdout_lossy().trim().to_string())
+        .filter(|s| !s.is_empty())?;
 
     // Check if fork point equals trunk tip — if so, no divergence
     let trunk_commit = {
@@ -97,9 +75,8 @@ fn resolve_fork_point(repo_path: &Path, from_rev: &str) -> Option<String> {
             "log", "-r", "trunk()", "--no-graph", "--limit", "1",
             "-T", "commit_id.short(12)",
         ]);
-        let out = Command::new("jj").args(&args).current_dir(repo_path).output().ok()?;
-        if !out.status.success() { return None; }
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        run_jj(repo_path, &args).ok()
+            .map(|o| o.stdout_lossy().trim().to_string())?
     };
 
     if fork_id == trunk_commit {
@@ -122,19 +99,9 @@ fn compute_jj_divergence(
         "log", "-r", &revset,
         "--no-graph", "-T", r#""\n""#,
     ]);
-    let count_output = Command::new("jj")
-        .args(&count_args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-    let behind_count = if count_output.status.success() {
-        String::from_utf8_lossy(&count_output.stdout)
-            .lines()
-            .filter(|l| !l.is_empty())
-            .count()
-    } else {
-        0
-    };
+    let behind_count = run_jj(repo_path, &count_args)
+        .map(|o| o.stdout_lossy().lines().filter(|l| !l.is_empty()).count())
+        .unwrap_or(0);
 
     if behind_count == 0 {
         return None;
@@ -144,19 +111,14 @@ fn compute_jj_divergence(
     let diff_args = no_snapshot(&[
         "diff", "--from", fork_point, "--to", "trunk()", "--summary",
     ]);
-    let diff_output = Command::new("jj")
-        .args(&diff_args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-    let upstream_files = if diff_output.status.success() {
-        parse_jj_summary(&String::from_utf8_lossy(&diff_output.stdout))
-            .into_iter()
-            .map(|f| f.path)
-            .collect()
-    } else {
-        HashSet::new()
-    };
+    let upstream_files = run_jj(repo_path, &diff_args)
+        .map(|o| {
+            parse_jj_summary(&o.stdout_lossy())
+                .into_iter()
+                .map(|f| f.path)
+                .collect()
+        })
+        .unwrap_or_default();
 
     Some(UpstreamDivergence {
         behind_count,
@@ -183,17 +145,8 @@ fn resolve_stack_tip(repo_path: &Path, from_rev: &str) -> Option<StackTip> {
         "log", "-r", "heads(trunk()..(@::))", "--no-graph",
         "-T", r#"change_id.short(12) ++ "\n""#,
     ]);
-    let output = Command::new("jj")
-        .args(&args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let output = run_jj(repo_path, &args).ok()?;
+    let stdout = output.stdout_lossy();
     let heads: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
 
     if heads.is_empty() {
@@ -238,17 +191,8 @@ fn resolve_bookmark_boundary(repo_path: &Path, from_rev: &str) -> Option<Bookmar
         "log", "-r", "latest((@:: | @) & bookmarks())", "--no-graph", "--limit", "1",
         "-T", template,
     ]);
-    let output = Command::new("jj")
-        .args(&args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let output = run_jj(repo_path, &args).ok()?;
+    let stdout = output.stdout_lossy();
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
         return None;
@@ -276,44 +220,26 @@ fn resolve_bookmark_boundary(repo_path: &Path, from_rev: &str) -> Option<Bookmar
         "log", "-r", &revset, "--no-graph", "--limit", "1",
         "-T", "change_id.short(12)",
     ]);
-    let prev_output = Command::new("jj")
-        .args(&prev_args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-
-    let boundary_id = if prev_output.status.success() {
-        let prev_id = String::from_utf8_lossy(&prev_output.stdout).trim().to_string();
-        if prev_id.is_empty() {
-            // No previous bookmark — boundary is trunk
-            from_rev.to_string()
-        } else {
-            prev_id
-        }
-    } else {
-        from_rev.to_string()
-    };
+    let boundary_id = run_jj(repo_path, &prev_args)
+        .ok()
+        .map(|o| o.stdout_lossy().trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| from_rev.to_string());
 
     // Step 3: Get the list of files changed between boundary and @
     let range = format!("\"{}\"..@", boundary_id);
     let diff_args = no_snapshot(&[
         "diff", "-r", &range, "--name-only",
     ]);
-    let diff_output = Command::new("jj")
-        .args(&diff_args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-
-    let changed_files: HashSet<String> = if diff_output.status.success() {
-        String::from_utf8_lossy(&diff_output.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect()
-    } else {
-        HashSet::new()
-    };
+    let changed_files: HashSet<String> = run_jj(repo_path, &diff_args)
+        .map(|o| {
+            o.stdout_lossy()
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
 
     Some(BookmarkBoundary {
         bookmark_name,
@@ -352,16 +278,9 @@ fn get_change_id_static(repo_path: &Path, rev: &str) -> Option<String> {
         "log", "-r", rev, "--no-graph", "--limit", "1",
         "-T", "change_id.short(12)",
     ]);
-    let output = Command::new("jj")
-        .args(&args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
-    }
+    run_jj(repo_path, &args)
+        .ok()
+        .map(|o| o.stdout_lossy().trim().to_string())
 }
 
 /// Compute @'s position in the stack from trunk to tip.
@@ -372,17 +291,8 @@ fn compute_stack_position(repo_path: &Path, tip_id: &str) -> Option<(usize, usiz
         "log", "-r", &revset, "--no-graph",
         "-T", r#"if(self.contained_in("@"), "@", ".") ++ "\n""#,
     ]);
-    let output = Command::new("jj")
-        .args(&args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let output = run_jj(repo_path, &args).ok()?;
+    let stdout = output.stdout_lossy();
     let entries: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
     let total = entries.len();
     if total == 0 {
@@ -415,31 +325,15 @@ impl JjVcs {
     }
 
     fn run_jj(&self, args: &[&str]) -> Result<String> {
-        let output = Command::new("jj")
-            .args(args)
-            .current_dir(&self.repo_path)
-            .output()
-            .context("failed to run jj")?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("jj {} failed: {}", args.join(" "), stderr.trim())
-        }
+        let output = run_jj(&self.repo_path, args)?;
+        Ok(output.stdout_lossy().into_owned())
     }
 
     fn run_jj_bytes(&self, args: &[&str]) -> Result<Option<Vec<u8>>> {
-        let output = Command::new("jj")
-            .args(args)
-            .current_dir(&self.repo_path)
-            .output()
-            .context("failed to run jj")?;
-
-        if output.status.success() {
-            Ok(Some(output.stdout))
-        } else {
-            Ok(None)
+        match run_jj(&self.repo_path, args) {
+            Ok(output) => Ok(Some(output.stdout)),
+            Err(e) if e.is_non_zero_exit() => Ok(None),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -447,16 +341,12 @@ impl JjVcs {
     /// The first call per refresh triggers the working copy auto-snapshot;
     /// all subsequent commands use `--ignore-working-copy`.
     fn get_changed_files_with_from(&self, from: &str, effective_to: &str) -> Result<Vec<ChangedFile>> {
-        let output = run_vcs_with_retry(
-            "jj", &self.repo_path,
+        let output = run_jj_with_retry(
+            &self.repo_path,
             &["diff", "--from", from, "--to", effective_to, "--summary"],
-            is_transient_jj_error,
+            is_transient_error,
         )?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("jj diff --summary failed: {}", stderr.trim());
-        }
-        Ok(parse_jj_summary(&String::from_utf8_lossy(&output.stdout)))
+        Ok(parse_jj_summary(&output.stdout_lossy()))
     }
 
     /// Detect binary files by checking --stat output for "(binary)" markers.
@@ -466,13 +356,10 @@ impl JjVcs {
         let args = no_snapshot(&[
             "diff", "--from", from, "--to", effective_to, "--stat",
         ]);
-        let Ok(output) = run_vcs_with_retry("jj", &self.repo_path, &args, is_transient_jj_error) else {
-            return HashSet::new();
-        };
-        if !output.status.success() {
-            return HashSet::new();
+        match run_jj_with_retry(&self.repo_path, &args, is_transient_error) {
+            Ok(output) => parse_binary_from_stat(&output.stdout_lossy()),
+            Err(_) => HashSet::new(),
         }
-        parse_binary_from_stat(&String::from_utf8_lossy(&output.stdout))
     }
 
     fn get_file_bytes_at_rev(&self, file_path: &str, rev: &str) -> Result<Option<Vec<u8>>> {
@@ -545,16 +432,9 @@ fn parse_rev_metadata(raw: &str) -> (String, String) {
 /// Free function for use in parallel contexts (rayon).
 fn file_content_no_snapshot(repo_path: &Path, file_path: &str, rev: &str) -> Option<String> {
     let args = no_snapshot(&["file", "show", "-r", rev, file_path]);
-    let output = Command::new("jj")
-        .args(&args)
-        .current_dir(repo_path)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).into_owned())
-    } else {
-        None
-    }
+    run_jj(repo_path, &args)
+        .ok()
+        .map(|o| o.stdout_lossy().into_owned())
 }
 
 fn process_jj_file(
@@ -617,18 +497,9 @@ fn process_jj_file(
 
 /// Get the jj repo root from a path.
 pub fn get_repo_root(path: &Path) -> Result<PathBuf> {
-    let output = Command::new("jj")
-        .args(["root"])
-        .current_dir(path)
-        .output()
-        .context("failed to run jj root")?;
-
-    if output.status.success() {
-        let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(PathBuf::from(root))
-    } else {
-        anyhow::bail!("not a jj repository")
-    }
+    let output = run_jj(path, &["root"])?;
+    let root = output.stdout_lossy().trim().to_string();
+    Ok(PathBuf::from(root))
 }
 
 impl crate::vcs::Vcs for JjVcs {
@@ -639,26 +510,22 @@ impl crate::vcs::Vcs for JjVcs {
     fn comparison_context(&self) -> Result<ComparisonContext> {
         let template = r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
         // First call triggers auto-snapshot to capture current working copy
-        let from_output = run_vcs_with_retry(
-            "jj", &self.repo_path,
+        let from_label = match run_jj_with_retry(
+            &self.repo_path,
             &["log", "-r", &self.from_rev, "-T", template, "--no-graph", "--limit", "1"],
-            is_transient_jj_error,
-        )?;
-        let from_label = if from_output.status.success() {
-            parse_rev_metadata(&String::from_utf8_lossy(&from_output.stdout)).1
-        } else {
-            self.from_rev.clone()
+            is_transient_error,
+        ) {
+            Ok(output) => parse_rev_metadata(&output.stdout_lossy()).1,
+            Err(_) => self.from_rev.clone(),
         };
 
         // Second call skips snapshot (already fresh)
         let to_args = no_snapshot(&[
             "log", "-r", "@", "-T", template, "--no-graph", "--limit", "1",
         ]);
-        let to_output = run_vcs_with_retry("jj", &self.repo_path, &to_args, is_transient_jj_error)?;
-        let to_label = if to_output.status.success() {
-            parse_rev_metadata(&String::from_utf8_lossy(&to_output.stdout)).1
-        } else {
-            "@".to_string()
+        let to_label = match run_jj_with_retry(&self.repo_path, &to_args, is_transient_error) {
+            Ok(output) => parse_rev_metadata(&output.stdout_lossy()).1,
+            Err(_) => "@".to_string(),
         };
 
         // stack_position is computed by refresh() and applied via
@@ -985,6 +852,7 @@ fn parse_binary_from_stat(output: &str) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     use crate::diff::LineSource;
     use crate::vcs::Vcs;
 
@@ -1296,44 +1164,6 @@ mod tests {
         let paths = vcs.watch_paths();
         assert!(paths.files.contains(&PathBuf::from("/repo/.jj/working_copy/checkout")));
         assert!(paths.recursive_dirs.contains(&PathBuf::from("/repo/.jj/repo/op_store")));
-    }
-
-    // === is_transient_jj_error tests ===
-
-    #[test]
-    fn test_transient_error_stale() {
-        assert!(is_transient_jj_error("The working copy is stale"));
-    }
-
-    #[test]
-    fn test_not_transient_error() {
-        assert!(!is_transient_jj_error("fatal: not a jj repository"));
-        assert!(!is_transient_jj_error("Error: revision not found"));
-        assert!(!is_transient_jj_error(""));
-    }
-
-    // === run_vcs_with_retry tests (jj) ===
-
-    #[test]
-    fn test_run_vcs_with_retry_jj_succeeds_on_first_attempt() {
-        if !jj_available() { return; }
-
-        let temp = tempfile::TempDir::new().unwrap();
-        Command::new("jj").args(["git", "init"]).current_dir(temp.path()).output().unwrap();
-
-        let output = run_vcs_with_retry("jj", temp.path(), &["log", "--limit", "1"], is_transient_jj_error).unwrap();
-        assert!(output.status.success());
-    }
-
-    #[test]
-    fn test_run_vcs_with_retry_jj_returns_failure_for_permanent_error() {
-        if !jj_available() { return; }
-
-        let temp = tempfile::TempDir::new().unwrap();
-        Command::new("jj").args(["git", "init"]).current_dir(temp.path()).output().unwrap();
-
-        let output = run_vcs_with_retry("jj", temp.path(), &["log", "-r", "nonexistent_rev_xyz"], is_transient_jj_error).unwrap();
-        assert!(!output.status.success());
     }
 
     // === Integration tests (require jj installed) ===
