@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use unicode_width::UnicodeWidthStr;
 use ratatui::{
     layout::Rect,
     style::{Color, Style},
@@ -652,22 +653,23 @@ impl<'a> DiffViewModel<'a> {
                     String::new()
                 };
 
-                let del_spans = apply_selection_to_content(
-                    del_spans,
-                    self.selection,
-                    screen_row_idx,
-                    prefix_width,
-                );
                 let del_spans = apply_search_to_content(del_spans, self.search, line_idx);
 
                 let del_prefix_char = self.line_prefix(diff_line, '-', del_source);
-                let (del_lines, del_row_infos) = wrap_content(
+                let (mut del_lines, del_row_infos) = wrap_content(
                     del_spans,
                     old_content,
                     del_prefix_str,
                     del_prefix_char,
                     del_style,
                     content_width,
+                    prefix_width,
+                );
+                apply_selection_to_wrapped_lines(
+                    &mut del_lines,
+                    &del_row_infos,
+                    self.selection,
+                    screen_row_idx,
                     prefix_width,
                 );
 
@@ -684,22 +686,23 @@ impl<'a> DiffViewModel<'a> {
                 new_content,
                 diff_line.file_path.as_deref(),
             );
-            let ins_spans = apply_selection_to_content(
-                ins_spans,
-                self.selection,
-                screen_row_idx,
-                prefix_width,
-            );
             let ins_spans = apply_search_to_content(ins_spans, self.search, line_idx);
 
             let ins_prefix_char = self.line_prefix(diff_line, '+', ins_source);
-            let (ins_lines, ins_row_infos) = wrap_content(
+            let (mut ins_lines, ins_row_infos) = wrap_content(
                 ins_spans,
                 new_content,
                 prefix_str.to_string(),
                 ins_prefix_char,
                 ins_style,
                 content_width,
+                prefix_width,
+            );
+            apply_selection_to_wrapped_lines(
+                &mut ins_lines,
+                &ins_row_infos,
+                self.selection,
+                screen_row_idx,
                 prefix_width,
             );
 
@@ -722,22 +725,23 @@ impl<'a> DiffViewModel<'a> {
                         highlight_style,
                     );
 
-                    let content_spans = apply_selection_to_content(
-                        content_spans,
-                        self.selection,
-                        screen_row_idx,
-                        prefix_width,
-                    );
                     let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
 
                     let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
-                    let (lines, row_infos) = wrap_content(
+                    let (mut lines, row_infos) = wrap_content(
                         content_spans,
                         &diff_line.content,
                         prefix_str.to_string(),
                         prefix_char,
                         style,
                         content_width,
+                        prefix_width,
+                    );
+                    apply_selection_to_wrapped_lines(
+                        &mut lines,
+                        &row_infos,
+                        self.selection,
+                        screen_row_idx,
                         prefix_width,
                     );
 
@@ -762,18 +766,23 @@ impl<'a> DiffViewModel<'a> {
             highlight_style,
         );
 
-        let content_spans =
-            apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
         let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
 
         let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
-        let (lines, row_infos) = wrap_content(
+        let (mut lines, row_infos) = wrap_content(
             content_spans,
             &diff_line.content,
             prefix_str.to_string(),
             prefix_char,
             style,
             content_width,
+            prefix_width,
+        );
+        apply_selection_to_wrapped_lines(
+            &mut lines,
+            &row_infos,
+            self.selection,
+            screen_row_idx,
             prefix_width,
         );
 
@@ -804,17 +813,22 @@ impl<'a> DiffViewModel<'a> {
             style,
         );
 
-        let content_spans =
-            apply_selection_to_content(content_spans, self.selection, screen_row_idx, prefix_width);
         let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
 
-        let (lines, row_infos) = wrap_content(
+        let (mut lines, row_infos) = wrap_content(
             content_spans,
             &diff_line.content,
             prefix_str.to_string(),
             prefix_char,
             style,
             content_width,
+            prefix_width,
+        );
+        apply_selection_to_wrapped_lines(
+            &mut lines,
+            &row_infos,
+            self.selection,
+            screen_row_idx,
             prefix_width,
         );
 
@@ -826,6 +840,7 @@ impl<'a> DiffViewModel<'a> {
     }
 }
 
+#[cfg(test)]
 fn apply_selection_to_content(
     content_spans: Vec<Span<'static>>,
     selection: &Option<Selection>,
@@ -837,17 +852,69 @@ fn apply_selection_to_content(
         let content_sel_end = sel_end.saturating_sub(prefix_width);
 
         let mut result = Vec::new();
-        let mut char_offset = 0;
+        let mut display_offset = 0;
 
         for span in content_spans {
+            let span_width = UnicodeWidthStr::width(span.content.as_ref());
             let span_with_selection =
-                apply_selection_to_span(span.clone(), char_offset, content_sel_start, content_sel_end);
-            char_offset += span.content.len();
+                apply_selection_to_span(span, display_offset, content_sel_start, content_sel_end);
+            display_offset += span_width;
             result.extend(span_with_selection);
         }
         result
     } else {
         content_spans
+    }
+}
+
+/// Apply selection highlighting to already-wrapped lines.
+///
+/// Each visual row gets its own selection check using `start_screen_row + i`,
+/// so continuation rows of wrapped lines are highlighted correctly.
+fn apply_selection_to_wrapped_lines(
+    lines: &mut [Line<'static>],
+    row_infos: &[ScreenRowInfo],
+    selection: &Option<Selection>,
+    start_screen_row: usize,
+    prefix_width: usize,
+) {
+    if selection.is_none() {
+        return;
+    }
+    for (i, line) in lines.iter_mut().enumerate() {
+        let screen_row = start_screen_row + i;
+        let Some((sel_start, sel_end)) = get_line_selection_range(selection, screen_row) else {
+            continue;
+        };
+        let content_sel_start = sel_start.saturating_sub(prefix_width);
+        let content_sel_end = sel_end.saturating_sub(prefix_width);
+
+        // Determine how many leading spans are prefix (not content).
+        // First row of a logical line: 2 prefix spans (line nums + prefix char).
+        // Continuation rows: 1 prefix span (indentation).
+        let prefix_span_count = if row_infos[i].is_continuation { 1 } else { 2 };
+
+        let all_spans: Vec<Span<'static>> = std::mem::take(&mut line.spans);
+        let mut result: Vec<Span<'static>> = Vec::with_capacity(all_spans.len() + 2);
+        let mut display_offset = 0;
+
+        for (idx, span) in all_spans.into_iter().enumerate() {
+            if idx < prefix_span_count {
+                result.push(span);
+            } else {
+                let span_width = UnicodeWidthStr::width(span.content.as_ref());
+                let selected = apply_selection_to_span(
+                    span,
+                    display_offset,
+                    content_sel_start,
+                    content_sel_end,
+                );
+                display_offset += span_width;
+                result.extend(selected);
+            }
+        }
+
+        *line = Line::from(result);
     }
 }
 
@@ -2223,5 +2290,148 @@ mod tests {
         assert_eq!(result[0].content, "café ");
         assert_eq!(result[1].content, "résumé");
         assert_eq!(result[1].style.bg, Some(SEARCH_CURRENT_BG));
+    }
+
+    #[test]
+    fn selection_on_wrapped_continuation_row_is_highlighted() {
+        use crate::app::{Position, Selection};
+        use crate::ui::selection::SELECTION_BG_COLOR;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // Create a line long enough to wrap to 3 rows at width 60.
+        // With prefix ~6 chars, content_width ~54, so 162 chars wraps to 3 rows.
+        let long_content = "x".repeat(162);
+        let mut lines = vec![DiffLine::file_header("test.rb")];
+        let mut line = base_line(&long_content);
+        line.line_number = Some(22);
+        line.file_path = Some("test.rb".to_string());
+        lines.push(line);
+
+        let width: u16 = 60;
+        let height: u16 = 10;
+
+        // First render without selection to find row_map layout
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(width);
+        let output = render_to_output(&app, width, height);
+
+        // Verify wrapping produced continuation rows
+        let continuation_count = output.row_map.iter().filter(|r| r.is_continuation).count();
+        assert!(
+            continuation_count >= 2,
+            "expected at least 2 continuation rows, got {}. row_map len = {}, rows: {:?}",
+            continuation_count,
+            output.row_map.len(),
+            output.row_map.iter().map(|r| (r.is_continuation, r.content.len())).collect::<Vec<_>>()
+        );
+
+        // The content row starts at row_map index 1 (after the file header).
+        // The middle continuation row is at index 2.
+        let middle_row_idx = 2;
+        assert!(
+            output.row_map[middle_row_idx].is_continuation,
+            "row {} should be a continuation row",
+            middle_row_idx
+        );
+
+        // Set selection spanning the entire middle continuation row.
+        // content_offset is (1,1) from TestAppBuilder defaults, so screen
+        // row = row_map_idx + offset_y = middle_row_idx + 1. Selection
+        // coords are in content space (row_map indices), so use middle_row_idx directly.
+        app.view.selection = Some(Selection {
+            start: Position { row: middle_row_idx, col: 0 },
+            end: Position { row: middle_row_idx, col: width as usize },
+            active: false,
+        });
+
+        // Re-render with the selection active
+        let ctx = FrameContext::new(&app);
+        let area = Rect::new(0, 0, width, height);
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                view_model.render(f);
+            })
+            .unwrap();
+
+        // The middle continuation row renders at screen_y = content_offset.y + middle_row_idx
+        let screen_y = app.view.content_offset.1 as u16 + middle_row_idx as u16;
+        let buf = terminal.backend().buffer();
+
+        // Check that at least one cell on the continuation row has the selection bg color
+        let has_selection_bg = (0..width).any(|x| buf[(x, screen_y)].bg == SELECTION_BG_COLOR);
+        assert!(
+            has_selection_bg,
+            "middle continuation row (screen_y={}) should have selection highlighting, \
+             but no cells had bg color {:?}. Cell bgs: {:?}",
+            screen_y,
+            SELECTION_BG_COLOR,
+            (0..width).map(|x| buf[(x, screen_y)].bg).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn selection_spanning_all_wrapped_rows_highlights_every_row() {
+        use crate::app::{Position, Selection};
+        use crate::ui::selection::SELECTION_BG_COLOR;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let long_content = "y".repeat(162);
+        let mut lines = vec![DiffLine::file_header("test.rb")];
+        let mut line = base_line(&long_content);
+        line.line_number = Some(10);
+        line.file_path = Some("test.rb".to_string());
+        lines.push(line);
+
+        let width: u16 = 60;
+        let height: u16 = 10;
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(width);
+        let output = render_to_output(&app, width, height);
+
+        // Find all rows belonging to the wrapped content line (index 1 onward)
+        let first_content_row = 1;
+        let last_content_row = output.row_map.len() - 1;
+        assert!(last_content_row >= first_content_row + 2, "need at least 3 rows");
+
+        // Select across all wrapped rows
+        app.view.selection = Some(Selection {
+            start: Position { row: first_content_row, col: 0 },
+            end: Position { row: last_content_row, col: width as usize },
+            active: false,
+        });
+
+        let ctx = FrameContext::new(&app);
+        let area = Rect::new(0, 0, width, height);
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                view_model.render(f);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let offset_y = app.view.content_offset.1 as u16;
+
+        for row_idx in first_content_row..=last_content_row {
+            let screen_y = offset_y + row_idx as u16;
+            let has_selection_bg = (0..width).any(|x| buf[(x, screen_y)].bg == SELECTION_BG_COLOR);
+            assert!(
+                has_selection_bg,
+                "row_map[{}] (screen_y={}, continuation={}) should have selection bg",
+                row_idx,
+                screen_y,
+                output.row_map[row_idx].is_continuation
+            );
+        }
     }
 }
