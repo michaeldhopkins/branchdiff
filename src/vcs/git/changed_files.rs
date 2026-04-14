@@ -1,11 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::process::Command;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 
-use super::commands::is_transient_error;
-use crate::vcs::shared::run_vcs_with_retry;
+use vcs_runner::{run_cmd_in_with_env, run_git, run_git_with_retry, is_transient_error};
 
 /// A file that has changes
 #[derive(Debug, Clone)]
@@ -32,19 +30,12 @@ fn detect_unstaged_renames(
     }
 
     // Find the .git directory (handles both regular repos and worktrees)
-    let git_dir_output = Command::new("git")
-        .args(["rev-parse", "--git-dir"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to find .git directory")?;
+    let git_dir_output = match run_git(repo_path, &["rev-parse", "--git-dir"]) {
+        Ok(o) => o,
+        Err(_) => return Ok(Vec::new()),
+    };
 
-    if !git_dir_output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let git_dir = repo_path.join(
-        String::from_utf8_lossy(&git_dir_output.stdout).trim(),
-    );
+    let git_dir = repo_path.join(git_dir_output.stdout_lossy().trim());
     let index_path = git_dir.join("index");
 
     // Create temp file for the index copy
@@ -61,38 +52,33 @@ fn detect_unstaged_renames(
 
     let temp_index_path = temp_index.path().to_string_lossy().to_string();
 
+    let env = [("GIT_INDEX_FILE", temp_index_path.as_str())];
+
     // Batch git add -N for all untracked files
     // Using --intent-to-add with the temp index
-    let add_output = Command::new("git")
-        .args(["add", "-N", "--"])
-        .args(untracked_files)
-        .env("GIT_INDEX_FILE", &temp_index_path)
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git add -N")?;
-
-    if !add_output.status.success() {
+    let mut add_args: Vec<&str> = vec!["add", "-N", "--"];
+    add_args.extend(untracked_files.iter().map(String::as_str));
+    if run_cmd_in_with_env(repo_path, "git", &add_args, &env).is_err() {
         // If add fails, just return empty (don't break the whole refresh)
         return Ok(Vec::new());
     }
 
     // Run git diff with rename detection using the temp index
-    let diff_output = Command::new("git")
-        .args(["diff", "--name-status", "-M", "HEAD"])
-        .env("GIT_INDEX_FILE", &temp_index_path)
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to run git diff with temp index")?;
-
-    if !diff_output.status.success() {
-        return Ok(Vec::new());
-    }
+    let diff_output = match run_cmd_in_with_env(
+        repo_path,
+        "git",
+        &["diff", "--name-status", "-M", "HEAD"],
+        &env,
+    ) {
+        Ok(o) => o,
+        Err(_) => return Ok(Vec::new()),
+    };
 
     // Parse renames from the diff output
     let deleted_set: HashSet<&str> = deleted_files.iter().map(String::as_str).collect();
     let untracked_set: HashSet<&str> = untracked_files.iter().map(String::as_str).collect();
 
-    let output_str = String::from_utf8_lossy(&diff_output.stdout);
+    let output_str = diff_output.stdout_lossy();
     let mut renames = Vec::new();
 
     for line in output_str.lines() {
@@ -145,14 +131,14 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
     // 2. Get staged changes (HEAD to index) and unstaged changes (index to working tree)
     // Use -uall to show individual files in untracked directories
     // Use retry logic to handle transient index.lock contention
-    let status_output = run_vcs_with_retry(
-        "git", repo_path,
+    let status_output = run_git_with_retry(
+        repo_path,
         &["status", "--porcelain=v1", "-uall"],
         is_transient_error,
     )?;
 
-    if status_output.status.success() {
-        let status_str = String::from_utf8_lossy(&status_output.stdout);
+    {
+        let status_str = status_output.stdout_lossy();
         for line in status_str.lines() {
             if line.len() < 3 {
                 continue;
@@ -250,20 +236,13 @@ pub(super) fn parse_diff_line(line: &str) -> Option<FileTransition> {
 
 /// Get file transitions between two refs with rename detection enabled
 pub(super) fn get_diff_transitions(repo_path: &Path, from: &str, to: &str) -> Result<Vec<FileTransition>> {
-    let output = run_vcs_with_retry(
-        "git", repo_path,
+    let output = run_git_with_retry(
+        repo_path,
         &["diff", "--name-status", "-M", from, to],
         is_transient_error,
     )?;
 
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git diff failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let output_str = String::from_utf8_lossy(&output.stdout);
+    let output_str = output.stdout_lossy();
     let transitions: Vec<FileTransition> = output_str
         .lines()
         .filter_map(parse_diff_line)

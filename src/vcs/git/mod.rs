@@ -151,15 +151,11 @@ impl Vcs for GitVcs {
     }
 
     fn current_revision_id(&self) -> Result<String> {
-        let output = crate::vcs::shared::run_vcs_with_retry(
-            "git", &self.repo_path,
+        let output = vcs_runner::run_git_with_retry(
+            &self.repo_path,
             &["rev-parse", "--short", "HEAD"],
-            commands::is_transient_error,
+            vcs_runner::is_transient_error,
         )?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-        } else {
-            anyhow::bail!("git rev-parse HEAD failed")
-        }
+        Ok(output.stdout_lossy().trim().to_string())
     }
 }

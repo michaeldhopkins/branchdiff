@@ -1,5 +1,4 @@
 use super::*;
-use crate::vcs::shared::run_vcs_with_retry;
 use crate::vcs::VcsEventType;
 use std::fs;
 use std::path::Path;
@@ -470,54 +469,6 @@ fn test_get_all_changed_files_with_empty_merge_base() {
     let changed = result.unwrap();
     let paths: Vec<&str> = changed.iter().map(|f| f.path.as_str()).collect();
     assert!(paths.contains(&"new_file.txt"));
-}
-
-#[test]
-fn test_is_transient_error_index_lock() {
-    // index.lock is the most common transient error
-    assert!(commands::is_transient_error(
-        "fatal: Unable to create '/path/.git/index.lock': File exists."
-    ));
-}
-
-#[test]
-fn test_is_transient_error_other_lock() {
-    // Other lock files should also be retried
-    assert!(commands::is_transient_error(
-        "Unable to create '/path/.git/refs/heads/main.lock': File exists"
-    ));
-}
-
-#[test]
-fn test_is_transient_error_not_lock() {
-    // Non-lock errors should not be retried
-    assert!(!commands::is_transient_error("fatal: not a git repository"));
-    assert!(!commands::is_transient_error("fatal: pathspec 'foo' did not match any files"));
-    assert!(!commands::is_transient_error(""));
-}
-
-#[test]
-fn test_run_vcs_with_retry_git_succeeds_on_first_attempt() {
-    let output = run_vcs_with_retry(
-        "git", Path::new("."), &["--version"], commands::is_transient_error,
-    )
-    .unwrap();
-
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("git version"));
-}
-
-#[test]
-fn test_run_vcs_with_retry_git_returns_failure_for_permanent_error() {
-    let output = run_vcs_with_retry(
-        "git", Path::new("."),
-        &["rev-parse", "--verify", "nonexistent-branch-12345"],
-        commands::is_transient_error,
-    )
-    .unwrap();
-
-    assert!(!output.status.success());
 }
 
 #[test]
@@ -1209,4 +1160,51 @@ fn test_collect_fetch_paths_deduplicates() {
     let paths = refresh::collect_fetch_paths(&files, &binary);
     // "file.rs" appears as both a primary path and a rename source — should be deduped
     assert_eq!(paths, vec!["file.rs", "renamed.rs"]);
+}
+
+// === Spawn-failure vs non-zero-exit distinction ===
+//
+// These exercise the branchdiff-specific error handling that maps
+// `RunError::NonZeroExit` to `Ok(None)` while letting spawn failures and
+// other errors propagate.
+
+#[test]
+fn test_get_file_at_ref_missing_ref_returns_none() {
+    // A non-existent ref causes git show to exit non-zero.
+    // Our code maps that to Ok(None), not Err.
+    let temp = create_test_repo();
+    let result = commands::get_file_at_ref(temp.path(), "file.txt", "nonexistent-ref-xyz");
+    assert!(matches!(result, Ok(None)),
+        "missing ref should yield Ok(None), got {:?}", result);
+}
+
+#[test]
+fn test_get_file_bytes_at_ref_missing_ref_returns_none() {
+    let temp = create_test_repo();
+    let result = commands::get_file_bytes_at_ref(temp.path(), "file.txt", "nonexistent-ref-xyz");
+    assert!(matches!(result, Ok(None)),
+        "missing ref should yield Ok(None), got {:?}", result);
+}
+
+#[test]
+fn test_has_merge_conflicts_distinguishes_conflict_from_error() {
+    // With a real conflict, git merge-tree exits non-zero -> our code reports Ok(true).
+    // Without a remote, ref_exists returns false and we short-circuit to Ok(false)
+    // before ever running merge-tree.
+    let (origin, clone) = create_repo_with_origin();
+
+    fs::write(origin.path().join("file.txt"), "origin change\n").unwrap();
+    git_cmd(origin.path(), &["add", "."]);
+    git_cmd(origin.path(), &["commit", "-m", "origin change"]);
+
+    fs::write(clone.path().join("file.txt"), "local change\n").unwrap();
+    git_cmd(clone.path(), &["add", "."]);
+    git_cmd(clone.path(), &["commit", "-m", "local change"]);
+
+    fetch_base_branch(clone.path(), "main").unwrap();
+
+    let version = get_git_version().unwrap();
+    let result = has_merge_conflicts(clone.path(), "main", &version);
+    assert_eq!(result.ok(), Some(true),
+        "conflicting local vs origin should report conflicts");
 }
