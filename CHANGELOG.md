@@ -1,3 +1,8 @@
+## [0.63.1] - 2026-04-12
+
+### Bug Fixes
+
+- Robust repo detection in waiting screen using filesystem watcher
 ## [0.63.0] - 2026-04-07
 
 ### Features
