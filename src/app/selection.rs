@@ -550,8 +550,16 @@ impl App {
         if screen_x >= offset_x && screen_y >= offset_y {
             let content_x = (screen_x - offset_x) as usize;
             let content_y = (screen_y - offset_y) as usize;
+            // Clamp to last actual content row. Without this, dragging into the
+            // empty area below the diff pushes selection.end.row past every
+            // wrapped row, making the renderer highlight rows the cursor never
+            // touched (e.g. the entire wrapped paragraph above).
+            let row = match self.view.row_map.len() {
+                0 => content_y,
+                len => content_y.min(len - 1),
+            };
             return Some(Position {
-                row: content_y,
+                row,
                 col: content_x,
             });
         }
@@ -1050,6 +1058,43 @@ mod tests {
         // Should select entire line: prefix_len to prefix_len + content_len
         assert_eq!(sel.start.col, 8); // prefix_len
         assert_eq!(sel.end.col, 13); // 5 + 8
+    }
+
+    #[test]
+    fn drag_below_paragraph_into_empty_area_does_not_select_whole_paragraph() {
+        // Suspected bug: when a 5-row wrapped paragraph is followed by empty
+        // space (e.g. only 5 rows of content but a 30-row terminal), dragging
+        // past the paragraph's last row sets selection.end.row to a very large
+        // number. Then in get_line_selection_range, every wrapped row of the
+        // paragraph falls inside [start.row, end.row], so the renderer
+        // highlights all 5 rows.
+        let mut app = TestAppBuilder::new().build();
+        app.view.line_num_width = 3;
+        app.view.content_offset = (1, 1);
+        app.view.row_map = vec![
+            make_row("paragraph row zero", false),
+            make_row("paragraph row one", true),
+            make_row("paragraph row two", true),
+            make_row("paragraph row three", true),
+            make_row("paragraph row four", true),
+        ];
+
+        // Click on the first content row (screen_y = 1 → pos.row = 0)
+        app.start_selection(9, 1);
+
+        // Drag down into empty space well past the last content row
+        // (screen_y = 15 → pos.row = 14, much larger than row_map.len() - 1)
+        app.update_selection(20, 15);
+
+        let sel = app.view.selection.as_ref().expect("selection set");
+        assert!(
+            sel.end.row < app.view.row_map.len(),
+            "drag past content should not push selection.end.row ({}) past the \
+             last actual row in row_map ({}); without clamping, every wrapped row \
+             of the paragraph appears selected",
+            sel.end.row,
+            app.view.row_map.len() - 1,
+        );
     }
 
     #[test]
