@@ -318,21 +318,17 @@ impl App {
         self.end_selection();
 
         match click_info {
-            None => {
-                // Drag happened (UpdateSelection clears last_click).
-                // Copy immediately if there's a real selection.
-                if self.has_non_empty_selection() {
-                    let _ = self.copy_selection();
-                }
+            // Drag happened (UpdateSelection clears last_click).
+            // Copy immediately if there's a real selection.
+            None if self.has_non_empty_selection() => {
+                let _ = self.copy_selection();
             }
-            Some((_, _, _, count)) if count >= 2 => {
-                // Multi-click (double/triple). Defer copy to allow higher click counts.
-                if self.has_non_empty_selection() {
-                    self.view.pending_copy = Some(Instant::now());
-                }
+            // Multi-click (double/triple). Defer copy to allow higher click counts.
+            Some((_, _, _, count)) if count >= 2 && self.has_non_empty_selection() => {
+                self.view.pending_copy = Some(Instant::now());
             }
             _ => {
-                // Single click without drag. Nothing to copy.
+                // No drag, or single click without drag, or empty selection.
             }
         }
     }

@@ -247,11 +247,10 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
         None
     };
 
-    let mut line_num = 1usize;
     let mut next_base_deletion = 0usize;
     let mut output_head_positions: Vec<Option<usize>> = Vec::new();
 
-    for working_idx in 0..working_lines.len() {
+    for (line_num, working_idx) in (1usize..).zip(0..working_lines.len()) {
         let working_content = working_lines[working_idx].trim_end();
         let working_base_pos = get_working_base_pos(working_idx);
 
@@ -319,7 +318,6 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
         );
 
         lines.push(output_line);
-        line_num += 1;
 
         if let Some(base_pos) = working_base_pos {
             next_base_deletion = next_base_deletion.max(base_pos + 1);
