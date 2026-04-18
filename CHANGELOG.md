@@ -1,3 +1,8 @@
+## [unreleased]
+
+### Bug Fixes
+
+- Clamp drag selection row to last visible content row
 ## [0.63.6] - 2026-04-14
 
 ### Refactor
