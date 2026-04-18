@@ -1,6 +1,6 @@
 [package]
 name = "branchdiff"
-version = "0.63.6"
+version = "0.63.7"
 edition = "2024"
 rust-version = "1.91"
 description = "Terminal UI showing unified diff of current branch vs its base"

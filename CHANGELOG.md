@@ -1,3 +1,8 @@
+## [0.63.6] - 2026-04-14
+
+### Refactor
+
+- Adopt vcs-runner crate for git/jj subprocess execution
 ## [0.63.2] - 2026-04-14
 
 ### Bug Fixes
