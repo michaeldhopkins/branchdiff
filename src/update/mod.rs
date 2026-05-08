@@ -187,12 +187,34 @@ pub struct UpdateConfig {
     pub repo_path: PathBuf,
 }
 
+/// Default time before the watchdog signals an in-flight refresh to abort.
+pub const DEFAULT_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Env var that overrides `DEFAULT_WATCHDOG_TIMEOUT` (whole seconds).
+/// Useful in giant repos where a legitimate refresh exceeds 10s.
+pub const WATCHDOG_TIMEOUT_ENV: &str = "BRANCHDIFF_WATCHDOG_TIMEOUT_SECS";
+
+/// Parse a watchdog-timeout env value, falling back to the default on missing
+/// or unparseable input. Split out from the `std::env::var` reader so tests
+/// can exercise the parsing without touching process-global env state.
+pub fn parse_watchdog_timeout(value: Option<&str>) -> Duration {
+    value
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_WATCHDOG_TIMEOUT)
+}
+
+/// Read the watchdog-timeout override from the environment.
+pub fn watchdog_timeout_from_env() -> Duration {
+    parse_watchdog_timeout(std::env::var(WATCHDOG_TIMEOUT_ENV).ok().as_deref())
+}
+
 impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
             fetch_interval: Duration::from_secs(30),
             refresh_fallback_interval: Duration::from_secs(FALLBACK_REFRESH_SECS),
-            refresh_watchdog_timeout: Duration::from_secs(10),
+            refresh_watchdog_timeout: DEFAULT_WATCHDOG_TIMEOUT,
             auto_fetch: true,
             diff_thresholds: DiffThresholds::default(),
             needs_fallback_refresh: false,
@@ -238,6 +260,26 @@ pub fn update(
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn test_parse_watchdog_timeout_uses_default_on_missing() {
+        assert_eq!(parse_watchdog_timeout(None), DEFAULT_WATCHDOG_TIMEOUT);
+    }
+
+    #[test]
+    fn test_parse_watchdog_timeout_uses_default_on_unparseable() {
+        assert_eq!(parse_watchdog_timeout(Some("")), DEFAULT_WATCHDOG_TIMEOUT);
+        assert_eq!(parse_watchdog_timeout(Some("abc")), DEFAULT_WATCHDOG_TIMEOUT);
+        assert_eq!(parse_watchdog_timeout(Some("-5")), DEFAULT_WATCHDOG_TIMEOUT);
+        assert_eq!(parse_watchdog_timeout(Some("1.5")), DEFAULT_WATCHDOG_TIMEOUT);
+    }
+
+    #[test]
+    fn test_parse_watchdog_timeout_accepts_valid_seconds() {
+        assert_eq!(parse_watchdog_timeout(Some("30")), Duration::from_secs(30));
+        assert_eq!(parse_watchdog_timeout(Some("0")), Duration::from_secs(0));
+        assert_eq!(parse_watchdog_timeout(Some("3600")), Duration::from_secs(3600));
+    }
 
     #[test]
     fn test_refresh_state_lifecycle() {

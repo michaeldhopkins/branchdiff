@@ -20,7 +20,7 @@ use branchdiff::limits;
 use branchdiff::message::{
     FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger, FALLBACK_REFRESH_SECS,
 };
-use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
+use branchdiff::update::{update, watchdog_timeout_from_env, RefreshState, Timers, UpdateConfig};
 use branchdiff::vcs::{self, ComparisonContext, Vcs};
 use branchdiff::ui;
 
@@ -359,6 +359,7 @@ fn run_main_app(
             auto_fetch,
             needs_fallback_refresh,
             repo_path: repo_root.clone(),
+            refresh_watchdog_timeout: watchdog_timeout_from_env(),
             ..Default::default()
         };
 

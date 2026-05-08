@@ -14,7 +14,10 @@ mod line_builder;
 mod output;
 mod provenance;
 
-pub use algorithm::{compute_four_way_diff, compute_four_way_diff_cancellable, DiffInput};
+pub use algorithm::{
+    compute_four_way_diff, compute_four_way_diff_cancellable,
+    compute_four_way_diff_with_predicate, DiffInput,
+};
 pub use block::{BlockKind, BlockMatch, ChangeBlock};
 pub use inline::InlineSpan;
 
