@@ -3,6 +3,8 @@
 //! Computes a unified diff showing changes across all four file versions,
 //! using provenance maps to track where each line originated.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::cancellation::{
     collect_canceled_committed, collect_canceled_simple, collect_canceled_staged,
     insert_canceled_lines,
@@ -10,6 +12,10 @@ use super::cancellation::{
 use super::output::{build_working_line_output, determine_deletion_source};
 use super::provenance::{build_modification_map, build_provenance_map};
 use super::{DiffLine, FileDiff, LineSource};
+
+/// Check the cancel flag every this many iterations of the main output loop.
+/// Power of two so the check is a cheap bitwise mask.
+const CANCEL_CHECK_INTERVAL: usize = 1024;
 
 /// Input for computing a 4-way diff.
 ///
@@ -82,6 +88,19 @@ fn check_file_deletion(input: &DiffInput<'_>) -> Option<FileDiff> {
 /// Uses provenance maps (not content similarity) to determine line sources.
 /// Inline diffs only created from explicit modification maps.
 pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
+    static NEVER: AtomicBool = AtomicBool::new(false);
+    compute_four_way_diff_cancellable(input, &NEVER)
+}
+
+/// Like `compute_four_way_diff` but bails to a header-only stub when `cancel`
+/// is observed set. Checks happen at the boundaries between the heavy phases
+/// (line collection, provenance map builds, the main output loop) and inside
+/// loops that are O(N) or worse. Without this, a stuck refresh on a large
+/// file kept burning CPU long after the watchdog signalled cancel.
+pub fn compute_four_way_diff_cancellable(
+    input: DiffInput<'_>,
+    cancel: &AtomicBool,
+) -> FileDiff {
     if let Some(deletion_diff) = check_file_deletion(&input) {
         return deletion_diff;
     }
@@ -91,7 +110,13 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
         Some(old) => DiffLine::renamed_file_header(old, path),
         None => DiffLine::file_header(path),
     };
-    let mut lines = vec![header];
+    let bail = || FileDiff::new(vec![header.clone()]);
+
+    if cancel.load(Ordering::Relaxed) {
+        return bail();
+    }
+
+    let mut lines = vec![header.clone()];
 
     let base = input.base.unwrap_or("");
     let head = input.head.unwrap_or(base);
@@ -102,6 +127,9 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
     let head_lines: Vec<&str> = head.lines().collect();
     let index_lines: Vec<&str> = index.lines().collect();
     let working_lines: Vec<&str> = working.lines().collect();
+    if cancel.load(Ordering::Relaxed) {
+        return bail();
+    }
 
     // If base == working, only show "canceled" lines (added then removed)
     if base == working {
@@ -130,6 +158,9 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
     let base_head_mods = build_modification_map(&base_lines, &head_lines, LineSource::Committed);
     let head_index_mods = build_modification_map(&head_lines, &index_lines, LineSource::Staged);
     let index_working_mods = build_modification_map(&index_lines, &working_lines, LineSource::Unstaged);
+    if cancel.load(Ordering::Relaxed) {
+        return bail();
+    }
 
     // Build reverse provenance: base_to_working[base_idx] = Some(working_idx) if still present
     let mut base_to_working: Vec<Option<usize>> = vec![None; base_lines.len()];
@@ -251,6 +282,11 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
     let mut output_head_positions: Vec<Option<usize>> = Vec::new();
 
     for (line_num, working_idx) in (1usize..).zip(0..working_lines.len()) {
+        if working_idx & (CANCEL_CHECK_INTERVAL - 1) == 0
+            && cancel.load(Ordering::Relaxed)
+        {
+            return bail();
+        }
         let working_content = working_lines[working_idx].trim_end();
         let working_base_pos = get_working_base_pos(working_idx);
 
@@ -348,42 +384,84 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
         next_base_deletion += 1;
     }
 
-    // Collect and insert canceled lines (added in commits/staging but removed in working)
-    let canceled_committed = collect_canceled_committed(
+    if append_canceled_sections(
+        &mut lines,
+        &mut output_head_positions,
+        path,
         &head_lines,
+        &index_lines,
         &head_from_base,
         &index_from_head,
         &working_from_index,
         &head_index_mods,
         &index_working_mods,
+        cancel,
+    )
+    .is_none()
+    {
+        return bail();
+    }
+
+    FileDiff::new(lines)
+}
+
+/// Append CanceledCommitted + CanceledStaged sections to `lines`. Returns
+/// `None` when the cancel flag fired during the O(output × index) lookup,
+/// so the caller can produce a header-only stub.
+#[allow(clippy::too_many_arguments)]
+fn append_canceled_sections(
+    lines: &mut Vec<DiffLine>,
+    output_head_positions: &mut Vec<Option<usize>>,
+    path: &str,
+    head_lines: &[&str],
+    index_lines: &[&str],
+    head_from_base: &[Option<usize>],
+    index_from_head: &[Option<usize>],
+    working_from_index: &[Option<usize>],
+    head_index_mods: &std::collections::HashMap<usize, (usize, &str)>,
+    index_working_mods: &std::collections::HashMap<usize, (usize, &str)>,
+    cancel: &AtomicBool,
+) -> Option<()> {
+    let canceled_committed = collect_canceled_committed(
+        head_lines,
+        head_from_base,
+        index_from_head,
+        working_from_index,
+        head_index_mods,
+        index_working_mods,
     );
     insert_canceled_lines(
-        &mut lines,
+        lines,
         canceled_committed,
         LineSource::CanceledCommitted,
         path,
-        &mut output_head_positions,
+        output_head_positions,
     );
 
     let canceled_staged = collect_canceled_staged(
-        &index_lines,
-        &index_from_head,
-        &working_from_index,
-        &index_working_mods,
+        index_lines,
+        index_from_head,
+        working_from_index,
+        index_working_mods,
     );
-    let mut output_index_positions: Vec<Option<usize>> = lines
-        .iter()
-        .map(|line| index_lines.iter().position(|h| h.trim_end() == line.content))
-        .collect();
+    // O(output × index_lines) scan; on a 5M-line working tree this can run for
+    // tens of seconds. Walk it manually so we can poll the cancel flag.
+    let mut output_index_positions: Vec<Option<usize>> = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        if i & (CANCEL_CHECK_INTERVAL - 1) == 0 && cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        output_index_positions
+            .push(index_lines.iter().position(|h| h.trim_end() == line.content));
+    }
     insert_canceled_lines(
-        &mut lines,
+        lines,
         canceled_staged,
         LineSource::CanceledStaged,
         path,
         &mut output_index_positions,
     );
-
-    FileDiff::new(lines)
+    Some(())
 }
 
 #[cfg(test)]
@@ -1016,5 +1094,131 @@ fn brand_new() {\n    println!(\"new\");\n}";
             .expect("should have non-blank additions");
         assert_eq!(*first_nonblank_add, "fn brand_new() {",
             "first non-blank addition should be 'fn brand_new() {{', got: {additions:?}");
+    }
+
+    // === Tests for compute_four_way_diff_cancellable ===
+
+    fn make_large_input(lines: usize) -> (String, String) {
+        let base = (0..lines).map(|i| format!("base line {i}")).collect::<Vec<_>>().join("\n");
+        let working = (0..lines).map(|i| format!("working line {i}")).collect::<Vec<_>>().join("\n");
+        (base, working)
+    }
+
+    #[test]
+    fn test_cancellable_bails_when_cancel_pre_set() {
+        // With cancel pre-set, a 50k-line diff that would normally take seconds
+        // must return a header-only stub effectively immediately. This is the
+        // contract the watchdog relies on.
+        let (base, working) = make_large_input(50_000);
+        let cancel = AtomicBool::new(true);
+
+        let start = std::time::Instant::now();
+        let diff = compute_four_way_diff_cancellable(
+            DiffInput {
+                path: "huge.log",
+                base: Some(&base),
+                head: Some(&base),
+                index: Some(&base),
+                working: Some(&working),
+                old_path: None,
+            },
+            &cancel,
+        );
+        let elapsed = start.elapsed();
+
+        assert_eq!(diff.lines.len(), 1, "cancelled diff must be header-only");
+        assert_eq!(diff.lines[0].source, LineSource::FileHeader);
+        assert!(diff.lines[0].content.contains("huge.log"));
+        // Loose bound: a real diff of 50k lines takes hundreds of ms+; a
+        // header-only stub returns in microseconds. Use 100ms to absorb CI noise.
+        assert!(elapsed < std::time::Duration::from_millis(100),
+            "cancelled diff took too long ({elapsed:?}), suggesting a heavy phase missed its cancel check");
+    }
+
+    #[test]
+    fn test_cancellable_finishes_normally_when_not_cancelled() {
+        // The cancellable form must produce identical output to the regular
+        // form when cancel stays false — otherwise we'd accidentally degrade
+        // every diff path that uses the cancellable variant.
+        let base = "line1\nline2\nline3";
+        let working = "line1\nMODIFIED\nline2\nline3\nline4";
+        let cancel = AtomicBool::new(false);
+
+        let regular = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+        let cancellable = compute_four_way_diff_cancellable(
+            DiffInput {
+                path: "test.rs",
+                base: Some(base),
+                head: Some(base),
+                index: Some(base),
+                working: Some(working),
+                old_path: None,
+            },
+            &cancel,
+        );
+
+        assert_eq!(regular.lines.len(), cancellable.lines.len());
+        for (a, b) in regular.lines.iter().zip(cancellable.lines.iter()) {
+            assert_eq!(a.content, b.content);
+            assert_eq!(a.source, b.source);
+            assert_eq!(a.prefix, b.prefix);
+        }
+    }
+
+    #[test]
+    fn test_cancellable_output_is_header_only_or_fully_completed_never_partial() {
+        // Race a 5ms-delayed cancel flip against a 50k-line diff that
+        // (uncancelled) generates 50k+ output lines. The function must end in
+        // exactly one of two states: header-only stub (an in-loop checkpoint
+        // observed cancel and returned `bail()`) OR fully-completed output
+        // (the function finished before the flip).
+        //
+        // A *partial* line count (between 2 and ~50k) would mean the bail path
+        // leaked already-pushed lines through to the caller — exactly the
+        // regression class this guards against. Removing the in-loop cancel
+        // checks but keeping the entry check would let the function run to
+        // completion here (returning ~50k lines) — which still passes the
+        // "never partial" check, so this is paired with the strict-time
+        // `test_cancellable_bails_when_cancel_pre_set` above.
+        let line_count = 50_000;
+        let working: String = (0..line_count)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let base = "totally different content";
+
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let flip = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            cancel_clone.store(true, Ordering::Relaxed);
+        });
+
+        let diff = compute_four_way_diff_cancellable(
+            DiffInput {
+                path: "x.rs",
+                base: Some(base),
+                head: Some(base),
+                index: Some(base),
+                working: Some(&working),
+                old_path: None,
+            },
+            &cancel,
+        );
+        flip.join().unwrap();
+
+        let n = diff.lines.len();
+        assert!(
+            n == 1 || n >= line_count,
+            "diff has {n} lines — must be header-only (1) or fully completed (>= {line_count}); \
+             a partial count means the bail path leaked accumulated lines"
+        );
     }
 }

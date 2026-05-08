@@ -19,7 +19,7 @@ fn no_snapshot<'a>(args: &[&'a str]) -> Vec<&'a str> {
     full
 }
 
-use crate::diff::{compute_four_way_diff, DiffInput, FileDiff};
+use crate::diff::{compute_four_way_diff, compute_four_way_diff_cancellable, DiffInput, FileDiff};
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
 use crate::vcs::{ComparisonContext, DiffBase, RefreshResult, StackPosition, UpstreamDivergence, VcsBackend, VcsEventType, VcsWatchPaths};
@@ -444,7 +444,12 @@ fn process_jj_file(
     binary_files: &HashSet<String>,
     tip_rev: Option<&str>,
     bookmark_changed_files: Option<&HashSet<String>>,
+    cancel: &AtomicBool,
 ) -> FileProcessResult {
+    if cancel.load(Ordering::Relaxed) {
+        return FileProcessResult::Cancelled;
+    }
+
     if binary_files.contains(&changed.path) {
         if is_image_file(&changed.path) {
             return FileProcessResult::Image { path: changed.path.clone() };
@@ -478,14 +483,17 @@ fn process_jj_file(
         None => index.as_deref(),
     };
 
-    let mut file_diff = compute_four_way_diff(DiffInput {
-        path: &changed.path,
-        base: base.as_deref(),
-        head: parent.as_deref(),
-        index: index.as_deref(),
-        working,
-        old_path: changed.old_path.as_deref(),
-    });
+    let mut file_diff = compute_four_way_diff_cancellable(
+        DiffInput {
+            path: &changed.path,
+            base: base.as_deref(),
+            head: parent.as_deref(),
+            index: index.as_deref(),
+            working,
+            old_path: changed.old_path.as_deref(),
+        },
+        cancel,
+    );
 
     if let Some(bm_files) = bookmark_changed_files {
         let in_bookmark = bm_files.contains(&changed.path);
@@ -571,7 +579,7 @@ impl crate::vcs::Vcs for JjVcs {
             anyhow::bail!("refresh cancelled");
         }
 
-        let results = process_files_parallel(&changed_files, |changed| {
+        let results = process_files_parallel(&changed_files, cancel_flag, |changed| {
             process_jj_file(
                 &self.repo_path,
                 effective_from,
@@ -579,6 +587,7 @@ impl crate::vcs::Vcs for JjVcs {
                 &binary_files,
                 tip_rev,
                 bookmark_changed_files,
+                cancel_flag,
             )
         });
 

@@ -126,6 +126,24 @@ impl RefreshState {
         }
     }
 
+    /// Signal the in-flight refresh to abort but leave the state machine alone.
+    ///
+    /// The point of the watchdog: nudge a slow refresh to bail without spawning
+    /// a replacement on top of it. If we changed state to Idle here, a fresh
+    /// trigger could spawn a second refresh while the cancelled-but-still-alive
+    /// thread keeps burning CPU — exactly the stacking bug we're escaping.
+    /// Holding state until the thread actually reports its outcome means the
+    /// next trigger is queued via `mark_pending` and only fires after cleanup.
+    pub fn signal_cancel(&self) {
+        match self {
+            RefreshState::InProgress { cancel_flag, .. }
+            | RefreshState::InProgressPending { cancel_flag, .. } => {
+                cancel_flag.store(true, Ordering::Relaxed);
+            }
+            RefreshState::Idle => {}
+        }
+    }
+
     pub fn start(&mut self) -> Arc<AtomicBool> {
         match self {
             RefreshState::InProgress { cancel_flag, .. }
