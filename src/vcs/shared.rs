@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use rayon::prelude::*;
 
 use crate::diff::{DiffLine, FileDiff, LineSource};
@@ -9,6 +11,10 @@ pub(crate) enum FileProcessResult {
     Diff(FileDiff),
     Binary { path: String },
     Image { path: String },
+    /// Skipped because the refresh was cancelled before this file ran. Carries
+    /// no diff data — callers throw the entire batch away once they observe
+    /// the cancel flag, so the empty payload never reaches the UI.
+    Cancelled,
 }
 
 /// Assembled output from converting `FileProcessResult`s into flat lines + grouped files.
@@ -43,6 +49,7 @@ pub(crate) fn assemble_results(results: Vec<FileProcessResult>) -> AssembledDiff
                 let marker = DiffLine::image_marker(&path);
                 files.push(FileDiff::new(vec![header, marker]));
             }
+            FileProcessResult::Cancelled => {}
         }
     }
 
@@ -61,15 +68,33 @@ pub(crate) fn assemble_results(results: Vec<FileProcessResult>) -> AssembledDiff
 
 /// Process files using the thread pool when the count exceeds `PARALLEL_THRESHOLD`,
 /// falling back to serial iteration for small batches.
-pub(crate) fn process_files_parallel<T, F>(items: &[T], process: F) -> Vec<FileProcessResult>
+///
+/// Polls `cancel` before each item so that once a refresh is signalled to abort,
+/// the remaining queued files are skipped instantly instead of running their
+/// (potentially expensive) per-file work. The diff result for skipped items is
+/// a header-only stub; callers discard the whole batch when they observe the
+/// cancel flag after this returns.
+pub(crate) fn process_files_parallel<T, F>(
+    items: &[T],
+    cancel: &AtomicBool,
+    process: F,
+) -> Vec<FileProcessResult>
 where
     T: Sync,
     F: Fn(&T) -> FileProcessResult + Sync,
 {
+    let guarded = |item: &T| -> FileProcessResult {
+        if cancel.load(Ordering::Relaxed) {
+            FileProcessResult::Cancelled
+        } else {
+            process(item)
+        }
+    };
+
     if items.len() >= PARALLEL_THRESHOLD {
-        vcs_thread_pool().install(|| items.par_iter().map(&process).collect())
+        vcs_thread_pool().install(|| items.par_iter().map(&guarded).collect())
     } else {
-        items.iter().map(process).collect()
+        items.iter().map(guarded).collect()
     }
 }
 
@@ -157,19 +182,55 @@ mod tests {
     #[test]
     fn test_process_files_parallel_serial_path() {
         let items = vec!["a.rs", "b.rs"];
-        let results = process_files_parallel(&items, |path| {
-            diff_result(path)
-        });
+        let cancel = AtomicBool::new(false);
+        let results = process_files_parallel(&items, &cancel, |path| diff_result(path));
         assert_eq!(results.len(), 2);
     }
 
     #[test]
     fn test_process_files_parallel_parallel_path() {
         let items: Vec<String> = (0..5).map(|i| format!("file{i}.rs")).collect();
-        let results = process_files_parallel(&items, |path| {
-            diff_result(path)
-        });
+        let cancel = AtomicBool::new(false);
+        let results = process_files_parallel(&items, &cancel, |path| diff_result(path));
         assert_eq!(results.len(), 5);
     }
 
+    #[test]
+    fn test_process_files_parallel_serial_skips_when_cancel_set() {
+        // Below PARALLEL_THRESHOLD: serial iteration. With cancel pre-set, the
+        // closure must never be invoked — that's the cheap-bail behaviour the
+        // watchdog relies on to keep CPU from stacking on huge files.
+        use std::sync::atomic::AtomicUsize;
+        let items = vec!["a.rs", "b.rs", "c.rs"];
+        let cancel = AtomicBool::new(true);
+        let invoked = AtomicUsize::new(0);
+
+        let results = process_files_parallel(&items, &cancel, |path| {
+            invoked.fetch_add(1, Ordering::Relaxed);
+            diff_result(path)
+        });
+
+        assert_eq!(invoked.load(Ordering::Relaxed), 0,
+            "per-file processor must not be called when cancel is pre-set");
+        assert_eq!(results.len(), 3);
+        assert!(matches!(results[0], FileProcessResult::Cancelled));
+        assert!(matches!(results[1], FileProcessResult::Cancelled));
+        assert!(matches!(results[2], FileProcessResult::Cancelled));
+    }
+
+    #[test]
+    fn test_assemble_drops_cancelled_results() {
+        // Cancelled stubs must not surface in the assembled diff — they would
+        // overwrite real data with empty placeholders if a stale refresh slipped
+        // through. Real callers discard the entire batch when they observe the
+        // cancel flag after the fact, but this guard belt-and-braces the path.
+        let results = vec![
+            diff_result("src/a.rs"),
+            FileProcessResult::Cancelled,
+            FileProcessResult::Cancelled,
+        ];
+
+        let assembled = assemble_results(results);
+        assert_eq!(assembled.files.len(), 1);
+    }
 }

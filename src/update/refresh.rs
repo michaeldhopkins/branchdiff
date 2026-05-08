@@ -216,11 +216,16 @@ pub(super) fn handle_tick(
         return result;
     }
 
-    // Watchdog: reset stuck refresh
+    // Watchdog: signal a slow refresh to abort. Crucially, do NOT spawn a
+    // replacement here and do NOT change the state machine — that would stack
+    // a fresh refresh on top of one that's still running, since the in-flight
+    // thread doesn't exit until it observes the cancel flag. The slow thread
+    // eventually reports its outcome, which transitions state back to Idle and
+    // releases any queued pending trigger.
     if let Some(started) = refresh_state.started_at()
         && started.elapsed() >= config.refresh_watchdog_timeout
     {
-        result.refresh = RefreshTrigger::Full;
+        refresh_state.signal_cancel();
     }
 
     // Periodic fallback refresh (only when file watching is insufficient)
@@ -238,7 +243,7 @@ pub(super) fn handle_tick(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     use crate::message::FALLBACK_REFRESH_SECS;
@@ -669,10 +674,15 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_tick_watchdog_resets_stuck_refresh() {
+    fn test_handle_tick_watchdog_signals_cancel_without_stacking_refresh() {
+        // The watchdog must NOT spawn a replacement refresh while the slow
+        // thread is still running — that produced concurrent refreshes that
+        // pegged CPU at 1250%. It must signal cancel and leave state alone so
+        // future triggers queue rather than stack.
+        let cancel_flag = Arc::new(AtomicBool::new(false));
         let mut refresh_state = RefreshState::InProgress {
             started_at: Instant::now() - Duration::from_secs(15),
-            cancel_flag: Arc::new(AtomicBool::new(false)),
+            cancel_flag: cancel_flag.clone(),
         };
         let mut timers = Timers::default();
         let config = UpdateConfig {
@@ -681,7 +691,108 @@ mod tests {
         };
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
-        assert_eq!(result.refresh, RefreshTrigger::Full);
+
+        assert_eq!(
+            result.refresh,
+            RefreshTrigger::None,
+            "watchdog must not request a new Full refresh on top of an in-flight one"
+        );
+        assert!(
+            cancel_flag.load(Ordering::Relaxed),
+            "watchdog must set the in-flight cancel flag"
+        );
+        assert!(
+            !refresh_state.is_idle(),
+            "state must stay InProgress until the slow thread actually reports"
+        );
+    }
+
+    #[test]
+    fn test_handle_tick_watchdog_repeated_ticks_do_not_stack() {
+        // Earlier the watchdog called RefreshState::start() which reset
+        // started_at to Instant::now() and spawned a thread. Each subsequent
+        // tick fired again 10s later, piling up concurrent refreshes that
+        // never exited. Now repeated ticks must be idempotent: cancel stays
+        // set, state stays InProgress, no Full triggers come back.
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now() - Duration::from_secs(20),
+            cancel_flag: cancel_flag.clone(),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig {
+            refresh_watchdog_timeout: Duration::from_secs(10),
+            ..Default::default()
+        };
+
+        for _ in 0..10 {
+            let result = handle_tick(&mut refresh_state, &mut timers, &config);
+            assert_eq!(result.refresh, RefreshTrigger::None);
+        }
+        assert!(cancel_flag.load(Ordering::Relaxed));
+        assert!(matches!(refresh_state, RefreshState::InProgress { .. }));
+    }
+
+    #[test]
+    fn test_handle_tick_watchdog_does_not_fire_when_idle() {
+        // Watchdog must not invent a refresh when there isn't one in flight.
+        let mut refresh_state = RefreshState::Idle;
+        let mut timers = Timers::default();
+        let config = UpdateConfig {
+            refresh_watchdog_timeout: Duration::from_secs(10),
+            ..Default::default()
+        };
+
+        let result = handle_tick(&mut refresh_state, &mut timers, &config);
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        assert!(refresh_state.is_idle());
+    }
+
+    #[test]
+    fn test_pending_trigger_queued_during_watchdog_cancel_runs_on_completion() {
+        // End-to-end of the post-watchdog flow: watchdog cancels, a file
+        // event arrives and goes to InProgressPending, the slow thread
+        // finally reports cancelled — and then the queued refresh fires.
+        use crate::message::RefreshOutcome;
+        use crate::test_support::{StubVcs, TestAppBuilder};
+        use std::path::PathBuf;
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now() - Duration::from_secs(20),
+            cancel_flag: cancel_flag.clone(),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig {
+            refresh_watchdog_timeout: Duration::from_secs(10),
+            ..Default::default()
+        };
+
+        let tick_result = handle_tick(&mut refresh_state, &mut timers, &config);
+        assert_eq!(tick_result.refresh, RefreshTrigger::None);
+        assert!(cancel_flag.load(Ordering::Relaxed));
+
+        refresh_state.mark_pending();
+        assert!(refresh_state.has_pending());
+
+        let mut app = TestAppBuilder::new().build();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+        let outcome = RefreshOutcome::Cancelled;
+        let result = handle_refresh(
+            outcome,
+            &mut app,
+            &mut refresh_state,
+            &mut timers,
+            &config,
+            &vcs,
+        );
+
+        assert_eq!(
+            result.refresh,
+            RefreshTrigger::Full,
+            "after the cancelled thread reports, the queued pending refresh should fire"
+        );
+        assert!(refresh_state.is_idle());
     }
 
     #[test]

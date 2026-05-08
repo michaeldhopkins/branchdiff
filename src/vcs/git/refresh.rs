@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::diff::{compute_four_way_diff, DiffInput, FileDiff};
+use crate::diff::{compute_four_way_diff, compute_four_way_diff_cancellable, DiffInput, FileDiff};
 use crate::file_links::compute_file_links;
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
@@ -97,7 +97,12 @@ fn process_single_file_batched(
     base_contents: &HashMap<String, String>,
     head_contents: &HashMap<String, String>,
     index_contents: &HashMap<String, String>,
+    cancel: &AtomicBool,
 ) -> FileProcessResult {
+    if cancel.load(Ordering::Relaxed) {
+        return FileProcessResult::Cancelled;
+    }
+
     if binary_files.contains(file_path) {
         if is_image_file(file_path) {
             return FileProcessResult::Image {
@@ -117,14 +122,17 @@ fn process_single_file_batched(
         index_contents,
         repo_path,
     );
-    FileProcessResult::Diff(compute_four_way_diff(DiffInput {
-        path: file_path,
-        base: contents.base.as_deref(),
-        head: contents.head.as_deref(),
-        index: contents.index.as_deref(),
-        working: contents.working.as_deref(),
-        old_path,
-    }))
+    FileProcessResult::Diff(compute_four_way_diff_cancellable(
+        DiffInput {
+            path: file_path,
+            base: contents.base.as_deref(),
+            head: contents.head.as_deref(),
+            index: contents.index.as_deref(),
+            working: contents.working.as_deref(),
+            old_path,
+        },
+        cancel,
+    ))
 }
 
 pub(super) fn git_compute_single_file_diff(
@@ -222,7 +230,7 @@ pub(super) fn git_compute_refresh(
         )
     });
 
-    let results = process_files_parallel(&changed_files, |file| {
+    let results = process_files_parallel(&changed_files, cancel_flag, |file| {
         process_single_file_batched(
             repo_path,
             &file.path,
@@ -231,6 +239,7 @@ pub(super) fn git_compute_refresh(
             &base_contents,
             &head_contents,
             &index_contents,
+            cancel_flag,
         )
     });
 
