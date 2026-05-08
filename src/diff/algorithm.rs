@@ -93,13 +93,24 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
 }
 
 /// Like `compute_four_way_diff` but bails to a header-only stub when `cancel`
-/// is observed set. Checks happen at the boundaries between the heavy phases
-/// (line collection, provenance map builds, the main output loop) and inside
-/// loops that are O(N) or worse. Without this, a stuck refresh on a large
-/// file kept burning CPU long after the watchdog signalled cancel.
+/// is observed set. Thin wrapper over `compute_four_way_diff_with_predicate`
+/// for the production hot path; tests use the predicate form directly so they
+/// can deterministically fire cancel after a known number of checkpoints.
 pub fn compute_four_way_diff_cancellable(
     input: DiffInput<'_>,
     cancel: &AtomicBool,
+) -> FileDiff {
+    compute_four_way_diff_with_predicate(input, &|| cancel.load(Ordering::Relaxed))
+}
+
+/// Predicate-based cancellable diff. The predicate is polled at the boundaries
+/// between the heavy phases (line collection, provenance + modification map
+/// builds, the main output loop) and inside loops that are O(N) or worse, so
+/// a stuck refresh on a 73 MB file can be aborted promptly. Returns a
+/// header-only stub when the predicate trips.
+pub fn compute_four_way_diff_with_predicate(
+    input: DiffInput<'_>,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> FileDiff {
     if let Some(deletion_diff) = check_file_deletion(&input) {
         return deletion_diff;
@@ -112,7 +123,7 @@ pub fn compute_four_way_diff_cancellable(
     };
     let bail = || FileDiff::new(vec![header.clone()]);
 
-    if cancel.load(Ordering::Relaxed) {
+    if is_cancelled() {
         return bail();
     }
 
@@ -127,7 +138,7 @@ pub fn compute_four_way_diff_cancellable(
     let head_lines: Vec<&str> = head.lines().collect();
     let index_lines: Vec<&str> = index.lines().collect();
     let working_lines: Vec<&str> = working.lines().collect();
-    if cancel.load(Ordering::Relaxed) {
+    if is_cancelled() {
         return bail();
     }
 
@@ -158,7 +169,7 @@ pub fn compute_four_way_diff_cancellable(
     let base_head_mods = build_modification_map(&base_lines, &head_lines, LineSource::Committed);
     let head_index_mods = build_modification_map(&head_lines, &index_lines, LineSource::Staged);
     let index_working_mods = build_modification_map(&index_lines, &working_lines, LineSource::Unstaged);
-    if cancel.load(Ordering::Relaxed) {
+    if is_cancelled() {
         return bail();
     }
 
@@ -282,9 +293,7 @@ pub fn compute_four_way_diff_cancellable(
     let mut output_head_positions: Vec<Option<usize>> = Vec::new();
 
     for (line_num, working_idx) in (1usize..).zip(0..working_lines.len()) {
-        if working_idx & (CANCEL_CHECK_INTERVAL - 1) == 0
-            && cancel.load(Ordering::Relaxed)
-        {
+        if working_idx & (CANCEL_CHECK_INTERVAL - 1) == 0 && is_cancelled() {
             return bail();
         }
         let working_content = working_lines[working_idx].trim_end();
@@ -395,7 +404,7 @@ pub fn compute_four_way_diff_cancellable(
         &working_from_index,
         &head_index_mods,
         &index_working_mods,
-        cancel,
+        is_cancelled,
     )
     .is_none()
     {
@@ -406,7 +415,7 @@ pub fn compute_four_way_diff_cancellable(
 }
 
 /// Append CanceledCommitted + CanceledStaged sections to `lines`. Returns
-/// `None` when the cancel flag fired during the O(output × index) lookup,
+/// `None` when the predicate fired during the O(output × index) lookup,
 /// so the caller can produce a header-only stub.
 #[allow(clippy::too_many_arguments)]
 fn append_canceled_sections(
@@ -420,7 +429,7 @@ fn append_canceled_sections(
     working_from_index: &[Option<usize>],
     head_index_mods: &std::collections::HashMap<usize, (usize, &str)>,
     index_working_mods: &std::collections::HashMap<usize, (usize, &str)>,
-    cancel: &AtomicBool,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Option<()> {
     let canceled_committed = collect_canceled_committed(
         head_lines,
@@ -448,7 +457,7 @@ fn append_canceled_sections(
     // tens of seconds. Walk it manually so we can poll the cancel flag.
     let mut output_index_positions: Vec<Option<usize>> = Vec::with_capacity(lines.len());
     for (i, line) in lines.iter().enumerate() {
-        if i & (CANCEL_CHECK_INTERVAL - 1) == 0 && cancel.load(Ordering::Relaxed) {
+        if i & (CANCEL_CHECK_INTERVAL - 1) == 0 && is_cancelled() {
             return None;
         }
         output_index_positions
@@ -1169,6 +1178,109 @@ fn brand_new() {\n    println!(\"new\");\n}";
             assert_eq!(a.content, b.content);
             assert_eq!(a.source, b.source);
             assert_eq!(a.prefix, b.prefix);
+        }
+    }
+
+    #[test]
+    fn test_with_predicate_main_loop_checkpoint_actually_fires() {
+        // Distinguish the main-loop checkpoint from the trailing
+        // append_canceled_sections checkpoint by sizing the input so the only
+        // way poll #4 can land on the loop is if the in-loop check is wired up.
+        //
+        // Poll order with all checkpoints intact:
+        //   1: entry, 2: post .lines() collect, 3: post maps, 4: main-loop iter 0,
+        //   5: append_canceled_sections iter 0.
+        //
+        // With a small working set (< CANCEL_CHECK_INTERVAL), the main loop
+        // polls only at iter 0. We use a counter-based predicate that returns
+        // true on poll #5 — the loop poll #4 sees false, the loop completes,
+        // and append_canceled poll #5 trips. Result: header-only.
+        //
+        // If someone removes the main-loop check, poll #4 lands on
+        // append_canceled iter 0 (sees false), no more polls fire (< 1024
+        // output lines), and the function returns the FULL diff. The
+        // assertion below catches that.
+        use std::sync::atomic::AtomicUsize;
+
+        // Stay well under CANCEL_CHECK_INTERVAL (1024) so we get exactly one
+        // poll per loop's iter 0.
+        let line_count = 200;
+        let working: String = (0..line_count)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let base = "different content";
+
+        let polls = AtomicUsize::new(0);
+        let trip_at = 5;
+        let predicate = |poll_log: &AtomicUsize| {
+            let n = poll_log.fetch_add(1, Ordering::Relaxed) + 1;
+            n >= trip_at
+        };
+        let pred_fn = || predicate(&polls);
+
+        let diff = compute_four_way_diff_with_predicate(
+            DiffInput {
+                path: "x.rs",
+                base: Some(base),
+                head: Some(base),
+                index: Some(base),
+                working: Some(&working),
+                old_path: None,
+            },
+            &pred_fn,
+        );
+
+        let total_polls = polls.load(Ordering::Relaxed);
+        assert_eq!(
+            diff.lines.len(),
+            1,
+            "expected header-only stub: in-loop checkpoint must consume poll #4, \
+             leaving poll #5 to fire in append_canceled_sections. \
+             Got {} lines after {} polls — the main-loop checkpoint was skipped, \
+             so poll #4 fell into append_canceled instead and the trip never happened.",
+            diff.lines.len(),
+            total_polls,
+        );
+        assert_eq!(
+            total_polls, trip_at,
+            "expected exactly {trip_at} polls (function returns immediately on trip); \
+             got {total_polls}"
+        );
+    }
+
+    #[test]
+    fn test_with_predicate_runs_to_completion_when_never_cancelled() {
+        // Sanity: the predicate-based form must produce identical output to the
+        // regular form when the predicate stays false. Otherwise we'd be
+        // shipping a divergent code path through the AtomicBool wrapper.
+        let base = "line1\nline2\nline3";
+        let working = "line1\nMODIFIED\nline2\nline3\nline4";
+
+        let regular = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+        let with_pred = compute_four_way_diff_with_predicate(
+            DiffInput {
+                path: "test.rs",
+                base: Some(base),
+                head: Some(base),
+                index: Some(base),
+                working: Some(working),
+                old_path: None,
+            },
+            &|| false,
+        );
+
+        assert_eq!(regular.lines.len(), with_pred.lines.len());
+        for (a, b) in regular.lines.iter().zip(with_pred.lines.iter()) {
+            assert_eq!(a.content, b.content);
+            assert_eq!(a.source, b.source);
         }
     }
 

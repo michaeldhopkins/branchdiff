@@ -457,8 +457,15 @@ fn process_jj_file(
         return FileProcessResult::Binary { path: changed.path.clone() };
     }
 
+    // Each `jj file show` is a separate subprocess and can take seconds for
+    // large files. Polling cancel between them lets a watchdog-cancelled
+    // refresh skip the remaining reads instead of paying the full 4× cost
+    // per concurrent file already in flight.
     let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
     let base = file_content_no_snapshot(repo_path, base_path, from_rev);
+    if cancel.load(Ordering::Relaxed) {
+        return FileProcessResult::Cancelled;
+    }
 
     // @- content for the committed/staged boundary — try current path first,
     // fall back to old_path for files renamed in the current commit
@@ -467,8 +474,14 @@ fn process_jj_file(
             changed.old_path.as_deref()
                 .and_then(|old| file_content_no_snapshot(repo_path, old, "@-"))
         });
+    if cancel.load(Ordering::Relaxed) {
+        return FileProcessResult::Cancelled;
+    }
 
     let index = file_content_no_snapshot(repo_path, &changed.path, "@");
+    if cancel.load(Ordering::Relaxed) {
+        return FileProcessResult::Cancelled;
+    }
     let tip_content = tip_rev
         .and_then(|tip| file_content_no_snapshot(repo_path, &changed.path, tip));
 

@@ -117,6 +117,12 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 - Click and drag to select text (auto-copies to clipboard on release)
 - Double-click to select word, triple-click to select line (auto-copies to clipboard)
 
+## Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BRANCHDIFF_WATCHDOG_TIMEOUT_SECS` | `10` | Whole seconds before the watchdog signals an in-flight refresh to abort. Raise for very large repos where a legitimate refresh exceeds 10s. |
+
 ## Contributing
 
 ### Requirements
