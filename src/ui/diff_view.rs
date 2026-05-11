@@ -15,7 +15,6 @@ use ratatui::{
 };
 
 use crate::app::{App, DisplayableItem, FrameContext, SearchState, Selection};
-use crate::app::search::SearchMatch;
 use crate::diff::{DiffLine, LineSource};
 use crate::image_diff::{ImageCache, IMAGE_PANEL_OVERHEAD};
 use crate::syntax::reset_highlight_state;
@@ -653,8 +652,9 @@ impl<'a> DiffViewModel<'a> {
                     String::new()
                 };
 
-                let del_spans = apply_search_to_content(del_spans, self.search, line_idx);
-
+                // Search match offsets are computed against `line.content` (the
+                // new text), so they do not align with the deletion-side text
+                // (`old_content`). Skip search highlighting on this side.
                 let del_prefix_char = self.line_prefix(diff_line, '-', del_source);
                 let (mut del_lines, del_row_infos) = wrap_content(
                     del_spans,
@@ -754,8 +754,10 @@ impl<'a> DiffViewModel<'a> {
             }
         }
 
-        // Non-wrapped inline spans with syntax highlighting
-        // Use the actual insertion source from spans, not the line's base source
+        // Non-wrapped inline spans with syntax highlighting.
+        // Use the actual insertion source from spans, not the line's base source.
+        // The rendered output here interleaves deletion text (from inline_spans)
+        // with content text, so search highlights need offset translation.
         let highlight_source = get_insertion_source(&diff_line.inline_spans);
         let highlight_style = line_style_with_highlight(highlight_source);
         let content_spans = syntax_highlight_inline_spans(
@@ -766,7 +768,12 @@ impl<'a> DiffViewModel<'a> {
             highlight_style,
         );
 
-        let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
+        let content_spans = apply_search_to_inline_render(
+            content_spans,
+            &diff_line.inline_spans,
+            self.search,
+            line_idx,
+        );
 
         let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
         let (mut lines, row_infos) = wrap_content(
@@ -918,12 +925,55 @@ fn apply_selection_to_wrapped_lines(
     }
 }
 
-/// Apply search match highlighting to content spans for a given line.
+/// Translate a content-space match range `[content_start, content_end)` into
+/// the corresponding render-space ranges, accounting for deletion text that
+/// `syntax_highlight_inline_spans` interleaves into the rendered output.
 ///
-/// Byte offsets from search matches are converted to char offsets since spans
-/// use character indexing. Spans may already be fragmented by syntax highlighting
-/// or selection, so we reconstruct the full text for offset conversion.
-/// Overlay search match highlights on content spans.
+/// Search matches are computed against `line.content` (the new text only —
+/// see [`crate::app::search::compute_matches`]). When the renderer emits
+/// deletion text inline, those characters take up render columns but do not
+/// exist in `content`, so a single content match may map to multiple
+/// disjoint render ranges.
+fn content_match_to_render_ranges(
+    inline_spans: &[crate::diff::InlineSpan],
+    content_start: usize,
+    content_end: usize,
+) -> Vec<(usize, usize)> {
+    if content_start >= content_end {
+        return Vec::new();
+    }
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut content_pos = 0;
+    let mut render_pos = 0;
+
+    for span in inline_spans {
+        let len = span.text.chars().count();
+        if span.is_deletion {
+            render_pos += len;
+            continue;
+        }
+        let span_c_end = content_pos + len;
+        let inter_start = content_start.max(content_pos);
+        let inter_end = content_end.min(span_c_end);
+        if inter_start < inter_end {
+            let r_start = render_pos + (inter_start - content_pos);
+            let r_end = render_pos + (inter_end - content_pos);
+            match ranges.last_mut() {
+                Some(last) if last.1 == r_start => last.1 = r_end,
+                _ => ranges.push((r_start, r_end)),
+            }
+        }
+        content_pos = span_c_end;
+        render_pos += len;
+        if content_pos >= content_end {
+            break;
+        }
+    }
+    ranges
+}
+
+/// Overlay search match highlights on content spans whose rendered text
+/// matches `line.content` 1:1 (no interleaved deletion text).
 ///
 /// SearchMatch stores char offsets (not byte offsets) so this works correctly
 /// with multi-byte UTF-8 content.
@@ -932,6 +982,28 @@ fn apply_search_to_content(
     search: &Option<SearchState>,
     line_idx: usize,
 ) -> Vec<Span<'static>> {
+    apply_search_with_translation(content_spans, search, line_idx, None)
+}
+
+/// Same as [`apply_search_to_content`] but for spans whose rendered text is
+/// `inline_spans` concatenated (i.e., includes interleaved deletion text).
+/// Match offsets are translated through `inline_spans` so highlights land on
+/// the correct rendered characters.
+fn apply_search_to_inline_render(
+    content_spans: Vec<Span<'static>>,
+    inline_spans: &[crate::diff::InlineSpan],
+    search: &Option<SearchState>,
+    line_idx: usize,
+) -> Vec<Span<'static>> {
+    apply_search_with_translation(content_spans, search, line_idx, Some(inline_spans))
+}
+
+fn apply_search_with_translation(
+    content_spans: Vec<Span<'static>>,
+    search: &Option<SearchState>,
+    line_idx: usize,
+    inline_spans: Option<&[crate::diff::InlineSpan]>,
+) -> Vec<Span<'static>> {
     let Some(search) = search else {
         return content_spans;
     };
@@ -939,62 +1011,74 @@ fn apply_search_to_content(
         return content_spans;
     }
 
-    let line_matches: Vec<&SearchMatch> = search
-        .matches
-        .iter()
-        .filter(|m| m.line_idx == line_idx)
-        .collect();
+    // Collect render-space highlight ranges for matches on this line.
+    let mut highlights: Vec<(usize, usize, bool)> = Vec::new();
+    for (m_idx, m) in search.matches.iter().enumerate() {
+        if m.line_idx != line_idx {
+            continue;
+        }
+        let is_current = m_idx == search.current;
+        let c_start = m.char_start;
+        let c_end = m.char_start + m.char_len;
+        match inline_spans {
+            Some(inline) => {
+                for (rs, re) in content_match_to_render_ranges(inline, c_start, c_end) {
+                    highlights.push((rs, re, is_current));
+                }
+            }
+            None => highlights.push((c_start, c_end, is_current)),
+        }
+    }
 
-    if line_matches.is_empty() {
+    if highlights.is_empty() {
         return content_spans;
     }
 
+    // Apply right-to-left so earlier indices stay stable as later splits insert spans.
+    highlights.sort_by_key(|h| std::cmp::Reverse(h.0));
     let mut result = content_spans;
-
-    for m in line_matches.iter().rev() {
-        let char_start = m.char_start;
-        let char_end = m.char_start + m.char_len;
-
-        let is_current = search.matches.get(search.current)
-            .is_some_and(|cur| cur.line_idx == m.line_idx && cur.char_start == m.char_start);
+    for (h_start, h_end, is_current) in highlights {
         let bg = if is_current { SEARCH_CURRENT_BG } else { SEARCH_MATCH_BG };
-
-        let mut new_result = Vec::new();
-        let mut char_offset = 0;
-
-        for span in result {
-            let span_char_len = span.content.chars().count();
-            let span_end = char_offset + span_char_len;
-
-            if span_end <= char_start || char_offset >= char_end {
-                new_result.push(span);
-            } else {
-                let base_style = span.style;
-                let text: Vec<char> = span.content.chars().collect();
-
-                let rel_start = char_start.saturating_sub(char_offset);
-                let rel_end = (char_end - char_offset).min(span_char_len);
-
-                if rel_start > 0 {
-                    let before: String = text[..rel_start].iter().collect();
-                    new_result.push(Span::styled(before, base_style));
-                }
-
-                let matched: String = text[rel_start..rel_end].iter().collect();
-                new_result.push(Span::styled(matched, base_style.bg(bg)));
-
-                if rel_end < span_char_len {
-                    let after: String = text[rel_end..].iter().collect();
-                    new_result.push(Span::styled(after, base_style));
-                }
-            }
-            char_offset = span_end;
-        }
-
-        result = new_result;
+        result = overlay_range(result, h_start, h_end, bg);
     }
-
     result
+}
+
+/// Split spans as needed to apply `bg` over render-space `[h_start, h_end)`.
+fn overlay_range(
+    spans: Vec<Span<'static>>,
+    h_start: usize,
+    h_end: usize,
+    bg: ratatui::style::Color,
+) -> Vec<Span<'static>> {
+    let mut new_result = Vec::with_capacity(spans.len() + 2);
+    let mut char_offset = 0;
+    for span in spans {
+        let span_char_len = span.content.chars().count();
+        let span_end = char_offset + span_char_len;
+
+        if span_end <= h_start || char_offset >= h_end {
+            new_result.push(span);
+        } else {
+            let base_style = span.style;
+            let text: Vec<char> = span.content.chars().collect();
+            let rel_start = h_start.saturating_sub(char_offset);
+            let rel_end = (h_end - char_offset).min(span_char_len);
+
+            if rel_start > 0 {
+                let before: String = text[..rel_start].iter().collect();
+                new_result.push(Span::styled(before, base_style));
+            }
+            let matched: String = text[rel_start..rel_end].iter().collect();
+            new_result.push(Span::styled(matched, base_style.bg(bg)));
+            if rel_end < span_char_len {
+                let after: String = text[rel_end..].iter().collect();
+                new_result.push(Span::styled(after, base_style));
+            }
+        }
+        char_offset = span_end;
+    }
+    new_result
 }
 
 fn render_search_bar(frame: &mut Frame, search: &SearchState, area: Rect) {
@@ -1139,6 +1223,7 @@ fn render_images_at_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::search::SearchMatch;
     use crate::test_support::{base_line, change_line, TestAppBuilder};
 
     #[test]
@@ -2433,5 +2518,378 @@ mod tests {
                 output.row_map[row_idx].is_continuation
             );
         }
+    }
+
+    /// Search match offsets are computed against `line.content` (the new text);
+    /// they must NOT be applied to the deletion side of a split modification,
+    /// whose rendered text is `line.old_content`. Reproduces a bug where
+    /// searching for text on a green (added) line also lit up arbitrary chars
+    /// on the preceding red (removed) line because the offsets aliased.
+    #[test]
+    fn search_does_not_highlight_deletion_side_of_split_modification() {
+        use crate::app::search::{compute_matches, SearchState};
+        use crate::diff::InlineSpan;
+        use crate::ui::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // PureDeletion always splits regardless of width.
+        //   old_content = "abc deleted XX def"  (chars 4-5 = "de" inside "deleted")
+        //   content     = "abc XX def"          (chars 4-5 = "XX")
+        // Searching "XX" finds it at chars 4-5 in `content`. The bug applies
+        // those offsets to the deletion render, lighting up "de" of "deleted".
+        let mut line = DiffLine::new(
+            LineSource::Committed,
+            "abc XX def".to_string(),
+            '+',
+            Some(1),
+        );
+        line.file_path = Some("test.rs".to_string());
+        line.old_content = Some("abc deleted XX def".to_string());
+        line.change_source = Some(LineSource::Committed);
+        line.inline_spans = vec![
+            InlineSpan { text: "abc ".to_string(), source: None, is_deletion: false },
+            InlineSpan { text: "deleted ".to_string(), source: Some(LineSource::Committed), is_deletion: true },
+            InlineSpan { text: "XX def".to_string(), source: None, is_deletion: false },
+        ];
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs"), line])
+            .build();
+        app.estimate_content_width(80);
+
+        let mut s = SearchState::new();
+        s.query = "XX".to_string();
+        s.input_active = false;
+        s.matches = compute_matches(&app.lines, "XX");
+        s.current = 0;
+        app.search = Some(s);
+
+        let width: u16 = 80;
+        let height: u16 = 10;
+
+        let ctx = FrameContext::new(&app);
+        let area = Rect::new(0, 0, width, height);
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| { view_model.render(f); }).unwrap();
+
+        // Layout: file header at row 0, deletion row at 1, insertion row at 2.
+        let buf = terminal.backend().buffer();
+        let offset_y = app.view.content_offset.1 as u16;
+        let del_y = offset_y + 1;
+        let ins_y = offset_y + 2;
+
+        let count_search_cells = |y: u16| -> usize {
+            (0..width)
+                .filter(|&x| {
+                    let bg = buf[(x, y)].bg;
+                    bg == SEARCH_CURRENT_BG || bg == SEARCH_MATCH_BG
+                })
+                .count()
+        };
+
+        // Sanity check: the insertion (green) row must highlight "XX".
+        assert!(
+            count_search_cells(ins_y) >= 2,
+            "insertion row should have ≥2 search-bg cells (for 'XX'), got {}",
+            count_search_cells(ins_y)
+        );
+
+        // Bug repro: the deletion (red) row must have NO search highlights.
+        let del_hits: Vec<u16> = (0..width)
+            .filter(|&x| {
+                let bg = buf[(x, del_y)].bg;
+                bg == SEARCH_CURRENT_BG || bg == SEARCH_MATCH_BG
+            })
+            .collect();
+        assert!(
+            del_hits.is_empty(),
+            "deletion row must not show search highlight (search matches refer \
+             to new content), but cells {:?} have search bg",
+            del_hits
+        );
+    }
+
+    // ---- content_match_to_render_ranges (offset translation) ----
+
+    mod content_to_render {
+        use super::*;
+        use crate::diff::InlineSpan;
+
+        fn unchanged(text: &str) -> InlineSpan {
+            InlineSpan { text: text.to_string(), source: None, is_deletion: false }
+        }
+        fn insertion(text: &str) -> InlineSpan {
+            InlineSpan { text: text.to_string(), source: Some(LineSource::Committed), is_deletion: false }
+        }
+        fn deletion(text: &str) -> InlineSpan {
+            InlineSpan { text: text.to_string(), source: Some(LineSource::Committed), is_deletion: true }
+        }
+
+        #[test]
+        fn empty_range_yields_nothing() {
+            let spans = vec![unchanged("hello")];
+            assert!(content_match_to_render_ranges(&spans, 3, 3).is_empty());
+            assert!(content_match_to_render_ranges(&spans, 5, 2).is_empty());
+        }
+
+        #[test]
+        fn no_deletions_is_identity() {
+            // content = "hello world" (rendered identically)
+            let spans = vec![unchanged("hello "), insertion("world")];
+            assert_eq!(
+                content_match_to_render_ranges(&spans, 6, 11),
+                vec![(6, 11)]
+            );
+            assert_eq!(
+                content_match_to_render_ranges(&spans, 0, 5),
+                vec![(0, 5)]
+            );
+        }
+
+        #[test]
+        fn deletion_before_match_shifts_render_position() {
+            // inline rendered: "DEL" + "abc"  → "DELabc"  (6 chars)
+            // content        :         "abc"  → "abc"     (3 chars)
+            // match content [0, 3) → render [3, 6)
+            let spans = vec![deletion("DEL"), insertion("abc")];
+            assert_eq!(
+                content_match_to_render_ranges(&spans, 0, 3),
+                vec![(3, 6)]
+            );
+        }
+
+        #[test]
+        fn deletion_after_match_does_not_shift() {
+            // rendered: "abc" + "DEL"  → "abcDEL"
+            // content : "abc"          → "abc"
+            // match [0, 3) → render [0, 3)
+            let spans = vec![insertion("abc"), deletion("DEL")];
+            assert_eq!(
+                content_match_to_render_ranges(&spans, 0, 3),
+                vec![(0, 3)]
+            );
+        }
+
+        #[test]
+        fn match_split_across_interior_deletion_yields_two_ranges() {
+            // rendered: "ab" + "DEL" + "cd"  → "abDELcd"  (7 chars)
+            // content : "ab" +         "cd"  → "abcd"     (4 chars)
+            // match content [0, 4) → render [0, 2) + [5, 7)
+            let spans = vec![unchanged("ab"), deletion("DEL"), insertion("cd")];
+            assert_eq!(
+                content_match_to_render_ranges(&spans, 0, 4),
+                vec![(0, 2), (5, 7)]
+            );
+        }
+
+        #[test]
+        fn match_inside_a_single_unchanged_span_is_translated() {
+            // rendered: "DEL" + "hello"   → "DELhello"
+            // content :         "hello"   → "hello"
+            // match content [1, 4) ("ell") → render [4, 7)
+            let spans = vec![deletion("DEL"), unchanged("hello")];
+            assert_eq!(
+                content_match_to_render_ranges(&spans, 1, 4),
+                vec![(4, 7)]
+            );
+        }
+
+        #[test]
+        fn adjacent_non_deletion_spans_coalesce_into_single_range() {
+            // rendered: "ab" + "cd"  → "abcd"   (no deletions)
+            // match across both → one coalesced range
+            let spans = vec![unchanged("ab"), insertion("cd")];
+            assert_eq!(
+                content_match_to_render_ranges(&spans, 1, 3),
+                vec![(1, 3)]
+            );
+        }
+
+        #[test]
+        fn multiple_deletions_accumulate_render_shift() {
+            // rendered: "D1" + "ab" + "D2" + "cd"  → "D1abD2cd"  (8 chars)
+            // content :         "ab" +         "cd"  → "abcd"     (4 chars)
+            // match content [2, 4) ("cd") → render [6, 8)
+            let spans = vec![deletion("D1"), unchanged("ab"), deletion("D2"), insertion("cd")];
+            assert_eq!(
+                content_match_to_render_ranges(&spans, 2, 4),
+                vec![(6, 8)]
+            );
+        }
+
+        #[test]
+        fn match_outside_content_yields_nothing() {
+            let spans = vec![unchanged("ab")];
+            assert!(content_match_to_render_ranges(&spans, 5, 7).is_empty());
+        }
+
+        #[test]
+        fn multibyte_chars_use_char_count_not_byte_count() {
+            // "café" is 4 chars but 5 bytes
+            let spans = vec![deletion("café"), insertion("ok")];
+            // rendered "caféok" (6 chars), content "ok" (2 chars)
+            // match [0, 2) → render [4, 6)
+            assert_eq!(
+                content_match_to_render_ranges(&spans, 0, 2),
+                vec![(4, 6)]
+            );
+        }
+    }
+
+    /// Integration test: inline Mixed render (deletion + insertion fit on one
+    /// line, no split). The renderer interleaves deletion text into the output;
+    /// search highlights must land on the actual matched characters in `content`,
+    /// not on whatever happens to live at those raw render offsets.
+    #[test]
+    fn search_highlight_aligned_on_inline_mixed_render() {
+        use crate::app::search::{compute_matches, SearchState};
+        use crate::diff::InlineSpan;
+        use crate::ui::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // Mixed change, fits within terminal width → does not split.
+        // inline_spans render as: "ab" + "DEL" + "cd ZZ ef"
+        // content (new):           "ab" +         "cd ZZ ef"  → "abcd ZZ ef"
+        // Search "ZZ" matches content chars 5-6. Without translation, the
+        // bug would highlight chars 5-6 of rendered "abDELcd ZZ ef" = "cd".
+        let mut line = DiffLine::new(
+            LineSource::Committed,
+            "abcd ZZ ef".to_string(),
+            ' ',
+            Some(1),
+        );
+        line.file_path = Some("test.rs".to_string());
+        line.old_content = Some("abDEL ef".to_string());
+        line.change_source = Some(LineSource::Committed);
+        line.inline_spans = vec![
+            InlineSpan { text: "ab".to_string(), source: None, is_deletion: false },
+            InlineSpan { text: "DEL".to_string(), source: Some(LineSource::Committed), is_deletion: true },
+            InlineSpan { text: "cd ZZ ef".to_string(), source: Some(LineSource::Committed), is_deletion: false },
+        ];
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs"), line])
+            .build();
+        app.estimate_content_width(80);
+
+        let mut s = SearchState::new();
+        s.query = "ZZ".to_string();
+        s.input_active = false;
+        s.matches = compute_matches(&app.lines, "ZZ");
+        s.current = 0;
+        app.search = Some(s);
+
+        let width: u16 = 80;
+        let height: u16 = 10;
+        let ctx = FrameContext::new(&app);
+        let area = Rect::new(0, 0, width, height);
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| { view_model.render(f); }).unwrap();
+
+        let buf = terminal.backend().buffer();
+        let offset_y = app.view.content_offset.1 as u16;
+        let row_y = offset_y + 1;
+
+        let highlighted: String = (0..width)
+            .filter_map(|x| {
+                let cell = &buf[(x, row_y)];
+                if cell.bg == SEARCH_CURRENT_BG || cell.bg == SEARCH_MATCH_BG {
+                    Some(cell.symbol().to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            highlighted, "ZZ",
+            "search highlight on inline-mixed line should cover exactly 'ZZ'; \
+             got {:?}",
+            highlighted
+        );
+    }
+
+    /// A search match that straddles a deletion in the inline render must
+    /// produce two visually-disjoint highlight regions, not one shifted region.
+    #[test]
+    fn search_highlight_split_by_interior_deletion_yields_two_regions() {
+        use crate::app::search::{compute_matches, SearchState};
+        use crate::diff::InlineSpan;
+        use crate::ui::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // rendered: "ab" + "DEL" + "cd"  → "abDELcd"
+        // content :  "ab" +        "cd"  → "abcd"
+        // search "abcd" matches all of content; should highlight render
+        // ranges [0, 2) ("ab") and [5, 7) ("cd"), skipping "DEL".
+        let mut line = DiffLine::new(
+            LineSource::Committed,
+            "abcd".to_string(),
+            ' ',
+            Some(1),
+        );
+        line.file_path = Some("test.rs".to_string());
+        line.old_content = Some("abDEL".to_string());
+        line.change_source = Some(LineSource::Committed);
+        line.inline_spans = vec![
+            InlineSpan { text: "ab".to_string(), source: None, is_deletion: false },
+            InlineSpan { text: "DEL".to_string(), source: Some(LineSource::Committed), is_deletion: true },
+            InlineSpan { text: "cd".to_string(), source: Some(LineSource::Committed), is_deletion: false },
+        ];
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::file_header("test.rs"), line])
+            .build();
+        app.estimate_content_width(80);
+
+        let mut s = SearchState::new();
+        s.query = "abcd".to_string();
+        s.input_active = false;
+        s.matches = compute_matches(&app.lines, "abcd");
+        s.current = 0;
+        app.search = Some(s);
+
+        let width: u16 = 80;
+        let height: u16 = 10;
+        let ctx = FrameContext::new(&app);
+        let area = Rect::new(0, 0, width, height);
+        let view_model = DiffViewModel::from_app(&app, &ctx, area);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| { view_model.render(f); }).unwrap();
+
+        let buf = terminal.backend().buffer();
+        let offset_y = app.view.content_offset.1 as u16;
+        let row_y = offset_y + 1;
+
+        // Collect highlighted symbols in render order.
+        let highlighted: String = (0..width)
+            .filter_map(|x| {
+                let cell = &buf[(x, row_y)];
+                if cell.bg == SEARCH_CURRENT_BG || cell.bg == SEARCH_MATCH_BG {
+                    Some(cell.symbol().to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // "ab" + "cd" — DEL must NOT be highlighted between them.
+        assert_eq!(
+            highlighted, "abcd",
+            "match straddling deletion should highlight only the matched \
+             characters, not the interleaved deletion text; got {:?}",
+            highlighted
+        );
     }
 }

@@ -2,6 +2,7 @@
 
 ### Bug Fixes
 
+- Align search highlights when modified lines render with interleaved deletion text (fixes mis-highlighting on both split and inline-mixed renders)
 - Clamp drag selection row to last visible content row
 ## [0.63.6] - 2026-04-14
 
