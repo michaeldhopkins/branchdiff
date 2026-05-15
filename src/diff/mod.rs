@@ -138,6 +138,20 @@ impl DiffLine {
         self.source.is_change() || self.change_source.is_some_and(|cs| cs.is_change())
     }
 
+    /// True if this line contributes an addition to the +/- totals.
+    /// A modified line (Base + change_source) shows both an inline addition and
+    /// an inline deletion, so it counts on both sides.
+    pub fn is_addition(&self) -> bool {
+        self.source.is_addition() || self.change_source.is_some_and(|cs| cs.is_addition())
+    }
+
+    /// True if this line contributes a deletion to the +/- totals.
+    /// A modified line carries its prior text in `old_content`; the renderer
+    /// shows that as a `-` row, so it counts as a deletion alongside the `+`.
+    pub fn is_deletion(&self) -> bool {
+        self.source.is_deletion() || self.change_source.is_some_and(|cs| cs.is_addition())
+    }
+
     /// True if this line belongs to jj's current commit (@).
     /// Catches both direct current-commit lines and Base lines with inline modifications from @.
     pub fn is_current_commit(&self) -> bool {
@@ -317,6 +331,34 @@ mod tests {
         let mut base_with_unstaged_mod = DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
         base_with_unstaged_mod.change_source = Some(LineSource::Unstaged);
         assert!(!base_with_unstaged_mod.is_current_commit());
+    }
+
+    #[test]
+    fn test_diff_line_is_addition_and_deletion_via_source() {
+        let added = DiffLine::new(LineSource::Committed, "+new".to_string(), '+', None);
+        assert!(added.is_addition());
+        assert!(!added.is_deletion());
+
+        let removed = DiffLine::new(LineSource::DeletedBase, "-old".to_string(), '-', None);
+        assert!(removed.is_deletion());
+        assert!(!removed.is_addition());
+
+        let context = DiffLine::new(LineSource::Base, " ctx".to_string(), ' ', None);
+        assert!(!context.is_addition());
+        assert!(!context.is_deletion());
+    }
+
+    #[test]
+    fn test_diff_line_modification_counts_on_both_sides() {
+        // A modified line (Base + change_source) represents an in-place edit:
+        // the renderer shows it as a `-` row (old_content) above a `+` row (content),
+        // so it must contribute to both addition and deletion totals.
+        let mut modified = DiffLine::new(LineSource::Base, "new".to_string(), ' ', Some(1));
+        modified.change_source = Some(LineSource::Committed);
+        modified.old_content = Some("old".to_string());
+
+        assert!(modified.is_addition());
+        assert!(modified.is_deletion());
     }
 
     #[test]
