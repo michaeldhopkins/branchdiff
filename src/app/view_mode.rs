@@ -11,17 +11,11 @@ impl App {
     }
 
     pub fn additions_count(&self) -> usize {
-        self.lines
-            .iter()
-            .filter(|line| line.source.is_addition())
-            .count()
+        self.lines.iter().filter(|line| line.is_addition()).count()
     }
 
     pub fn deletions_count(&self) -> usize {
-        self.lines
-            .iter()
-            .filter(|line| line.source.is_deletion())
-            .count()
+        self.lines.iter().filter(|line| line.is_deletion()).count()
     }
 
     /// Compute visibility using a predicate to determine "interesting" lines.
@@ -528,6 +522,27 @@ mod tests {
         ];
         let app = TestAppBuilder::new().with_lines(lines).build();
         assert_eq!(app.deletions_count(), 3);
+    }
+
+    #[test]
+    fn test_modified_lines_counted_on_both_sides() {
+        // An in-place edit (e.g. renaming `@renewal` → `@request`) is stored as a
+        // single Base line carrying a change_source + old_content. The renderer
+        // shows it as a `-` row above a `+` row, so the status bar must count it
+        // once for additions and once for deletions.
+        let mut modified = DiffLine::new(LineSource::Base, "@request".to_string(), ' ', Some(1));
+        modified.change_source = Some(LineSource::Committed);
+        modified.old_content = Some("@renewal".to_string());
+
+        let lines = vec![
+            DiffLine::new(LineSource::Base, " ctx".to_string(), ' ', None),
+            modified,
+            DiffLine::new(LineSource::Committed, "+pure_add".to_string(), '+', None),
+            DiffLine::new(LineSource::DeletedBase, "-pure_del".to_string(), '-', None),
+        ];
+        let app = TestAppBuilder::new().with_lines(lines).build();
+        assert_eq!(app.additions_count(), 2, "1 modification + 1 pure add");
+        assert_eq!(app.deletions_count(), 2, "1 modification + 1 pure del");
     }
 
     #[test]

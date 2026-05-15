@@ -114,8 +114,8 @@ pub fn prepare(app: &mut App) -> OutputData {
 
             let filtered = apply_view_mode(&file.lines, &app.view.view_mode);
 
-            let additions = filtered.iter().filter(|l| l.source.is_addition()).count();
-            let deletions = filtered.iter().filter(|l| l.source.is_deletion()).count();
+            let additions = filtered.iter().filter(|l| l.is_addition()).count();
+            let deletions = filtered.iter().filter(|l| l.is_deletion()).count();
 
             let collapsed = app.view.collapsed_files.contains(&path);
 
