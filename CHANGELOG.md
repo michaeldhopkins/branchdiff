@@ -1,5 +1,9 @@
 ## [unreleased]
 
+### Performance
+
+- Cache per-line display width on `DiffLine` and add an ASCII fast path; scrolling diffs with multi-megabyte single-line files (e.g. minified search indexes) no longer re-walks the content on every frame
+
 ### Bug Fixes
 
 - Count modified lines in +/- totals so the status bar reflects every change rendered on screen

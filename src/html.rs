@@ -534,22 +534,11 @@ mod tests {
 
     #[test]
     fn test_write_inline_spans_output() {
-        let line = DiffLine {
-            source: LineSource::Committed,
-            content: "hello world".into(),
-            prefix: '+',
-            line_number: Some(1),
-            file_path: None,
-            inline_spans: vec![
-                InlineSpan { text: "hello".into(), source: None, is_deletion: false },
-                InlineSpan { text: " world".into(), source: Some(LineSource::Committed), is_deletion: false },
-            ],
-            old_content: None,
-            change_source: None,
-            in_current_bookmark: None,
-            block_idx: None,
-            move_target: None,
-        };
+        let mut line = DiffLine::new(LineSource::Committed, "hello world".into(), '+', Some(1));
+        line.inline_spans = vec![
+            InlineSpan { text: "hello".into(), source: None, is_deletion: false },
+            InlineSpan { text: " world".into(), source: Some(LineSource::Committed), is_deletion: false },
+        ];
         let mut buf = Vec::new();
         write_inline_spans(&mut buf, &line).unwrap();
         let html = String::from_utf8(buf).unwrap();
@@ -559,22 +548,11 @@ mod tests {
 
     #[test]
     fn test_write_inline_spans_with_deletion() {
-        let line = DiffLine {
-            source: LineSource::DeletedBase,
-            content: "old text".into(),
-            prefix: '-',
-            line_number: Some(1),
-            file_path: None,
-            inline_spans: vec![
-                InlineSpan { text: "old".into(), source: Some(LineSource::DeletedBase), is_deletion: true },
-                InlineSpan { text: " text".into(), source: None, is_deletion: false },
-            ],
-            old_content: None,
-            change_source: None,
-            in_current_bookmark: None,
-            block_idx: None,
-            move_target: None,
-        };
+        let mut line = DiffLine::new(LineSource::DeletedBase, "old text".into(), '-', Some(1));
+        line.inline_spans = vec![
+            InlineSpan { text: "old".into(), source: Some(LineSource::DeletedBase), is_deletion: true },
+            InlineSpan { text: " text".into(), source: None, is_deletion: false },
+        ];
         let mut buf = Vec::new();
         write_inline_spans(&mut buf, &line).unwrap();
         let html = String::from_utf8(buf).unwrap();
@@ -583,21 +561,10 @@ mod tests {
 
     #[test]
     fn test_write_inline_spans_escapes_html() {
-        let line = DiffLine {
-            source: LineSource::Committed,
-            content: "<script>".into(),
-            prefix: '+',
-            line_number: Some(1),
-            file_path: None,
-            inline_spans: vec![
-                InlineSpan { text: "<script>".into(), source: Some(LineSource::Committed), is_deletion: false },
-            ],
-            old_content: None,
-            change_source: None,
-            in_current_bookmark: None,
-            block_idx: None,
-            move_target: None,
-        };
+        let mut line = DiffLine::new(LineSource::Committed, "<script>".into(), '+', Some(1));
+        line.inline_spans = vec![
+            InlineSpan { text: "<script>".into(), source: Some(LineSource::Committed), is_deletion: false },
+        ];
         let mut buf = Vec::new();
         write_inline_spans(&mut buf, &line).unwrap();
         let html = String::from_utf8(buf).unwrap();

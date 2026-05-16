@@ -2,7 +2,6 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
-use unicode_width::UnicodeWidthStr;
 
 use super::ScreenRowInfo;
 use crate::diff::DiffLine;
@@ -56,7 +55,7 @@ pub fn wrapped_line_height(
             .as_ref()
             .map(|s| content_display_width(s))
             .unwrap_or(0);
-        let ins_width = content_display_width(&line.content);
+        let ins_width = line.display_width();
         let del_height = if del_width == 0 {
             0
         } else {
@@ -67,13 +66,13 @@ pub fn wrapped_line_height(
     }
 
     // Mixed inline changes (deletions + insertions) may render on separate rows
-    if has_mixed_inline_changes(line) && content_display_width(&line.content) > content_width {
+    if has_mixed_inline_changes(line) && line.display_width() > content_width {
         let del_width = line
             .old_content
             .as_ref()
             .map(|s| content_display_width(s))
             .unwrap_or(0);
-        let ins_width = content_display_width(&line.content);
+        let ins_width = line.display_width();
         let del_height = if del_width == 0 {
             0
         } else {
@@ -84,7 +83,7 @@ pub fn wrapped_line_height(
     }
 
     // Standard text wrapping
-    let width = content_display_width(&line.content);
+    let width = line.display_width();
     if width <= content_width {
         1
     } else {
@@ -118,21 +117,7 @@ fn has_pure_deletion_inline(line: &DiffLine) -> bool {
     has_deletions && !has_insertions
 }
 
-/// Compute the display width of content accounting for tab expansion and
-/// control character replacement. Must match `sanitize_for_display` behavior
-/// so that height estimation agrees with actual rendering.
-pub fn content_display_width(s: &str) -> usize {
-    use unicode_width::UnicodeWidthChar;
-    s.chars()
-        .map(|ch| {
-            if ch == '\t' {
-                4
-            } else {
-                UnicodeWidthChar::width(ch).unwrap_or(1)
-            }
-        })
-        .sum()
-}
+pub use crate::diff::content_display_width;
 
 /// Replace characters that cause terminal rendering artifacts.
 /// Tabs expand to 4 spaces; other control characters (unicode-width None)
@@ -184,6 +169,9 @@ pub fn wrap_content(
 ) -> (Vec<Line<'static>>, Vec<ScreenRowInfo>) {
     // Sanitize control characters that cause terminal rendering artifacts:
     // tabs expand to 4 spaces, other control chars become spaces.
+    // Width measurement is done independently via `content_display_width`,
+    // which handles tabs/control chars consistently regardless of whether
+    // sanitization ran.
     let content_spans: Vec<Span<'static>> = content_spans
         .into_iter()
         .map(|span| match sanitize_for_display(&span.content) {
@@ -194,10 +182,10 @@ pub fn wrap_content(
     let content = sanitize_for_display(content)
         .unwrap_or_else(|| content.to_string());
 
-    let content_display_width: usize = content_spans.iter().map(|s| s.content.width()).sum();
+    let total_width: usize = content_spans.iter().map(|s| content_display_width(&s.content)).sum();
 
     // If content fits, no wrapping needed
-    if content_display_width <= content_width {
+    if total_width <= content_width {
         let mut spans = Vec::new();
         spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(prefix_char, style));
@@ -269,7 +257,7 @@ pub fn wrap_content(
                 continue;
             }
 
-            let remaining_display_width = remaining.width();
+            let remaining_display_width = content_display_width(remaining);
 
             if remaining_display_width <= space_available {
                 // Entire remaining text fits
@@ -344,7 +332,7 @@ mod tests {
             let display_width: usize = line
                 .spans
                 .iter()
-                .map(|s| s.content.width())
+                .map(|s| content_display_width(&s.content))
                 .sum();
             assert!(
                 display_width <= prefix_width + content_width,
@@ -381,7 +369,7 @@ mod tests {
             let display_width: usize = line
                 .spans
                 .iter()
-                .map(|s| s.content.width())
+                .map(|s| content_display_width(&s.content))
                 .sum();
             assert!(
                 display_width <= prefix_width + content_width,
@@ -465,7 +453,7 @@ mod tests {
             let display_width: usize = line
                 .spans
                 .iter()
-                .map(|s| s.content.width())
+                .map(|s| content_display_width(&s.content))
                 .sum();
             assert!(
                 display_width <= prefix_width + content_width,
@@ -524,7 +512,7 @@ mod tests {
             let display_width: usize = line
                 .spans
                 .iter()
-                .map(|s| s.content.width())
+                .map(|s| content_display_width(&s.content))
                 .sum();
             assert!(
                 display_width <= prefix_width + content_width,
@@ -596,7 +584,11 @@ mod tests {
     }
 
     #[test]
-    fn test_content_display_width_matches_sanitized_width() {
+    fn test_content_display_width_invariant_under_sanitization() {
+        // Sanitization (tab -> 4 spaces, control char -> 1 space) must not
+        // change the measured column width. This is the invariant that lets
+        // `wrap_content` measure spans in any order with respect to sanitizing
+        // them.
         let test_cases = [
             "hello world",
             "\t\tindented",
@@ -606,14 +598,14 @@ mod tests {
         ];
 
         for input in &test_cases {
-            let width = content_display_width(input);
+            let raw = content_display_width(input);
             let sanitized = sanitize_for_display(input)
                 .unwrap_or_else(|| input.to_string());
+            let after = content_display_width(&sanitized);
             assert_eq!(
-                width,
-                sanitized.width(),
-                "content_display_width and sanitized width disagree for {:?}",
-                input
+                raw, after,
+                "width changed across sanitization for {:?}: {} -> {}",
+                input, raw, after
             );
         }
     }

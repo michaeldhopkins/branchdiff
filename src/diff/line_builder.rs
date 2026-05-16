@@ -8,87 +8,40 @@ use super::{DiffLine, LineSource};
 impl DiffLine {
     /// Create a file header line for a new or modified file.
     pub fn file_header(path: &str) -> Self {
-        Self {
-            source: LineSource::FileHeader,
-            content: path.to_string(),
-            prefix: ' ',
-            line_number: None,
-            file_path: Some(path.to_string()),
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-            in_current_bookmark: None,
-            block_idx: None,
-            move_target: None,
-        }
+        let mut line = Self::new(LineSource::FileHeader, path.to_string(), ' ', None);
+        line.file_path = Some(path.to_string());
+        line
     }
 
     /// Create a file header line for a deleted file.
     pub fn deleted_file_header(path: &str) -> Self {
-        Self {
-            source: LineSource::FileHeader,
-            content: format!("{} (deleted)", path),
-            prefix: ' ',
-            line_number: None,
-            file_path: Some(path.to_string()),
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-            in_current_bookmark: None,
-            block_idx: None,
-            move_target: None,
-        }
+        let mut line = Self::new(LineSource::FileHeader, format!("{} (deleted)", path), ' ', None);
+        line.file_path = Some(path.to_string());
+        line
     }
 
     /// Create a file header line for a renamed file.
     pub fn renamed_file_header(old_path: &str, new_path: &str) -> Self {
-        Self {
-            source: LineSource::FileHeader,
-            content: format!("{} → {}", old_path, new_path),
-            prefix: ' ',
-            line_number: None,
-            file_path: Some(new_path.to_string()),
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-            in_current_bookmark: None,
-            block_idx: None,
-            move_target: None,
-        }
+        let mut line = Self::new(
+            LineSource::FileHeader,
+            format!("{} → {}", old_path, new_path),
+            ' ',
+            None,
+        );
+        line.file_path = Some(new_path.to_string());
+        line
     }
 
     /// Create an image marker line (UI layer will render actual image).
     pub fn image_marker(path: &str) -> Self {
-        Self {
-            source: LineSource::Base,
-            content: "[image]".to_string(),
-            prefix: ' ',
-            line_number: None,
-            file_path: Some(path.to_string()),
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-            in_current_bookmark: None,
-            block_idx: None,
-            move_target: None,
-        }
+        let mut line = Self::new(LineSource::Base, "[image]".to_string(), ' ', None);
+        line.file_path = Some(path.to_string());
+        line
     }
 
     /// Create an elided lines marker (shows count of hidden lines).
     pub fn elided(count: usize) -> Self {
-        Self {
-            source: LineSource::Elided,
-            content: format!("{} lines", count),
-            prefix: ' ',
-            line_number: None,
-            file_path: None,
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-            in_current_bookmark: None,
-            block_idx: None,
-            move_target: None,
-        }
+        Self::new(LineSource::Elided, format!("{} lines", count), ' ', None)
     }
 }
 
