@@ -23,6 +23,35 @@ pub use inline::InlineSpan;
 
 pub(crate) use inline::compute_inline_diff_merged;
 
+use std::cell::OnceCell;
+
+/// Compute the column width of `s` when displayed in a terminal.
+///
+/// Tabs expand to 4 columns; other ASCII control characters and unicode chars
+/// without a defined width count as 1 column. Must agree with the renderer's
+/// `sanitize_for_display`, since height estimation calls this and rendering
+/// calls `sanitize_for_display` to produce the actual on-screen text.
+///
+/// Has a pure-ASCII fast path that avoids the per-char unicode width table —
+/// critical when a single diff line is multiple megabytes (e.g. minified
+/// search indexes), which would otherwise cost millions of lookups per frame.
+pub fn content_display_width(s: &str) -> usize {
+    if s.is_ascii() {
+        let tabs = s.bytes().filter(|&b| b == b'\t').count();
+        return s.len() + tabs * 3;
+    }
+    use unicode_width::UnicodeWidthChar;
+    s.chars()
+        .map(|ch| {
+            if ch == '\t' {
+                4
+            } else {
+                UnicodeWidthChar::width(ch).unwrap_or(1)
+            }
+        })
+        .sum()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineSource {
     Base,
@@ -105,10 +134,20 @@ pub struct DiffLine {
     pub block_idx: Option<usize>,
     /// If this line is part of a moved block, the file path of the matching block.
     pub move_target: Option<String>,
+    /// Cached display width of `content`. Populated eagerly by `DiffLine::new`;
+    /// struct-literal constructions can leave this unset and rely on lazy init
+    /// via `display_width()`. The cache lets `wrapped_line_height` skip the
+    /// O(n) char walk on every frame — critical for diffs containing very
+    /// long single lines (e.g. minified search indexes).
+    display_width: OnceCell<usize>,
 }
 
 impl DiffLine {
     pub fn new(source: LineSource, content: String, prefix: char, line_number: Option<usize>) -> Self {
+        let display_width = OnceCell::new();
+        // OK to ignore — OnceCell::set only fails when already set, which can't
+        // happen on a freshly constructed cell.
+        let _ = display_width.set(content_display_width(&content));
         Self {
             source,
             content,
@@ -121,7 +160,16 @@ impl DiffLine {
             in_current_bookmark: None,
             block_idx: None,
             move_target: None,
+            display_width,
         }
+    }
+
+    /// Cached column width of `content`.
+    ///
+    /// Computed once on first access (or in `new`) and reused. Treats tab as 4
+    /// columns; matches `crate::diff::content_display_width`.
+    pub fn display_width(&self) -> usize {
+        *self.display_width.get_or_init(|| content_display_width(&self.content))
     }
 
     pub fn with_old_content(mut self, old: &str) -> Self {
@@ -331,6 +379,50 @@ mod tests {
         let mut base_with_unstaged_mod = DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
         base_with_unstaged_mod.change_source = Some(LineSource::Unstaged);
         assert!(!base_with_unstaged_mod.is_current_commit());
+    }
+
+    #[test]
+    fn test_content_display_width_ascii_fast_path() {
+        assert_eq!(content_display_width(""), 0);
+        assert_eq!(content_display_width("hello"), 5);
+        assert_eq!(content_display_width("\t"), 4);
+        assert_eq!(content_display_width("a\tb"), 6);
+        assert_eq!(content_display_width("\t\t\t"), 12);
+        // ASCII control chars count as 1 col (matches sanitize_for_display).
+        assert_eq!(content_display_width("a\x01b\x7fc"), 5);
+    }
+
+    #[test]
+    fn test_content_display_width_ascii_and_unicode_paths_agree_on_overlap() {
+        // Tab and ASCII control chars are handled identically by both paths.
+        for input in ["", "x", "\t", "a\tb", "\x01", "abc\x7fdef"] {
+            let ascii = content_display_width(input);
+            // Force unicode path by temporarily prefixing with non-ASCII then subtracting.
+            let with_unicode = format!("é{}", input);
+            let unicode = content_display_width(&with_unicode);
+            assert_eq!(
+                ascii + 1,
+                unicode,
+                "ascii/unicode width paths disagree for {:?}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn test_content_display_width_unicode() {
+        // Wide CJK chars count as 2 columns each.
+        assert_eq!(content_display_width("你好"), 4);
+        // Accented Latin counts as 1.
+        assert_eq!(content_display_width("café"), 4);
+    }
+
+    #[test]
+    fn test_diff_line_caches_display_width() {
+        let line = DiffLine::new(LineSource::Committed, "hello\tworld".into(), '+', None);
+        assert_eq!(line.display_width(), 5 + 4 + 5);
+        // Second call returns the same cached value.
+        assert_eq!(line.display_width(), 5 + 4 + 5);
     }
 
     #[test]

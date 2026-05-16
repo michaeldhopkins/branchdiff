@@ -349,26 +349,15 @@ mod tests {
     use super::*;
 
     fn make_diff_line(source: LineSource, content: &str, file_path: &str) -> DiffLine {
-        DiffLine {
-            source,
-            content: content.to_string(),
-            prefix: match source {
-                LineSource::Base => ' ',
-                LineSource::Committed | LineSource::Staged | LineSource::Unstaged => '+',
-                LineSource::DeletedBase
-                | LineSource::DeletedCommitted
-                | LineSource::DeletedStaged => '-',
-                _ => ' ',
-            },
-            line_number: None,
-            file_path: Some(file_path.to_string()),
-            inline_spans: Vec::new(),
-            old_content: None,
-            change_source: None,
-            in_current_bookmark: None,
-            block_idx: None,
-            move_target: None,
-        }
+        let prefix = match source {
+            LineSource::Base => ' ',
+            LineSource::Committed | LineSource::Staged | LineSource::Unstaged => '+',
+            LineSource::DeletedBase
+            | LineSource::DeletedCommitted
+            | LineSource::DeletedStaged => '-',
+            _ => ' ',
+        };
+        DiffLine::new(source, content.to_string(), prefix, None).with_file_path(file_path)
     }
 
     #[test]
@@ -688,19 +677,7 @@ mod tests {
     #[test]
     fn test_lines_without_file_path_are_skipped() {
         fn make_line_no_path(source: LineSource, content: &str) -> DiffLine {
-            DiffLine {
-                source,
-                content: content.to_string(),
-                prefix: ' ',
-                line_number: None,
-                file_path: None,
-                inline_spans: Vec::new(),
-                old_content: None,
-                change_source: None,
-                in_current_bookmark: None,
-                block_idx: None,
-                move_target: None,
-            }
+            DiffLine::new(source, content.to_string(), ' ', None)
         }
 
         let lines = vec![
@@ -720,19 +697,7 @@ mod tests {
     #[test]
     fn test_lines_with_empty_file_path_are_skipped() {
         fn make_line_empty_path(source: LineSource, content: &str) -> DiffLine {
-            DiffLine {
-                source,
-                content: content.to_string(),
-                prefix: ' ',
-                line_number: None,
-                file_path: Some(String::new()),
-                inline_spans: Vec::new(),
-                old_content: None,
-                change_source: None,
-                in_current_bookmark: None,
-                block_idx: None,
-                move_target: None,
-            }
+            DiffLine::new(source, content.to_string(), ' ', None).with_file_path("")
         }
 
         let lines = vec![
