@@ -646,56 +646,12 @@ impl App {
         }
     }
 
-    /// Copy selected text to clipboard
-    pub fn copy_selection(&mut self) -> Result<bool> {
-        if let Some(text) = self.get_selected_text() {
-            let mut clipboard = Clipboard::new()
-                .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
-            clipboard.set_text(text)
-                .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {}", e))?;
-            self.clear_selection();
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    /// Copy current file path to clipboard
-    pub fn copy_current_path(&mut self) -> Result<bool> {
-        if let Some(path) = self.current_file() {
-            let mut clipboard = Clipboard::new()
-                .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
-            clipboard.set_text(path)
-                .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {}", e))?;
-            self.view.path_copied_at = Some(std::time::Instant::now());
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
-    /// Copy entire diff to clipboard (respects view mode and collapsed files)
-    pub fn copy_diff(&mut self) -> Result<bool> {
-        let text = self.format_diff_for_copy();
+    /// Write text to the system clipboard and trigger the "Copied" title flash.
+    /// Returns `Ok(false)` if `text` is empty (no clipboard write, no flash).
+    fn write_to_clipboard(&mut self, text: String) -> Result<bool> {
         if text.is_empty() {
             return Ok(false);
         }
-
-        let mut clipboard = Clipboard::new()
-            .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
-        clipboard.set_text(text)
-            .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {}", e))?;
-        self.view.path_copied_at = Some(std::time::Instant::now());
-        Ok(true)
-    }
-
-    /// Copy git patch format to clipboard (for use with `git apply`)
-    pub fn copy_patch(&mut self) -> Result<bool> {
-        let text = patch::generate_patch(&self.lines);
-        if text.is_empty() {
-            return Ok(false);
-        }
-
         let mut clipboard = Clipboard::new()
             .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
         clipboard
@@ -703,6 +659,38 @@ impl App {
             .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {}", e))?;
         self.view.path_copied_at = Some(std::time::Instant::now());
         Ok(true)
+    }
+
+    /// Copy selected text to clipboard
+    pub fn copy_selection(&mut self) -> Result<bool> {
+        let Some(text) = self.get_selected_text() else {
+            return Ok(false);
+        };
+        let copied = self.write_to_clipboard(text)?;
+        if copied {
+            self.clear_selection();
+        }
+        Ok(copied)
+    }
+
+    /// Copy current file path to clipboard
+    pub fn copy_current_path(&mut self) -> Result<bool> {
+        let Some(path) = self.current_file() else {
+            return Ok(false);
+        };
+        self.write_to_clipboard(path)
+    }
+
+    /// Copy entire diff to clipboard (respects view mode and collapsed files)
+    pub fn copy_diff(&mut self) -> Result<bool> {
+        let text = self.format_diff_for_copy();
+        self.write_to_clipboard(text)
+    }
+
+    /// Copy git patch format to clipboard (for use with `git apply`)
+    pub fn copy_patch(&mut self) -> Result<bool> {
+        let text = patch::generate_patch(&self.lines);
+        self.write_to_clipboard(text)
     }
 
     /// Format the diff for copying to clipboard
@@ -1508,6 +1496,34 @@ mod tests {
         let executed = app.check_and_execute_pending_copy();
         assert!(!executed);
         assert!(app.view.pending_copy.is_some());
+    }
+
+    #[test]
+    fn test_copy_selection_triggers_copied_flash() {
+        // Auto-copy on text selection should set path_copied_at so the
+        // " ✓ Copied " title flash reassures the user that the select didn't
+        // just silently lose focus. Without this, drag-to-select feels broken.
+        let mut app = TestAppBuilder::new().build();
+        app.view.line_num_width = 0;
+        app.view.content_offset = (0, 0);
+        app.view.row_map = vec![make_row("hello", false)];
+        app.view.selection = Some(Selection {
+            start: Position { row: 0, col: 4 },
+            end: Position { row: 0, col: 9 },
+            active: false,
+        });
+
+        assert!(app.view.path_copied_at.is_none());
+
+        // Headless CI without a clipboard returns Err; only assert the flash
+        // when the clipboard write actually succeeded.
+        if matches!(app.copy_selection(), Ok(true)) {
+            assert!(
+                app.view.path_copied_at.is_some(),
+                "copy_selection must set path_copied_at to trigger the UI flash",
+            );
+            assert!(app.should_show_copied_flash());
+        }
     }
 
     #[test]

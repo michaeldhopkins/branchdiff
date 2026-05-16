@@ -9,6 +9,7 @@
 - Count modified lines in +/- totals so the status bar reflects every change rendered on screen
 - Align search highlights when modified lines render with interleaved deletion text (fixes mis-highlighting on both split and inline-mixed renders)
 - Clamp drag selection row to last visible content row
+- Flash " ✓ Copied" indicator when text-selection auto-copy fires, so drag-to-select no longer feels silent
 ## [0.63.6] - 2026-04-14
 
 ### Refactor
