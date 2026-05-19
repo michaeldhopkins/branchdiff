@@ -1,51 +1,82 @@
-## [unreleased]
-
-### Performance
-
-- Cache per-line display width on `DiffLine` and add an ASCII fast path; scrolling diffs with multi-megabyte single-line files (e.g. minified search indexes) no longer re-walks the content on every frame
+## [0.63.14] - 2026-05-19
 
 ### Bug Fixes
 
-- Count modified lines in +/- totals so the status bar reflects every change rendered on screen
-- Align search highlights when modified lines render with interleaved deletion text (fixes mis-highlighting on both split and inline-mixed renders)
+- Flash "Copied" indicator on text-selection auto-copy
+## [0.63.13] - 2026-05-19
+
+### Performance
+
+- Cache display width on DiffLine to fix scroll on huge single-line files
+## [0.63.12] - 2026-05-19
+
+### Bug Fixes
+
+- Count modified lines in +/- totals
+## [0.63.11] - 2026-05-19
+
+### Bug Fixes
+
+- Align search highlights when modified lines render with deletion text
+## [0.63.10] - 2026-05-19
+
+### Bug Fixes
+
+- Stop watchdog stacking refreshes; honor cancel inside diff
+- Tighten cancel coverage in jj refresh and diff; configurable watchdog
+
+### Miscellaneous
+
+- Require conventional commits in cliff.toml
+## [0.63.8] - 2026-05-19
+
+### Bug Fixes
+
 - Clamp drag selection row to last visible content row
-- Flash " ✓ Copied" indicator when text-selection auto-copy fires, so drag-to-select no longer feels silent
-## [0.63.6] - 2026-04-14
+
+### Miscellaneous
+
+- Satisfy new clippy 1.95 lints
+## [0.63.6] - 2026-05-19
 
 ### Refactor
 
 - Adopt vcs-runner crate for git/jj subprocess execution
-## [0.63.2] - 2026-04-14
+## [0.63.2] - 2026-05-19
 
 ### Bug Fixes
 
 - Selection highlighting and copy on wrapped lines and wide characters
-## [0.63.1] - 2026-04-12
+## [0.63.1] - 2026-05-19
 
 ### Bug Fixes
 
 - Robust repo detection in waiting screen using filesystem watcher
-## [0.63.0] - 2026-04-07
+
+### Documentation
+
+- Update README
+## [0.63.0] - 2026-05-19
 
 ### Features
 
 - Mark files as reviewed with r/R keybindings
-## [0.62.2] - 2026-04-07
+## [0.62.2] - 2026-05-19
 
 ### Bug Fixes
 
 - WCAG AA contrast for solarized HTML theme
-## [0.62.1] - 2026-04-07
+## [0.62.1] - 2026-05-19
 
 ### Bug Fixes
 
 - Hunk boundary sliding for cleaner function-level diffs
-## [0.62.0] - 2026-04-07
+## [0.62.0] - 2026-05-19
 
 ### Features
 
 - Move detection with block matching across files
-## [0.61.1] - 2026-04-05
+## [0.61.1] - 2026-05-19
 
 ### Bug Fixes
 
@@ -54,12 +85,12 @@
 ### Miscellaneous
 
 - Regenerate Cargo.lock and changelog
-## [0.61.0] - 2026-04-05
+## [0.61.0] - 2026-05-19
 
 ### Features
 
 - HTML output mode with shared rendering engine
-## [0.60.1] - 2026-04-05
+## [0.60.1] - 2026-05-19
 
 ### Bug Fixes
 
@@ -68,17 +99,17 @@
 ### Miscellaneous
 
 - Regenerate changelog
-## [0.60.0] - 2026-04-03
+## [0.60.0] - 2026-05-19
 
 ### Features
 
 - Upstream divergence awareness with fork-point/trunk-tip toggle
-## [0.59.1] - 2026-03-25
+## [0.59.1] - 2026-05-19
 
 ### Bug Fixes
 
 - Gracefully fall back from CommitOnly/BookmarkOnly when revision context disappears
-## [0.59.0] - 2026-03-17
+## [0.59.0] - 2026-05-19
 
 ### Features
 
@@ -87,12 +118,16 @@
 ### Miscellaneous
 
 - Regenerate changelog
-## [0.58.0] - 2026-03-16
+## [0.58.0] - 2026-05-19
 
 ### Features
 
 - Auto-copy on highlight and status bar selection
-## [0.57.0] - 2026-03-10
+
+### Miscellaneous
+
+- Update GitHub Actions to Node 24 versions
+## [0.57.0] - 2026-05-19
 
 ### Features
 
@@ -101,14 +136,19 @@
 ### Bug Fixes
 
 - Align help modal color legend indentation and shorten view mode label
-## [0.56.2] - 2026-03-02
+
+### Documentation
+
+- Update README
+- Update README
+## [0.56.2] - 2026-05-19
 
 ### Bug Fixes
 
 - Rename [changes] view mode label to [changed lines only]
 - Show [all lines] label for Full view mode in status bar
 - Update Cargo.lock for v0.56.2
-## [0.56.0] - 2026-03-02
+## [0.56.0] - 2026-05-19
 
 ### Features
 
@@ -117,19 +157,19 @@
 ### Bug Fixes
 
 - Hide files with no current-commit changes in CommitOnly view
-## [0.55.2] - 2026-03-02
+## [0.55.2] - 2026-05-19
 
 ### Bug Fixes
 
 - Remove --keepParent from ditto to fix notarization ticket registration
 - Remove --keepParent from ditto to fix notarization ticket registration
-## [0.55.1] - 2026-03-02
+## [0.55.1] - 2026-05-19
 
 ### Miscellaneous
 
 - Add formula and repo fields to tap dispatch payload
 - Add Apple code signing and notarization for macOS binaries
-## [0.55.0] - 2026-03-01
+## [0.55.0] - 2026-05-19
 
 ### Features
 
@@ -138,17 +178,17 @@
 ### Bug Fixes
 
 - Correct artifact download paths in release workflow
-## [0.54.4] - 2026-02-28
+## [0.54.4] - 2026-05-19
 
 ### Bug Fixes
 
 - Render inline deletion text in merged diff view
-## [0.54.3] - 2026-02-28
+## [0.54.3] - 2026-05-19
 
 ### Bug Fixes
 
 - Publish to crates.io before downloading artifacts to avoid payload size issue
-## [0.54.2] - 2026-02-28
+## [0.54.2] - 2026-05-19
 
 ### Features
 
@@ -252,12 +292,16 @@
 ### Documentation
 
 - Add Contributing section to README
+- Update README
+- Update README
 - Add semver guidelines to CLAUDE.md
 - Add committing section linking semver to commit workflow
 - Add antipatterns section to CLAUDE.md
 - Add pre-commit checklist to CLAUDE.md for version bump reminder
 - Add guidance on unit tests vs integration tests
 - Update README with jj support, --diff flag, and current features
+- Update README
+- Update README
 
 ### Performance
 
@@ -285,6 +329,8 @@
 ### Miscellaneous
 
 - Add codebase statistics script
+- Merge main
+- Merge main
 - Add coverage and security audit to dev workflow
 - Update Cargo.lock for unicode-width dependency
 - Upgrade ratatui to 0.30 and ratatui-image to 10
@@ -293,15 +339,18 @@
 - Add MIT/Apache-2.0 dual license for crates.io publishing
 - Replace cargo-dist with simple version-driven CI/release workflows
 - Update Cargo.lock for v0.54.2
-## [0.1.0] - 2025-12-23
+## [0.1.0] - 2026-05-19
 
 ### Features
 
+- Add inline diff coalescing, line wrapping, and text selection
+- Replace r:refresh with ?:help in status bar
 - Auto-fetch base branch and detect merge conflicts
 - Show changed line count in status bar instead of total lines
 - Add three view modes (full, context, changes-only)
 - Width-aware inline diff display
 - Responsive status bar for narrow terminals
+- Add a file display toggle
 - Auto-collapse lock files by default
 - Show canceled lines for committed additions deleted in working tree
 - Add non-interactive print mode (-p/--print)
@@ -327,6 +376,7 @@
 
 ### Bug Fixes
 
+- Refresh view when staging/unstaging files
 - Refresh getting stuck after cancellation
 - Status bar showing wrong branch name after refresh
 - Esc dismisses help modal instead of quitting
@@ -345,18 +395,15 @@
 - Align local clippy with CI (-D warnings)
 - *(test)* Configure git user in cloned repos for CI
 
-### Other
+### Refactor
 
 - Deduplicate refresh logic, use &Path, use extend()
 - Extract magic numbers to named constants in ui.rs
-- Refresh view when staging/unstaging files
-
-### Refactor
-
 - Reorganize diff.rs into diff/ module
 - Reorganize app.rs into app/ module
 - Reorganize ui.rs into ui/ module
 - Reorganize modals into directory structure
+- Turn unwraps into more explicit typing
 - Remove redundant comments
 - Improve code organization and reduce duplication
 - Address code review feedback
@@ -370,10 +417,13 @@
 
 ### Documentation
 
+- Add README with screenshot
+- Add Ctrl+c to quit keybindings in README
 - Fix misleading comment about Unix fd limit fallback
 
 ### Performance
 
+- Move git operations to background thread for responsive input
 - Reduce debounce 100ms→20ms, add refresh pipeline tests
 - Add parallel file processing with rayon
 - Add incremental single-file updates
@@ -388,10 +438,12 @@
 
 ### Miscellaneous
 
+- Initial commit (branchdiff v0.1.0)
 - Add .DS_Store to .gitignore
 - Mark as unlicensed (all rights reserved)
 - Remove redundant comments
 - Add clippy lints to prevent architectural regression
 - Add profiling profile for samply
 - Add CI workflow and cargo-dist release automation
+- Add vendor/ to gitignore
 - Upgrade to Rust Edition 2024 with let-chains

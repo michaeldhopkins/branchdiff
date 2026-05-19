@@ -49,7 +49,7 @@ fn color_labels(backend: VcsBackend) -> ColorLabels {
 
 pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
     let modal_width = 54u16;
-    let modal_height = 53u16;
+    let modal_height = 54u16;
 
     let x = area.width.saturating_sub(modal_width) / 2;
     let y = area.height.saturating_sub(modal_height) / 2;
@@ -122,6 +122,10 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("    q / Esc / ^c", Style::default().fg(Color::Cyan)),
             Span::raw("  Quit"),
+        ]),
+        Line::from(vec![
+            Span::styled("    u           ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Accept fix shown in error banner"),
         ]),
         Line::from(vec![
             Span::styled("    / or Ctrl+f ", Style::default().fg(Color::Cyan)),

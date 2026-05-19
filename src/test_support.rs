@@ -122,6 +122,7 @@ impl TestAppBuilder {
             files: self.files,
             lines: self.lines,
             error: None,
+            pending_recovery: None,
             conflict_warning: None,
             performance_warning: None,
             file_links: HashMap::new(),

@@ -81,6 +81,27 @@ pub struct RefreshResult {
     pub divergence: Option<UpstreamDivergence>,
 }
 
+impl RefreshResult {
+    /// An empty refresh result, used to seed `App` when the initial refresh
+    /// fails but we still want to enter the TUI so the user can see the error
+    /// banner and the file watcher can auto-recover.
+    pub fn empty() -> Self {
+        Self {
+            files: Vec::new(),
+            lines: Vec::new(),
+            base_identifier: String::new(),
+            base_label: None,
+            current_branch: None,
+            metrics: DiffMetrics::default(),
+            file_links: HashMap::new(),
+            stack_position: None,
+            bookmark_name: None,
+            revision_id: None,
+            divergence: None,
+        }
+    }
+}
+
 /// Paths a VCS backend wants watched for change detection.
 pub struct VcsWatchPaths {
     /// Individual files to watch non-recursively (e.g., .git/index, .git/HEAD)
@@ -100,4 +121,27 @@ pub enum VcsEventType {
     Lock,
     /// Regular source file — triggers immediate refresh
     Source,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_refresh_result_has_no_data_and_no_metadata() {
+        // The empty constructor seeds App when the initial refresh fails so
+        // the TUI can come up with an error banner. It must be safely
+        // displayable — no labels, no identifiers, no files.
+        let r = RefreshResult::empty();
+        assert!(r.files.is_empty());
+        assert!(r.lines.is_empty());
+        assert!(r.base_identifier.is_empty());
+        assert!(r.base_label.is_none());
+        assert!(r.current_branch.is_none());
+        assert!(r.file_links.is_empty());
+        assert!(r.stack_position.is_none());
+        assert!(r.bookmark_name.is_none());
+        assert!(r.revision_id.is_none());
+        assert!(r.divergence.is_none());
+    }
 }

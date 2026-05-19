@@ -794,6 +794,14 @@ impl crate::vcs::Vcs for JjVcs {
         };
         self.diff_base.store(val, Ordering::Relaxed);
     }
+
+    fn try_recover(&self, action: crate::update::RecoveryAction) -> Result<()> {
+        match action {
+            crate::update::RecoveryAction::JjUpdateStale => {
+                self.run_jj(&["workspace", "update-stale"]).map(|_| ())
+            }
+        }
+    }
 }
 
 /// Changed file from jj diff --summary output.

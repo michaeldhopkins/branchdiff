@@ -20,8 +20,11 @@ use branchdiff::limits;
 use branchdiff::message::{
     FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger, FALLBACK_REFRESH_SECS,
 };
-use branchdiff::update::{update, watchdog_timeout_from_env, RefreshState, Timers, UpdateConfig};
-use branchdiff::vcs::{self, ComparisonContext, Vcs};
+use branchdiff::update::{
+    classify_error, update, watchdog_timeout_from_env, ErrorClass, RecoveryAction,
+    RefreshState, Timers, UpdateConfig,
+};
+use branchdiff::vcs::{self, ComparisonContext, RefreshResult, Vcs};
 use branchdiff::ui;
 
 use std::io;
@@ -309,19 +312,7 @@ fn run_main_app(
     loop {
         let vcs: Arc<dyn Vcs> = Arc::from(detected);
 
-        // Fallback labels if jj has a transient error during restart — the
-        // first successful refresh will update them via apply_refresh_result.
-        let comparison = vcs.comparison_context().unwrap_or_else(|_| ComparisonContext {
-            from_label: "base".to_string(),
-            to_label: "working copy".to_string(),
-            stack_position: None,
-            vcs_backend: vcs.backend(),
-            bookmark_name: None,
-            divergence: None,
-        });
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        let initial = vcs.refresh(&cancel_flag)?;
-        let mut app = App::new(repo_root.clone(), comparison, initial);
+        let mut app = build_initial_app(&*vcs, repo_root.clone());
         app.load_images_for_markers(&*vcs);
         app.set_image_picker(image_picker.clone());
 
@@ -511,6 +502,181 @@ fn spawn_single_file_refresh(
     });
 }
 
+/// Build the initial `App` for a TUI session.
+///
+/// Tries the initial refresh; on failure, returns an `App` with empty data and
+/// the error pre-populated on `app.error` (plus a recovery hint when the error
+/// is recognized). This is the single seam where startup and runtime share
+/// error-classification logic — previously, a failed initial refresh bubbled
+/// `Err` out of `main()` and the user had to restart branchdiff manually after
+/// fixing the condition. Now the TUI comes up, the watcher is wired, and an
+/// external fix (or pressing the recovery key) auto-recovers without restart.
+fn build_initial_app(vcs: &dyn Vcs, repo_root: PathBuf) -> App {
+    // Fallback labels if comparison_context itself fails (e.g. jj is stale and
+    // even the log query bails). The first successful refresh replaces these.
+    let comparison = vcs.comparison_context().unwrap_or_else(|_| ComparisonContext {
+        from_label: "base".to_string(),
+        to_label: "working copy".to_string(),
+        stack_position: None,
+        vcs_backend: vcs.backend(),
+        bookmark_name: None,
+        divergence: None,
+    });
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    apply_initial_refresh(
+        vcs.refresh(&cancel_flag).map_err(|e| format!("{e:#}")),
+        repo_root,
+        comparison,
+    )
+}
+
+/// Pure helper that maps an initial-refresh outcome to an `App` — extracted
+/// from `build_initial_app` so the error→banner→hint wiring can be tested
+/// without spinning up a real VCS backend.
+fn apply_initial_refresh(
+    initial: std::result::Result<RefreshResult, String>,
+    repo_root: PathBuf,
+    comparison: ComparisonContext,
+) -> App {
+    match initial {
+        Ok(result) => App::new(repo_root, comparison, result),
+        Err(msg) => {
+            let mut app = App::new(repo_root, comparison, RefreshResult::empty());
+            app.error = Some(msg.clone());
+            if let ErrorClass::Actionable(hint) = classify_error(&msg) {
+                app.pending_recovery = Some(hint);
+            }
+            app
+        }
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    use branchdiff::update::{RecoveryAction, RecoveryHint};
+    use branchdiff::vcs::VcsBackend;
+
+    fn test_comparison() -> ComparisonContext {
+        ComparisonContext {
+            from_label: "main".to_string(),
+            to_label: "feature".to_string(),
+            stack_position: None,
+            vcs_backend: VcsBackend::Jj,
+            bookmark_name: None,
+            divergence: None,
+        }
+    }
+
+    /// Happy path: a successful refresh produces an App with that data and no
+    /// error banner. The empty-result fallback must NOT be applied here.
+    #[test]
+    fn apply_initial_refresh_success_uses_provided_result() {
+        let mut r = RefreshResult::empty();
+        r.base_identifier = "abc123".to_string();
+        let app = apply_initial_refresh(Ok(r), PathBuf::from("/tmp/r"), test_comparison());
+        assert_eq!(app.base_identifier, "abc123");
+        assert!(app.error.is_none());
+        assert!(app.pending_recovery.is_none());
+    }
+
+    /// Failure path: the App still comes up (this is the bug fix — no more
+    /// process exit), the banner shows the message, and a recognized error
+    /// gets a one-key fix offered.
+    #[test]
+    fn apply_initial_refresh_failure_surfaces_banner_with_stale_hint() {
+        let msg = "Error: The working copy is stale. Hint: Run `jj workspace update-stale`.";
+        let app = apply_initial_refresh(
+            Err(msg.to_string()),
+            PathBuf::from("/tmp/r"),
+            test_comparison(),
+        );
+        assert_eq!(app.error.as_deref(), Some(msg));
+        let hint = app.pending_recovery.expect("stale message should offer recovery");
+        assert_eq!(hint.action, RecoveryAction::JjUpdateStale);
+        assert_eq!(hint.key_hint, 'u');
+        // Empty data so the diff view renders nothing under the banner.
+        assert!(app.files.is_empty());
+        assert!(app.lines.is_empty());
+    }
+
+    /// Failure with an unrecognized error: banner shows the message but no
+    /// fix is offered. Pressing 'u' would be a no-op.
+    #[test]
+    fn apply_initial_refresh_unrecognized_failure_has_no_hint() {
+        let app = apply_initial_refresh(
+            Err("no such revision: foo".to_string()),
+            PathBuf::from("/tmp/r"),
+            test_comparison(),
+        );
+        assert!(app.error.is_some());
+        assert!(app.pending_recovery.is_none());
+    }
+
+    #[test]
+    fn apply_initial_refresh_failure_preserves_comparison_labels() {
+        // Even on failure, the labels we computed via comparison_context (or
+        // its fallback) must survive — that's what the status bar reads.
+        let comparison = ComparisonContext {
+            from_label: "from-label".to_string(),
+            to_label: "to-label".to_string(),
+            ..test_comparison()
+        };
+        let app = apply_initial_refresh(
+            Err("stale".to_string()),
+            PathBuf::from("/tmp/r"),
+            comparison,
+        );
+        assert_eq!(app.comparison.from_label, "from-label");
+        assert_eq!(app.comparison.to_label, "to-label");
+    }
+
+    /// Regression guard: ensure the helper handles a hint that doesn't get
+    /// stripped or relocated when round-tripped through the App field.
+    #[test]
+    fn pending_recovery_field_matches_classifier_output() {
+        let app = apply_initial_refresh(
+            Err("The working copy is stale".to_string()),
+            PathBuf::from("/tmp/r"),
+            test_comparison(),
+        );
+        let hint = app.pending_recovery.expect("expected hint");
+        assert_eq!(hint, RecoveryHint::jj_update_stale());
+    }
+}
+
+/// Run the recovery command then a follow-up refresh — both reported as a
+/// single `RefreshOutcome` so the existing pipeline handles the result.
+fn spawn_recovery(
+    vcs: Arc<dyn Vcs>,
+    action: RecoveryAction,
+    refresh_tx: mpsc::Sender<RefreshOutcome>,
+    cancel_flag: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        if let Err(e) = vcs.try_recover(action) {
+            let _ = refresh_tx.send(RefreshOutcome::Error(format!(
+                "Recovery action failed: {e:#}"
+            )));
+            return;
+        }
+        match vcs.refresh(&cancel_flag) {
+            Ok(mut result) => {
+                result.revision_id = vcs.current_revision_id().ok();
+                let _ = refresh_tx.send(RefreshOutcome::success(result));
+            }
+            Err(e) => {
+                let outcome = if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    RefreshOutcome::Cancelled
+                } else {
+                    RefreshOutcome::Error(format!("{e:#}"))
+                };
+                let _ = refresh_tx.send(outcome);
+            }
+        }
+    });
+}
+
 fn spawn_refresh(
     vcs: Arc<dyn Vcs>,
     refresh_tx: mpsc::Sender<RefreshOutcome>,
@@ -630,25 +796,33 @@ where
                 return Ok(result.loop_action);
             }
 
-            match result.refresh {
-                RefreshTrigger::Full => {
-                    vcs.set_diff_base(app.diff_base);
-                    let cancel_flag = refresh_state.start();
-                    spawn_refresh(
-                        vcs.clone(),
-                        refresh_tx.clone(),
-                        cancel_flag,
-                    );
+            // Recovery takes precedence over Refresh: accepting a recovery
+            // already implies running a follow-up refresh, so a Full trigger
+            // queued on the same iteration would be redundant work.
+            if let Some(action) = result.trigger_recovery {
+                let cancel_flag = refresh_state.start();
+                spawn_recovery(vcs.clone(), action, refresh_tx.clone(), cancel_flag);
+            } else {
+                match result.refresh {
+                    RefreshTrigger::Full => {
+                        vcs.set_diff_base(app.diff_base);
+                        let cancel_flag = refresh_state.start();
+                        spawn_refresh(
+                            vcs.clone(),
+                            refresh_tx.clone(),
+                            cancel_flag,
+                        );
+                    }
+                    RefreshTrigger::SingleFile(file_path) => {
+                        refresh_state.start_single_file();
+                        spawn_single_file_refresh(
+                            vcs.clone(),
+                            file_path.to_string_lossy().to_string(),
+                            refresh_tx.clone(),
+                        );
+                    }
+                    RefreshTrigger::None => {}
                 }
-                RefreshTrigger::SingleFile(file_path) => {
-                    refresh_state.start_single_file();
-                    spawn_single_file_refresh(
-                        vcs.clone(),
-                        file_path.to_string_lossy().to_string(),
-                        refresh_tx.clone(),
-                    );
-                }
-                RefreshTrigger::None => {}
             }
 
             if result.trigger_fetch {

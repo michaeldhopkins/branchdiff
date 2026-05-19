@@ -96,6 +96,8 @@ pub struct UpdateResult {
     pub refresh: RefreshTrigger,
     /// Should trigger a fetch.
     pub trigger_fetch: bool,
+    /// Whether to spawn the recovery action that was offered in the banner.
+    pub trigger_recovery: Option<crate::update::RecoveryAction>,
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
 }

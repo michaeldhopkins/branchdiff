@@ -6,8 +6,11 @@
 
 mod file_change;
 mod input;
+pub mod recovery;
 mod refresh;
 mod search;
+
+pub use recovery::{classify_error, ErrorClass, RecoveryAction, RecoveryHint};
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -362,5 +365,226 @@ mod tests {
         state.cancel_and_mark_pending();
         assert!(flag.load(Ordering::Relaxed), "cancel flag should be set");
         assert!(state.has_pending(), "should remain InProgressPending");
+    }
+
+    /// End-to-end through the `update()` boundary: stale error arrives, the
+    /// recovery hint appears, user presses 'u', and a follow-up success clears
+    /// the banner. This is the recovery loop a user actually sees — the unit
+    /// tests for individual handlers don't exercise it together.
+    #[test]
+    fn end_to_end_stale_recovery_flow_through_update_boundary() {
+        use crate::file_events::VcsLockState;
+        use crate::input::AppAction;
+        use crate::message::{Message, RefreshOutcome};
+        use crate::test_support::{base_line, StubVcs, TestAppBuilder};
+        use std::path::PathBuf;
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        // Step 1: stale error arrives.
+        let stale = Message::RefreshCompleted(Box::new(RefreshOutcome::Error(
+            "The working copy is stale. Hint: Run `jj workspace update-stale`.".to_string(),
+        )));
+        update(stale, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &config, &vcs);
+        assert!(app.pending_recovery.is_some(), "stale should surface recovery hint");
+        assert!(
+            timers.transient_retry_at.is_none(),
+            "stale must not schedule a transient retry"
+        );
+
+        // Step 2: user presses 'u' to accept the fix.
+        let press = Message::Input(AppAction::RunRecovery);
+        let press_result = update(
+            press,
+            &mut app,
+            &mut refresh_state,
+            &mut vcs_lock,
+            &mut timers,
+            &config,
+            &vcs,
+        );
+        assert!(
+            press_result.trigger_recovery.is_some(),
+            "RunRecovery must escalate to a recovery spawn"
+        );
+        assert!(app.pending_recovery.is_none(), "hint consumed on accept");
+
+        // Step 3: recovery + follow-up refresh succeed (the spawned thread
+        // would post a Success outcome). Banner must clear.
+        refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let success = Message::RefreshCompleted(Box::new(RefreshOutcome::success(
+            crate::vcs::RefreshResult {
+                files: vec![],
+                lines: vec![base_line("recovered")],
+                base_identifier: "rec".to_string(),
+                base_label: None,
+                current_branch: Some("main".to_string()),
+                metrics: crate::limits::DiffMetrics::default(),
+                file_links: std::collections::HashMap::new(),
+                stack_position: None,
+                bookmark_name: None,
+                revision_id: None,
+                divergence: None,
+            },
+        )));
+        update(
+            success,
+            &mut app,
+            &mut refresh_state,
+            &mut vcs_lock,
+            &mut timers,
+            &config,
+            &vcs,
+        );
+        assert!(app.error.is_none());
+        assert!(app.pending_recovery.is_none());
+    }
+
+    /// The "fix it from another terminal" path: stale error is showing, a
+    /// file event arrives (the user just ran `jj workspace update-stale` in
+    /// another tab), the resulting refresh succeeds — the banner must clear
+    /// without the user having to press anything. This is the auto-recovery
+    /// flow that the initial-refresh-non-fatal change was designed to enable.
+    #[test]
+    fn file_event_driven_auto_recovery_after_stale() {
+        use crate::file_events::VcsLockState;
+        use crate::message::{Message, RefreshOutcome, RefreshTrigger};
+        use crate::test_support::{base_line, StubVcs, TestAppBuilder};
+        use notify_debouncer_mini::{DebouncedEvent, DebouncedEventKind};
+        use std::path::PathBuf;
+
+        let mut app = TestAppBuilder::new().build();
+        // Seed state as if a startup or runtime refresh had just failed with stale.
+        app.error = Some("The working copy is stale".to_string());
+        app.pending_recovery = Some(crate::update::RecoveryHint::jj_update_stale());
+
+        let mut refresh_state = RefreshState::Idle;
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        // Step A: the user runs `jj workspace update-stale` in another tab.
+        // That mutates `.git/HEAD` (StubVcs classifies it as RevisionChange),
+        // which the file watcher debouncer delivers as a FileChanged message.
+        let file_event = Message::FileChanged(vec![DebouncedEvent::new(
+            PathBuf::from("/tmp/test/.git/HEAD"),
+            DebouncedEventKind::Any,
+        )]);
+        let r = update(
+            file_event,
+            &mut app,
+            &mut refresh_state,
+            &mut vcs_lock,
+            &mut timers,
+            &config,
+            &vcs,
+        );
+        // The watcher should have asked us to refresh. Without this, no
+        // auto-recovery would ever happen — guard against a future change
+        // that breaks the wiring.
+        assert_eq!(
+            r.refresh,
+            RefreshTrigger::Full,
+            "revision-change event must trigger a refresh"
+        );
+
+        // Banner is unchanged yet — the refresh hasn't completed.
+        assert!(app.error.is_some());
+        assert!(app.pending_recovery.is_some());
+
+        // Step B: simulate the spawned refresh completing successfully (the
+        // user's external fix worked). The banner and hint must clear.
+        refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let success = Message::RefreshCompleted(Box::new(RefreshOutcome::success(
+            crate::vcs::RefreshResult {
+                files: vec![],
+                lines: vec![base_line("recovered")],
+                base_identifier: "rec".to_string(),
+                base_label: None,
+                current_branch: Some("main".to_string()),
+                metrics: crate::limits::DiffMetrics::default(),
+                file_links: std::collections::HashMap::new(),
+                stack_position: None,
+                bookmark_name: None,
+                revision_id: None,
+                divergence: None,
+            },
+        )));
+        update(
+            success,
+            &mut app,
+            &mut refresh_state,
+            &mut vcs_lock,
+            &mut timers,
+            &config,
+            &vcs,
+        );
+        assert!(app.error.is_none(), "external fix must clear the banner");
+        assert!(
+            app.pending_recovery.is_none(),
+            "external fix must drop the now-stale hint"
+        );
+    }
+
+    /// Counterpart to the happy path: if the recovery command itself fails,
+    /// the new error must replace the old one — and the now-stale hint must
+    /// not linger and re-offer the same broken fix.
+    #[test]
+    fn recovery_failure_clears_hint_and_shows_new_error() {
+        use crate::file_events::VcsLockState;
+        use crate::message::{Message, RefreshOutcome};
+        use crate::test_support::{StubVcs, TestAppBuilder};
+        use std::path::PathBuf;
+
+        let mut app = TestAppBuilder::new().build();
+        app.error = Some("Running `jj workspace update-stale`...".to_string());
+        // pending_recovery was already cleared by RunRecovery; the spawn
+        // thread now reports back with a failure.
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let failure = Message::RefreshCompleted(Box::new(RefreshOutcome::Error(
+            "Recovery action failed: jj exited with code 2".to_string(),
+        )));
+        update(
+            failure,
+            &mut app,
+            &mut refresh_state,
+            &mut vcs_lock,
+            &mut timers,
+            &config,
+            &vcs,
+        );
+
+        assert!(
+            app.error.as_ref().unwrap().contains("Recovery action failed"),
+            "got: {:?}",
+            app.error
+        );
+        assert!(
+            app.pending_recovery.is_none(),
+            "a generic failure isn't actionable — don't re-offer the broken fix"
+        );
     }
 }

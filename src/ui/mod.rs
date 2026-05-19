@@ -15,7 +15,7 @@ pub mod status_bar;
 pub mod wrapping;
 
 // Re-export commonly used items
-pub use modals::{draw_help_modal, draw_warning_banner};
+pub use modals::{draw_help_modal, draw_warning_banner, draw_warning_banner_with_hint};
 pub use status_bar::{draw_status_bar, status_bar_height, status_bar_plain_text};
 
 /// Width of the prefix after line numbers: prefix char + space + status symbol + trailing space
@@ -65,7 +65,7 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
 
     if let Some(area) = warning_area {
         if let Some(error) = &app.error {
-            draw_warning_banner(frame, error, area);
+            draw_warning_banner_with_hint(frame, error, app.pending_recovery.as_ref(), area);
         } else if let Some(warning) = &app.conflict_warning {
             draw_warning_banner(frame, warning, area);
         }

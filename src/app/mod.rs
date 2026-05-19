@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use ratatui_image::picker::Picker;
 
 use crate::diff::{DiffLine, FileDiff};
+use crate::update::RecoveryHint;
 use crate::vcs::{ComparisonContext, DiffBase, VcsBackend};
 use crate::gitignore::GitignoreFilter;
 use crate::image_diff::ImageCache;
@@ -54,6 +55,9 @@ pub struct App {
     pub lines: Vec<DiffLine>,
     /// Error message to display (if any)
     pub error: Option<String>,
+    /// If `error` is recoverable, the action we can offer to fix it.
+    /// Renders as a key hint in the banner; pressing the key runs the action.
+    pub pending_recovery: Option<RecoveryHint>,
     /// Warning message about merge conflicts (if any)
     pub conflict_warning: Option<String>,
     /// Performance warning (large repo or diff)
@@ -103,6 +107,7 @@ impl App {
             files: Vec::new(),
             lines,
             error: None,
+            pending_recovery: None,
             conflict_warning: None,
             performance_warning: None,
             file_links: HashMap::new(),
@@ -135,6 +140,7 @@ impl App {
             files: Vec::new(),
             lines: Vec::new(),
             error: None,
+            pending_recovery: None,
             conflict_warning: None,
             performance_warning: None,
             gitignore_filter,
@@ -269,6 +275,7 @@ impl App {
 
     pub fn apply_refresh_result(&mut self, result: RefreshResult) {
         self.error = None;
+        self.pending_recovery = None;
         self.base_identifier = result.base_identifier;
         if let Some(label) = result.base_label {
             self.comparison.from_label = label;

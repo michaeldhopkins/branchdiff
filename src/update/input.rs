@@ -166,6 +166,21 @@ pub(super) fn handle_input(
             }
         }
 
+        // Accept the recovery action offered in the error banner.
+        // The keybinding always fires, but we only act when a recovery is
+        // actually pending. Once accepted, we clear the hint so a second
+        // press won't re-trigger while the action is running.
+        AppAction::RunRecovery => {
+            if let Some(hint) = app.pending_recovery.take() {
+                app.error = Some(format!("Running `{}`...", hint.command_label));
+                result.trigger_recovery = Some(hint.action);
+                result.needs_redraw = true;
+            } else {
+                // Don't repaint for a no-op.
+                result.needs_redraw = false;
+            }
+        }
+
         // No-op actions
         AppAction::Resize | AppAction::None => {}
     }
@@ -501,5 +516,42 @@ mod tests {
         assert_eq!(app.diff_base, crate::vcs::DiffBase::TrunkTip);
         assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(refresh_state.has_pending());
+    }
+
+    #[test]
+    fn run_recovery_with_pending_hint_triggers_action_and_clears_hint() {
+        use crate::update::{RecoveryAction, RecoveryHint};
+        let mut app = TestAppBuilder::new().build();
+        app.error = Some("The working copy is stale".to_string());
+        app.pending_recovery = Some(RecoveryHint::jj_update_stale());
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::RunRecovery, &mut app, &mut refresh_state);
+
+        assert_eq!(result.trigger_recovery, Some(RecoveryAction::JjUpdateStale));
+        assert!(result.needs_redraw);
+        assert!(
+            app.pending_recovery.is_none(),
+            "hint must be consumed so a second press doesn't double-fire"
+        );
+        // The error swap to "Running `...`" gives the user feedback that the
+        // command is in flight — relying just on an empty banner would feel
+        // like the keypress did nothing.
+        assert!(
+            app.error.as_ref().unwrap().starts_with("Running `"),
+            "got: {:?}",
+            app.error
+        );
+    }
+
+    #[test]
+    fn run_recovery_without_pending_hint_is_noop() {
+        let mut app = TestAppBuilder::new().build();
+        // No pending_recovery, no error — pressing 'u' must not invent one.
+        let mut refresh_state = RefreshState::Idle;
+        let result = handle_input(AppAction::RunRecovery, &mut app, &mut refresh_state);
+        assert!(result.trigger_recovery.is_none());
+        assert!(!result.needs_redraw, "no-op must not force a repaint");
+        assert!(app.error.is_none());
     }
 }

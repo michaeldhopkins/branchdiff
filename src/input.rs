@@ -25,6 +25,9 @@ pub enum AppAction {
     ToggleDiffBase,
     ToggleReviewed,
     ToggleAllReviewed,
+    /// Accept the recovery offered in the error banner (e.g. run
+    /// `jj workspace update-stale`). A no-op when nothing is pending.
+    RunRecovery,
     Resize,
     None,
 }
@@ -99,6 +102,11 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
 
         // Toggle reviewed state for current file
         (KeyCode::Char('r'), KeyModifiers::NONE) => AppAction::ToggleReviewed,
+
+        // Accept the suggested recovery shown in the error banner. The handler
+        // ignores this when no recovery is pending, so plain 'u' remains a
+        // no-op outside of error-banner state.
+        (KeyCode::Char('u'), KeyModifiers::NONE) => AppAction::RunRecovery,
 
         _ => AppAction::None,
     }
@@ -316,6 +324,23 @@ mod tests {
     fn test_toggle_diff_base_with_m() {
         let event = key_event(KeyCode::Char('m'), KeyModifiers::NONE);
         assert_eq!(handle_event(event), AppAction::ToggleDiffBase);
+    }
+
+    #[test]
+    fn run_recovery_bound_to_plain_u() {
+        // Plain 'u' invokes the recovery offered in the error banner. The
+        // handler is a no-op when nothing is pending, so this remains safe
+        // for users who don't have a banner showing.
+        let event = key_event(KeyCode::Char('u'), KeyModifiers::NONE);
+        assert_eq!(handle_event(event), AppAction::RunRecovery);
+    }
+
+    #[test]
+    fn ctrl_u_is_still_page_up_after_recovery_binding() {
+        // Regression guard: adding plain 'u' for recovery must not steal the
+        // existing Ctrl+u shortcut.
+        let event = key_event(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(handle_event(event), AppAction::PageUp);
     }
 
     #[test]
