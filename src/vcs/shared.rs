@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rayon::prelude::*;
@@ -76,7 +77,7 @@ pub(crate) fn assemble_results(results: Vec<FileProcessResult>) -> AssembledDiff
 /// cancel flag after this returns.
 pub(crate) fn process_files_parallel<T, F>(
     items: &[T],
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
     process: F,
 ) -> Vec<FileProcessResult>
 where
@@ -182,7 +183,7 @@ mod tests {
     #[test]
     fn test_process_files_parallel_serial_path() {
         let items = vec!["a.rs", "b.rs"];
-        let cancel = AtomicBool::new(false);
+        let cancel = Arc::new(AtomicBool::new(false));
         let results = process_files_parallel(&items, &cancel, |path| diff_result(path));
         assert_eq!(results.len(), 2);
     }
@@ -190,7 +191,7 @@ mod tests {
     #[test]
     fn test_process_files_parallel_parallel_path() {
         let items: Vec<String> = (0..5).map(|i| format!("file{i}.rs")).collect();
-        let cancel = AtomicBool::new(false);
+        let cancel = Arc::new(AtomicBool::new(false));
         let results = process_files_parallel(&items, &cancel, |path| diff_result(path));
         assert_eq!(results.len(), 5);
     }
@@ -202,7 +203,7 @@ mod tests {
         // watchdog relies on to keep CPU from stacking on huge files.
         use std::sync::atomic::AtomicUsize;
         let items = vec!["a.rs", "b.rs", "c.rs"];
-        let cancel = AtomicBool::new(true);
+        let cancel = Arc::new(AtomicBool::new(true));
         let invoked = AtomicUsize::new(0);
 
         let results = process_files_parallel(&items, &cancel, |path| {

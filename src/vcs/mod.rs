@@ -142,7 +142,15 @@ pub trait Vcs: Send + Sync {
     /// copy). Backends that don't support the requested action return an error
     /// — the UI only offers an action after `classify_error` returns one the
     /// active backend is known to handle.
-    fn try_recover(&self, action: crate::update::RecoveryAction) -> Result<()> {
+    ///
+    /// `cancel` is passed through to the underlying subprocess so the user can
+    /// abort a slow recovery (e.g. by quitting the TUI) without leaking a
+    /// running `jj`/`git` child.
+    fn try_recover(
+        &self,
+        action: crate::update::RecoveryAction,
+        _cancel: &Arc<AtomicBool>,
+    ) -> Result<()> {
         anyhow::bail!("backend does not support recovery action {action:?}")
     }
 }

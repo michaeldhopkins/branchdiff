@@ -654,10 +654,17 @@ fn spawn_recovery(
     cancel_flag: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
-        if let Err(e) = vcs.try_recover(action) {
-            let _ = refresh_tx.send(RefreshOutcome::Error(format!(
-                "Recovery action failed: {e:#}"
-            )));
+        if let Err(e) = vcs.try_recover(action, &cancel_flag) {
+            // A cancel mid-`try_recover` surfaces as a `RunError::Cancelled`
+            // that anyhow propagates by Display — the flag is still our
+            // source of truth for whether to treat this as user-initiated
+            // cancellation versus a genuine failure.
+            let outcome = if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                RefreshOutcome::Cancelled
+            } else {
+                RefreshOutcome::Error(format!("Recovery action failed: {e:#}"))
+            };
+            let _ = refresh_tx.send(outcome);
             return;
         }
         match vcs.refresh(&cancel_flag) {

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use vcs_runner::{run_cmd_in_with_env, run_git, run_git_with_retry, is_transient_error};
+use vcs_runner::{Cmd, run_git, run_git_with_retry, is_transient_error};
 
 /// A file that has changes
 #[derive(Debug, Clone)]
@@ -52,24 +52,28 @@ fn detect_unstaged_renames(
 
     let temp_index_path = temp_index.path().to_string_lossy().to_string();
 
-    let env = [("GIT_INDEX_FILE", temp_index_path.as_str())];
-
-    // Batch git add -N for all untracked files
-    // Using --intent-to-add with the temp index
+    // Batch git add -N for all untracked files using --intent-to-add against
+    // the temp index. `GIT_INDEX_FILE` directs git to write to our temp file
+    // instead of the real index, so this never disturbs the user's staging area.
     let mut add_args: Vec<&str> = vec!["add", "-N", "--"];
     add_args.extend(untracked_files.iter().map(String::as_str));
-    if run_cmd_in_with_env(repo_path, "git", &add_args, &env).is_err() {
+    let add_result = Cmd::new("git")
+        .in_dir(repo_path)
+        .env("GIT_INDEX_FILE", temp_index_path.as_str())
+        .args(&add_args)
+        .run();
+    if add_result.is_err() {
         // If add fails, just return empty (don't break the whole refresh)
         return Ok(Vec::new());
     }
 
     // Run git diff with rename detection using the temp index
-    let diff_output = match run_cmd_in_with_env(
-        repo_path,
-        "git",
-        &["diff", "--name-status", "-M", "HEAD"],
-        &env,
-    ) {
+    let diff_output = match Cmd::new("git")
+        .in_dir(repo_path)
+        .env("GIT_INDEX_FILE", temp_index_path.as_str())
+        .args(["diff", "--name-status", "-M", "HEAD"])
+        .run()
+    {
         Ok(o) => o,
         Err(_) => return Ok(Vec::new()),
     };

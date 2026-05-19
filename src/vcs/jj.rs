@@ -5,7 +5,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use vcs_runner::{run_jj, run_jj_with_retry, is_transient_error};
+use vcs_runner::{
+    is_transient_error, run_jj, run_jj_cancellable, run_jj_with_retry,
+    run_jj_with_retry_cancellable,
+};
 
 use super::shared::{assemble_results, process_files_parallel, FileProcessResult};
 
@@ -56,7 +59,11 @@ fn resolve_base_rev(repo_path: &Path) -> String {
 /// Find the fork point: the most recent common ancestor of trunk() and @.
 /// Returns None if @ is already on top of trunk (no divergence) or if
 /// from_rev isn't trunk().
-fn resolve_fork_point(repo_path: &Path, from_rev: &str) -> Option<String> {
+fn resolve_fork_point(
+    repo_path: &Path,
+    from_rev: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<String> {
     if from_rev != "trunk()" {
         return None;
     }
@@ -65,7 +72,7 @@ fn resolve_fork_point(repo_path: &Path, from_rev: &str) -> Option<String> {
         "log", "-r", "heads(::trunk() & ::@)", "--no-graph",
         "--limit", "1", "-T", "commit_id.short(12)",
     ]);
-    let fork_id = run_jj(repo_path, &args).ok()
+    let fork_id = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()
         .map(|o| o.stdout_lossy().trim().to_string())
         .filter(|s| !s.is_empty())?;
 
@@ -75,7 +82,7 @@ fn resolve_fork_point(repo_path: &Path, from_rev: &str) -> Option<String> {
             "log", "-r", "trunk()", "--no-graph", "--limit", "1",
             "-T", "commit_id.short(12)",
         ]);
-        run_jj(repo_path, &args).ok()
+        run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()
             .map(|o| o.stdout_lossy().trim().to_string())?
     };
 
@@ -92,6 +99,7 @@ fn resolve_fork_point(repo_path: &Path, from_rev: &str) -> Option<String> {
 fn compute_jj_divergence(
     repo_path: &Path,
     fork_point: &str,
+    cancel: &Arc<AtomicBool>,
 ) -> Option<UpstreamDivergence> {
     // Count commits between fork point and trunk
     let revset = format!("\"{}\"..trunk()", fork_point);
@@ -99,7 +107,7 @@ fn compute_jj_divergence(
         "log", "-r", &revset,
         "--no-graph", "-T", r#""\n""#,
     ]);
-    let behind_count = run_jj(repo_path, &count_args)
+    let behind_count = run_jj_cancellable(repo_path, &count_args, Arc::clone(cancel))
         .map(|o| o.stdout_lossy().lines().filter(|l| !l.is_empty()).count())
         .unwrap_or(0);
 
@@ -111,7 +119,7 @@ fn compute_jj_divergence(
     let diff_args = no_snapshot(&[
         "diff", "--from", fork_point, "--to", "trunk()", "--summary",
     ]);
-    let upstream_files = run_jj(repo_path, &diff_args)
+    let upstream_files = run_jj_cancellable(repo_path, &diff_args, Arc::clone(cancel))
         .map(|o| {
             parse_jj_summary(&o.stdout_lossy())
                 .into_iter()
@@ -136,7 +144,11 @@ struct StackTip {
 
 /// Find the tip(s) of the mutable stack above @.
 /// Returns None when @ is already the tip or from_rev isn't trunk().
-fn resolve_stack_tip(repo_path: &Path, from_rev: &str) -> Option<StackTip> {
+fn resolve_stack_tip(
+    repo_path: &Path,
+    from_rev: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<StackTip> {
     if from_rev != "trunk()" {
         return None;
     }
@@ -145,7 +157,7 @@ fn resolve_stack_tip(repo_path: &Path, from_rev: &str) -> Option<StackTip> {
         "log", "-r", "heads(trunk()..(@::))", "--no-graph",
         "-T", r#"change_id.short(12) ++ "\n""#,
     ]);
-    let output = run_jj(repo_path, &args).ok()?;
+    let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
     let stdout = output.stdout_lossy();
     let heads: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
 
@@ -154,7 +166,7 @@ fn resolve_stack_tip(repo_path: &Path, from_rev: &str) -> Option<StackTip> {
     }
 
     // Check if the only head IS @ (meaning @ is already at the tip)
-    let at_id = get_change_id_static(repo_path, "@")?;
+    let at_id = get_change_id_static(repo_path, "@", cancel)?;
     if heads.len() == 1 && heads[0].trim() == at_id.trim() {
         return None;
     }
@@ -180,7 +192,11 @@ struct BookmarkBoundary {
 /// Strategy:
 /// 1. Find the bookmark at or above @ (the bookmark @ belongs to).
 /// 2. Find the nearest ancestor bookmark below that one.
-fn resolve_bookmark_boundary(repo_path: &Path, from_rev: &str) -> Option<BookmarkBoundary> {
+fn resolve_bookmark_boundary(
+    repo_path: &Path,
+    from_rev: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<BookmarkBoundary> {
     if from_rev != "trunk()" {
         return None;
     }
@@ -191,7 +207,7 @@ fn resolve_bookmark_boundary(repo_path: &Path, from_rev: &str) -> Option<Bookmar
         "log", "-r", "latest((@:: | @) & bookmarks())", "--no-graph", "--limit", "1",
         "-T", template,
     ]);
-    let output = run_jj(repo_path, &args).ok()?;
+    let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
     let stdout = output.stdout_lossy();
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
@@ -220,7 +236,7 @@ fn resolve_bookmark_boundary(repo_path: &Path, from_rev: &str) -> Option<Bookmar
         "log", "-r", &revset, "--no-graph", "--limit", "1",
         "-T", "change_id.short(12)",
     ]);
-    let boundary_id = run_jj(repo_path, &prev_args)
+    let boundary_id = run_jj_cancellable(repo_path, &prev_args, Arc::clone(cancel))
         .ok()
         .map(|o| o.stdout_lossy().trim().to_string())
         .filter(|s| !s.is_empty())
@@ -231,7 +247,7 @@ fn resolve_bookmark_boundary(repo_path: &Path, from_rev: &str) -> Option<Bookmar
     let diff_args = no_snapshot(&[
         "diff", "-r", &range, "--name-only",
     ]);
-    let changed_files: HashSet<String> = run_jj(repo_path, &diff_args)
+    let changed_files: HashSet<String> = run_jj_cancellable(repo_path, &diff_args, Arc::clone(cancel))
         .map(|o| {
             o.stdout_lossy()
                 .lines()
@@ -273,12 +289,12 @@ fn mark_bookmark_provenance(file_diff: &mut crate::diff::FileDiff, file_in_curre
 }
 
 /// Get a change_id without requiring a JjVcs instance.
-fn get_change_id_static(repo_path: &Path, rev: &str) -> Option<String> {
+fn get_change_id_static(repo_path: &Path, rev: &str, cancel: &Arc<AtomicBool>) -> Option<String> {
     let args = no_snapshot(&[
         "log", "-r", rev, "--no-graph", "--limit", "1",
         "-T", "change_id.short(12)",
     ]);
-    run_jj(repo_path, &args)
+    run_jj_cancellable(repo_path, &args, Arc::clone(cancel))
         .ok()
         .map(|o| o.stdout_lossy().trim().to_string())
 }
@@ -340,11 +356,17 @@ impl JjVcs {
     /// Get changed files between a from revision and effective_to.
     /// The first call per refresh triggers the working copy auto-snapshot;
     /// all subsequent commands use `--ignore-working-copy`.
-    fn get_changed_files_with_from(&self, from: &str, effective_to: &str) -> Result<Vec<ChangedFile>> {
-        let output = run_jj_with_retry(
+    fn get_changed_files_with_from(
+        &self,
+        from: &str,
+        effective_to: &str,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<Vec<ChangedFile>> {
+        let output = run_jj_with_retry_cancellable(
             &self.repo_path,
             &["diff", "--from", from, "--to", effective_to, "--summary"],
             is_transient_error,
+            Arc::clone(cancel),
         )?;
         Ok(parse_jj_summary(&output.stdout_lossy()))
     }
@@ -352,11 +374,21 @@ impl JjVcs {
     /// Detect binary files by checking --stat output for "(binary)" markers.
     /// Uses `--ignore-working-copy` since the snapshot is already fresh from
     /// `get_changed_files`.
-    fn get_binary_files_set(&self, from: &str, effective_to: &str) -> HashSet<String> {
+    fn get_binary_files_set(
+        &self,
+        from: &str,
+        effective_to: &str,
+        cancel: &Arc<AtomicBool>,
+    ) -> HashSet<String> {
         let args = no_snapshot(&[
             "diff", "--from", from, "--to", effective_to, "--stat",
         ]);
-        match run_jj_with_retry(&self.repo_path, &args, is_transient_error) {
+        match run_jj_with_retry_cancellable(
+            &self.repo_path,
+            &args,
+            is_transient_error,
+            Arc::clone(cancel),
+        ) {
             Ok(output) => parse_binary_from_stat(&output.stdout_lossy()),
             Err(_) => HashSet::new(),
         }
@@ -430,9 +462,14 @@ fn parse_rev_metadata(raw: &str) -> (String, String) {
 
 /// Read file content at a revision without triggering auto-snapshot.
 /// Free function for use in parallel contexts (rayon).
-fn file_content_no_snapshot(repo_path: &Path, file_path: &str, rev: &str) -> Option<String> {
+fn file_content_no_snapshot(
+    repo_path: &Path,
+    file_path: &str,
+    rev: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<String> {
     let args = no_snapshot(&["file", "show", "-r", rev, file_path]);
-    run_jj(repo_path, &args)
+    run_jj_cancellable(repo_path, &args, Arc::clone(cancel))
         .ok()
         .map(|o| o.stdout_lossy().into_owned())
 }
@@ -444,7 +481,7 @@ fn process_jj_file(
     binary_files: &HashSet<String>,
     tip_rev: Option<&str>,
     bookmark_changed_files: Option<&HashSet<String>>,
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
 ) -> FileProcessResult {
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
@@ -458,32 +495,32 @@ fn process_jj_file(
     }
 
     // Each `jj file show` is a separate subprocess and can take seconds for
-    // large files. Polling cancel between them lets a watchdog-cancelled
-    // refresh skip the remaining reads instead of paying the full 4× cost
-    // per concurrent file already in flight.
+    // large files. The cancel flag is plumbed into the subprocess itself
+    // (via run_jj_cancellable inside file_content_no_snapshot), so a slow
+    // file read gets killed mid-flight — not only between reads.
     let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
-    let base = file_content_no_snapshot(repo_path, base_path, from_rev);
+    let base = file_content_no_snapshot(repo_path, base_path, from_rev, cancel);
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
     }
 
     // @- content for the committed/staged boundary — try current path first,
     // fall back to old_path for files renamed in the current commit
-    let parent = file_content_no_snapshot(repo_path, &changed.path, "@-")
+    let parent = file_content_no_snapshot(repo_path, &changed.path, "@-", cancel)
         .or_else(|| {
             changed.old_path.as_deref()
-                .and_then(|old| file_content_no_snapshot(repo_path, old, "@-"))
+                .and_then(|old| file_content_no_snapshot(repo_path, old, "@-", cancel))
         });
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
     }
 
-    let index = file_content_no_snapshot(repo_path, &changed.path, "@");
+    let index = file_content_no_snapshot(repo_path, &changed.path, "@", cancel);
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
     }
     let tip_content = tip_rev
-        .and_then(|tip| file_content_no_snapshot(repo_path, &changed.path, tip));
+        .and_then(|tip| file_content_no_snapshot(repo_path, &changed.path, tip, cancel));
 
     // When tip_rev is None (@ is at tip), working == index.
     // When tip_rev is Some, working is the tip content — even if None (file
@@ -556,9 +593,9 @@ impl crate::vcs::Vcs for JjVcs {
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
         // Resolve fork point for divergence detection and fork-point mode
-        let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev);
+        let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev, cancel_flag);
         let divergence = fork_point.as_deref()
-            .and_then(|fp| compute_jj_divergence(&self.repo_path, fp));
+            .and_then(|fp| compute_jj_divergence(&self.repo_path, fp, cancel_flag));
 
         // Determine the effective --from rev based on diff_base mode
         let effective_from = match self.load_diff_base() {
@@ -567,7 +604,7 @@ impl crate::vcs::Vcs for JjVcs {
         };
 
         // Resolve stack tip — determines if @ is mid-stack
-        let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev);
+        let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev, cancel_flag);
         let effective_to = stack_tip
             .as_ref()
             .map(|t| t.change_id.as_str())
@@ -575,18 +612,18 @@ impl crate::vcs::Vcs for JjVcs {
         let tip_rev = stack_tip.as_ref().map(|t| t.change_id.as_str());
 
         // Resolve bookmark boundary for BookmarkOnly view mode
-        let bookmark_boundary = resolve_bookmark_boundary(&self.repo_path, &self.from_rev);
+        let bookmark_boundary = resolve_bookmark_boundary(&self.repo_path, &self.from_rev, cancel_flag);
         let bookmark_changed_files = bookmark_boundary.as_ref().map(|b| &b.changed_files);
 
         // First command — triggers working copy auto-snapshot
-        let changed_files = self.get_changed_files_with_from(effective_from, effective_to)?;
+        let changed_files = self.get_changed_files_with_from(effective_from, effective_to, cancel_flag)?;
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
         }
 
         // All subsequent commands use --ignore-working-copy
-        let binary_files = self.get_binary_files_set(effective_from, effective_to);
+        let binary_files = self.get_binary_files_set(effective_from, effective_to, cancel_flag);
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
@@ -652,43 +689,48 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
-        let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev);
+        // single_file_diff isn't surfaced as cancellable through the Vcs trait
+        // — it's a quick path used for incremental updates. Pass a never-set
+        // cancel flag so the subprocess calls compile against the cancellable
+        // helpers. A future change can plumb a real cancel through if needed.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev, &cancel);
         let effective_from = match self.load_diff_base() {
             DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(&self.from_rev),
             DiffBase::TrunkTip => &self.from_rev,
         };
 
-        let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev);
+        let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev, &cancel);
         let effective_to = stack_tip
             .as_ref()
             .map(|t| t.change_id.as_str())
             .unwrap_or("@");
 
         // First command triggers auto-snapshot
-        let changed_files = self.get_changed_files_with_from(effective_from, effective_to).ok()?;
+        let changed_files = self.get_changed_files_with_from(effective_from, effective_to, &cancel).ok()?;
         let changed = changed_files.iter().find(|f| f.path == file_path);
         let old_path = changed.and_then(|f| f.old_path.as_deref());
 
         // Subsequent commands skip snapshot
         let base_path = old_path.unwrap_or(file_path);
-        let base = file_content_no_snapshot(&self.repo_path, base_path, effective_from);
+        let base = file_content_no_snapshot(&self.repo_path, base_path, effective_from, &cancel);
 
-        let parent = file_content_no_snapshot(&self.repo_path, file_path, "@-")
+        let parent = file_content_no_snapshot(&self.repo_path, file_path, "@-", &cancel)
             .or_else(|| {
-                old_path.and_then(|old| file_content_no_snapshot(&self.repo_path, old, "@-"))
+                old_path.and_then(|old| file_content_no_snapshot(&self.repo_path, old, "@-", &cancel))
             });
 
-        let index = file_content_no_snapshot(&self.repo_path, file_path, "@");
+        let index = file_content_no_snapshot(&self.repo_path, file_path, "@", &cancel);
         let tip_content = stack_tip
             .as_ref()
-            .and_then(|t| file_content_no_snapshot(&self.repo_path, file_path, &t.change_id));
+            .and_then(|t| file_content_no_snapshot(&self.repo_path, file_path, &t.change_id, &cancel));
         let has_tip = stack_tip.is_some();
 
         if base.is_none() && index.is_none() && tip_content.is_none() {
             return None;
         }
 
-        let binary_files = self.get_binary_files_set(effective_from, effective_to);
+        let binary_files = self.get_binary_files_set(effective_from, effective_to, &cancel);
         if binary_files.contains(file_path) {
             return None;
         }
@@ -705,7 +747,7 @@ impl crate::vcs::Vcs for JjVcs {
         });
 
         // Mark bookmark provenance for BookmarkOnly view mode
-        if let Some(boundary) = resolve_bookmark_boundary(&self.repo_path, &self.from_rev) {
+        if let Some(boundary) = resolve_bookmark_boundary(&self.repo_path, &self.from_rev, &cancel) {
             let in_bookmark = boundary.changed_files.contains(file_path);
             mark_bookmark_provenance(&mut file_diff, in_bookmark);
         }
@@ -735,7 +777,12 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn binary_files(&self) -> HashSet<String> {
-        self.get_binary_files_set(&self.from_rev, "@")
+        // Trait method has no cancel hook — use a never-set flag so the
+        // cancellable helper compiles cleanly. This path is used outside the
+        // refresh hot loop (e.g. image rendering callbacks) where mid-call
+        // cancellation isn't currently wired through the trait.
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.get_binary_files_set(&self.from_rev, "@", &cancel)
     }
 
     fn fetch(&self) -> Result<()> {
@@ -795,10 +842,19 @@ impl crate::vcs::Vcs for JjVcs {
         self.diff_base.store(val, Ordering::Relaxed);
     }
 
-    fn try_recover(&self, action: crate::update::RecoveryAction) -> Result<()> {
+    fn try_recover(
+        &self,
+        action: crate::update::RecoveryAction,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<()> {
         match action {
             crate::update::RecoveryAction::JjUpdateStale => {
-                self.run_jj(&["workspace", "update-stale"]).map(|_| ())
+                run_jj_cancellable(
+                    &self.repo_path,
+                    &["workspace", "update-stale"],
+                    Arc::clone(cancel),
+                )?;
+                Ok(())
             }
         }
     }
@@ -1607,7 +1663,7 @@ mod tests {
         // @ is the tip — one commit above trunk, nothing above @
         std::fs::write(repo.join("feature.txt"), "content\n").unwrap();
 
-        let tip = resolve_stack_tip(repo, "trunk()");
+        let tip = resolve_stack_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false)));
         assert!(tip.is_none(), "should return None when @ is already the tip");
     }
 
@@ -1629,7 +1685,7 @@ mod tests {
         // Move @ back to commit2 (mid-stack)
         Command::new("jj").args(["edit", "@---"]).current_dir(repo).output().unwrap();
 
-        let tip = resolve_stack_tip(repo, "trunk()");
+        let tip = resolve_stack_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false)));
         assert!(tip.is_some(), "should return a tip when @ is mid-stack");
         let tip = tip.unwrap();
         assert_eq!(tip.head_count, 1, "linear stack should have 1 head");
@@ -1644,7 +1700,7 @@ mod tests {
         let repo = temp.path();
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
 
-        let tip = resolve_stack_tip(repo, "@-");
+        let tip = resolve_stack_tip(repo, "@-", &Arc::new(AtomicBool::new(false)));
         assert!(tip.is_none(), "should return None when from_rev is not trunk()");
     }
 
@@ -1674,7 +1730,7 @@ mod tests {
         // After commit2b: @=empty, @-=commit2b, @--=commit1
         Command::new("jj").args(["edit", "@--"]).current_dir(repo).output().unwrap();
 
-        let tip = resolve_stack_tip(repo, "trunk()");
+        let tip = resolve_stack_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false)));
         assert!(tip.is_some(), "should detect stack tip when @ is below a fork");
         let tip = tip.unwrap();
         assert_eq!(tip.head_count, 2, "branching stack should have 2 heads");
@@ -1698,7 +1754,7 @@ mod tests {
         // Move @ to commit2 (position 2 of 3 mutable commits, plus the empty @)
         Command::new("jj").args(["edit", "@---"]).current_dir(repo).output().unwrap();
 
-        let tip = resolve_stack_tip(repo, "trunk()").expect("should have a tip");
+        let tip = resolve_stack_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false))).expect("should have a tip");
         let (current, total) = compute_stack_position(repo, &tip.change_id)
             .expect("should compute position");
 
@@ -1965,5 +2021,68 @@ mod tests {
             "Boundary revset must include remote_bookmarks() for pushed bookmark segments");
         assert!(revset.contains(&format!("\"{}\"", change_id)),
             "Boundary revset must reference the current bookmark's change ID");
+    }
+
+    /// `try_recover` with a pre-set cancel flag must bail before spawning jj —
+    /// vcs-runner's contract is "If `cancel` is already set before spawn,
+    /// returns `Cancelled` without starting the child." This is the cheap
+    /// short-circuit branchdiff relies on when the user quits during a
+    /// queued recovery.
+    #[test]
+    fn try_recover_short_circuits_on_preset_cancel() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(true));
+        let result = vcs.try_recover(crate::update::RecoveryAction::JjUpdateStale, &cancel);
+        assert!(result.is_err(), "pre-set cancel must abort recovery");
+        let msg = format!("{:#}", result.unwrap_err()).to_lowercase();
+        assert!(
+            msg.contains("cancel"),
+            "error must surface as cancellation, got: {msg:?}"
+        );
+    }
+
+    /// Counterpart: with cancel clear, try_recover on a non-stale repo should
+    /// succeed (jj's update-stale is a no-op when nothing's stale). This
+    /// guards against accidentally short-circuiting on the wrong flag state.
+    #[test]
+    fn try_recover_succeeds_when_cancel_clear() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.try_recover(crate::update::RecoveryAction::JjUpdateStale, &cancel);
+        assert!(result.is_ok(), "non-stale repo should accept update-stale silently, got: {result:?}");
+    }
+
+    /// `refresh` with a pre-set cancel flag must bail quickly without doing
+    /// the full work. Pre-set means the user hit `q` between scheduling and
+    /// the spawn thread starting — we want a fast, clean exit, not a hang.
+    #[test]
+    fn refresh_short_circuits_on_preset_cancel() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        std::fs::write(temp.path().join("feature.txt"), "new\n").unwrap();
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(true));
+        let start = std::time::Instant::now();
+        let result = vcs.refresh(&cancel);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "pre-set cancel should produce an Err");
+        // Should be fast — we're checking the cancel-propagation contract,
+        // not measuring perf. A 5s ceiling catches a regression where
+        // cancel doesn't propagate at all, without flaking on slow CI.
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "refresh with pre-set cancel took {elapsed:?} — cancel isn't propagating"
+        );
     }
 }
