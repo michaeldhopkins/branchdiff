@@ -1,5 +1,10 @@
 ## [unreleased]
 
+### Features
+
+- Adopt vcs-runner 0.13 — cancel kills in-flight subprocesses
+## [0.64.1] - 2026-05-19
+
 ### Bug Fixes
 
 - Wrap stale-recovery banner so the press-key hint stays visible

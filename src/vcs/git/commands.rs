@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, Context, Result};
 
-use vcs_runner::{run_cmd, run_git, run_git_with_retry, run_git_with_timeout, is_transient_error as vcs_is_transient};
+use vcs_runner::{Cmd, run_git, run_git_with_retry, run_git_with_timeout, is_transient_error as vcs_is_transient};
 use crate::vcs::UpstreamDivergence;
 
 /// Git version required for merge-tree --write-tree (conflict detection)
@@ -34,7 +34,7 @@ impl std::fmt::Display for GitVersion {
 
 /// Detect the installed git version
 pub fn get_git_version() -> Result<GitVersion> {
-    let output = run_cmd("git", &["--version"])?;
+    let output = Cmd::new("git").args(["--version"]).run()?;
     parse_git_version(&output.stdout_lossy())
 }
 
