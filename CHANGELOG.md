@@ -1,3 +1,13 @@
+## [unreleased]
+
+### Bug Fixes
+
+- Wrap stale-recovery banner so the press-key hint stays visible
+## [0.64.0] - 2026-05-19
+
+### Features
+
+- Recover from jj stale working copy without restarting
 ## [0.63.14] - 2026-05-19
 
 ### Bug Fixes
