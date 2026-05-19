@@ -137,6 +137,14 @@ pub trait Vcs: Send + Sync {
     /// Set the diff base mode (fork point vs trunk tip).
     /// Only meaningful for jj — git always uses merge-base (fork point).
     fn set_diff_base(&self, _base: DiffBase) {}
+
+    /// Attempt to repair a recoverable error condition (e.g. a stale jj working
+    /// copy). Backends that don't support the requested action return an error
+    /// — the UI only offers an action after `classify_error` returns one the
+    /// active backend is known to handle.
+    fn try_recover(&self, action: crate::update::RecoveryAction) -> Result<()> {
+        anyhow::bail!("backend does not support recovery action {action:?}")
+    }
 }
 
 #[cfg(test)]

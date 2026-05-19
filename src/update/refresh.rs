@@ -2,16 +2,9 @@ use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::message::{FetchResult, LoopAction, RefreshOutcome, RefreshTrigger, UpdateResult};
-/// Check if a formatted error message indicates a transient condition worth retrying.
-///
-/// The refresh pipeline flattens errors to strings at the thread boundary (see
-/// `spawn_refresh` in main.rs), so we can't inspect the structured `vcs_runner::RunError`
-/// here. Match the same patterns vcs_runner's `is_transient_error` does.
-fn is_transient_error_msg(msg: &str) -> bool {
-    msg.contains(".lock") || msg.contains("stale")
-}
 use crate::vcs::Vcs;
 
+use super::recovery::{classify_error, ErrorClass};
 use super::{RefreshState, Timers, UpdateConfig};
 
 /// Delay before processing VCS internal events (500ms reduces lock collisions by ~80%)
@@ -102,21 +95,36 @@ pub(super) fn handle_refresh(
             result.needs_redraw = true;
         }
         RefreshOutcome::Error(msg) => {
-            if is_transient_error_msg(&msg)
-                && timers.transient_retry_attempt < TRANSIENT_RETRY_MAX_ATTEMPTS
-            {
-                let delay_ms = (TRANSIENT_RETRY_BASE_MS << timers.transient_retry_attempt)
-                    .min(TRANSIENT_RETRY_MAX_MS);
-                timers.transient_retry_at =
-                    Some(Instant::now() + Duration::from_millis(delay_ms));
-                timers.transient_retry_attempt += 1;
-                app.error = Some(format!(
-                    "{msg} (retrying in {:.0}s...)",
-                    delay_ms as f64 / 1000.0
-                ));
-            } else {
-                timers.transient_retry_at = None;
-                app.error = Some(msg);
+            match classify_error(&msg) {
+                ErrorClass::Transient
+                    if timers.transient_retry_attempt < TRANSIENT_RETRY_MAX_ATTEMPTS =>
+                {
+                    let delay_ms = (TRANSIENT_RETRY_BASE_MS << timers.transient_retry_attempt)
+                        .min(TRANSIENT_RETRY_MAX_MS);
+                    timers.transient_retry_at =
+                        Some(Instant::now() + Duration::from_millis(delay_ms));
+                    timers.transient_retry_attempt += 1;
+                    app.pending_recovery = None;
+                    app.error = Some(format!(
+                        "{msg} (retrying in {:.0}s...)",
+                        delay_ms as f64 / 1000.0
+                    ));
+                }
+                ErrorClass::Actionable(hint) => {
+                    // Don't auto-retry: this won't self-heal. Surface the
+                    // banner with a key hint so the user can accept the fix,
+                    // and let the file watcher recover if they fix it
+                    // externally.
+                    timers.transient_retry_at = None;
+                    timers.transient_retry_attempt = 0;
+                    app.pending_recovery = Some(hint);
+                    app.error = Some(msg);
+                }
+                ErrorClass::Transient | ErrorClass::Permanent => {
+                    timers.transient_retry_at = None;
+                    app.pending_recovery = None;
+                    app.error = Some(msg);
+                }
             }
             result.needs_redraw = true;
         }
@@ -1082,8 +1090,9 @@ mod tests {
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
+        // Lock contention is transient — should schedule a retry.
         let outcome = RefreshOutcome::Error(
-            "jj diff --summary failed: The working copy is stale".to_string(),
+            "could not acquire .git/index.lock".to_string(),
         );
         let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
@@ -1091,6 +1100,159 @@ mod tests {
         assert!(timers.transient_retry_at.is_some());
         assert_eq!(timers.transient_retry_attempt, 1);
         assert!(app.error.as_ref().unwrap().contains("retrying"));
+        assert!(app.pending_recovery.is_none(), "lock errors do not offer a fix");
+    }
+
+    #[test]
+    fn test_stale_working_copy_is_actionable_not_transient() {
+        // Regression: previously branchdiff retried stale-working-copy with
+        // exponential backoff up to 10 times — pointless, because stale won't
+        // self-heal. Now we surface it immediately with a recovery hint and
+        // skip the retry timer entirely.
+        use crate::update::RecoveryAction;
+
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Error(
+            "Error: The working copy is stale (not updated since operation 26a0bbff5afe). \
+             Hint: Run `jj workspace update-stale` to update it.".to_string(),
+        );
+        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(result.needs_redraw);
+        assert!(
+            timers.transient_retry_at.is_none(),
+            "stale must not schedule a retry — it won't self-heal"
+        );
+        assert_eq!(timers.transient_retry_attempt, 0);
+        assert!(app.error.is_some());
+        assert!(
+            !app.error.as_ref().unwrap().contains("retrying"),
+            "stale message must not include retry suffix"
+        );
+        let hint = app.pending_recovery.expect("stale should offer recovery");
+        assert_eq!(hint.action, RecoveryAction::JjUpdateStale);
+        assert_eq!(hint.key_hint, 'u');
+    }
+
+    #[test]
+    fn test_stale_resets_existing_transient_retry_state() {
+        // Defensive: if some earlier failure had scheduled a transient retry,
+        // a follow-up stale outcome must clear that timer — we don't want a
+        // stale ⇒ retry path to ever exist.
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        timers.transient_retry_at = Some(Instant::now() + Duration::from_secs(3));
+        timers.transient_retry_attempt = 2;
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Error("The working copy is stale".to_string());
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(timers.transient_retry_at.is_none());
+        assert_eq!(timers.transient_retry_attempt, 0);
+        assert!(app.pending_recovery.is_some());
+    }
+
+    #[test]
+    fn lock_error_after_stale_clears_pending_recovery() {
+        // If a stale banner is showing and a new refresh fails with a
+        // *different* error class (here: lock contention, which is transient),
+        // the now-irrelevant recovery hint must clear — otherwise we'd offer
+        // `jj workspace update-stale` as a fix for a lock error, which is
+        // nonsense.
+        use crate::update::RecoveryHint;
+        let mut app = TestAppBuilder::new().build();
+        app.pending_recovery = Some(RecoveryHint::jj_update_stale());
+        app.error = Some("The working copy is stale".to_string());
+
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Error("could not acquire .git/index.lock".to_string());
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(app.pending_recovery.is_none(), "transient error must clear stale hint");
+        assert!(timers.transient_retry_at.is_some(), "transient still schedules retry");
+        assert!(app.error.as_ref().unwrap().contains("retrying"));
+    }
+
+    #[test]
+    fn permanent_error_after_stale_clears_pending_recovery() {
+        // Symmetric to the transient case: a permanent error must also clear
+        // any leftover hint from an earlier stale banner.
+        use crate::update::RecoveryHint;
+        let mut app = TestAppBuilder::new().build();
+        app.pending_recovery = Some(RecoveryHint::jj_update_stale());
+
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::Error("Config error: no such revision".to_string());
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(app.pending_recovery.is_none());
+        assert!(timers.transient_retry_at.is_none());
+        assert!(app.error.is_some());
+        assert!(!app.error.as_ref().unwrap().contains("retrying"));
+    }
+
+    #[test]
+    fn test_success_clears_pending_recovery() {
+        // If the user fixes the stale state externally, the next successful
+        // refresh must clear both the error message and the recovery hint so
+        // the banner disappears.
+        use crate::update::RecoveryHint;
+        let mut app = TestAppBuilder::new().build();
+        app.error = Some("The working copy is stale".to_string());
+        app.pending_recovery = Some(RecoveryHint::jj_update_stale());
+
+        let mut refresh_state = RefreshState::InProgress {
+            started_at: Instant::now(),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        };
+        let mut timers = Timers::default();
+        let config = UpdateConfig::default();
+        let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
+
+        let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
+            files: vec![],
+            lines: vec![base_line("recovered")],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: Some("main".to_string()),
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None, bookmark_name: None,
+            revision_id: None,
+            divergence: None,
+        });
+        handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+
+        assert!(app.error.is_none());
+        assert!(app.pending_recovery.is_none());
     }
 
     #[test]
@@ -1125,8 +1287,9 @@ mod tests {
                 started_at: Instant::now(),
                 cancel_flag: Arc::new(AtomicBool::new(false)),
             };
+            // Use a lock message — that's the transient case that backs off.
             let outcome = RefreshOutcome::Error(
-                "The working copy is stale".to_string(),
+                "could not acquire .git/index.lock".to_string(),
             );
             handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
             let retry_at = timers.transient_retry_at.unwrap();
@@ -1156,7 +1319,7 @@ mod tests {
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
         let outcome = RefreshOutcome::Error(
-            "The working copy is stale".to_string(),
+            "could not acquire .git/index.lock".to_string(),
         );
         handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
