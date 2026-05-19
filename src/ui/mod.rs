@@ -15,7 +15,9 @@ pub mod status_bar;
 pub mod wrapping;
 
 // Re-export commonly used items
-pub use modals::{draw_help_modal, draw_warning_banner, draw_warning_banner_with_hint};
+pub use modals::{
+    banner_row_count, draw_help_modal, draw_warning_banner, draw_warning_banner_with_hint,
+};
 pub use status_bar::{draw_status_bar, status_bar_height, status_bar_plain_text};
 
 /// Width of the prefix after line numbers: prefix char + space + status symbol + trailing space
@@ -41,11 +43,22 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
     let has_warning = app.conflict_warning.is_some() || app.error.is_some();
     let status_height = status_bar_height(app, size.width);
 
+    // Banner height depends on content: actionable errors get a 2-row layout
+    // (summary + key hint); long unrecognized errors wrap and grow up to a
+    // hard cap so the diff view always keeps usable space.
+    let warning_height = if has_warning {
+        let message = app.error.as_deref().or(app.conflict_warning.as_deref()).unwrap_or("");
+        let hint = if app.error.is_some() { app.pending_recovery.as_ref() } else { None };
+        banner_row_count(message, hint, size.width)
+    } else {
+        0
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if has_warning {
             vec![
-                Constraint::Length(1),
+                Constraint::Length(warning_height),
                 Constraint::Min(1),
                 Constraint::Length(status_height),
             ]

@@ -24,6 +24,11 @@ pub struct RecoveryHint {
     pub key_hint: char,
     /// Human-readable command shown next to the key hint.
     pub command_label: &'static str,
+    /// Short, friendly summary of the problem — replaces the raw subprocess
+    /// error in the banner so the actionable message stays on one line. The
+    /// raw error is verbose (full command line, exit status, multi-paragraph
+    /// hints) and clips at the terminal edge; this is the user-facing version.
+    pub friendly_summary: &'static str,
 }
 
 impl RecoveryHint {
@@ -32,6 +37,7 @@ impl RecoveryHint {
             action: RecoveryAction::JjUpdateStale,
             key_hint: 'u',
             command_label: "jj workspace update-stale",
+            friendly_summary: "jj working copy is stale",
         }
     }
 }
