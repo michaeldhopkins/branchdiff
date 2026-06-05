@@ -891,7 +891,7 @@ mod tests {
         );
 
         // Verify meaningful coalescing happened
-        assert!(result.is_meaningful || !result.is_meaningful, "Just checking we got a result");
+        assert!(!coalesced.is_empty(), "coalescing should produce spans");
     }
 
     #[test]

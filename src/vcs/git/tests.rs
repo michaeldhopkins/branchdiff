@@ -487,7 +487,7 @@ fn test_get_binary_files_detects_binary() {
     let merge_base = commands::get_merge_base(temp.path(), "main").unwrap();
 
     // Add a binary file (null bytes make it binary)
-    fs::write(temp.path().join("binary.bin"), &[0u8, 1, 2, 255, 254, 253]).unwrap();
+    fs::write(temp.path().join("binary.bin"), [0u8, 1, 2, 255, 254, 253]).unwrap();
     // Must be staged/tracked for git diff to see it
     git_cmd(temp.path(), &["add", "binary.bin"]);
 
@@ -513,7 +513,7 @@ fn test_get_binary_files_handles_renamed_binary() {
     let temp = create_test_repo();
 
     // Create and commit a binary file
-    fs::write(temp.path().join("original.bin"), &[0u8, 1, 2, 255]).unwrap();
+    fs::write(temp.path().join("original.bin"), [0u8, 1, 2, 255]).unwrap();
     git_cmd(temp.path(), &["add", "original.bin"]);
     git_cmd(temp.path(), &["commit", "-m", "add binary"]);
 
@@ -541,7 +541,7 @@ fn test_get_binary_files_with_empty_merge_base() {
     git_cmd(temp.path(), &["config", "user.name", "Test"]);
 
     // Add a binary file before first commit
-    fs::write(temp.path().join("binary.bin"), &[0u8, 1, 2]).unwrap();
+    fs::write(temp.path().join("binary.bin"), [0u8, 1, 2]).unwrap();
     git_cmd(temp.path(), &["add", "."]);
     git_cmd(temp.path(), &["commit", "-m", "initial"]);
 
@@ -759,7 +759,7 @@ fn test_git_vcs_comparison_context_detached_head() {
 #[test]
 fn test_git_vcs_binary_files() {
     let temp = create_test_repo();
-    fs::write(temp.path().join("binary.bin"), &[0u8, 1, 2, 255]).unwrap();
+    fs::write(temp.path().join("binary.bin"), [0u8, 1, 2, 255]).unwrap();
     git_cmd(temp.path(), &["add", "binary.bin"]);
 
     let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();

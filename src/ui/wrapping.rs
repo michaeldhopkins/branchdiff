@@ -157,7 +157,12 @@ fn display_width_split(s: &str, max_width: usize) -> usize {
     s.len()
 }
 
-/// Wrap content spans into multiple lines if needed, returning Lines and ScreenRowInfo entries
+/// Wrap content spans into multiple lines if needed, returning Lines and ScreenRowInfo entries.
+///
+/// `max_rows` caps how many wrapped rows are produced. The renderer only ever
+/// displays a viewport's worth of rows, so for a pathologically long line (one
+/// physical line of hundreds of KB wraps to thousands of rows) generating the
+/// full set every frame is wasted work. Pass `usize::MAX` for no cap.
 pub fn wrap_content(
     content_spans: Vec<Span<'static>>,
     content: &str,
@@ -166,6 +171,7 @@ pub fn wrap_content(
     style: Style,
     content_width: usize,
     prefix_width: usize,
+    max_rows: usize,
 ) -> (Vec<Line<'static>>, Vec<ScreenRowInfo>) {
     // Sanitize control characters that cause terminal rendering artifacts:
     // tabs expand to 4 spaces, other control chars become spaces.
@@ -254,6 +260,9 @@ pub fn wrap_content(
                     &mut result_lines,
                 );
                 current_width = 0;
+                if result_lines.len() >= max_rows {
+                    return (result_lines, row_infos);
+                }
                 continue;
             }
 
@@ -282,6 +291,9 @@ pub fn wrap_content(
                     &mut result_lines,
                 );
                 current_width = 0;
+                if result_lines.len() >= max_rows {
+                    return (result_lines, row_infos);
+                }
             }
         }
     }
@@ -324,6 +336,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            usize::MAX,
         );
 
         assert!(lines.len() > 1, "Content should wrap");
@@ -347,6 +360,46 @@ mod tests {
     }
 
     #[test]
+    fn test_wrap_content_caps_at_max_rows() {
+        let content = "a".repeat(1000);
+        let content_spans = vec![Span::styled(content.clone(), Style::default())];
+
+        let (lines, row_infos) = wrap_content(
+            content_spans,
+            &content,
+            "  ".to_string(),
+            "+ C ".to_string(),
+            Style::default(),
+            10,
+            6,
+            5,
+        );
+
+        assert_eq!(lines.len(), 5, "wrapping should stop once max_rows is reached");
+        assert_eq!(row_infos.len(), 5);
+    }
+
+    #[test]
+    fn test_wrap_content_under_max_rows_unaffected() {
+        let content = "a".repeat(25);
+        let content_spans = vec![Span::styled(content.clone(), Style::default())];
+
+        let (lines, _) = wrap_content(
+            content_spans,
+            &content,
+            "  ".to_string(),
+            "+ C ".to_string(),
+            Style::default(),
+            10,
+            6,
+            100,
+        );
+
+        // 25 chars / 10 = 3 rows, well under the cap
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
     fn test_wrapped_unicode_content_correct_width() {
         let content_width = 20;
         let prefix_width = 6;
@@ -363,6 +416,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            usize::MAX,
         );
 
         for (i, line) in lines.iter().enumerate() {
@@ -397,6 +451,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            usize::MAX,
         );
 
         assert_eq!(lines.len(), 1);
@@ -420,6 +475,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            usize::MAX,
         );
 
         assert!(lines.len() >= 3, "Should produce 3+ wrapped lines");
@@ -447,6 +503,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            usize::MAX,
         );
 
         for (i, line) in lines.iter().enumerate() {
@@ -483,6 +540,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            usize::MAX,
         );
 
         // Content after tab expansion: "        some_long_identifier = value;" = 38 chars
@@ -541,6 +599,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            usize::MAX,
         );
 
         assert_eq!(lines.len(), 1);
@@ -571,6 +630,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            usize::MAX,
         );
 
         assert_eq!(lines.len(), 1);

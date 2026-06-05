@@ -960,7 +960,7 @@ mod tests {
         // Typical terminal fonts have ~1:2 aspect ratio (width:height)
         let aspect = font_size.1 as f64 / font_size.0 as f64;
         assert!(
-            aspect >= 1.5 && aspect <= 3.0,
+            (1.5..=3.0).contains(&aspect),
             "Font aspect ratio {:?} should be roughly 1:2",
             font_size
         );

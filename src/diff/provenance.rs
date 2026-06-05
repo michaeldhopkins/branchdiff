@@ -314,15 +314,13 @@ mod tests {
         assert_eq!(provenance[4], None);
 
         // All indices in the provenance should be valid for old_lines
-        for prov in &provenance {
-            if let Some(idx) = prov {
-                assert!(
-                    *idx < old_lines.len(),
-                    "provenance index {} is out of bounds for old_lines (len {})",
-                    idx,
-                    old_lines.len()
-                );
-            }
+        for idx in provenance.iter().flatten() {
+            assert!(
+                *idx < old_lines.len(),
+                "provenance index {} is out of bounds for old_lines (len {})",
+                idx,
+                old_lines.len()
+            );
         }
     }
 
@@ -342,10 +340,8 @@ mod tests {
         assert_eq!(provenance[1], Some(1));
 
         // All indices should be valid
-        for prov in &provenance {
-            if let Some(idx) = prov {
-                assert!(*idx < old_lines.len());
-            }
+        for idx in provenance.iter().flatten() {
+            assert!(*idx < old_lines.len());
         }
     }
 

@@ -200,13 +200,11 @@ mod tests {
     #[test]
     fn test_duplicate_file_events_are_deduplicated() {
         // Given: 5 events for only 2 unique paths
-        let events = vec![
-            DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
-            DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
-            DebouncedEvent::new(PathBuf::from("/repo/src/lib.rs"), DebouncedEventKind::Any),
+        let events = [DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
             DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
             DebouncedEvent::new(PathBuf::from("/repo/src/lib.rs"), DebouncedEventKind::Any),
-        ];
+            DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
+            DebouncedEvent::new(PathBuf::from("/repo/src/lib.rs"), DebouncedEventKind::Any)];
 
         // When: we collect unique paths (same logic as handle_file_change)
         let unique_paths: HashSet<_> = events
@@ -405,8 +403,10 @@ mod tests {
             started_at: Instant::now(),
         };
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers::default();
-        timers.pending_vcs_event = Some(Instant::now() - Duration::from_millis(300));
+        let mut timers = Timers {
+            pending_vcs_event: Some(Instant::now() - Duration::from_millis(300)),
+            ..Default::default()
+        };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         let events = vec![
@@ -462,8 +462,10 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers::default();
-        timers.last_refresh_completed = Some(Instant::now() - Duration::from_secs(5));
+        let mut timers = Timers {
+            last_refresh_completed: Some(Instant::now() - Duration::from_secs(5)),
+            ..Default::default()
+        };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         let events = vec![
@@ -551,8 +553,10 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers::default();
-        timers.last_refresh_completed = Some(Instant::now() - Duration::from_millis(100));
+        let mut timers = Timers {
+            last_refresh_completed: Some(Instant::now() - Duration::from_millis(100)),
+            ..Default::default()
+        };
 
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
@@ -582,8 +586,10 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers::default();
-        timers.last_refresh_completed = Some(Instant::now() - Duration::from_millis(500));
+        let mut timers = Timers {
+            last_refresh_completed: Some(Instant::now() - Duration::from_millis(500)),
+            ..Default::default()
+        };
 
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
@@ -613,8 +619,10 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers::default();
-        timers.last_refresh_completed = Some(Instant::now() - Duration::from_secs(5));
+        let mut timers = Timers {
+            last_refresh_completed: Some(Instant::now() - Duration::from_secs(5)),
+            ..Default::default()
+        };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         let events = vec![DebouncedEvent::new(
@@ -677,8 +685,10 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers::default();
-        timers.last_refresh_completed = Some(Instant::now() - Duration::from_millis(100));
+        let mut timers = Timers {
+            last_refresh_completed: Some(Instant::now() - Duration::from_millis(100)),
+            ..Default::default()
+        };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         let events = vec![DebouncedEvent::new(
@@ -704,8 +714,10 @@ mod tests {
         let mut app = TestAppBuilder::new().with_files(vec![dummy]).build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers::default();
-        timers.pending_vcs_event = Some(Instant::now());
+        let mut timers = Timers {
+            pending_vcs_event: Some(Instant::now()),
+            ..Default::default()
+        };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         let events = vec![DebouncedEvent::new(
@@ -761,8 +773,10 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers::default();
-        timers.last_refresh_completed = Some(Instant::now() - Duration::from_secs(5));
+        let mut timers = Timers {
+            last_refresh_completed: Some(Instant::now() - Duration::from_secs(5)),
+            ..Default::default()
+        };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         let events = vec![DebouncedEvent::new(
@@ -795,8 +809,10 @@ mod tests {
         app.gitignore_filter = crate::gitignore::GitignoreFilter::new(temp.path());
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers::default();
-        timers.last_refresh_completed = Some(Instant::now() - Duration::from_secs(5));
+        let mut timers = Timers {
+            last_refresh_completed: Some(Instant::now() - Duration::from_secs(5)),
+            ..Default::default()
+        };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         let events = vec![DebouncedEvent::new(

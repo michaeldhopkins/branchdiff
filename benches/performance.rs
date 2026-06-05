@@ -66,6 +66,7 @@ fn bench_frame_context(c: &mut Criterion) {
                 ViewMode::Context => "context",
                 ViewMode::ChangesOnly => "changes",
                 ViewMode::CommitOnly => "commit_only",
+                ViewMode::BookmarkOnly => "bookmark_only",
             };
 
             let mut app = App::new_for_bench(diff.clone());
