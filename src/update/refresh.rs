@@ -264,8 +264,10 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
-        timers.last_refresh = Instant::now() - Duration::from_secs(60);
+        let mut timers = Timers {
+            last_refresh: Instant::now() - Duration::from_secs(60),
+            ..Default::default()
+        };
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
         let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
@@ -391,8 +393,10 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
-        timers.pending_vcs_event = Some(Instant::now() - Duration::from_millis(100));
+        let mut timers = Timers {
+            pending_vcs_event: Some(Instant::now() - Duration::from_millis(100)),
+            ..Default::default()
+        };
 
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
@@ -418,9 +422,11 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
         // Simulate a pending VCS event from just before refresh completed
-        timers.pending_vcs_event = Some(Instant::now() - Duration::from_millis(100));
+        let mut timers = Timers {
+            pending_vcs_event: Some(Instant::now() - Duration::from_millis(100)),
+            ..Default::default()
+        };
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
         let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
@@ -837,8 +843,10 @@ mod tests {
     #[test]
     fn test_handle_tick_processes_pending_vcs_event_after_delay() {
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers::default();
-        timers.pending_vcs_event = Some(Instant::now() - Duration::from_millis(600));
+        let mut timers = Timers {
+            pending_vcs_event: Some(Instant::now() - Duration::from_millis(600)),
+            ..Default::default()
+        };
 
         let config = UpdateConfig::default();
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
@@ -850,8 +858,10 @@ mod tests {
     #[test]
     fn test_handle_tick_does_not_process_pending_vcs_event_too_early() {
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers::default();
-        timers.pending_vcs_event = Some(Instant::now());
+        let mut timers = Timers {
+            pending_vcs_event: Some(Instant::now()),
+            ..Default::default()
+        };
 
         let config = UpdateConfig::default();
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
@@ -966,8 +976,10 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
-        timers.last_known_revision = Some("old_rev".to_string());
+        let mut timers = Timers {
+            last_known_revision: Some("old_rev".to_string()),
+            ..Default::default()
+        };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
@@ -998,8 +1010,10 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
-        timers.last_known_revision = Some("same_rev".to_string());
+        let mut timers = Timers {
+            last_known_revision: Some("same_rev".to_string()),
+            ..Default::default()
+        };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
@@ -1029,8 +1043,10 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
-        timers.last_known_revision = Some("old_rev".to_string());
+        let mut timers = Timers {
+            last_known_revision: Some("old_rev".to_string()),
+            ..Default::default()
+        };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
@@ -1152,9 +1168,11 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
-        timers.transient_retry_at = Some(Instant::now() + Duration::from_secs(3));
-        timers.transient_retry_attempt = 2;
+        let mut timers = Timers {
+            transient_retry_at: Some(Instant::now() + Duration::from_secs(3)),
+            transient_retry_attempt: 2,
+            ..Default::default()
+        };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
@@ -1313,8 +1331,10 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
-        timers.transient_retry_attempt = TRANSIENT_RETRY_MAX_ATTEMPTS;
+        let mut timers = Timers {
+            transient_retry_attempt: TRANSIENT_RETRY_MAX_ATTEMPTS,
+            ..Default::default()
+        };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
@@ -1330,8 +1350,10 @@ mod tests {
     #[test]
     fn test_handle_tick_fires_transient_retry() {
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers::default();
-        timers.transient_retry_at = Some(Instant::now() - Duration::from_millis(100));
+        let mut timers = Timers {
+            transient_retry_at: Some(Instant::now() - Duration::from_millis(100)),
+            ..Default::default()
+        };
         let config = UpdateConfig::default();
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
@@ -1346,8 +1368,10 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
-        timers.transient_retry_at = Some(Instant::now() - Duration::from_millis(100));
+        let mut timers = Timers {
+            transient_retry_at: Some(Instant::now() - Duration::from_millis(100)),
+            ..Default::default()
+        };
         let config = UpdateConfig::default();
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
@@ -1359,8 +1383,10 @@ mod tests {
     #[test]
     fn test_handle_tick_no_transient_retry_when_future() {
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers::default();
-        timers.transient_retry_at = Some(Instant::now() + Duration::from_secs(60));
+        let mut timers = Timers {
+            transient_retry_at: Some(Instant::now() + Duration::from_secs(60)),
+            ..Default::default()
+        };
         let config = UpdateConfig::default();
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
@@ -1376,9 +1402,11 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers::default();
-        timers.transient_retry_at = Some(Instant::now() + Duration::from_secs(5));
-        timers.transient_retry_attempt = 3;
+        let mut timers = Timers {
+            transient_retry_at: Some(Instant::now() + Duration::from_secs(5)),
+            transient_retry_attempt: 3,
+            ..Default::default()
+        };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 

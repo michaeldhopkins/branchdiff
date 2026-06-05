@@ -69,7 +69,7 @@ mod tests {
         state.set_locked(true);
         state.set_pending();
         assert!(state.is_locked());
-        assert!(!state.take_pending().then_some(()).is_none());
+        assert!(state.take_pending());
     }
 
     #[test]

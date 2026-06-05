@@ -1,5 +1,10 @@
 ## [unreleased]
 
+### Performance
+
+- Cap highlighting and wrapping for huge single-line files
+## [0.65.0] - 2026-05-19
+
 ### Features
 
 - Adopt vcs-runner 0.13 — cancel kills in-flight subprocesses

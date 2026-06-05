@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn test_refresh_with_binary_file() {
         let temp_dir = create_test_repo();
-        std::fs::write(temp_dir.path().join("binary.bin"), &[0u8, 1, 2, 255, 254, 253]).unwrap();
+        std::fs::write(temp_dir.path().join("binary.bin"), [0u8, 1, 2, 255, 254, 253]).unwrap();
 
         let vcs = GitVcs::new(temp_dir.path().to_path_buf()).unwrap();
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -233,7 +233,7 @@ mod tests {
         let repo_path = temp_dir.path();
 
         std::fs::write(repo_path.join("text.txt"), "text content\n").unwrap();
-        std::fs::write(repo_path.join("binary.bin"), &[0u8, 1, 2, 255, 254, 253]).unwrap();
+        std::fs::write(repo_path.join("binary.bin"), [0u8, 1, 2, 255, 254, 253]).unwrap();
         git_cmd(repo_path, &["add", "binary.bin"]);
 
         let vcs = GitVcs::new(repo_path.to_path_buf()).unwrap();

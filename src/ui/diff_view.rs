@@ -152,6 +152,10 @@ impl<'a> DiffViewModel<'a> {
         let content_offset_x = self.area.x + 1;
         let content_offset_y = self.area.y + 1;
 
+        // Caps per-line wrapping so a 200 KB single line doesn't wrap to thousands
+        // of off-screen rows every frame. Minus 2 for the top/bottom border.
+        let max_content_rows = self.area.height.saturating_sub(2) as usize;
+
         let mut all_lines: Vec<Line> = Vec::new();
         let mut all_row_infos: Vec<ScreenRowInfo> = Vec::new();
         let mut image_positions: Vec<ImageRenderPosition> = Vec::new();
@@ -185,6 +189,7 @@ impl<'a> DiffViewModel<'a> {
                         prefix_width,
                         content_width,
                         screen_row_idx,
+                        max_content_rows,
                         &mut all_lines,
                         &mut all_row_infos,
                         &mut image_positions,
@@ -333,6 +338,7 @@ impl<'a> DiffViewModel<'a> {
         prefix_width: usize,
         content_width: usize,
         screen_row_idx: usize,
+        max_rows: usize,
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
         image_positions: &mut Vec<ImageRenderPosition>,
@@ -396,6 +402,7 @@ impl<'a> DiffViewModel<'a> {
                 prefix_width,
                 content_width,
                 screen_row_idx,
+                max_rows,
                 all_lines,
                 all_row_infos,
             );
@@ -410,6 +417,7 @@ impl<'a> DiffViewModel<'a> {
             prefix_width,
             content_width,
             screen_row_idx,
+            max_rows,
             all_lines,
             all_row_infos,
         )
@@ -618,6 +626,7 @@ impl<'a> DiffViewModel<'a> {
         prefix_width: usize,
         content_width: usize,
         mut screen_row_idx: usize,
+        max_rows: usize,
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) -> usize {
@@ -664,6 +673,7 @@ impl<'a> DiffViewModel<'a> {
                     del_style,
                     content_width,
                     prefix_width,
+                    max_rows.saturating_sub(screen_row_idx).max(1),
                 );
                 apply_selection_to_wrapped_lines(
                     &mut del_lines,
@@ -697,6 +707,7 @@ impl<'a> DiffViewModel<'a> {
                 ins_style,
                 content_width,
                 prefix_width,
+                max_rows.saturating_sub(screen_row_idx).max(1),
             );
             apply_selection_to_wrapped_lines(
                 &mut ins_lines,
@@ -736,6 +747,7 @@ impl<'a> DiffViewModel<'a> {
                         style,
                         content_width,
                         prefix_width,
+                        max_rows.saturating_sub(screen_row_idx).max(1),
                     );
                     apply_selection_to_wrapped_lines(
                         &mut lines,
@@ -784,6 +796,7 @@ impl<'a> DiffViewModel<'a> {
             style,
             content_width,
             prefix_width,
+            max_rows.saturating_sub(screen_row_idx).max(1),
         );
         apply_selection_to_wrapped_lines(
             &mut lines,
@@ -808,6 +821,7 @@ impl<'a> DiffViewModel<'a> {
         prefix_width: usize,
         content_width: usize,
         screen_row_idx: usize,
+        max_rows: usize,
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) -> usize {
@@ -830,6 +844,7 @@ impl<'a> DiffViewModel<'a> {
             style,
             content_width,
             prefix_width,
+            max_rows.saturating_sub(screen_row_idx).max(1),
         );
         apply_selection_to_wrapped_lines(
             &mut lines,
@@ -1226,6 +1241,69 @@ mod tests {
     use crate::app::search::SearchMatch;
     use crate::test_support::{base_line, change_line, TestAppBuilder};
 
+    /// Average frame time for a diff consisting of a single `content` line.
+    #[cfg(test)]
+    fn avg_render_frame(content: String, width: u16, height: u16) -> std::time::Duration {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use std::time::Instant;
+
+        let mut line = DiffLine::new(LineSource::Committed, content, '+', Some(1));
+        line.file_path = Some("bundle.js".to_string());
+        let lines = vec![DiffLine::file_header("bundle.js"), line];
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(width);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut draw = |app: &mut App| {
+            terminal
+                .draw(|f| {
+                    let ctx = FrameContext::new(app);
+                    crate::ui::draw_with_frame(f, app, &ctx);
+                })
+                .unwrap();
+        };
+
+        draw(&mut app); // warm up lazy syntax-set init
+
+        let frames = 10;
+        let start = Instant::now();
+        for _ in 0..frames {
+            draw(&mut app);
+        }
+        start.elapsed() / frames
+    }
+
+    #[test]
+    fn perf_huge_line_render_does_not_scale_with_length() {
+        // A 256 KB minified bundle on one physical line. Pre-fix, every frame ran
+        // syntect over the whole line (~460 ms) and wrapped it into thousands of
+        // rows (~260 ms); render time scaled with line length. Both are now capped
+        // to the visible window.
+        //
+        // Measured relative to a 9 KB line — which stays under the syntax cap and
+        // is highlighted in full regardless of this fix — so the ratio is stable
+        // across machines and CI load (both frames see the same contention). With
+        // the fix the big line is no slower than the small one; without it the big
+        // line is ~40x slower.
+        let width: u16 = 120;
+        let height: u16 = 40;
+
+        let small = avg_render_frame("a".repeat(9_000), width, height);
+        let huge = avg_render_frame("a".repeat(256 * 1024), width, height);
+
+        assert!(
+            huge < small * 8,
+            "256 KB line rendered at {:?}/frame vs {:?}/frame for a 9 KB line \
+             (>8x) — render time is scaling with line length again",
+            huge,
+            small,
+        );
+    }
+
     #[test]
     fn test_diff_view_model_from_app() {
         let app = TestAppBuilder::new()
@@ -1240,6 +1318,45 @@ mod tests {
         assert_eq!(view_model.lines.len(), 2);
         assert!(view_model.selection.is_none());
         assert!(view_model.collapsed_files.is_empty());
+    }
+
+    #[test]
+    fn test_huge_single_line_renders_bounded_rows() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let width: u16 = 80;
+        let height: u16 = 24;
+
+        // One physical line of 200 KB — without the cap this wraps to thousands
+        // of rows and is rebuilt every frame.
+        let huge = "a".repeat(200_000);
+        let mut line = DiffLine::new(LineSource::Committed, huge, '+', Some(1));
+        line.file_path = Some("searchindex.js".to_string());
+        let lines = vec![DiffLine::file_header("searchindex.js"), line];
+
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.estimate_content_width(width);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut row_map_len = usize::MAX;
+        terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(&app);
+                let area = Rect::new(0, 0, width, height);
+                let vm = DiffViewModel::from_app(&app, &ctx, area);
+                row_map_len = vm.render(f).row_map.len();
+            })
+            .unwrap();
+
+        assert!(
+            row_map_len <= height as usize,
+            "huge line produced {} rows, expected <= viewport height {}",
+            row_map_len,
+            height
+        );
     }
 
     #[test]

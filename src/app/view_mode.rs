@@ -736,12 +736,13 @@ mod tests {
     fn test_commit_only_context_preserves_other_commit_lines() {
         // A Committed line (earlier commit) within ±5 of a Staged line should be
         // visible as context, with its original source preserved
-        let mut lines = Vec::new();
-        lines.push(base_line("before"));
-        lines.push(DiffLine::new(LineSource::Committed, "earlier_nearby".to_string(), '+', Some(2)));
-        lines.push(base_line("between"));
-        lines.push(DiffLine::new(LineSource::Staged, "current_commit".to_string(), '+', Some(4)));
-        lines.push(base_line("after"));
+        let lines = vec![
+            base_line("before"),
+            DiffLine::new(LineSource::Committed, "earlier_nearby".to_string(), '+', Some(2)),
+            base_line("between"),
+            DiffLine::new(LineSource::Staged, "current_commit".to_string(), '+', Some(4)),
+            base_line("after"),
+        ];
 
         let mut app = TestAppBuilder::new()
             .with_lines(lines)
@@ -881,16 +882,14 @@ mod tests {
     #[test]
     fn test_commit_only_hides_files_with_no_current_commit_changes() {
         // Two files: file1 has Staged lines (current commit), file2 has only Committed lines
-        let mut lines = Vec::new();
-
-        // File 1: has current-commit changes
-        lines.push(DiffLine::file_header("current.rs"));
-        lines.push(base_line("unchanged"));
-        lines.push(DiffLine::new(LineSource::Staged, "new_in_current".to_string(), '+', Some(2)));
-        lines.push(base_line("more_unchanged"));
-
-        // File 2: only earlier-commit changes (no current-commit lines)
-        lines.push(DiffLine::file_header("earlier.rs"));
+        // File 1 has current-commit changes; file 2 (added below) only earlier-commit changes
+        let mut lines = vec![
+            DiffLine::file_header("current.rs"),
+            base_line("unchanged"),
+            DiffLine::new(LineSource::Staged, "new_in_current".to_string(), '+', Some(2)),
+            base_line("more_unchanged"),
+            DiffLine::file_header("earlier.rs"),
+        ];
         for i in 0..10 {
             lines.push(base_line(&format!("base{}", i)));
         }
@@ -980,12 +979,13 @@ mod tests {
 
     #[test]
     fn test_bookmark_only_shows_earlier_as_context() {
-        let mut lines = Vec::new();
-        lines.push(base_line("before"));
-        lines.push(make_bookmark_line(LineSource::Committed, "earlier_nearby", false));
-        lines.push(base_line("between"));
-        lines.push(make_bookmark_line(LineSource::Staged, "current_bookmark", true));
-        lines.push(base_line("after"));
+        let lines = vec![
+            base_line("before"),
+            make_bookmark_line(LineSource::Committed, "earlier_nearby", false),
+            base_line("between"),
+            make_bookmark_line(LineSource::Staged, "current_bookmark", true),
+            base_line("after"),
+        ];
 
         let mut app = TestAppBuilder::new()
             .with_lines(lines)

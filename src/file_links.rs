@@ -416,7 +416,7 @@ mod tests {
         let links = compute_file_links(paths);
 
         // foo.js has two matches, so no link
-        assert!(links.get("foo.js").is_none());
+        assert!(!links.contains_key("foo.js"));
     }
 
     #[test]
@@ -424,8 +424,8 @@ mod tests {
         let paths = &["foo.js", "bar.js"];
         let links = compute_file_links(paths);
 
-        assert!(links.get("foo.js").is_none());
-        assert!(links.get("bar.js").is_none());
+        assert!(!links.contains_key("foo.js"));
+        assert!(!links.contains_key("bar.js"));
     }
 
     // === Edge cases ===

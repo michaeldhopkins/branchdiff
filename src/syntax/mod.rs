@@ -19,6 +19,15 @@ pub struct SyntaxSegment {
     pub fg_color: Color,
 }
 
+/// Lines longer than this (in bytes) are rendered without syntax highlighting.
+///
+/// Syntect's per-line cost scales with length: a single 264 KB minified line
+/// (e.g. a generated `searchindex-*.js`) takes ~460 ms to highlight, and the
+/// renderer re-runs this every frame, making scrolling unusable. Past this
+/// threshold the payoff — readable colors on minified/generated content — is
+/// negligible, so we fall back to a single plain-text segment.
+pub const MAX_HIGHLIGHT_LINE_LEN: usize = 10_000;
+
 /// Global syntax highlighter with lazy initialization
 pub struct SyntaxHighlighter {
     syntax_set: SyntaxSet,
@@ -63,6 +72,16 @@ impl SyntaxHighlighter {
         // Handle empty content
         if content.is_empty() {
             return vec![];
+        }
+
+        // State is intentionally left untouched: lines this long are generated
+        // content with no following lines to mis-color, and advancing syntect over
+        // hundreds of KB is the cost being avoided.
+        if content.len() > MAX_HIGHLIGHT_LINE_LEN {
+            return vec![SyntaxSegment {
+                text: content.to_string(),
+                fg_color: DEFAULT_FG,
+            }];
         }
 
         let path = file_path.unwrap_or("");
@@ -259,6 +278,28 @@ mod tests {
         // Should have "const" as keyword
         let const_segment = segments.iter().find(|s| s.text == "const");
         assert!(const_segment.is_some(), "TypeScript 'const' keyword should be highlighted");
+    }
+
+    #[test]
+    fn test_long_line_skips_highlighting() {
+        reset_highlight_state();
+        let content = "a".repeat(MAX_HIGHLIGHT_LINE_LEN + 1);
+        let segments = highlight_line(&content, Some("test.js"));
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text.len(), content.len());
+        assert_eq!(segments[0].fg_color, DEFAULT_FG);
+    }
+
+    #[test]
+    fn test_line_at_threshold_still_highlights() {
+        reset_highlight_state();
+        let pad = "a".repeat(MAX_HIGHLIGHT_LINE_LEN - 9);
+        let content = format!("const x={};", pad);
+        assert_eq!(content.len(), MAX_HIGHLIGHT_LINE_LEN);
+        let segments = highlight_line(&content, Some("test.js"));
+        // "const" is recognized as a keyword, so the line is split into segments
+        // rather than returned as a single plain run.
+        assert!(segments.len() > 1);
     }
 
     #[test]
