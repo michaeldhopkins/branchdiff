@@ -378,6 +378,8 @@ impl App {
             self.view.scroll_offset = new_position.saturating_sub(middle_offset);
         }
 
+        // The item list changed, so any prior within-line offset is meaningless.
+        self.view.sub_row = 0;
         self.clamp_scroll();
         self.view.needs_inline_spans = true;
     }
@@ -882,7 +884,6 @@ mod tests {
     #[test]
     fn test_commit_only_hides_files_with_no_current_commit_changes() {
         // Two files: file1 has Staged lines (current commit), file2 has only Committed lines
-        // File 1 has current-commit changes; file 2 (added below) only earlier-commit changes
         let mut lines = vec![
             DiffLine::file_header("current.rs"),
             base_line("unchanged"),

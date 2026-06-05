@@ -1,5 +1,9 @@
 ## [unreleased]
 
+### Features
+
+- Scroll row-by-row through long wrapped lines
+
 ### Performance
 
 - Cap highlighting and wrapping for huge single-line files

@@ -426,9 +426,6 @@ fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> R
     eprintln!("Running {} frames...", frames);
     let bench_start = Instant::now();
 
-    let ctx = FrameContext::new(&app);
-    let max_scroll = ctx.max_scroll(&app);
-
     for frame_num in 0..frames {
         let action = match frame_num % 20 {
             0..=4 => AppAction::ScrollDown(3),
@@ -444,13 +441,8 @@ fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> R
         };
 
         match action {
-            AppAction::ScrollDown(n) => {
-                let new_offset = (app.view.scroll_offset + n).min(max_scroll);
-                app.view.scroll_offset = new_offset;
-            }
-            AppAction::ScrollUp(n) => {
-                app.view.scroll_offset = app.view.scroll_offset.saturating_sub(n);
-            }
+            AppAction::ScrollDown(n) => app.scroll_down(n),
+            AppAction::ScrollUp(n) => app.scroll_up(n),
             AppAction::NextFile => app.next_file(),
             AppAction::PrevFile => app.prev_file(),
             AppAction::CycleViewMode => app.cycle_view_mode(),

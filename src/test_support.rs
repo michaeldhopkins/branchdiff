@@ -133,6 +133,7 @@ impl TestAppBuilder {
             diff_base: crate::vcs::DiffBase::default(),
             view: ViewState {
                 scroll_offset: self.scroll_offset,
+                sub_row: 0,
                 viewport_height: self.viewport_height,
                 view_mode: self.view_mode,
                 content_offset: (1, 1),

@@ -28,7 +28,7 @@ use super::spans::{
     get_deletion_source, get_insertion_source, inline_display_width, InlineChangeType,
     syntax_highlight_content, syntax_highlight_inline_spans,
 };
-use super::wrapping::wrap_content;
+use super::wrapping::{content_display_width, wrap_content};
 use super::{ScreenRowInfo, PREFIX_CHAR_WIDTH};
 
 /// Pure data needed for diff rendering (no App reference during render).
@@ -57,6 +57,8 @@ pub struct DiffViewModel<'a> {
     pub upstream_files: Option<&'a HashSet<String>>,
     /// Files marked as reviewed by the user.
     pub reviewed_files: &'a HashMap<String, u64>,
+    /// Wrapped rows of the first visible item to skip (mid-line scroll position).
+    pub top_sub_row: usize,
 }
 
 /// Position where an image should be rendered after text render
@@ -89,6 +91,14 @@ impl<'a> DiffViewModel<'a> {
         let (start, end) = ctx.visible_range(app);
         let items = &ctx.items()[start..end];
 
+        // Image markers can't be scrolled into mid-line (they render from their
+        // top), so pin the top sub-row to 0 when the first visible item is one.
+        let top_sub_row = items
+            .first()
+            .and_then(|it| it.as_line_index())
+            .filter(|&idx| app.lines[idx].is_image_marker())
+            .map_or(app.view.sub_row, |_| 0);
+
         Self {
             items,
             lines: &app.lines,
@@ -102,6 +112,7 @@ impl<'a> DiffViewModel<'a> {
             search: &app.search,
             upstream_files: app.comparison.divergence.as_ref().map(|d| &d.upstream_files),
             reviewed_files: &app.view.reviewed_files,
+            top_sub_row,
         }
     }
 
@@ -126,16 +137,15 @@ impl<'a> DiffViewModel<'a> {
         // stale state from previous renders causing flickering or incorrect colors
         reset_highlight_state();
 
+        // Global max (all lines, not just visible) so `content_width` is constant
+        // as you scroll. The scroll engine caches wrap heights against it; a width
+        // that shifted with the visible window would desync them and a deep
+        // within-line scroll could render past the line's end. Matches
+        // `App::estimate_content_width`.
         let max_line_num = self
-            .items
+            .lines
             .iter()
-            .filter_map(|item| {
-                if let DisplayableItem::Line(idx) = item {
-                    self.lines[*idx].line_number
-                } else {
-                    None
-                }
-            })
+            .filter_map(|line| line.line_number)
             .max()
             .unwrap_or(0);
         let line_num_width = if max_line_num > 0 {
@@ -152,8 +162,6 @@ impl<'a> DiffViewModel<'a> {
         let content_offset_x = self.area.x + 1;
         let content_offset_y = self.area.y + 1;
 
-        // Caps per-line wrapping so a 200 KB single line doesn't wrap to thousands
-        // of off-screen rows every frame. Minus 2 for the top/bottom border.
         let max_content_rows = self.area.height.saturating_sub(2) as usize;
 
         let mut all_lines: Vec<Line> = Vec::new();
@@ -161,7 +169,8 @@ impl<'a> DiffViewModel<'a> {
         let mut image_positions: Vec<ImageRenderPosition> = Vec::new();
         let mut screen_row_idx = 0;
 
-        for item in self.items {
+        for (item_pos, item) in self.items.iter().enumerate() {
+            let skip_rows = if item_pos == 0 { self.top_sub_row } else { 0 };
             match item {
                 DisplayableItem::Elided(count) => {
                     self.render_elided_marker(
@@ -190,6 +199,7 @@ impl<'a> DiffViewModel<'a> {
                         content_width,
                         screen_row_idx,
                         max_content_rows,
+                        skip_rows,
                         &mut all_lines,
                         &mut all_row_infos,
                         &mut image_positions,
@@ -339,6 +349,7 @@ impl<'a> DiffViewModel<'a> {
         content_width: usize,
         screen_row_idx: usize,
         max_rows: usize,
+        skip_rows: usize,
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
         image_positions: &mut Vec<ImageRenderPosition>,
@@ -403,6 +414,7 @@ impl<'a> DiffViewModel<'a> {
                 content_width,
                 screen_row_idx,
                 max_rows,
+                skip_rows,
                 all_lines,
                 all_row_infos,
             );
@@ -418,6 +430,7 @@ impl<'a> DiffViewModel<'a> {
             content_width,
             screen_row_idx,
             max_rows,
+            skip_rows,
             all_lines,
             all_row_infos,
         )
@@ -627,6 +640,7 @@ impl<'a> DiffViewModel<'a> {
         content_width: usize,
         mut screen_row_idx: usize,
         max_rows: usize,
+        skip_rows: usize,
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) -> usize {
@@ -653,6 +667,18 @@ impl<'a> DiffViewModel<'a> {
                 diff_line.file_path.as_deref(),
             );
 
+            // Split the skip window across the concatenated del ++ ins rows. The
+            // del count uses the same div_ceil as `wrapped_line_height` so the
+            // boundary lines up with the scroll engine.
+            let del_width = content_display_width(old_content);
+            let del_full_rows = if del_spans.is_empty() || del_width == 0 {
+                0
+            } else {
+                del_width.div_ceil(content_width.max(1))
+            };
+            let del_skip = skip_rows.min(del_full_rows);
+            let ins_skip = skip_rows.saturating_sub(del_full_rows);
+
             if !del_spans.is_empty() {
                 let del_style = line_style(del_source);
                 let del_prefix_str = if !prefix_str.is_empty() {
@@ -673,6 +699,7 @@ impl<'a> DiffViewModel<'a> {
                     del_style,
                     content_width,
                     prefix_width,
+                    del_skip,
                     max_rows.saturating_sub(screen_row_idx).max(1),
                 );
                 apply_selection_to_wrapped_lines(
@@ -707,6 +734,7 @@ impl<'a> DiffViewModel<'a> {
                 ins_style,
                 content_width,
                 prefix_width,
+                ins_skip,
                 max_rows.saturating_sub(screen_row_idx).max(1),
             );
             apply_selection_to_wrapped_lines(
@@ -747,6 +775,7 @@ impl<'a> DiffViewModel<'a> {
                         style,
                         content_width,
                         prefix_width,
+                        skip_rows,
                         max_rows.saturating_sub(screen_row_idx).max(1),
                     );
                     apply_selection_to_wrapped_lines(
@@ -796,6 +825,7 @@ impl<'a> DiffViewModel<'a> {
             style,
             content_width,
             prefix_width,
+            skip_rows,
             max_rows.saturating_sub(screen_row_idx).max(1),
         );
         apply_selection_to_wrapped_lines(
@@ -822,6 +852,7 @@ impl<'a> DiffViewModel<'a> {
         content_width: usize,
         screen_row_idx: usize,
         max_rows: usize,
+        skip_rows: usize,
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) -> usize {
@@ -844,6 +875,7 @@ impl<'a> DiffViewModel<'a> {
             style,
             content_width,
             prefix_width,
+            skip_rows,
             max_rows.saturating_sub(screen_row_idx).max(1),
         );
         apply_selection_to_wrapped_lines(
@@ -1241,7 +1273,6 @@ mod tests {
     use crate::app::search::SearchMatch;
     use crate::test_support::{base_line, change_line, TestAppBuilder};
 
-    /// Average frame time for a diff consisting of a single `content` line.
     #[cfg(test)]
     fn avg_render_frame(content: String, width: u16, height: u16) -> std::time::Duration {
         use ratatui::backend::TestBackend;
@@ -1279,16 +1310,9 @@ mod tests {
 
     #[test]
     fn perf_huge_line_render_does_not_scale_with_length() {
-        // A 256 KB minified bundle on one physical line. Pre-fix, every frame ran
-        // syntect over the whole line (~460 ms) and wrapped it into thousands of
-        // rows (~260 ms); render time scaled with line length. Both are now capped
-        // to the visible window.
-        //
-        // Measured relative to a 9 KB line — which stays under the syntax cap and
-        // is highlighted in full regardless of this fix — so the ratio is stable
-        // across machines and CI load (both frames see the same contention). With
-        // the fix the big line is no slower than the small one; without it the big
-        // line is ~40x slower.
+        // Render time must not scale with line length. Measured relative to a 9 KB
+        // line (highlighted in full either way) so the ratio is stable across
+        // machines; pre-fix the 256 KB line was ~40x slower.
         let width: u16 = 120;
         let height: u16 = 40;
 
@@ -1328,8 +1352,6 @@ mod tests {
         let width: u16 = 80;
         let height: u16 = 24;
 
-        // One physical line of 200 KB — without the cap this wraps to thousands
-        // of rows and is rebuilt every frame.
         let huge = "a".repeat(200_000);
         let mut line = DiffLine::new(LineSource::Committed, huge, '+', Some(1));
         line.file_path = Some("searchindex.js".to_string());
@@ -1356,6 +1378,135 @@ mod tests {
             "huge line produced {} rows, expected <= viewport height {}",
             row_map_len,
             height
+        );
+    }
+
+    #[test]
+    fn test_content_width_stable_across_scroll() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let width: u16 = 80;
+        let height: u16 = 8;
+
+        // Two groups with different line-number widths. The first group is
+        // larger than the viewport so the top window contains only small numbers.
+        let mut lines = Vec::new();
+        for n in 1..=15 {
+            lines.push(DiffLine::new(LineSource::Base, format!("line {n}"), ' ', Some(n)));
+        }
+        for n in 1000..=1010 {
+            lines.push(DiffLine::new(LineSource::Base, format!("line {n}"), ' ', Some(n)));
+        }
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.view.view_mode = crate::app::ViewMode::Full;
+        app.estimate_content_width(width);
+
+        let render_cw = |app: &App| -> usize {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut cw = 0;
+            terminal
+                .draw(|f| {
+                    let ctx = FrameContext::new(app);
+                    let area = Rect::new(0, 0, width, height);
+                    let vm = DiffViewModel::from_app(app, &ctx, area);
+                    cw = vm.render(f).content_width;
+                })
+                .unwrap();
+            cw
+        };
+
+        app.view.scroll_offset = 0;
+        let top = render_cw(&app);
+        // Scroll so only the 4-digit-numbered lines are visible.
+        app.view.scroll_offset = 16;
+        let bottom = render_cw(&app);
+
+        assert_eq!(
+            top, bottom,
+            "content_width must not depend on which lines are currently visible \
+             (the scroll engine assumes a stable per-line wrap height)"
+        );
+    }
+
+    #[test]
+    fn test_render_with_sub_row_starts_mid_line() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let width: u16 = 80;
+        let height: u16 = 20;
+
+        // Distinct cycling ASCII so each wrapped row's content is identifiable.
+        let content: String = (0..5000).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+        let mut line = DiffLine::new(LineSource::Committed, content.clone(), '+', Some(1));
+        line.file_path = Some("f.js".to_string());
+
+        let mut app = TestAppBuilder::new().with_lines(vec![line]).build();
+        app.estimate_content_width(width);
+        let skip = 7;
+        app.view.scroll_offset = 0;
+        app.view.sub_row = skip;
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut out = None;
+        terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(&app);
+                let area = Rect::new(0, 0, width, height);
+                let vm = DiffViewModel::from_app(&app, &ctx, area);
+                out = Some(vm.render(f));
+            })
+            .unwrap();
+        let out = out.unwrap();
+
+        assert!(!out.row_map.is_empty());
+        assert!(out.row_map.len() <= (height - 2) as usize);
+        assert!(
+            out.row_map[0].is_continuation,
+            "top row is a mid-line continuation, not the logical line start"
+        );
+        let cw = out.content_width;
+        let expected: String = content.chars().skip(skip * cw).take(cw).collect();
+        assert_eq!(
+            out.row_map[0].content, expected,
+            "top visible row is the slice scrolled to"
+        );
+    }
+
+    #[test]
+    fn test_render_deep_sub_row_stays_bounded() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let width: u16 = 80;
+        let height: u16 = 20;
+
+        let mut line =
+            DiffLine::new(LineSource::Committed, "a".repeat(200_000), '+', Some(1));
+        line.file_path = Some("bundle.js".to_string());
+        let mut app = TestAppBuilder::new().with_lines(vec![line]).build();
+        app.estimate_content_width(width);
+        app.view.scroll_offset = 0;
+        app.view.sub_row = 1000;
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut len = usize::MAX;
+        terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(&app);
+                let area = Rect::new(0, 0, width, height);
+                let vm = DiffViewModel::from_app(&app, &ctx, area);
+                len = vm.render(f).row_map.len();
+            })
+            .unwrap();
+
+        assert!(
+            len <= (height - 2) as usize,
+            "deep mid-line scroll still renders only a viewport of rows"
         );
     }
 

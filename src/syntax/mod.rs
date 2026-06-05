@@ -19,13 +19,9 @@ pub struct SyntaxSegment {
     pub fg_color: Color,
 }
 
-/// Lines longer than this (in bytes) are rendered without syntax highlighting.
-///
-/// Syntect's per-line cost scales with length: a single 264 KB minified line
-/// (e.g. a generated `searchindex-*.js`) takes ~460 ms to highlight, and the
-/// renderer re-runs this every frame, making scrolling unusable. Past this
-/// threshold the payoff — readable colors on minified/generated content — is
-/// negligible, so we fall back to a single plain-text segment.
+/// Lines longer than this (bytes) skip syntax highlighting: syntect's per-line
+/// cost scales with length (a 264 KB minified line takes ~460 ms) and it reruns
+/// every frame. Past this the payoff on minified/generated content is negligible.
 pub const MAX_HIGHLIGHT_LINE_LEN: usize = 10_000;
 
 /// Global syntax highlighter with lazy initialization
@@ -74,9 +70,9 @@ impl SyntaxHighlighter {
             return vec![];
         }
 
-        // State is intentionally left untouched: lines this long are generated
-        // content with no following lines to mis-color, and advancing syntect over
-        // hundreds of KB is the cost being avoided.
+        // Leave highlighter state untouched: advancing syntect over the line is
+        // the cost being avoided, and such lines are generated content with no
+        // following lines to mis-color.
         if content.len() > MAX_HIGHLIGHT_LINE_LEN {
             return vec![SyntaxSegment {
                 text: content.to_string(),
@@ -297,8 +293,6 @@ mod tests {
         let content = format!("const x={};", pad);
         assert_eq!(content.len(), MAX_HIGHLIGHT_LINE_LEN);
         let segments = highlight_line(&content, Some("test.js"));
-        // "const" is recognized as a keyword, so the line is split into segments
-        // rather than returned as a single plain run.
         assert!(segments.len() > 1);
     }
 

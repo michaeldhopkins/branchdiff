@@ -60,13 +60,17 @@ pub struct FrameContext {
     /// Snapshot of app state at creation time
     viewport_height: usize,
     scroll_offset: usize,
+    sub_row: usize,
     content_width: usize,
 
-    /// Lazily computed: maximum valid scroll offset
-    max_scroll: OnceCell<usize>,
+    /// Lazily computed: maximum valid scroll position as `(item, sub_row)`
+    max_scroll: OnceCell<(usize, usize)>,
 
     /// Lazily computed: wrapped line heights for each item
     wrap_heights: OnceCell<Vec<usize>>,
+
+    /// Lazily computed: prefix sums of `wrap_heights` (`[i]` = rows before item `i`)
+    row_prefix: OnceCell<Vec<usize>>,
 
     /// Lazily computed: visible range (start, end) indices into items
     visible_range: OnceCell<(usize, usize)>,
@@ -85,9 +89,11 @@ impl FrameContext {
             items,
             viewport_height: app.view.viewport_height,
             scroll_offset: app.view.scroll_offset,
+            sub_row: app.view.sub_row,
             content_width: app.view.content_width,
             max_scroll: OnceCell::new(),
             wrap_heights: OnceCell::new(),
+            row_prefix: OnceCell::new(),
             visible_range: OnceCell::new(),
         }
     }
@@ -133,14 +139,58 @@ impl FrameContext {
         self.items.iter().filter(|i| matches!(i, DisplayableItem::Line(_))).count()
     }
 
-    /// Get maximum valid scroll offset (lazily computed)
-    pub fn max_scroll(&self, app: &App) -> usize {
+    pub fn max_scroll(&self, app: &App) -> (usize, usize) {
         *self.max_scroll.get_or_init(|| self.compute_max_scroll(app))
     }
 
     /// Get visible range as (start, end) indices into items (lazily computed)
     pub fn visible_range(&self, app: &App) -> (usize, usize) {
         *self.visible_range.get_or_init(|| self.compute_visible_range(app))
+    }
+
+    fn row_prefix(&self, app: &App) -> &[usize] {
+        self.row_prefix.get_or_init(|| {
+            let heights = self.get_wrap_heights(app);
+            let mut prefix = Vec::with_capacity(heights.len() + 1);
+            let mut acc = 0;
+            prefix.push(0);
+            for h in heights {
+                acc += h;
+                prefix.push(acc);
+            }
+            prefix
+        })
+    }
+
+    pub fn total_rows(&self, app: &App) -> usize {
+        *self.row_prefix(app).last().unwrap_or(&0)
+    }
+
+    /// `sub_row` beyond the item's height overflows into later items.
+    pub fn to_abs_row(&self, app: &App, item: usize, sub_row: usize) -> usize {
+        let prefix = self.row_prefix(app);
+        let item = item.min(prefix.len().saturating_sub(1));
+        prefix[item] + sub_row
+    }
+
+    /// Clamps to the last row when `abs` is past the end.
+    pub fn from_abs_row(&self, app: &App, abs: usize) -> (usize, usize) {
+        let prefix = self.row_prefix(app);
+        let total = *prefix.last().unwrap_or(&0);
+        if total == 0 {
+            return (0, 0);
+        }
+        let abs = abs.min(total - 1);
+        // Heights are >= 1, so the prefix strictly increases past index 0 and
+        // partition_point yields the unique containing item.
+        let item = prefix.partition_point(|&p| p <= abs) - 1;
+        (item, abs - prefix[item])
+    }
+
+    pub fn clamp(&self, app: &App, item: usize, sub_row: usize) -> (usize, usize) {
+        let abs = self.to_abs_row(app, item, sub_row);
+        let max_abs = self.total_rows(app).saturating_sub(self.viewport_height);
+        self.from_abs_row(app, abs.min(max_abs))
     }
 
     /// Iterate over all items
@@ -194,35 +244,11 @@ impl FrameContext {
         None
     }
 
-    /// Compute the maximum valid scroll offset
-    fn compute_max_scroll(&self, app: &App) -> usize {
-        if self.items.is_empty() {
-            return 0;
-        }
-
-        let wrap_heights = self.get_wrap_heights(app);
-        let total_rows: usize = wrap_heights.iter().sum();
-
-        if total_rows <= self.viewport_height {
-            return 0;
-        }
-
-        // Work backwards from the end to find how many items fit in viewport
-        let mut rows_from_end = 0;
-        let mut items_from_end = 0;
-
-        for height in wrap_heights.iter().rev() {
-            if rows_from_end + height > self.viewport_height {
-                break;
-            }
-            rows_from_end += height;
-            items_from_end += 1;
-        }
-
-        self.items.len().saturating_sub(items_from_end)
+    fn compute_max_scroll(&self, app: &App) -> (usize, usize) {
+        let max_abs = self.total_rows(app).saturating_sub(self.viewport_height);
+        self.from_abs_row(app, max_abs)
     }
 
-    /// Compute the visible range for current scroll position
     fn compute_visible_range(&self, app: &App) -> (usize, usize) {
         if self.items.is_empty() {
             return (0, 0);
@@ -234,12 +260,17 @@ impl FrameContext {
         let mut rows_used = 0;
         let mut end = start;
 
-        for height in wrap_heights.iter().skip(start) {
+        for (i, &height) in wrap_heights.iter().enumerate().skip(start) {
             // Include items whose first row is visible, even if they extend beyond viewport
             if rows_used >= self.viewport_height && end > start {
                 break;
             }
-            rows_used += height;
+            let effective = if i == start {
+                height.saturating_sub(self.sub_row)
+            } else {
+                height
+            };
+            rows_used += effective;
             end += 1;
         }
 
@@ -337,7 +368,7 @@ mod tests {
     fn test_frame_context_max_scroll_empty() {
         let app = TestAppBuilder::new().build();
         let ctx = FrameContext::new(&app);
-        assert_eq!(ctx.max_scroll(&app), 0);
+        assert_eq!(ctx.max_scroll(&app), (0, 0));
     }
 
     #[test]
@@ -346,7 +377,7 @@ mod tests {
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.viewport_height = 10;
         let ctx = FrameContext::new(&app);
-        assert_eq!(ctx.max_scroll(&app), 0);
+        assert_eq!(ctx.max_scroll(&app), (0, 0));
     }
 
     #[test]
@@ -355,7 +386,56 @@ mod tests {
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.viewport_height = 10;
         let ctx = FrameContext::new(&app);
-        assert_eq!(ctx.max_scroll(&app), 10);
+        assert_eq!(ctx.max_scroll(&app), (10, 0));
+    }
+
+    /// Build an app whose items wrap to the given row heights, by setting a
+    /// content width of 10 and lines whose length forces `height * 10` columns.
+    #[cfg(test)]
+    fn app_with_heights(heights: &[usize], viewport: usize) -> App {
+        let lines: Vec<_> = heights
+            .iter()
+            .map(|&h| base_line(&"x".repeat((h * 10).saturating_sub(5).max(1))))
+            .collect();
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.view.content_width = 10;
+        app.view.viewport_height = viewport;
+        app
+    }
+
+    #[test]
+    fn test_abs_row_round_trip() {
+        let app = app_with_heights(&[1, 1, 1, 10], 4);
+        let ctx = FrameContext::new(&app);
+        assert_eq!(ctx.total_rows(&app), 13);
+        for abs in 0..13 {
+            let (item, sub) = ctx.from_abs_row(&app, abs);
+            assert_eq!(ctx.to_abs_row(&app, item, sub), abs, "round trip at {abs}");
+        }
+    }
+
+    #[test]
+    fn test_max_scroll_lands_mid_item() {
+        let app = app_with_heights(&[1, 1, 1, 10], 4);
+        let ctx = FrameContext::new(&app);
+        assert_eq!(ctx.max_scroll(&app), (3, 6));
+    }
+
+    #[test]
+    fn test_visible_range_with_sub_row() {
+        let mut app = app_with_heights(&[1, 1, 1, 10], 4);
+        app.view.scroll_offset = 3;
+        app.view.sub_row = 6;
+        let ctx = FrameContext::new(&app);
+        assert_eq!(ctx.visible_range(&app), (3, 4));
+    }
+
+    #[test]
+    fn test_clamp_caps_to_max_scroll() {
+        let app = app_with_heights(&[1, 1, 1, 10], 4);
+        let ctx = FrameContext::new(&app);
+        assert_eq!(ctx.clamp(&app, 99, 5), (3, 6));
+        assert_eq!(ctx.clamp(&app, 3, 2), (3, 2));
     }
 
     #[test]

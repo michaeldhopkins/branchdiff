@@ -24,6 +24,9 @@ use super::ViewMode;
 pub struct ViewState {
     // Scrolling & Viewport
     pub scroll_offset: usize,
+    /// Wrapped rows of the top item scrolled past, so the viewport can start
+    /// mid-line. Invariant: `sub_row < height(scroll_offset)`, and 0 after a jump.
+    pub sub_row: usize,
     pub viewport_height: usize,
 
     // View mode
@@ -71,6 +74,7 @@ impl Default for ViewState {
     fn default() -> Self {
         Self {
             scroll_offset: 0,
+            sub_row: 0,
             viewport_height: 0,
             view_mode: ViewMode::default(),
             content_offset: (0, 0),
@@ -106,6 +110,7 @@ mod tests {
 
         // Scrolling starts at top
         assert_eq!(state.scroll_offset, 0);
+        assert_eq!(state.sub_row, 0);
         assert_eq!(state.viewport_height, 0);
 
         // Context view mode by default (shows changes with surrounding context)

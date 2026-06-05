@@ -1,5 +1,4 @@
-use crate::diff::{DiffLine, LineSource};
-use crate::ui::wrapping::{wrapped_line_height, ImageDimensions};
+use crate::diff::LineSource;
 
 use super::{App, DisplayableItem, FrameContext};
 
@@ -12,21 +11,30 @@ impl App {
         self.clear_selection();
     }
 
-    pub fn scroll_up(&mut self, n: usize) {
-        let old_offset = self.view.scroll_offset;
-        self.view.scroll_offset = self.view.scroll_offset.saturating_sub(n);
-        if self.view.scroll_offset != old_offset {
+    fn current_abs_row(&self, ctx: &FrameContext) -> usize {
+        ctx.to_abs_row(self, self.view.scroll_offset, self.view.sub_row)
+    }
+
+    fn set_scroll_abs(&mut self, ctx: &FrameContext, abs: usize) {
+        let max_abs = ctx.total_rows(self).saturating_sub(self.view.viewport_height);
+        let (item, sub) = ctx.from_abs_row(self, abs.min(max_abs));
+        if item != self.view.scroll_offset || sub != self.view.sub_row {
+            self.view.scroll_offset = item;
+            self.view.sub_row = sub;
             self.invalidate_view();
         }
     }
 
+    pub fn scroll_up(&mut self, n: usize) {
+        let ctx = FrameContext::new(self);
+        let abs = self.current_abs_row(&ctx).saturating_sub(n);
+        self.set_scroll_abs(&ctx, abs);
+    }
+
     pub fn scroll_down(&mut self, n: usize) {
-        let old_offset = self.view.scroll_offset;
-        self.view.scroll_offset = self.view.scroll_offset.saturating_add(n);
-        self.clamp_scroll();
-        if self.view.scroll_offset != old_offset {
-            self.invalidate_view();
-        }
+        let ctx = FrameContext::new(self);
+        let abs = self.current_abs_row(&ctx).saturating_add(n);
+        self.set_scroll_abs(&ctx, abs);
     }
 
     /// Get the file path of the file currently at the top of the viewport.
@@ -58,6 +66,7 @@ impl App {
                 && self.lines[*idx].source == LineSource::FileHeader
             {
                 self.view.scroll_offset = i;
+                self.view.sub_row = 0;
                 self.invalidate_view();
                 return;
             }
@@ -72,6 +81,7 @@ impl App {
 
         if let Some(pos) = ctx.find_next_file_header(self, self.view.scroll_offset) {
             self.view.scroll_offset = pos;
+            self.view.sub_row = 0;
             self.invalidate_view();
         }
     }
@@ -98,6 +108,7 @@ impl App {
                 && self.lines[idx].source == LineSource::FileHeader
             {
                 self.view.scroll_offset = i;
+                self.view.sub_row = 0;
                 self.invalidate_view();
                 return;
             }
@@ -112,6 +123,7 @@ impl App {
 
         if let Some(pos) = ctx.find_prev_file_header(self, self.view.scroll_offset) {
             self.view.scroll_offset = pos;
+            self.view.sub_row = 0;
             self.invalidate_view();
         }
     }
@@ -127,65 +139,26 @@ impl App {
     }
 
     pub fn go_to_top(&mut self) {
-        if self.view.scroll_offset != 0 {
+        if self.view.scroll_offset != 0 || self.view.sub_row != 0 {
             self.view.scroll_offset = 0;
+            self.view.sub_row = 0;
             self.invalidate_view();
         }
     }
 
     pub fn go_to_bottom(&mut self) {
-        let old_offset = self.view.scroll_offset;
-        let items = self.compute_displayable_items();
-        self.view.scroll_offset = self.max_scroll_for_items(&items);
-        if self.view.scroll_offset != old_offset {
-            self.invalidate_view();
-        }
+        let ctx = FrameContext::new(self);
+        self.go_to_bottom_with_frame(&ctx);
     }
 
     /// Go to bottom using pre-computed FrameContext
     pub fn go_to_bottom_with_frame(&mut self, ctx: &FrameContext) {
-        let old_offset = self.view.scroll_offset;
-        self.view.scroll_offset = ctx.max_scroll(self);
-        if self.view.scroll_offset != old_offset {
+        let (item, sub) = ctx.max_scroll(self);
+        if item != self.view.scroll_offset || sub != self.view.sub_row {
+            self.view.scroll_offset = item;
+            self.view.sub_row = sub;
             self.invalidate_view();
         }
-    }
-
-    /// Compute max scroll offset from displayable items (no cloning)
-    fn max_scroll_for_items(&self, items: &[DisplayableItem]) -> usize {
-        if items.is_empty() {
-            return 0;
-        }
-
-        let total_rows: usize = items
-            .iter()
-            .map(|item| match item {
-                DisplayableItem::Line(idx) => self.wrapped_line_height(&self.lines[*idx]),
-                DisplayableItem::Elided(_) | DisplayableItem::Message(_) => 1,
-            })
-            .sum();
-
-        if total_rows <= self.view.viewport_height {
-            return 0;
-        }
-
-        // Work backwards to find how many items fit in viewport
-        let mut rows_from_end = 0;
-        let mut items_from_end = 0;
-
-        for item in items.iter().rev() {
-            let height = match item {
-                DisplayableItem::Line(idx) => self.wrapped_line_height(&self.lines[*idx]),
-                DisplayableItem::Elided(_) | DisplayableItem::Message(_) => 1,
-            };
-            if rows_from_end + height > self.view.viewport_height {
-                break;
-            }
-            rows_from_end += height;
-            items_from_end += 1;
-        }
-
-        items.len().saturating_sub(items_from_end)
     }
 
     /// Set viewport height (called during rendering)
@@ -197,77 +170,41 @@ impl App {
         }
     }
 
-    /// Clamp scroll offset to valid range
     pub(super) fn clamp_scroll(&mut self) {
-        let items = self.compute_displayable_items();
-        let max_scroll = self.max_scroll_for_items(&items);
-        self.view.scroll_offset = self.view.scroll_offset.min(max_scroll);
+        let ctx = FrameContext::new(self);
+        self.clamp_scroll_with_frame(&ctx);
     }
 
-    /// Clamp scroll offset using pre-computed FrameContext
     pub fn clamp_scroll_with_frame(&mut self, ctx: &FrameContext) {
-        let max_scroll = ctx.max_scroll(self);
-        self.view.scroll_offset = self.view.scroll_offset.min(max_scroll);
+        let (item, sub) = ctx.clamp(self, self.view.scroll_offset, self.view.sub_row);
+        self.view.scroll_offset = item;
+        self.view.sub_row = sub;
     }
 
-    /// Scroll down using pre-computed FrameContext
     pub fn scroll_down_with_frame(&mut self, n: usize, ctx: &FrameContext) {
-        let old_offset = self.view.scroll_offset;
-        self.view.scroll_offset = self.view.scroll_offset.saturating_add(n);
-        self.clamp_scroll_with_frame(ctx);
-        if self.view.scroll_offset != old_offset {
-            self.view.needs_inline_spans = true;
-            self.clear_selection();
-        }
+        let abs = self.current_abs_row(ctx).saturating_add(n);
+        self.set_scroll_abs(ctx, abs);
     }
 
-    /// Calculate how many screen rows a line will take when wrapped.
-    /// Delegates to the shared `wrapped_line_height` function in `ui::wrapping`.
-    pub(super) fn wrapped_line_height(&self, line: &DiffLine) -> usize {
-        // Get image dimensions from cache if this is an image marker
-        let image_dims: Option<ImageDimensions> = if line.is_image_marker() {
-            line.file_path.as_ref().and_then(|path| {
-                self.image_cache.peek(path).map(|state| {
-                    let before = state
-                        .before
-                        .as_ref()
-                        .map(|img| (img.original_width, img.original_height));
-                    let after = state
-                        .after
-                        .as_ref()
-                        .map(|img| (img.original_width, img.original_height));
-                    (before, after)
-                })
-            })
-        } else {
-            None
-        };
-
-        wrapped_line_height(
-            line,
-            self.view.content_width,
-            image_dims,
-            self.view.panel_width,
-            self.font_size,
-        )
+    pub fn scroll_up_with_frame(&mut self, n: usize, ctx: &FrameContext) {
+        let abs = self.current_abs_row(ctx).saturating_sub(n);
+        self.set_scroll_abs(ctx, abs);
     }
 
     pub fn scroll_percentage(&self) -> u16 {
-        let items = self.compute_displayable_items();
-        self.compute_scroll_percentage(items.len(), self.max_scroll_for_items(&items))
+        let ctx = FrameContext::new(self);
+        self.scroll_percentage_with_frame(&ctx)
     }
 
-    /// Compute scroll percentage using pre-computed FrameContext
+    /// Scroll percentage, in absolute screen rows so it advances within one
+    /// long wrapped line rather than jumping a whole item at a time.
     pub fn scroll_percentage_with_frame(&self, ctx: &FrameContext) -> u16 {
-        self.compute_scroll_percentage(ctx.item_count(), ctx.max_scroll(self))
-    }
-
-    /// Common scroll percentage calculation
-    fn compute_scroll_percentage(&self, item_count: usize, max_scroll: usize) -> u16 {
-        if item_count == 0 || item_count <= self.view.viewport_height || max_scroll == 0 {
+        let max_abs = ctx.total_rows(self).saturating_sub(self.view.viewport_height);
+        if max_abs == 0 {
             100
         } else {
-            let pct = ((self.view.scroll_offset as f64 / max_scroll as f64) * 100.0) as u16;
+            let cur = self.current_abs_row(ctx);
+            let pct = ((cur as f64 / max_abs as f64) * 100.0) as u16;
             pct.min(100)
         }
     }
@@ -276,6 +213,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diff::DiffLine;
     use crate::test_support::{base_line, TestAppBuilder};
 
     #[test]
@@ -442,10 +380,8 @@ mod tests {
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.viewport_height = 10;
 
-        let items = app.compute_displayable_items();
-        let max_scroll = app.max_scroll_for_items(&items);
-
-        assert_eq!(max_scroll, 10); // 20 lines - 10 viewport = 10
+        let ctx = FrameContext::new(&app);
+        assert_eq!(ctx.max_scroll(&app), (10, 0));
     }
 
     #[test]
@@ -493,9 +429,9 @@ mod tests {
             },
         );
 
-        // Image markers should have dynamic height based on actual image dimensions
-        let image_line = &app.lines[1];
-        let height = app.wrapped_line_height(image_line);
+        // total_rows = header (1 row) + image height
+        let ctx = FrameContext::new(&app);
+        let height = ctx.total_rows(&app) - 1;
 
         // Height is calculated from actual image dimensions, not viewport percentage
         let expected = crate::ui::image_view::calculate_image_height_for_images(
@@ -515,12 +451,17 @@ mod tests {
             DiffLine::file_header("test.png"),
             DiffLine::image_marker("test.png"),
         ];
-        let app = TestAppBuilder::new().with_lines(lines).build();
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.view.content_width = 80;
+        app.view.panel_width = 100;
 
-        let image_line = &app.lines[1];
-        let height = app.wrapped_line_height(image_line);
-
-        assert_eq!(height, 1, "Image marker without cache data should be 1 row");
+        // header (1 row) + image fallback (1 row)
+        let ctx = FrameContext::new(&app);
+        assert_eq!(
+            ctx.total_rows(&app),
+            2,
+            "Image marker without cache data should be 1 row"
+        );
     }
 
     #[test]
@@ -560,15 +501,85 @@ mod tests {
             );
         }
 
-        let items = app.compute_displayable_items();
-        let max_scroll = app.max_scroll_for_items(&items);
-
-        // With image data in cache, markers have real heights based on dimensions
-        // 3 file headers (3 rows) + 3 image markers with real height
-        // Total should exceed viewport of 15, so max_scroll > 0
+        let ctx = FrameContext::new(&app);
         assert!(
-            max_scroll > 0,
+            ctx.max_scroll(&app) > (0, 0),
             "max_scroll should account for tall image markers"
+        );
+    }
+
+    /// Build an app whose items wrap to the given row heights (content width 10).
+    fn heights_app(heights: &[usize], viewport: usize) -> App {
+        let lines: Vec<_> = heights
+            .iter()
+            .map(|&h| base_line(&"x".repeat((h * 10).saturating_sub(5).max(1))))
+            .collect();
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        app.view.content_width = 10;
+        app.view.viewport_height = viewport;
+        app
+    }
+
+    fn pos(app: &App) -> (usize, usize) {
+        (app.view.scroll_offset, app.view.sub_row)
+    }
+
+    #[test]
+    fn test_scroll_down_crosses_item_boundary() {
+        let mut app = heights_app(&[1, 3, 1, 1, 1, 1, 1], 3);
+        app.scroll_down(1);
+        assert_eq!(pos(&app), (1, 0), "abs row 1 = start of the 3-row item");
+        app.scroll_down(2);
+        assert_eq!(pos(&app), (1, 2), "still inside the 3-row item");
+        app.scroll_down(1);
+        assert_eq!(pos(&app), (2, 0), "crossed into the next item");
+    }
+
+    #[test]
+    fn test_scroll_up_underflows_to_previous_item_last_row() {
+        let mut app = heights_app(&[1, 3, 1, 1, 1, 1, 1], 3);
+        app.view.scroll_offset = 2;
+        app.view.sub_row = 0;
+        app.scroll_up(1);
+        assert_eq!(pos(&app), (1, 2), "underflow lands on the previous item's last row");
+    }
+
+    #[test]
+    fn test_resize_reclamps_sub_row() {
+        let mut app = heights_app(&[1, 10], 4);
+        let (i, s) = FrameContext::new(&app).max_scroll(&app);
+        app.view.scroll_offset = i;
+        app.view.sub_row = s;
+        assert_eq!(pos(&app), (1, 6));
+
+        app.set_viewport_height(11);
+        assert_eq!(pos(&app), (0, 0));
+    }
+
+    #[test]
+    fn test_width_change_reclamps_sub_row() {
+        let mut app = heights_app(&[10], 4);
+        let (i, s) = FrameContext::new(&app).max_scroll(&app);
+        app.view.scroll_offset = i;
+        app.view.sub_row = s;
+        assert!(app.view.sub_row > 0, "precondition: scrolled into the line");
+
+        // Widening re-wraps the line shorter; the stale sub_row must clamp back.
+        app.set_content_layout(1, 1, 0, 200, 210);
+        assert_eq!(pos(&app), (0, 0));
+    }
+
+    #[test]
+    fn test_scroll_percentage_advances_within_one_long_line() {
+        let mut app = heights_app(&[1, 100], 10);
+        app.view.scroll_offset = 1;
+        app.view.sub_row = 0;
+        let near_top = app.scroll_percentage();
+        app.view.sub_row = 45;
+        let mid = app.scroll_percentage();
+        assert!(
+            mid > near_top,
+            "percentage advances while scrolling through one long wrapped line ({near_top} -> {mid})"
         );
     }
 }
