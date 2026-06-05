@@ -541,14 +541,21 @@ impl App {
         };
         let Some(line_idx) = line_idx else { return };
 
-        let items = self.compute_displayable_items();
-        if let Some(item_idx) = items.iter().position(|item| {
+        let ctx = FrameContext::new(self);
+        if let Some(item_idx) = ctx.items().iter().position(|item| {
             matches!(item, DisplayableItem::Line(i) if *i == line_idx)
         }) {
-            let viewport_end = self.view.scroll_offset + self.view.viewport_height;
-            if item_idx < self.view.scroll_offset || item_idx >= viewport_end {
-                self.view.scroll_offset = item_idx.saturating_sub(self.view.viewport_height / 4);
-                self.clamp_scroll();
+            // Work in absolute screen rows so centering is correct even when the
+            // lines above the match wrap to multiple rows.
+            let match_abs = ctx.to_abs_row(self, item_idx, 0);
+            let top_abs = ctx.to_abs_row(self, self.view.scroll_offset, self.view.sub_row);
+            let viewport = self.view.viewport_height;
+            if match_abs < top_abs || match_abs >= top_abs + viewport {
+                let target = match_abs.saturating_sub(viewport / 4);
+                let (item, sub) = ctx.from_abs_row(self, target);
+                let (item, sub) = ctx.clamp(self, item, sub);
+                self.view.scroll_offset = item;
+                self.view.sub_row = sub;
             }
             self.view.needs_inline_spans = true;
         }
@@ -579,13 +586,21 @@ impl App {
         content_width: usize,
         panel_width: u16,
     ) {
-        if self.view.content_width != content_width {
+        let width_changed = self.view.content_width != content_width;
+        if width_changed {
             self.view.needs_inline_spans = true;
         }
         self.view.content_offset = (offset_x, offset_y);
         self.view.line_num_width = line_num_width;
         self.view.content_width = content_width;
         self.view.panel_width = panel_width;
+
+        // A width change re-wraps every line, so `sub_row` may now exceed the top
+        // line's new height — re-clamp against the new layout.
+        if width_changed {
+            let ctx = FrameContext::new(self);
+            self.clamp_scroll_with_frame(&ctx);
+        }
     }
 
     /// Check if inline spans need recomputation

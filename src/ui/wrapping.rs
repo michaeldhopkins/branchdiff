@@ -157,12 +157,12 @@ fn display_width_split(s: &str, max_width: usize) -> usize {
     s.len()
 }
 
-/// Wrap content spans into multiple lines if needed, returning Lines and ScreenRowInfo entries.
+/// Wrap content spans into multiple lines, returning Lines and ScreenRowInfo entries.
 ///
-/// `max_rows` caps how many wrapped rows are produced. The renderer only ever
-/// displays a viewport's worth of rows, so for a pathologically long line (one
-/// physical line of hundreds of KB wraps to thousands of rows) generating the
-/// full set every frame is wasted work. Pass `usize::MAX` for no cap.
+/// `skip_rows` drops that many leading wrapped rows (the first emitted row then
+/// renders as a continuation); `max_rows` caps how many are produced (pass
+/// `usize::MAX` for no cap). Together they keep output O(viewport) even scrolled
+/// deep into a huge line: skipped rows are advanced through but never allocated.
 pub fn wrap_content(
     content_spans: Vec<Span<'static>>,
     content: &str,
@@ -171,6 +171,7 @@ pub fn wrap_content(
     style: Style,
     content_width: usize,
     prefix_width: usize,
+    skip_rows: usize,
     max_rows: usize,
 ) -> (Vec<Line<'static>>, Vec<ScreenRowInfo>) {
     // Sanitize control characters that cause terminal rendering artifacts:
@@ -192,6 +193,10 @@ pub fn wrap_content(
 
     // If content fits, no wrapping needed
     if total_width <= content_width {
+        // The single row is itself scrolled above the viewport.
+        if skip_rows > 0 {
+            return (Vec::new(), Vec::new());
+        }
         let mut spans = Vec::new();
         spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(prefix_char, style));
@@ -212,23 +217,30 @@ pub fn wrap_content(
     let mut row_infos = Vec::new();
     let mut current_line_spans: Vec<Span<'static>> = Vec::new();
     let mut current_width = 0;
-    let mut is_first_line = true;
+    // Counts skipped rows too; row 0 gets the line-number prefix, every later
+    // row (including the first emitted when skip_rows > 0) is a continuation.
+    let mut row_index = 0usize;
     let mut current_content = String::new();
 
     // Continuation line indent (same width as "123 + ")
     let continuation_indent = " ".repeat(prefix_width);
 
-    // Helper closure to emit the current line and reset state
-    let emit_line = |current_line_spans: &mut Vec<Span<'static>>,
+    // Helper closure to emit the current row (or discard it if still in the
+    // skipped region) and reset the accumulator.
+    let emit_line = |row_index: usize,
+                         current_line_spans: &mut Vec<Span<'static>>,
                          current_content: &mut String,
-                         is_first_line: &mut bool,
                          row_infos: &mut Vec<ScreenRowInfo>,
                          result_lines: &mut Vec<Line<'static>>| {
+        if row_index < skip_rows {
+            current_line_spans.clear();
+            current_content.clear();
+            return;
+        }
         let mut line_spans = Vec::new();
-        if *is_first_line {
+        if row_index == 0 {
             line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
             line_spans.push(Span::styled(prefix_char.clone(), style));
-            *is_first_line = false;
         } else {
             line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
         }
@@ -239,7 +251,7 @@ pub fn wrap_content(
             content: std::mem::take(current_content),
             is_file_header: false,
             file_path: None,
-            is_continuation: !row_infos.is_empty(),
+            is_continuation: row_index > 0,
         });
     };
 
@@ -253,44 +265,55 @@ pub fn wrap_content(
 
             if space_available == 0 {
                 emit_line(
+                    row_index,
                     &mut current_line_spans,
                     &mut current_content,
-                    &mut is_first_line,
                     &mut row_infos,
                     &mut result_lines,
                 );
                 current_width = 0;
+                row_index += 1;
                 if result_lines.len() >= max_rows {
                     return (result_lines, row_infos);
                 }
                 continue;
             }
 
-            let remaining_display_width = content_display_width(remaining);
+            // Skipped rows are advanced through but never allocated.
+            let materialise = row_index >= skip_rows;
 
-            if remaining_display_width <= space_available {
-                // Entire remaining text fits
-                current_line_spans.push(Span::styled(remaining.to_string(), span_style));
-                current_content.push_str(remaining);
-                current_width += remaining_display_width;
+            // `display_width_split` stops after `space_available` columns, so the
+            // fits-or-split decision is O(content_width), not O(remaining).
+            // Measuring the full remaining width here made deep scrolls quadratic.
+            let split_at = display_width_split(remaining, space_available);
+
+            if split_at >= remaining.len() {
+                // Entire remaining text fits on this row
+                if materialise {
+                    current_line_spans.push(Span::styled(remaining.to_string(), span_style));
+                    current_content.push_str(remaining);
+                }
+                current_width += content_display_width(remaining);
                 remaining = "";
             } else {
                 // Split at display width boundary, taking at least one char
-                let split_at = display_width_split(remaining, space_available)
-                    .max(remaining.ceil_char_boundary(1));
+                let split_at = split_at.max(remaining.ceil_char_boundary(1));
                 let (chunk, rest) = remaining.split_at(split_at);
-                current_line_spans.push(Span::styled(chunk.to_string(), span_style));
-                current_content.push_str(chunk);
+                if materialise {
+                    current_line_spans.push(Span::styled(chunk.to_string(), span_style));
+                    current_content.push_str(chunk);
+                }
                 remaining = rest;
 
                 emit_line(
+                    row_index,
                     &mut current_line_spans,
                     &mut current_content,
-                    &mut is_first_line,
                     &mut row_infos,
                     &mut result_lines,
                 );
                 current_width = 0;
+                row_index += 1;
                 if result_lines.len() >= max_rows {
                     return (result_lines, row_infos);
                 }
@@ -298,12 +321,12 @@ pub fn wrap_content(
         }
     }
 
-    // Emit any remaining content
-    if !current_line_spans.is_empty() || is_first_line {
+    // Emit any remaining content (the final partial row).
+    if !current_line_spans.is_empty() {
         emit_line(
+            row_index,
             &mut current_line_spans,
             &mut current_content,
-            &mut is_first_line,
             &mut row_infos,
             &mut result_lines,
         );
@@ -336,6 +359,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            0,
             usize::MAX,
         );
 
@@ -372,6 +396,7 @@ mod tests {
             Style::default(),
             10,
             6,
+            0,
             5,
         );
 
@@ -392,11 +417,121 @@ mod tests {
             Style::default(),
             10,
             6,
+            0,
             100,
         );
 
         // 25 chars / 10 = 3 rows, well under the cap
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn test_wrap_content_skips_leading_rows() {
+        // 9 rows, each filled with its own row digit so positions are checkable.
+        let content: String = (0..9)
+            .map(|d| char::from_digit(d, 10).unwrap().to_string().repeat(10))
+            .collect();
+        let content_spans = vec![Span::styled(content.clone(), Style::default())];
+
+        let (lines, row_infos) = wrap_content(
+            content_spans,
+            &content,
+            "  ".to_string(),
+            "+ C ".to_string(),
+            Style::default(),
+            10,
+            6,
+            3,
+            5,
+        );
+
+        assert_eq!(lines.len(), 5, "skip 3 rows, cap at 5");
+        assert_eq!(row_infos.len(), 5);
+        assert_eq!(row_infos[0].content, "3333333333", "first visible row is row 3");
+        assert!(
+            row_infos[0].is_continuation,
+            "a row skipped into renders as a continuation (indent, no line number)"
+        );
+        assert_eq!(row_infos[4].content, "7777777777");
+    }
+
+    #[test]
+    fn test_wrap_content_skip_past_end_is_empty() {
+        let content = "a".repeat(100); // 10 rows at width 10
+        let content_spans = vec![Span::styled(content.clone(), Style::default())];
+
+        let (lines, row_infos) = wrap_content(
+            content_spans,
+            &content,
+            "  ".to_string(),
+            "+ C ".to_string(),
+            Style::default(),
+            10,
+            6,
+            50,
+            5,
+        );
+
+        assert!(lines.is_empty());
+        assert!(row_infos.is_empty());
+    }
+
+    #[test]
+    fn test_wrap_content_deep_skip_allocates_only_max_rows() {
+        // A 256 KB line wraps to ~26k rows; skipping deep into it must still only
+        // materialise `max_rows` rows (the perf guarantee behind scroll-through).
+        let content = "a".repeat(256 * 1024);
+        let content_spans = vec![Span::styled(content.clone(), Style::default())];
+
+        let (lines, _) = wrap_content(
+            content_spans,
+            &content,
+            "  ".to_string(),
+            "+ C ".to_string(),
+            Style::default(),
+            10,
+            6,
+            20_000,
+            5,
+        );
+
+        assert_eq!(lines.len(), 5);
+    }
+
+    #[test]
+    fn test_wrap_content_deep_skip_is_not_quadratic() {
+        use std::time::Instant;
+
+        // Ratio against a shallow skip (stable across machines): a quadratic
+        // per-row rescan makes the deep case orders of magnitude slower.
+        let content = "a".repeat(256 * 1024); // ~26k rows at width 10
+        let run = |skip: usize| {
+            let t = Instant::now();
+            for _ in 0..3 {
+                let spans = vec![Span::styled(content.clone(), Style::default())];
+                let (lines, _) = wrap_content(
+                    spans,
+                    &content,
+                    "  ".to_string(),
+                    "+ ".to_string(),
+                    Style::default(),
+                    10,
+                    6,
+                    skip,
+                    40,
+                );
+                std::hint::black_box(&lines);
+            }
+            t.elapsed()
+        };
+
+        let shallow = run(0);
+        let deep = run(20_000);
+        assert!(
+            deep < shallow * 8,
+            "deep skip {deep:?} should stay within 8x of shallow {shallow:?} \
+             (a quadratic per-row rescan would be orders of magnitude slower)"
+        );
     }
 
     #[test]
@@ -416,6 +551,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            0,
             usize::MAX,
         );
 
@@ -451,6 +587,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            0,
             usize::MAX,
         );
 
@@ -475,6 +612,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            0,
             usize::MAX,
         );
 
@@ -503,6 +641,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            0,
             usize::MAX,
         );
 
@@ -540,6 +679,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            0,
             usize::MAX,
         );
 
@@ -599,6 +739,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            0,
             usize::MAX,
         );
 
@@ -630,6 +771,7 @@ mod tests {
             Style::default(),
             content_width,
             prefix_width,
+            0,
             usize::MAX,
         );
 

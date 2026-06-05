@@ -828,6 +828,19 @@ mod tests {
     }
 
     #[test]
+    fn find_logical_line_bounds_clamps_when_top_row_is_continuation() {
+        // All rows are continuations (logical start scrolled off): the backward
+        // scan must clamp at row 0 rather than underflow.
+        let mut app = TestAppBuilder::new().build();
+        app.view.row_map = vec![
+            make_row("mid a", true),
+            make_row("mid b", true),
+            make_row("mid c", true),
+        ];
+        assert_eq!(app.find_logical_line_bounds(2), (0, 2));
+    }
+
+    #[test]
     fn test_get_selected_text_wrapped_line_no_extra_newlines() {
         // One logical line wrapped across two screen rows
         // With line_num_width=3, prefix_len = 8
