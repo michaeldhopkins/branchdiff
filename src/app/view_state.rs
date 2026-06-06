@@ -60,6 +60,8 @@ pub struct ViewState {
     // Dirty flags & UI timing
     pub needs_inline_spans: bool,
     pub path_copied_at: Option<Instant>,
+    /// (message, shown_at) for the transient title-bar flash.
+    pub status_flash: Option<(String, Instant)>,
     pub last_click: Option<(Instant, u16, u16, u8)>,
 
     // Deferred auto-copy (waits for multi-click window to expire)
@@ -92,6 +94,7 @@ impl Default for ViewState {
             reviewed_flash: None,
             needs_inline_spans: true,
             path_copied_at: None,
+            status_flash: None,
             last_click: None,
             pending_copy: None,
             status_bar_lines: Vec::new(),

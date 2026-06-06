@@ -166,6 +166,13 @@ pub(super) fn handle_input(
             }
         }
 
+        // Resolution + launch happen in the main loop (it owns the terminal);
+        // here we only resolve which file.
+        AppAction::OpenEditor => match app.current_file_path() {
+            Some(rel) => result.open_editor = Some(app.repo_path.join(rel)),
+            None => app.set_status_flash("No file to open"),
+        },
+
         // Accept the recovery action offered in the error banner.
         // The keybinding always fires, but we only act when a recovery is
         // actually pending. Once accepted, we clear the hint so a second
@@ -214,6 +221,27 @@ mod tests {
 
         handle_input(AppAction::ScrollDown(5), &mut app, &mut refresh_state);
         assert_eq!(app.view.scroll_offset, 5);
+    }
+
+    #[test]
+    fn test_handle_input_open_editor_sets_path() {
+        use crate::diff::DiffLine;
+        let lines = vec![DiffLine::file_header("src/foo.rs"), base_line("x")];
+        let mut app = TestAppBuilder::new().with_lines(lines).build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::OpenEditor, &mut app, &mut refresh_state);
+        assert_eq!(result.open_editor, Some(app.repo_path.join("src/foo.rs")));
+    }
+
+    #[test]
+    fn test_handle_input_open_editor_no_file_flashes() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::OpenEditor, &mut app, &mut refresh_state);
+        assert!(result.open_editor.is_none());
+        assert_eq!(app.status_flash_message(), Some("No file to open"));
     }
 
     #[test]

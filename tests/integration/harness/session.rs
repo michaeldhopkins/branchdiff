@@ -28,6 +28,10 @@ impl TuiSession {
     /// Launch branchdiff in the given repository directory.
     /// Waits for initial render before returning.
     pub fn launch(repo_path: &Path) -> Self {
+        Self::launch_with_env(repo_path, &[])
+    }
+
+    pub fn launch_with_env(repo_path: &Path, env: &[(&str, &str)]) -> Self {
         let pty_system = native_pty_system();
 
         let pair = pty_system
@@ -42,6 +46,9 @@ impl TuiSession {
         let mut cmd = CommandBuilder::new("branchdiff");
         cmd.cwd(repo_path);
         cmd.env("TERM", "xterm-256color");
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
 
         let child = pair.slave.spawn_command(cmd).expect("failed to spawn branchdiff");
 

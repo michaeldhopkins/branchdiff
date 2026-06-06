@@ -25,6 +25,7 @@ pub enum AppAction {
     ToggleDiffBase,
     ToggleReviewed,
     ToggleAllReviewed,
+    OpenEditor,
     /// Accept the recovery offered in the error banner (e.g. run
     /// `jj workspace update-stale`). A no-op when nothing is pending.
     RunRecovery,
@@ -102,6 +103,8 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
 
         // Toggle reviewed state for current file
         (KeyCode::Char('r'), KeyModifiers::NONE) => AppAction::ToggleReviewed,
+
+        (KeyCode::Char('e'), KeyModifiers::NONE) => AppAction::OpenEditor,
 
         // Accept the suggested recovery shown in the error banner. The handler
         // ignores this when no recovery is pending, so plain 'u' remains a
@@ -181,6 +184,12 @@ mod tests {
     fn test_scroll_down_with_arrow() {
         let event = key_event(KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(handle_event(event), AppAction::ScrollDown(1));
+    }
+
+    #[test]
+    fn test_open_editor_with_e() {
+        let event = key_event(KeyCode::Char('e'), KeyModifiers::NONE);
+        assert_eq!(handle_event(event), AppAction::OpenEditor);
     }
 
     #[test]

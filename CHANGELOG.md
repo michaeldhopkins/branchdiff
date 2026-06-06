@@ -2,6 +2,12 @@
 
 ### Features
 
+- Open the current file in your editor with 'e'
+- Opens $VISUAL, than $EDITOR, than OS file association if exists
+## [0.66.0] - 2026-06-06
+
+### Features
+
 - Scroll row-by-row through long wrapped lines
 
 ### Performance

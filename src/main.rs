@@ -11,6 +11,7 @@ mod print;
 
 use branchdiff::app::{self, App, FrameContext};
 use branchdiff::cli::{Cli, OutputMode};
+use branchdiff::external::{self, ExternalCommand, LaunchMode};
 use clap::Parser;
 use branchdiff::file_events::VcsLockState;
 #[cfg(target_os = "linux")]
@@ -52,6 +53,126 @@ use ratatui::prelude::*;
 enum AnyDebouncer {
     Recommended(Debouncer<RecommendedWatcher>),
     Poll(Debouncer<PollWatcher>),
+}
+
+/// Owns the TUI terminal and restores it on drop — including on a panic unwind,
+/// which the previous end-of-`main` teardown missed.
+struct TerminalGuard {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+}
+
+impl TerminalGuard {
+    fn new() -> Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+        Ok(Self { terminal })
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Best-effort: Drop can't return a Result and must not panic.
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        );
+        let _ = self.terminal.show_cursor();
+    }
+}
+
+/// Suspends the TUI for its scope (while a terminal editor owns the tty),
+/// restoring raw mode + alternate screen + mouse on drop — even on panic.
+struct SuspendGuard;
+
+impl SuspendGuard {
+    fn new() -> io::Result<Self> {
+        disable_raw_mode()?;
+        execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            crossterm::cursor::Show
+        )?;
+        Ok(Self)
+    }
+}
+
+impl Drop for SuspendGuard {
+    fn drop(&mut self) {
+        let _ = enable_raw_mode();
+        let _ = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture);
+    }
+}
+
+fn run_external<B: Backend>(terminal: &mut Terminal<B>, cmd: &ExternalCommand) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    use std::process::{Command, Stdio};
+    match cmd.mode {
+        LaunchMode::Foreground => {
+            let status = {
+                let _guard = SuspendGuard::new()?;
+                Command::new(&cmd.program).args(&cmd.args).status()
+            };
+            // Force a full repaint via `resize`, not `Terminal::clear`: clear()
+            // snapshots the cursor with a DSR query that blocks reading the
+            // terminal's reply, hanging under a non-responding terminal (tests).
+            let area: ratatui::layout::Rect = terminal.size()?.into();
+            terminal.resize(area)?;
+            // Propagate only spawn/wait failures (e.g. editor not found); a
+            // non-zero editor exit is not our concern.
+            status?;
+        }
+        LaunchMode::Detached => {
+            let mut child = Command::new(&cmd.program)
+                .args(&cmd.args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            // Reap on a side thread so a fire-and-forget GUI editor doesn't
+            // leave a zombie for the rest of the session.
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Resolve and launch the editor for `path`. Problems become a title flash, not
+/// an error — a failed open must never tear down the session.
+fn open_file_in_editor<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    repo_path: &Path,
+    path: PathBuf,
+) where
+    B::Error: Send + Sync + 'static,
+{
+    if !path.exists() {
+        app.set_status_flash("File not on disk");
+        return;
+    }
+    // Only pay for the VCS-config subprocess when no editor env var is set.
+    let env_set = ["VISUAL", "EDITOR"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()));
+    let vcs_editor = if env_set {
+        None
+    } else {
+        external::vcs_configured_editor(app.comparison.vcs_backend, repo_path)
+    };
+    let cmd = external::resolve_editor(&path, |k| std::env::var(k).ok(), vcs_editor)
+        .unwrap_or_else(|| external::os_open_command(&path));
+    if let Err(e) = run_external(terminal, &cmd) {
+        app.set_status_flash(format!("Editor failed: {e}"));
+    }
 }
 
 impl AnyDebouncer {
@@ -158,11 +279,7 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
     use ratatui::widgets::{Block, Borders, Paragraph};
     use ratatui::layout::Alignment;
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut guard = TerminalGuard::new()?;
 
     // Set up a filesystem watcher on the target directory for instant
     // detection of .jj/ or .git/ creation.
@@ -199,7 +316,7 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
             (Some(vcs_type), Some(err)) => format!("Repository found (.{vcs_type} detected)\n\nInitializing...\n\n{err}"),
         };
 
-        terminal.draw(|f| {
+        guard.terminal.draw(|f| {
             let area = f.area();
             let message = Paragraph::new(display_msg.as_str())
                 .alignment(Alignment::Center)
@@ -225,14 +342,7 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
                 (KeyCode::Char('q'), _)
                 | (KeyCode::Char('c'), KeyModifiers::CONTROL)
                 | (KeyCode::Esc, _) => {
-                    disable_raw_mode()?;
-                    execute!(
-                        terminal.backend_mut(),
-                        LeaveAlternateScreen,
-                        DisableMouseCapture
-                    )?;
-                    terminal.show_cursor()?;
-                    return Ok(());
+                    return Ok(()); // `guard` drops -> terminal restored
                 }
                 _ => {}
             }
@@ -263,13 +373,8 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
             match vcs::detect(path) {
                 Ok(detected) => {
                     let repo_root = detected.repo_path().to_path_buf();
-                    disable_raw_mode()?;
-                    execute!(
-                        terminal.backend_mut(),
-                        LeaveAlternateScreen,
-                        DisableMouseCapture
-                    )?;
-                    terminal.show_cursor()?;
+                    // Restore before handing off; run_main_app installs its own guard.
+                    drop(guard);
                     return run_main_app(detected, repo_root, auto_fetch);
                 }
                 Err(e) => {
@@ -300,12 +405,9 @@ fn run_main_app(
     };
     image_picker.set_background_color(image::Rgba([30, 30, 30, 255]));
 
-    // Setup terminal (once — survives restarts)
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    // The guard lives across the restart loop, so the terminal survives restarts.
+    let mut guard = TerminalGuard::new()?;
+    let terminal = &mut guard.terminal;
 
     let watch_limit = limits::get_watch_limit();
 
@@ -355,7 +457,7 @@ fn run_main_app(
         };
 
         let loop_action = run_app(
-            &mut terminal,
+            &mut *terminal,
             &mut app,
             debouncer.watcher(),
             file_rx,
@@ -381,15 +483,6 @@ fn run_main_app(
             LoopAction::Continue => unreachable!("run_app should not return Continue"),
         }
     }
-
-    // Restore terminal (once)
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
 
     Ok(())
 }
@@ -826,6 +919,11 @@ where
 
             if result.trigger_fetch {
                 spawn_fetch(vcs.clone(), fetch_tx.clone());
+            }
+
+            if let Some(path) = result.open_editor {
+                open_file_in_editor(terminal, app, &config.repo_path, path);
+                needs_redraw = true;
             }
         }
 

@@ -760,6 +760,16 @@ impl App {
         result
     }
 
+    pub fn set_status_flash(&mut self, message: impl Into<String>) {
+        self.view.status_flash = Some((message.into(), std::time::Instant::now()));
+    }
+
+    pub fn status_flash_message(&self) -> Option<&str> {
+        self.view.status_flash.as_ref().and_then(|(msg, at)| {
+            (at.elapsed() < std::time::Duration::from_secs(2)).then_some(msg.as_str())
+        })
+    }
+
     /// Check if the "copied" flash should be shown (within 800ms of copy)
     pub fn should_show_copied_flash(&self) -> bool {
         if let Some(copied_at) = self.view.path_copied_at {

@@ -40,8 +40,11 @@ impl App {
     /// Get the file path of the file currently at the top of the viewport.
     pub fn current_file_path(&self) -> Option<String> {
         let items = self.compute_displayable_items();
+        if items.is_empty() {
+            return None;
+        }
         // Look backwards from scroll offset to find the most recent file header
-        for i in (0..=self.view.scroll_offset.min(items.len().saturating_sub(1))).rev() {
+        for i in (0..=self.view.scroll_offset.min(items.len() - 1)).rev() {
             if let DisplayableItem::Line(idx) = &items[i] {
                 let line = &self.lines[*idx];
                 if line.source == LineSource::FileHeader {
@@ -554,6 +557,13 @@ mod tests {
 
         app.set_viewport_height(11);
         assert_eq!(pos(&app), (0, 0));
+    }
+
+    #[test]
+    fn current_file_path_empty_diff_is_none() {
+        // Regression: an empty diff must not panic indexing items[0].
+        let app = TestAppBuilder::new().build();
+        assert_eq!(app.current_file_path(), None);
     }
 
     #[test]

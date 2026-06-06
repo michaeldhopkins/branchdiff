@@ -45,6 +45,8 @@ pub struct DiffViewModel<'a> {
     pub area: Rect,
     /// Whether to show the "copied" flash in the title.
     pub show_copied_flash: bool,
+    /// Transient status message to show in the title (takes precedence).
+    pub status_flash: Option<String>,
     /// Image cache for loaded image data.
     pub image_cache: &'a ImageCache,
     /// Font size in pixels (width, height) for image height calculations.
@@ -106,6 +108,7 @@ impl<'a> DiffViewModel<'a> {
             collapsed_files: &app.view.collapsed_files,
             area,
             show_copied_flash: app.should_show_copied_flash(),
+            status_flash: app.status_flash_message().map(str::to_string),
             image_cache: &app.image_cache,
             font_size: app.font_size,
             vcs_backend: app.comparison.vcs_backend,
@@ -209,9 +212,13 @@ impl<'a> DiffViewModel<'a> {
             }
         }
 
-        // Determine title based on current file (with optional "copied" flash)
         let current_file = self.find_current_file();
-        let title = if self.show_copied_flash {
+        let title = if let Some(msg) = &self.status_flash {
+            Line::from(vec![Span::styled(
+                format!(" {msg} "),
+                Style::default().fg(Color::Yellow),
+            )])
+        } else if self.show_copied_flash {
             Line::from(vec![Span::styled(
                 " ✓ Copied ",
                 Style::default().fg(Color::Green),
