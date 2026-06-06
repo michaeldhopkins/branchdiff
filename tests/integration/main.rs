@@ -23,6 +23,59 @@ fn test_shows_modified_file() {
     session.assert_status_bar_contains("1 file");
 }
 
+/// Verify `e` opens the current file in `$EDITOR` (a foreground/terminal editor)
+/// and that the TUI is restored afterward. Exercises the SuspendGuard round-trip.
+#[test]
+#[cfg(unix)]
+fn test_e_opens_current_file_in_editor() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    let repo = TestRepo::new();
+    repo.add_file("src/main.rs", "fn main() {}");
+    repo.commit("add main.rs");
+    repo.create_branch("feature");
+    repo.modify_file("src/main.rs", "fn main() {\n    println!(\"hi\");\n}");
+
+    // Mock editor lives outside the repo so the file watcher ignores it; it just
+    // records the path it was handed. Its name is unknown to the preset table,
+    // so it is classified Foreground (suspend + wait + restore).
+    let mock_dir = tempfile::TempDir::new().unwrap();
+    let sentinel = mock_dir.path().join("opened.txt");
+    let script = mock_dir.path().join("mock_editor.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", sentinel.display()),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).unwrap();
+
+    let mut session =
+        TuiSession::launch_with_env(repo.path(), &[("EDITOR", script.to_str().unwrap())]);
+    session.assert_contains("src/main.rs");
+
+    session.press("e");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let recorded = loop {
+        match std::fs::read_to_string(&sentinel) {
+            Ok(s) if !s.is_empty() => break s,
+            _ => {
+                assert!(Instant::now() < deadline, "editor was never invoked");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    assert!(
+        recorded.ends_with("src/main.rs"),
+        "editor opened the wrong file: {recorded}"
+    );
+
+    session.assert_contains("src/main.rs");
+}
+
 /// Verify branchdiff starts in Context view mode (not Full).
 /// This test would have caught the ViewMode::Full regression.
 #[test]

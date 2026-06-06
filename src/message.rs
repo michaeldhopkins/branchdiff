@@ -98,6 +98,8 @@ pub struct UpdateResult {
     pub trigger_fetch: bool,
     /// Whether to spawn the recovery action that was offered in the banner.
     pub trigger_recovery: Option<crate::update::RecoveryAction>,
+    /// Absolute path of a file to open in the editor (launched by the main loop).
+    pub open_editor: Option<std::path::PathBuf>,
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
 }

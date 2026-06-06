@@ -151,6 +151,7 @@ impl TestAppBuilder {
                 reviewed_flash: None,
                 needs_inline_spans: true,
                 path_copied_at: None,
+                status_flash: None,
                 last_click: None,
                 pending_copy: None,
                 status_bar_lines: Vec::new(),

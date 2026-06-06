@@ -104,6 +104,7 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 | `c` | Cycle view mode (context → changes → full; jj adds commit → bookmark) |
 | `m` | Toggle diff base (fork-point / trunk tip) |
 | `r` | Refresh |
+| `e` | Open current file in your editor (`$VISUAL`/`$EDITOR`, then git/jj config, else OS default) |
 | `p` | Copy current file path |
 | `Y` | Copy entire diff |
 | `D` | Copy git patch format |
