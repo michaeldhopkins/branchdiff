@@ -31,8 +31,7 @@ Terminal UI showing unified diff of current branch vs its base.
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew tap michaeldhopkins/tap
-brew install branchdiff
+brew install michaeldhopkins/tap/branchdiff
 ```
 
 ### Shell installer (macOS/Linux)
