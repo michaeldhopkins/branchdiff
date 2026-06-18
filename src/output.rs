@@ -157,11 +157,6 @@ fn apply_view_mode(lines: &[DiffLine], view_mode: &crate::app::ViewMode) -> Vec<
             let show = context_visibility(lines);
             filter_with_elided(lines, &show)
         }
-        ViewMode::ChangesOnly => lines
-            .iter()
-            .filter(|l| l.source.is_change() || l.source.is_header())
-            .cloned()
-            .collect(),
         // CommitOnly and BookmarkOnly fall back to Context for non-interactive output
         ViewMode::CommitOnly | ViewMode::BookmarkOnly => {
             let show = context_visibility(lines);
@@ -238,18 +233,4 @@ mod tests {
         assert_eq!(result.len(), 3);
     }
 
-    #[test]
-    fn test_apply_view_mode_changes_only() {
-        let lines = vec![
-            DiffLine::file_header("test.rs"),
-            DiffLine::new(LineSource::Base, "a".into(), ' ', Some(1)),
-            DiffLine::new(LineSource::Committed, "b".into(), '+', Some(2)),
-            DiffLine::new(LineSource::DeletedBase, "c".into(), '-', Some(3)),
-        ];
-        let result = apply_view_mode(&lines, &crate::app::ViewMode::ChangesOnly);
-        assert_eq!(result.len(), 3); // header + 2 changes, no base
-        assert_eq!(result[0].source, LineSource::FileHeader);
-        assert_eq!(result[1].source, LineSource::Committed);
-        assert_eq!(result[2].source, LineSource::DeletedBase);
-    }
 }

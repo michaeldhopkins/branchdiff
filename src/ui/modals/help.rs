@@ -93,7 +93,7 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(""),
         Line::from(vec![
             Span::styled("    c           ", Style::default().fg(Color::Cyan)),
-            Span::raw("  Cycle view (full/ctx/chg/cmt/bm)"),
+            Span::raw("  Cycle view (full/ctx/cmt/bm)"),
         ]),
         Line::from(vec![
             Span::styled("    m           ", Style::default().fg(Color::Cyan)),
