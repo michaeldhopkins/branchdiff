@@ -14,7 +14,7 @@ Terminal UI showing unified diff of current branch vs its base.
 - Color-coded diff view with distinct colors per change layer (git: committed/staged/unstaged; jj: earlier/current/later commits)
 - Inline diff highlighting showing exactly which characters changed
 - **Upstream divergence awareness**: toggle between fork-point (only your changes) and trunk-tip (full divergence) with `m`. Files changed upstream show ↑ markers; status bar shows behind-count
-- Multiple view modes: context (default), changes-only, full file, and jj-specific commit-only and bookmark-only modes
+- Multiple view modes: context (default), full file, and jj-specific commit-only and bookmark-only modes
 - Image diffs with side-by-side before/after panels
 - Live file watching with auto-refresh on changes
 - Mouse support: scrolling, click-to-collapse file sections, text selection with auto-copy (double-click word, triple-click line)

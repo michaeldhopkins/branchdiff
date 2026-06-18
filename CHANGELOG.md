@@ -2,8 +2,16 @@
 
 ### Features
 
+- Remove the changes-only view mode from the 'c' cycle
+
+### Miscellaneous
+
+- Bump action-gh-release to v3; docs: qualified brew install
+## [0.67.0] - 2026-06-15
+
+### Features
+
 - Open the current file in your editor with 'e'
-- Opens $VISUAL, than $EDITOR, than OS file association if exists
 ## [0.66.0] - 2026-06-06
 
 ### Features

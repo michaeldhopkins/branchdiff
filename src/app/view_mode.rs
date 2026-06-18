@@ -144,20 +144,11 @@ impl App {
         self.build_lines_with_mapping_from_visibility(&show)
     }
 
-    pub(super) fn build_changes_only_lines(&self) -> Vec<DiffLine> {
-        self.lines
-            .iter()
-            .filter(|line| line.source.is_change() || line.source.is_header())
-            .cloned()
-            .collect()
-    }
-
     /// Compute displayable items as indices (more efficient than cloning lines)
     pub fn compute_displayable_items(&self) -> Vec<super::DisplayableItem> {
         let items = match self.view.view_mode {
             ViewMode::Full => self.compute_full_items(),
             ViewMode::Context => self.compute_context_items(),
-            ViewMode::ChangesOnly => self.compute_changes_only_items(),
             ViewMode::CommitOnly => self.compute_commit_only_items(),
             ViewMode::BookmarkOnly => self.compute_bookmark_only_items(),
         };
@@ -168,20 +159,6 @@ impl App {
     fn compute_full_items(&self) -> Vec<super::DisplayableItem> {
         (0..self.lines.len())
             .map(super::DisplayableItem::Line)
-            .collect()
-    }
-
-    /// Changes-only mode: filter to just change lines (including modified base lines)
-    fn compute_changes_only_items(&self) -> Vec<super::DisplayableItem> {
-        self.lines
-            .iter()
-            .enumerate()
-            .filter(|(_, line)| {
-                line.source.is_change()
-                    || line.source.is_header()
-                    || line.old_content.is_some()  // Include modified base lines
-            })
-            .map(|(i, _)| super::DisplayableItem::Line(i))
             .collect()
     }
 
@@ -349,9 +326,8 @@ impl App {
         if self.lines.is_empty() {
             self.view.view_mode = match self.view.view_mode {
                 ViewMode::Full => ViewMode::Context,
-                ViewMode::Context => ViewMode::ChangesOnly,
-                ViewMode::ChangesOnly if is_jj => ViewMode::CommitOnly,
-                ViewMode::ChangesOnly => ViewMode::Full,
+                ViewMode::Context if is_jj => ViewMode::CommitOnly,
+                ViewMode::Context => ViewMode::Full,
                 ViewMode::CommitOnly if is_jj => ViewMode::BookmarkOnly,
                 ViewMode::CommitOnly => ViewMode::Full,
                 ViewMode::BookmarkOnly => ViewMode::Full,
@@ -365,9 +341,8 @@ impl App {
 
         self.view.view_mode = match self.view.view_mode {
             ViewMode::Full => ViewMode::Context,
-            ViewMode::Context => ViewMode::ChangesOnly,
-            ViewMode::ChangesOnly if is_jj => ViewMode::CommitOnly,
-            ViewMode::ChangesOnly => ViewMode::Full,
+            ViewMode::Context if is_jj => ViewMode::CommitOnly,
+            ViewMode::Context => ViewMode::Full,
             ViewMode::CommitOnly if is_jj => ViewMode::BookmarkOnly,
             ViewMode::CommitOnly => ViewMode::Full,
             ViewMode::BookmarkOnly => ViewMode::Full,
@@ -420,21 +395,6 @@ impl App {
                 }
                 index_map.iter().rev().find_map(|x| *x)
             }
-            ViewMode::ChangesOnly => {
-                let displayed = self.build_changes_only_lines();
-                if target_pos < displayed.len() {
-                    let target_line = &displayed[target_pos];
-                    self.lines.iter().position(|l| {
-                        l.source == target_line.source
-                            && l.content == target_line.content
-                            && l.line_number == target_line.line_number
-                    })
-                } else if !displayed.is_empty() {
-                    Some(self.lines.len().saturating_sub(1))
-                } else {
-                    None
-                }
-            }
         }
     }
 
@@ -475,21 +435,6 @@ impl App {
                 }
 
                 best_pos
-            }
-            ViewMode::ChangesOnly => {
-                let displayed = self.build_changes_only_lines();
-                if original_idx < self.lines.len() {
-                    let target = &self.lines[original_idx];
-                    for (pos, line) in displayed.iter().enumerate() {
-                        if line.source == target.source
-                            && line.content == target.content
-                            && line.line_number == target.line_number
-                        {
-                            return pos;
-                        }
-                    }
-                }
-                0
             }
         }
     }
@@ -581,8 +526,6 @@ mod tests {
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::Context);
         app.cycle_view_mode();
-        assert_eq!(app.view.view_mode, ViewMode::ChangesOnly);
-        app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::BookmarkOnly);
@@ -602,8 +545,6 @@ mod tests {
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::Context);
         app.cycle_view_mode();
-        assert_eq!(app.view.view_mode, ViewMode::ChangesOnly);
-        app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::Full);
     }
 
@@ -612,7 +553,7 @@ mod tests {
         let mut app = TestAppBuilder::new()
             .with_vcs_backend(VcsBackend::Jj)
             .build();
-        app.view.view_mode = ViewMode::ChangesOnly;
+        app.view.view_mode = ViewMode::Context;
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
         app.cycle_view_mode();

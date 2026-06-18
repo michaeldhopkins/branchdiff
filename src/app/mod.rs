@@ -31,7 +31,6 @@ pub enum ViewMode {
     Full,
     #[default]
     Context,
-    ChangesOnly,
     /// jj only: show only current commit (@) changes with surrounding context
     CommitOnly,
     /// jj only: show only current bookmark's changes with surrounding context
@@ -856,52 +855,6 @@ mod tests {
     }
 
     #[test]
-    fn test_changes_only_view_filters_base_lines() {
-        let lines = vec![
-            DiffLine::file_header("test.rs"),
-            base_line("context line 1"),
-            DiffLine::new(LineSource::Committed, "committed".to_string(), '+', Some(1)),
-            base_line("context line 2"),
-            DiffLine::new(LineSource::Unstaged, "unstaged".to_string(), '+', Some(2)),
-            base_line("context line 3"),
-        ];
-        let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view.view_mode = ViewMode::ChangesOnly;
-        let items = app.compute_displayable_items();
-        let displayed = collect_lines(&app, &items);
-        assert_eq!(displayed.len(), 3);
-        assert_eq!(displayed[0].source, LineSource::FileHeader);
-        assert_eq!(displayed[1].source, LineSource::Committed);
-        assert_eq!(displayed[2].source, LineSource::Unstaged);
-    }
-
-    #[test]
-    fn test_changes_only_includes_modified_base_lines() {
-        // Modified base lines have source=Base but old_content set
-        // They should be included in ChangesOnly mode
-        let mut modified_line = DiffLine::new(LineSource::Base, "new content".to_string(), ' ', Some(1));
-        modified_line.old_content = Some("old content".to_string());
-        modified_line.change_source = Some(LineSource::Unstaged);
-
-        let lines = vec![
-            DiffLine::file_header("test.rs"),
-            base_line("plain context"),  // Should NOT appear (plain Base)
-            modified_line,               // Should appear (Base with old_content)
-            DiffLine::new(LineSource::Committed, "committed".to_string(), '+', Some(3)),
-        ];
-        let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view.view_mode = ViewMode::ChangesOnly;
-        let items = app.compute_displayable_items();
-        let displayed = collect_lines(&app, &items);
-
-        assert_eq!(displayed.len(), 3, "Should have header + modified base + committed");
-        assert_eq!(displayed[0].source, LineSource::FileHeader);
-        assert_eq!(displayed[1].source, LineSource::Base);  // Modified base line
-        assert!(displayed[1].old_content.is_some(), "Modified base line should have old_content");
-        assert_eq!(displayed[2].source, LineSource::Committed);
-    }
-
-    #[test]
     fn test_should_quit_dismisses_help_first() {
         let mut app = TestAppBuilder::new().build();
         assert!(!app.view.show_help);
@@ -920,8 +873,6 @@ mod tests {
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::Context);
         assert_eq!(app.view.scroll_offset, 0);
-        app.cycle_view_mode();
-        assert_eq!(app.view.view_mode, ViewMode::ChangesOnly);
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::Full);
     }
@@ -1013,12 +964,10 @@ mod tests {
         // Position so the change is visible (change is at index 20)
         app.view.scroll_offset = 16; // Middle at 21, close to change
 
-        // Cycle through all three modes back to Full
+        // Cycle through both modes back to Full
         app.cycle_view_mode(); // Full -> Context
         assert_eq!(app.view.view_mode, ViewMode::Context);
-        app.cycle_view_mode(); // Context -> ChangesOnly
-        assert_eq!(app.view.view_mode, ViewMode::ChangesOnly);
-        app.cycle_view_mode(); // ChangesOnly -> Full
+        app.cycle_view_mode(); // Context -> Full
         assert_eq!(app.view.view_mode, ViewMode::Full);
     }
 

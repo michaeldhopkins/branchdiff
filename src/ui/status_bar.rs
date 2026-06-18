@@ -15,7 +15,6 @@ fn view_mode_label(app: &App) -> String {
     match app.view.view_mode {
         ViewMode::Full => " [all lines]".to_string(),
         ViewMode::Context => " [context]".to_string(),
-        ViewMode::ChangesOnly => " [changed lines only]".to_string(),
         ViewMode::CommitOnly => format!(" [commit {}]", app.comparison.to_label),
         ViewMode::BookmarkOnly => match &app.comparison.bookmark_name {
             Some(name) => format!(" [bookmark {}]", name),
@@ -526,13 +525,6 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         app.view.view_mode = crate::app::ViewMode::Context;
         assert_eq!(view_mode_label(&app), " [context]");
-    }
-
-    #[test]
-    fn test_view_mode_label_changes_only_mode() {
-        let mut app = TestAppBuilder::new().build();
-        app.view.view_mode = crate::app::ViewMode::ChangesOnly;
-        assert_eq!(view_mode_label(&app), " [changed lines only]");
     }
 
     #[test]

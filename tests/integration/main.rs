@@ -91,7 +91,7 @@ fn test_starts_in_context_mode() {
     session.assert_status_bar_contains("[context]");
 }
 
-/// Verify view mode cycles through Context -> Changes -> Full.
+/// Verify view mode cycles through Context -> Full -> Context (git).
 #[test]
 fn test_view_mode_cycling() {
     let repo = TestRepo::new();
@@ -105,19 +105,10 @@ fn test_view_mode_cycling() {
     // Should start in Context mode
     session.assert_status_bar_contains("[context]");
 
-    // Press 'c' to cycle to ChangesOnly
+    // Press 'c' to cycle to Full
     session.press("c");
-    session.wait_for_text("[changed lines only]");
-    session.assert_status_bar_contains("[changed lines only]");
-
-    // Press 'c' again to cycle to Full
-    session.press("c");
-    session
-        .wait_for(
-            |contents| !contents.contains("[changed lines only]") && !contents.contains("[context]"),
-            std::time::Duration::from_secs(5),
-        )
-        .expect("timeout waiting for Full mode");
+    session.wait_for_text("[all lines]");
+    session.assert_status_bar_contains("[all lines]");
 
     // Press 'c' again to cycle back to Context
     session.press("c");
