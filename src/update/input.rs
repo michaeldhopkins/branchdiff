@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::app::App;
 use crate::app::selection::MULTI_CLICK_MS;
 use crate::input::AppAction;
-use crate::message::{LoopAction, RefreshTrigger, UpdateResult};
+use crate::message::{LoopAction, OpenTarget, RefreshTrigger, UpdateResult};
 
 use super::RefreshState;
 const POSITION_TOLERANCE: u16 = 2;
@@ -169,9 +169,14 @@ pub(super) fn handle_input(
         // Resolution + launch happen in the main loop (it owns the terminal);
         // here we only resolve which file.
         AppAction::OpenEditor => match app.current_file_path() {
-            Some(rel) => result.open_editor = Some(app.repo_path.join(rel)),
+            Some(rel) => {
+                result.open_editor = Some(OpenTarget::File(app.repo_path.join(rel)));
+            }
             None => app.set_status_flash("No file to open"),
         },
+
+        // The repo root always exists, so there's nothing to validate here.
+        AppAction::OpenRepo => result.open_editor = Some(OpenTarget::Repo),
 
         // Accept the recovery action offered in the error banner.
         // The keybinding always fires, but we only act when a recovery is
@@ -231,7 +236,19 @@ mod tests {
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::OpenEditor, &mut app, &mut refresh_state);
-        assert_eq!(result.open_editor, Some(app.repo_path.join("src/foo.rs")));
+        assert_eq!(
+            result.open_editor,
+            Some(OpenTarget::File(app.repo_path.join("src/foo.rs")))
+        );
+    }
+
+    #[test]
+    fn test_handle_input_open_repo_sets_repo_target() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::OpenRepo, &mut app, &mut refresh_state);
+        assert_eq!(result.open_editor, Some(OpenTarget::Repo));
     }
 
     #[test]

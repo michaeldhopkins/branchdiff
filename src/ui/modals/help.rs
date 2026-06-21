@@ -112,6 +112,10 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Open current file in editor"),
         ]),
         Line::from(vec![
+            Span::styled("    E           ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Open repo in editor"),
+        ]),
+        Line::from(vec![
             Span::styled("    p           ", Style::default().fg(Color::Cyan)),
             Span::raw("  Copy file path"),
         ]),

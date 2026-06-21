@@ -2,6 +2,11 @@
 
 ### Features
 
+- Open the whole repo in your editor with 'E'
+## [0.68.0] - 2026-06-18
+
+### Features
+
 - Remove the changes-only view mode from the 'c' cycle
 
 ### Miscellaneous

@@ -23,31 +23,71 @@ pub struct ExternalCommand {
     pub mode: LaunchMode,
 }
 
+fn stem(program: &str) -> &str {
+    Path::new(program)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program)
+}
+
+/// GUI editors that treat a folder as a project. Shared by [`classify_mode`]
+/// (they launch detached) and [`opens_directory`] (they open a directory), so the
+/// two stay in sync when an editor is added.
+fn is_gui_workspace_editor(name: &str) -> bool {
+    matches!(
+        name,
+        "code"
+            | "code-insiders"
+            | "codium"
+            | "cursor"
+            | "subl"
+            | "sublime_text"
+            | "zed"
+            | "xed"
+            | "bbedit"
+            | "acme"
+    )
+}
+
 /// Unknown editors default to `Foreground`: wrongly suspending a GUI editor only
 /// flickers, but fire-and-forgetting a terminal editor corrupts the shared tty.
 pub fn classify_mode(program: &str) -> LaunchMode {
-    let name = Path::new(program)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(program);
-    match name {
-        "code" | "code-insiders" | "codium" | "cursor" | "subl" | "sublime_text" | "zed"
-        | "xed" | "bbedit" | "acme" | "nvim-remote" => LaunchMode::Detached,
-        _ => LaunchMode::Foreground,
+    let name = stem(program);
+    // nvim-remote hands off to a running nvim and returns immediately, so it
+    // wants Detached too — but it's not a workspace editor (see opens_directory).
+    if is_gui_workspace_editor(name) || name == "nvim-remote" {
+        LaunchMode::Detached
+    } else {
+        LaunchMode::Foreground
     }
 }
 
+/// Editors that open a *directory* in a useful way: GUI workspace editors (which
+/// treat a folder as a project) plus terminal editors with a built-in file
+/// browser (vim → netrw, emacs → dired, helix → file picker). Editors not listed
+/// here — nano, ed, micro, and unknowns — either error or do nothing on a folder,
+/// so the caller falls back to the OS file manager instead.
+pub fn opens_directory(program: &str) -> bool {
+    let name = stem(program);
+    // Terminal editors with a directory browser. (nvim-remote is excluded:
+    // opening a directory through `nvr` is not meaningful.)
+    is_gui_workspace_editor(name)
+        || matches!(
+            name,
+            "vim" | "nvim" | "vi" | "view" | "emacs" | "emacsclient" | "hx" | "helix"
+        )
+}
+
 /// First non-empty of `$VISUAL`, `$EDITOR`, then the VCS-configured editor
-/// (fetched separately since it needs a subprocess). `None` means nothing is
-/// configured — the caller falls back to [`os_open_command`].
+/// (fetched separately since it needs a subprocess), split into a program and
+/// its leading args. `None` means nothing is configured.
 ///
 /// The editor string is whitespace-split, so a program path containing spaces
 /// or shell quoting is not supported (the common `code --wait` form is).
-pub fn resolve_editor(
-    file: &Path,
+fn resolve_editor_parts(
     env_get: impl Fn(&str) -> Option<String>,
     vcs_editor: Option<String>,
-) -> Option<ExternalCommand> {
+) -> Option<(String, Vec<String>)> {
     let raw = [env_get("VISUAL"), env_get("EDITOR"), vcs_editor]
         .into_iter()
         .flatten()
@@ -56,10 +96,39 @@ pub fn resolve_editor(
 
     let mut parts = raw.split_whitespace().map(String::from);
     let program = parts.next()?;
-    let mut args: Vec<String> = parts.collect();
+    Some((program, parts.collect()))
+}
+
+/// Resolve the editor for a single `file`. `None` means nothing is configured —
+/// the caller falls back to [`os_open_command`].
+pub fn resolve_editor(
+    file: &Path,
+    env_get: impl Fn(&str) -> Option<String>,
+    vcs_editor: Option<String>,
+) -> Option<ExternalCommand> {
+    let (program, mut args) = resolve_editor_parts(env_get, vcs_editor)?;
     args.push(file.to_string_lossy().into_owned());
     let mode = classify_mode(&program);
     Some(ExternalCommand { program, args, mode })
+}
+
+/// Resolve how to open a repo `dir`. If the configured editor can open a
+/// directory ([`opens_directory`]), targets it; otherwise — no editor set, or one
+/// that can't, like nano — falls back to the OS file manager via
+/// [`os_open_command`], which always opens the folder somewhere visible.
+pub fn resolve_dir_opener(
+    dir: &Path,
+    env_get: impl Fn(&str) -> Option<String>,
+    vcs_editor: Option<String>,
+) -> ExternalCommand {
+    match resolve_editor_parts(env_get, vcs_editor) {
+        Some((program, mut args)) if opens_directory(&program) => {
+            args.push(dir.to_string_lossy().into_owned());
+            let mode = classify_mode(&program);
+            ExternalCommand { program, args, mode }
+        }
+        _ => os_open_command(dir),
+    }
 }
 
 pub fn os_open_command(file: &Path) -> ExternalCommand {
@@ -176,6 +245,75 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn opens_directory_gui_terminal_and_rejects_others() {
+        // GUI workspace editors.
+        assert!(opens_directory("code"));
+        assert!(opens_directory("/usr/local/bin/cursor"));
+        assert!(opens_directory("zed"));
+        // Terminal editors with a directory browser.
+        assert!(opens_directory("vim"));
+        assert!(opens_directory("/usr/bin/nvim"));
+        assert!(opens_directory("emacs"));
+        assert!(opens_directory("hx"));
+        // Cannot open a folder usefully.
+        assert!(!opens_directory("nano"));
+        assert!(!opens_directory("micro"));
+        assert!(!opens_directory("ed"));
+        assert!(!opens_directory("my-weird-editor"));
+        // Detached for file-open, but not directory-capable.
+        assert!(!opens_directory("nvim-remote"));
+    }
+
+    #[test]
+    fn gui_workspace_editors_are_detached_and_dir_capable() {
+        // The shared helper must keep both classifications in sync.
+        for ed in ["code", "cursor", "zed", "subl", "bbedit"] {
+            assert_eq!(classify_mode(ed), LaunchMode::Detached, "{ed} mode");
+            assert!(opens_directory(ed), "{ed} should open a directory");
+        }
+    }
+
+    fn dir() -> PathBuf {
+        PathBuf::from("/repo")
+    }
+    fn dir_arg() -> String {
+        dir().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn dir_opener_uses_dir_capable_editor() {
+        let cmd = resolve_dir_opener(
+            &dir(),
+            |k| (k == "EDITOR").then(|| "code --wait".into()),
+            None,
+        );
+        assert_eq!(cmd.program, "code");
+        assert_eq!(cmd.args, vec!["--wait".to_string(), dir_arg()]);
+        assert_eq!(cmd.mode, LaunchMode::Detached);
+    }
+
+    #[test]
+    fn dir_opener_uses_terminal_editor_with_suspend() {
+        let cmd = resolve_dir_opener(&dir(), |k| (k == "EDITOR").then(|| "vim".into()), None);
+        assert_eq!(cmd.program, "vim");
+        assert_eq!(cmd.args, vec![dir_arg()]);
+        assert_eq!(cmd.mode, LaunchMode::Foreground);
+    }
+
+    #[test]
+    fn dir_opener_falls_back_for_non_dir_editor() {
+        // nano can't open a folder, so we open the OS file manager instead.
+        let cmd = resolve_dir_opener(&dir(), |k| (k == "EDITOR").then(|| "nano".into()), None);
+        assert_eq!(cmd, os_open_command(&dir()));
+    }
+
+    #[test]
+    fn dir_opener_falls_back_when_unset() {
+        let cmd = resolve_dir_opener(&dir(), |_| None, None);
+        assert_eq!(cmd, os_open_command(&dir()));
     }
 
     #[test]
