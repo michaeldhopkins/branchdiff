@@ -1,15 +1,15 @@
 ## Pre-Commit Checklist
 
 Before every commit, verify:
-1. [ ] `cargo clippy -- -D warnings` passes
+1. [ ] `cargo clippy --all-targets -- -D warnings` passes
 2. [ ] `cargo test` passes
 3. [ ] Version bumped in `Cargo.toml` (patch for fixes, minor for features)
-4. [ ] `cargo install --path .` run after version bump
-5. [ ] `git cliff --output CHANGELOG.md` to regenerate changelog
+4. [ ] `cargo install --path .` run after version bump (also refreshes `Cargo.lock`, which CI checks with `--locked`)
+5. [ ] Changelog regenerated — see [Releasing](#releasing-jj--ci) for the exact jj-aware command
 
 After building or making changes, always run `cargo install --path .` to install the binary.
 
-Always run `cargo clippy -- -D warnings` before committing to match CI. Clippy warnings should never be allowed to go unaddressed. Using `#[allow(...)]` to suppress warnings is not acceptable - actually fix the underlying issue.
+Run `cargo clippy --all-targets -- -D warnings` before committing. CI's clippy skips test/bench code without `--all-targets`, so a plain `cargo clippy` can pass locally while CI fails — always pass `--all-targets`. Clippy warnings should never be allowed to go unaddressed. Using `#[allow(...)]` to suppress warnings is not acceptable - actually fix the underlying issue.
 
 ## Antipatterns (Not Caught by Lints)
 
@@ -76,8 +76,18 @@ If you need an integration test to verify rendering or UI logic, that's a design
 
 When adding user-facing features (keybindings, commands, UI elements):
 - Update README.md with feature description and keybindings
-- Update the help menu in src/ui/help.rs
+- Update the help menu in `src/ui/modals/help.rs`
 - Test the feature manually before committing
+
+**Testing keybindings/external launches against ambient environment.** The
+integration harness spawns `branchdiff` from `PATH`, so it runs the *installed*
+binary — run `cargo install --path .` before integration tests or you'll test
+stale code. Run integration tests with `--test-threads=1` (PTY tests are not
+parallel-safe). And when a test sets `$EDITOR`, it MUST also set `$VISUAL=""`:
+editor resolution prefers `$VISUAL`, then `$EDITOR`, then the VCS-configured
+editor (`git core.editor` / `jj ui.editor`), so a developer's ambient `$VISUAL`
+or git config silently shadows the test's mock. Such tests pass on CI (clean
+env) but fail locally — neutralize the whole precedence chain in the test env.
 
 Constants and magic numbers:
 - If a literal value is used more than once, extract it to a named constant
@@ -87,6 +97,43 @@ Constants and magic numbers:
 ## Committing
 
 Before committing, bump the version in `Cargo.toml` according to semver rules below. Every commit that changes behavior or fixes bugs requires a version bump. Run `cargo install --path .` after bumping to update `Cargo.lock`.
+
+## Releasing (jj + CI)
+
+This repo is colocated under **jj** (Jujutsu); use `jj`, not raw `git`. Releases
+are fully automated by `.github/workflows/release.yml` — **do not create tags
+manually.**
+
+**What CI does on every push to `main`:** reads the version from `Cargo.toml`;
+if a `v<version>` tag does not already exist, it builds the platform binaries,
+**creates and pushes the `v<version>` tag itself**, generates release notes with
+`git cliff --latest --strip all`, publishes the GitHub release, and dispatches
+the Homebrew formula update. Implications:
+- The only "release trigger" is a version bump landing on `main`. If you forget
+  to bump `Cargo.toml`, the push is a silent no-op (no release).
+- Never pre-tag locally — a pre-existing `v<version>` tag makes CI *skip* the
+  release entirely (and the Homebrew dispatch with it).
+- The committed `CHANGELOG.md` keeps `## [unreleased]` as the heading for the
+  new entry. CI's `git cliff --latest` produces the release notes; the heading
+  only rolls to `## [x.y.z]` on the *next* changelog regeneration (once the tag
+  exists). Don't hand-edit it to a version number.
+
+**Regenerating the changelog under jj (the non-obvious part).** `git cliff`
+walks git's `HEAD`, but in a colocated jj repo `HEAD` tracks `@-` (the parent of
+the working copy), *not* the working-copy commit `@`. So running `git cliff`
+right after `jj describe` will NOT see your new commit — it silently rewrites the
+changelog for the *previous* state. The working sequence:
+
+```
+jj describe -m "feat: ..."          # describe the working-copy commit @
+jj new                              # start an empty child; now HEAD == your commit
+git cliff --output CHANGELOG.md     # walks HEAD, so your commit is included
+jj squash                           # fold the CHANGELOG edit back into the feat commit
+```
+
+**Pushing** (only with explicit user approval): `jj bookmark set main -r <feat-commit>`
+then `jj git push --bookmark main`. After pushing, watch the run with
+`gh run list --workflow=release.yml` / `gh run watch <id>`.
 
 ## Versioning (Semver)
 
