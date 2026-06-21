@@ -19,7 +19,8 @@ use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::{handle_event, AppAction};
 use branchdiff::limits;
 use branchdiff::message::{
-    FetchResult, LoopAction, Message, RefreshOutcome, RefreshTrigger, FALLBACK_REFRESH_SECS,
+    FetchResult, LoopAction, Message, OpenTarget, RefreshOutcome, RefreshTrigger,
+    FALLBACK_REFRESH_SECS,
 };
 use branchdiff::update::{
     classify_error, update, watchdog_timeout_from_env, ErrorClass, RecoveryAction,
@@ -145,8 +146,35 @@ where
     Ok(())
 }
 
-/// Resolve and launch the editor for `path`. Problems become a title flash, not
-/// an error — a failed open must never tear down the session.
+/// The VCS-configured editor, but only looked up when no editor env var is set —
+/// the lookup runs a subprocess, so we skip it when `$VISUAL`/`$EDITOR` already
+/// decide.
+fn vcs_editor_if_unset(app: &App, repo_path: &Path) -> Option<String> {
+    let env_set = ["VISUAL", "EDITOR"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()));
+    if env_set {
+        None
+    } else {
+        external::vcs_configured_editor(app.comparison.vcs_backend, repo_path)
+    }
+}
+
+/// Run a resolved external command, turning any spawn failure into a title flash
+/// rather than an error — a failed open must never tear down the session.
+fn launch_or_flash<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    cmd: &ExternalCommand,
+) where
+    B::Error: Send + Sync + 'static,
+{
+    if let Err(e) = run_external(terminal, cmd) {
+        app.set_status_flash(format!("Editor failed: {e}"));
+    }
+}
+
+/// Resolve and launch the editor for a single file `path`.
 fn open_file_in_editor<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -159,20 +187,22 @@ fn open_file_in_editor<B: Backend>(
         app.set_status_flash("File not on disk");
         return;
     }
-    // Only pay for the VCS-config subprocess when no editor env var is set.
-    let env_set = ["VISUAL", "EDITOR"]
-        .iter()
-        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()));
-    let vcs_editor = if env_set {
-        None
-    } else {
-        external::vcs_configured_editor(app.comparison.vcs_backend, repo_path)
-    };
+    let vcs_editor = vcs_editor_if_unset(app, repo_path);
     let cmd = external::resolve_editor(&path, |k| std::env::var(k).ok(), vcs_editor)
         .unwrap_or_else(|| external::os_open_command(&path));
-    if let Err(e) = run_external(terminal, &cmd) {
-        app.set_status_flash(format!("Editor failed: {e}"));
-    }
+    launch_or_flash(terminal, app, &cmd);
+}
+
+/// Open the repo root as a folder/project. Editors that can't open a directory
+/// (or no editor at all) fall back to the OS file manager — see
+/// [`external::resolve_dir_opener`].
+fn open_repo_in_editor<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, repo_path: &Path)
+where
+    B::Error: Send + Sync + 'static,
+{
+    let vcs_editor = vcs_editor_if_unset(app, repo_path);
+    let cmd = external::resolve_dir_opener(repo_path, |k| std::env::var(k).ok(), vcs_editor);
+    launch_or_flash(terminal, app, &cmd);
 }
 
 impl AnyDebouncer {
@@ -921,9 +951,16 @@ where
                 spawn_fetch(vcs.clone(), fetch_tx.clone());
             }
 
-            if let Some(path) = result.open_editor {
-                open_file_in_editor(terminal, app, &config.repo_path, path);
-                needs_redraw = true;
+            match result.open_editor {
+                Some(OpenTarget::File(path)) => {
+                    open_file_in_editor(terminal, app, &config.repo_path, path);
+                    needs_redraw = true;
+                }
+                Some(OpenTarget::Repo) => {
+                    open_repo_in_editor(terminal, app, &config.repo_path);
+                    needs_redraw = true;
+                }
+                None => {}
             }
         }
 

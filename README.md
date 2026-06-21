@@ -104,6 +104,7 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 | `m` | Toggle diff base (fork-point / trunk tip) |
 | `r` | Refresh |
 | `e` | Open current file in your editor (`$VISUAL`/`$EDITOR`, then git/jj config, else OS default) |
+| `E` | Open the repo folder in your editor (GUI or terminal editors that handle directories; else the OS file manager) |
 | `p` | Copy current file path |
 | `Y` | Copy entire diff |
 | `D` | Copy git patch format |

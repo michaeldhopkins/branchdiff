@@ -26,6 +26,7 @@ pub enum AppAction {
     ToggleReviewed,
     ToggleAllReviewed,
     OpenEditor,
+    OpenRepo,
     /// Accept the recovery offered in the error banner (e.g. run
     /// `jj workspace update-stale`). A no-op when nothing is pending.
     RunRecovery,
@@ -105,6 +106,10 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         (KeyCode::Char('r'), KeyModifiers::NONE) => AppAction::ToggleReviewed,
 
         (KeyCode::Char('e'), KeyModifiers::NONE) => AppAction::OpenEditor,
+
+        // Open the whole repo in the editor. Some terminals report a capital
+        // letter without the SHIFT modifier, so accept both (matching G/Y/D).
+        (KeyCode::Char('E'), KeyModifiers::SHIFT | KeyModifiers::NONE) => AppAction::OpenRepo,
 
         // Accept the suggested recovery shown in the error banner. The handler
         // ignores this when no recovery is pending, so plain 'u' remains a
@@ -190,6 +195,15 @@ mod tests {
     fn test_open_editor_with_e() {
         let event = key_event(KeyCode::Char('e'), KeyModifiers::NONE);
         assert_eq!(handle_event(event), AppAction::OpenEditor);
+    }
+
+    #[test]
+    fn test_open_repo_with_shift_e() {
+        // Both reported forms of a capital E (some terminals omit the modifier).
+        let shifted = key_event(KeyCode::Char('E'), KeyModifiers::SHIFT);
+        assert_eq!(handle_event(shifted), AppAction::OpenRepo);
+        let bare = key_event(KeyCode::Char('E'), KeyModifiers::NONE);
+        assert_eq!(handle_event(bare), AppAction::OpenRepo);
     }
 
     #[test]
