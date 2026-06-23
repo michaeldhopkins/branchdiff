@@ -167,6 +167,7 @@ fn compute_jj_divergence(
 }
 
 /// Info about the stack tip when @ is not at the top.
+#[derive(Debug)]
 struct StackTip {
     /// Short change_id of the chosen tip commit.
     change_id: String,
@@ -258,9 +259,17 @@ fn resolve_orphaned_tip(
 
     // Most recent non-empty leaf descending from `@`'s parent, excluding `@`'s
     // own (empty) line — i.e. the rebased remainder of the abandoned stack.
+    //
+    // `~ working_copies() ~ ::working_copies()` excludes *other workspaces*: when
+    // several jj workspaces branch from the same trunk commit, that commit is the
+    // shared parent, so every sibling workspace's `@` (and the work beneath it)
+    // would otherwise land in the candidate set and a fresh, empty workspace would
+    // show another workspace's diff. A genuinely abandoned tip in *this* workspace
+    // is neither a working copy nor an ancestor of one, so it survives.
     let args = no_snapshot(&[
-        "log", "-r", "latest((heads((@-)::) ~ (@::)) ~ empty())", "--no-graph",
-        "--limit", "1", "-T", "change_id.short(12)",
+        "log", "-r",
+        "latest((heads((@-)::) ~ (@::) ~ working_copies() ~ ::working_copies()) ~ empty())",
+        "--no-graph", "--limit", "1", "-T", "change_id.short(12)",
     ]);
     let id = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()
         .map(|o| o.stdout_lossy().trim().to_string())
@@ -1035,18 +1044,33 @@ fn parse_jj_summary(output: &str) -> Vec<ChangedFile> {
         .collect()
 }
 
-/// Parse jj rename format: `{old_path => new_path}`
+/// Parse a jj `--summary` rename entry into old/new paths.
+///
+/// jj factors the common directory prefix (and any common suffix) *outside* the
+/// brace, wrapping only the differing segment:
+///   `{old => new}`            (root)
+///   `sub/{old => new}`        (common prefix)
+///   `app/{old => new}/f.js`   (common prefix and suffix)
+/// The earlier parser anchored the brace at the start of the string and so
+/// matched only the root form, silently dropping every nested rename. jj always
+/// braces renames in `--summary`, so a string without a `{ … => … }` is treated
+/// as malformed and skipped.
 fn parse_rename(s: &str) -> Option<ChangedFile> {
-    let s = s.strip_prefix('{')?.strip_suffix('}')?;
-    let (old, new) = s.split_once(" => ")?;
-    let old = old.trim();
-    let new = new.trim();
+    let open = s.find('{')?;
+    let close = s.find('}')?;
+    if close < open {
+        return None;
+    }
+    let prefix = &s[..open];
+    let suffix = &s[close + 1..];
+    let (old, new) = s[open + 1..close].split_once(" => ")?;
+    let (old, new) = (old.trim(), new.trim());
     if new.is_empty() {
         return None;
     }
     Some(ChangedFile {
-        path: new.to_string(),
-        old_path: Some(old.to_string()),
+        path: format!("{prefix}{new}{suffix}"),
+        old_path: Some(format!("{prefix}{old}{suffix}")),
     })
 }
 
@@ -1121,6 +1145,32 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "src/new.rs");
         assert_eq!(files[0].old_path.as_deref(), Some("src/old.rs"));
+    }
+
+    #[test]
+    fn test_parse_summary_renamed_prefix_factored() {
+        // jj factors the common dir prefix outside the brace for nested renames.
+        let files = parse_jj_summary("R sub/{sub_orig.txt => sub_new.txt}\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "sub/sub_new.txt");
+        assert_eq!(files[0].old_path.as_deref(), Some("sub/sub_orig.txt"));
+    }
+
+    #[test]
+    fn test_parse_summary_renamed_deeply_nested() {
+        let files = parse_jj_summary("R deep/er/path/{deep_orig.txt => deep_new.txt}\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "deep/er/path/deep_new.txt");
+        assert_eq!(files[0].old_path.as_deref(), Some("deep/er/path/deep_orig.txt"));
+    }
+
+    #[test]
+    fn test_parse_summary_renamed_prefix_and_suffix_factored() {
+        // jj can also factor a common suffix after the brace.
+        let files = parse_jj_summary("R app/{old => new}/controller.js\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "app/new/controller.js");
+        assert_eq!(files[0].old_path.as_deref(), Some("app/old/controller.js"));
     }
 
     #[test]
@@ -2027,6 +2077,34 @@ mod tests {
 
         let tip = resolve_orphaned_tip(repo, "@-", &Arc::new(AtomicBool::new(false)));
         assert!(tip.is_none(), "orphaned recovery only applies in trunk() mode");
+    }
+
+    #[test]
+    fn test_resolve_orphaned_tip_ignores_sibling_workspace() {
+        if !jj_available() { return; }
+
+        // Regression for #2: several workspaces branched off the same trunk share
+        // that commit as their parent, so a fresh, empty workspace must not adopt
+        // another workspace's commit as an "orphaned" tip.
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path(); // its own @ is an empty working copy on trunk
+
+        // A sibling workspace with real, committed work branched from trunk.
+        let ws2 = tempfile::TempDir::new().unwrap();
+        let ws2_path = ws2.path().to_string_lossy().to_string();
+        Command::new("jj")
+            .args(["workspace", "add", "--name", "ws2", "-r", "trunk()", &ws2_path])
+            .current_dir(repo).output().unwrap();
+        std::fs::write(ws2.path().join("ws2_work.txt"), "sibling work\n").unwrap();
+        Command::new("jj").args(["status"]).current_dir(ws2.path()).output().unwrap();
+        Command::new("jj").args(["bookmark", "create", "feature", "-r", "@"])
+            .current_dir(ws2.path()).output().unwrap();
+
+        let tip = resolve_orphaned_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false)));
+        assert!(
+            tip.is_none(),
+            "fresh empty workspace must not re-anchor to a sibling workspace, got {tip:?}"
+        );
     }
 
     #[test]

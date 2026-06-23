@@ -2,6 +2,11 @@
 
 ### Bug Fixes
 
+- *(jj)* Parse nested renames and don't adopt sibling workspaces
+## [0.70.1] - 2026-06-23
+
+### Bug Fixes
+
 - Accept -v as an alias for the version flag
 - *(jj)* Recover the diff when @ is orphaned and detect ops in secondary workspaces
 - Show pure renames and annotate deleted files with their line count
