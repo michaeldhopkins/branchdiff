@@ -68,7 +68,7 @@ If no repository is found, branchdiff waits and automatically starts when `git i
 | `--no-auto-fetch` | Disable automatic fetching of base branch |
 | `--benchmark N` | Run stress test rendering N frames (for profiling) |
 | `-h`, `--help` | Print help |
-| `-V`, `--version` | Print version |
+| `-v`, `-V`, `--version` | Print version |
 
 ### Profiling
 
