@@ -1,5 +1,16 @@
 ## [unreleased]
 
+### Bug Fixes
+
+- Accept -v as an alias for the version flag
+- *(jj)* Recover the diff when @ is orphaned and detect ops in secondary workspaces
+- Show pure renames and annotate deleted files with their line count
+
+### Documentation
+
+- Document the jj-aware release flow and editor-test env gotchas in CLAUDE.md
+## [0.69.0] - 2026-06-21
+
 ### Features
 
 - Open the whole repo in your editor with 'E'

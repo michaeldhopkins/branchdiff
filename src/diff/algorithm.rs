@@ -47,7 +47,7 @@ pub struct DiffInput<'a> {
 }
 
 fn build_deletion_diff(path: &str, content: &str, source: LineSource) -> FileDiff {
-    let mut lines = vec![DiffLine::deleted_file_header(path)];
+    let mut lines = vec![DiffLine::deleted_file_header(path, content.lines().count())];
     for (i, line) in content.lines().enumerate() {
         lines.push(
             DiffLine::new(source, line.to_string(), '-', Some(i + 1)).with_file_path(path),
@@ -112,6 +112,15 @@ pub fn compute_four_way_diff_with_predicate(
     input: DiffInput<'_>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> FileDiff {
+    // Capture the rename source before `input` is consumed so every return path
+    // (including the header-only bail) carries it through to `FileDiff`.
+    let old_path = input.old_path.map(str::to_string);
+    let mut diff = compute_four_way_diff_body(input, is_cancelled);
+    diff.old_path = old_path;
+    diff
+}
+
+fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> bool) -> FileDiff {
     if let Some(deletion_diff) = check_file_deletion(&input) {
         return deletion_diff;
     }
@@ -498,7 +507,7 @@ mod tests {
         // First line is header
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
         assert!(diff.lines[0].content.contains("deleted.rs"));
-        assert!(diff.lines[0].content.contains("(deleted)"));
+        assert!(diff.lines[0].content.contains("(deleted"));
 
         // Content lines should have DeletedStaged source
         assert_eq!(diff.lines[1].source, LineSource::DeletedStaged);

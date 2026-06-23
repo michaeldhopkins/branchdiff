@@ -718,7 +718,7 @@ mod tests {
     #[test]
     fn test_auto_collapse_deleted_files() {
         let deleted_file = FileDiff::new(vec![
-                DiffLine::deleted_file_header("src/old_file.rs"),
+                DiffLine::deleted_file_header("src/old_file.rs", 1),
                 change_line("deleted content"),
         ]);
         let regular_file = FileDiff::new(vec![
@@ -759,7 +759,7 @@ mod tests {
     #[test]
     fn test_manually_toggled_deleted_files_not_auto_collapsed() {
         let deleted_file = FileDiff::new(vec![
-                DiffLine::deleted_file_header("src/old_file.rs"),
+                DiffLine::deleted_file_header("src/old_file.rs", 1),
                 change_line("deleted content"),
         ]);
 
@@ -779,7 +779,7 @@ mod tests {
     fn test_undeleted_file_uncollapses() {
         // Simulate a file that was deleted (auto-collapsed) then restored
         let deleted_file = FileDiff::new(vec![
-                DiffLine::deleted_file_header("src/restored.rs"),
+                DiffLine::deleted_file_header("src/restored.rs", 1),
                 change_line("content"),
         ]);
 
@@ -802,7 +802,7 @@ mod tests {
     fn test_undeleted_lock_file_stays_collapsed() {
         // Lock files should stay collapsed even after being "restored"
         let deleted_lock = FileDiff::new(vec![
-                DiffLine::deleted_file_header("Gemfile.lock"),
+                DiffLine::deleted_file_header("Gemfile.lock", 1),
                 change_line("content"),
         ]);
 
