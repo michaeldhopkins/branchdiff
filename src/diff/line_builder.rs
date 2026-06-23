@@ -13,9 +13,17 @@ impl DiffLine {
         line
     }
 
-    /// Create a file header line for a deleted file.
-    pub fn deleted_file_header(path: &str) -> Self {
-        let mut line = Self::new(LineSource::FileHeader, format!("{} (deleted)", path), ' ', None);
+    /// Create a file header line for a deleted file. `deleted_lines` annotates
+    /// the header with the removed-line count (e.g. `foo.rs (deleted, -162)`) so
+    /// the count is visible even while the file is auto-collapsed; a count of 0
+    /// (empty file) omits it.
+    pub fn deleted_file_header(path: &str, deleted_lines: usize) -> Self {
+        let label = if deleted_lines > 0 {
+            format!("{path} (deleted, -{deleted_lines})")
+        } else {
+            format!("{path} (deleted)")
+        };
+        let mut line = Self::new(LineSource::FileHeader, label, ' ', None);
         line.file_path = Some(path.to_string());
         line
     }
@@ -59,10 +67,16 @@ mod tests {
 
     #[test]
     fn test_deleted_file_header() {
-        let header = DiffLine::deleted_file_header("old/file.rs");
+        let header = DiffLine::deleted_file_header("old/file.rs", 162);
         assert_eq!(header.source, LineSource::FileHeader);
-        assert_eq!(header.content, "old/file.rs (deleted)");
+        assert_eq!(header.content, "old/file.rs (deleted, -162)");
         assert_eq!(header.file_path, Some("old/file.rs".to_string()));
+    }
+
+    #[test]
+    fn test_deleted_file_header_empty_omits_count() {
+        let header = DiffLine::deleted_file_header("empty.txt", 0);
+        assert_eq!(header.content, "empty.txt (deleted)");
     }
 
     #[test]

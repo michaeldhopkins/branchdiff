@@ -47,9 +47,11 @@ pub(super) fn should_auto_collapse(path: &str) -> bool {
         .any(|pattern| path.ends_with(pattern))
 }
 
-/// Check if a file header indicates a deleted file
+/// Check if a file header indicates a deleted file. Deletion headers are either
+/// `path (deleted)` (empty file / image) or `path (deleted, -N)` with a line
+/// count. The `(deleted, -` marker is specific enough to not match a real path.
 pub(super) fn is_deleted_file(header_content: &str) -> bool {
-    header_content.ends_with("(deleted)")
+    header_content.ends_with("(deleted)") || header_content.contains("(deleted, -")
 }
 
 /// Auto-collapse files matching lock/generated file patterns and deleted files.
@@ -108,6 +110,9 @@ mod tests {
     fn test_is_deleted_file() {
         assert!(is_deleted_file("path/to/file.rs (deleted)"));
         assert!(is_deleted_file("file.txt (deleted)"));
+        // Headers now carry the removed-line count and must still be detected.
+        assert!(is_deleted_file("app/packs/application.js (deleted, -162)"));
+        assert!(is_deleted_file("file.txt (deleted, -1)"));
 
         assert!(!is_deleted_file("path/to/file.rs"));
         assert!(!is_deleted_file("deleted_file.rs"));

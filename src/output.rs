@@ -107,8 +107,10 @@ pub fn prepare(app: &mut App) -> OutputData {
                 .map(|l| l.content.clone())
                 .unwrap_or_default();
 
+            // Drop files that carry no diff rows — except pure renames/moves,
+            // whose entire change *is* the header (old → new) with zero +/- lines.
             let has_content = file.lines.iter().any(|l| l.source != LineSource::FileHeader);
-            if !has_content {
+            if !has_content && !file.is_rename() {
                 return None;
             }
 
@@ -168,7 +170,44 @@ fn apply_view_mode(lines: &[DiffLine], view_mode: &crate::app::ViewMode) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::DiffLine;
+    use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff};
+    use crate::test_support::TestAppBuilder;
+
+    #[test]
+    fn test_prepare_keeps_pure_rename_with_zero_lines() {
+        // Regression: a pure rename produces a header-only FileDiff. It must
+        // still appear in the output (1 file, +0 -0), not be filtered as noise.
+        let content = "a\nb\nc";
+        let rename = compute_four_way_diff(DiffInput {
+            path: "new.txt",
+            base: Some(content),
+            head: Some(content),
+            index: Some(content),
+            working: Some(content),
+            old_path: Some("old.txt"),
+        });
+        assert!(rename.is_rename());
+
+        let mut app = TestAppBuilder::new().with_files(vec![rename]).build();
+        let data = prepare(&mut app);
+
+        assert_eq!(data.files.len(), 1, "pure rename must survive the filter");
+        assert_eq!(data.files[0].path, "old.txt → new.txt");
+        assert_eq!(data.files[0].additions, 0);
+        assert_eq!(data.files[0].deletions, 0);
+    }
+
+    #[test]
+    fn test_prepare_drops_header_only_non_rename() {
+        // A header-only file that is NOT a rename is genuine noise and stays filtered.
+        let empty = FileDiff::new(vec![DiffLine::file_header("ghost.txt")]);
+        assert!(!empty.is_rename());
+
+        let mut app = TestAppBuilder::new().with_files(vec![empty]).build();
+        let data = prepare(&mut app);
+
+        assert!(data.files.is_empty(), "header-only non-rename should be dropped");
+    }
 
     #[test]
     fn test_context_visibility_shows_changes_and_context() {

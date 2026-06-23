@@ -247,13 +247,23 @@ pub struct FileDiff {
     pub blocks: Vec<ChangeBlock>,
     /// Hash of all change line content, for detecting when a file's diff changes.
     pub content_hash: u64,
+    /// Source path when this file was renamed/moved. `Some` even for a *pure*
+    /// rename (no content change), which is the signal that lets such files
+    /// survive the "header-only files are noise" filter in the output stage.
+    pub old_path: Option<String>,
 }
 
 impl FileDiff {
     pub fn new(mut lines: Vec<DiffLine>) -> Self {
         let blocks = block::extract_blocks(&mut lines);
         let content_hash = Self::compute_content_hash(&lines);
-        Self { lines, blocks, content_hash }
+        Self { lines, blocks, content_hash, old_path: None }
+    }
+
+    /// True when this file is a rename/move. A pure rename has no add/delete
+    /// lines, so callers that filter on content must consult this to keep it.
+    pub fn is_rename(&self) -> bool {
+        self.old_path.is_some()
     }
 
     fn compute_content_hash(lines: &[DiffLine]) -> u64 {
@@ -661,6 +671,25 @@ mod tests {
         // Verify the header shows the rename
         assert_eq!(diff.lines[0].source, LineSource::FileHeader);
         assert_eq!(diff.lines[0].content, "original.txt → renamed.txt");
+
+        // Structural rename signal must survive even with zero content lines —
+        // this is what keeps a pure rename from being filtered out downstream.
+        assert!(diff.is_rename(), "pure rename should be flagged as a rename");
+        assert_eq!(diff.old_path.as_deref(), Some("original.txt"));
+    }
+
+    #[test]
+    fn test_non_rename_has_no_old_path() {
+        let diff = compute_four_way_diff(DiffInput {
+            path: "file.txt",
+            base: Some("a\nb"),
+            head: Some("a\nb\nc"),
+            index: Some("a\nb\nc"),
+            working: Some("a\nb\nc"),
+            old_path: None,
+        });
+        assert!(!diff.is_rename());
+        assert_eq!(diff.old_path, None);
     }
 
     #[test]
