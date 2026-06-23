@@ -36,6 +36,38 @@ pub struct JjVcs {
     /// Stored as AtomicU8 for interior mutability (Vcs trait uses &self).
     /// 0 = ForkPoint, 1 = TrunkTip.
     diff_base: AtomicU8,
+    /// Resolved path to the shared operation log (`.jj/repo/op_store`). In a
+    /// secondary workspace `.jj/repo` is a pointer *file* to the shared repo, so
+    /// this is resolved once at construction rather than assumed to live under
+    /// `repo_path`. Watching/classifying it is what lets a workspace notice
+    /// operations performed elsewhere.
+    op_store_dir: PathBuf,
+}
+
+/// Resolve the shared `op_store` directory for a jj repo. The default workspace
+/// has `.jj/repo` as a directory; a workspace created by `jj workspace add` has
+/// `.jj/repo` as a file containing the path (usually relative to `.jj/`) of the
+/// shared repo.
+fn resolve_jj_op_store(repo_path: &Path) -> PathBuf {
+    let jj_dir = repo_path.join(".jj");
+    let repo = jj_dir.join("repo");
+    let repo_dir = if repo.is_file() {
+        std::fs::read_to_string(&repo)
+            .ok()
+            .map(|contents| {
+                let target = Path::new(contents.trim());
+                if target.is_absolute() {
+                    target.to_path_buf()
+                } else {
+                    jj_dir.join(target)
+                }
+            })
+            .map(|joined| std::fs::canonicalize(&joined).unwrap_or(joined))
+            .unwrap_or(repo)
+    } else {
+        repo
+    };
+    repo_dir.join("op_store")
 }
 
 /// Probe whether `trunk()` points to a real remote-tracking bookmark.
@@ -175,6 +207,68 @@ fn resolve_stack_tip(
         change_id: heads[0].trim().to_string(),
         head_count: heads.len(),
     })
+}
+
+/// Recover a useful tip when `@` is an empty commit orphaned by abandoning the
+/// commit you were editing. In that case jj moves `@` to a fresh empty commit on
+/// the abandoned commit's parent and rebases the remainder as a *sibling* line,
+/// so `resolve_stack_tip` (which only walks `@`'s own descendants) finds nothing
+/// and the diff collapses to `@`'s empty range. Follow to the most recent
+/// non-empty leaf on the sibling line instead.
+///
+/// Returns `None` in every normal case. The discriminator is "`@` is empty AND
+/// its parent has another child": a normal working copy — whether on a linear
+/// stack or one of several independent stacks — is its parent's only child, so
+/// there is no sibling and we never navigate away from a deliberate `@`.
+fn resolve_orphaned_tip(
+    repo_path: &Path,
+    from_rev: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<StackTip> {
+    if from_rev != "trunk()" {
+        return None;
+    }
+
+    // Cheap bail for the common case: `(@-)+ ~ @` is the set of `@`'s siblings,
+    // which is empty for any ordinary working copy. This keeps the extra jj
+    // calls below off the hot path.
+    let siblings = run_jj_cancellable(
+        repo_path,
+        &no_snapshot(&["log", "-r", "(@-)+ ~ @", "--no-graph", "--limit", "1", "-T", r#""x""#]),
+        Arc::clone(cancel),
+    ).ok()?;
+    if siblings.stdout_lossy().trim().is_empty() {
+        return None;
+    }
+
+    // Only re-anchor when `@` itself carries no work — a non-empty `@` with a
+    // sibling is deliberate forked development we must not jump away from.
+    // This check deliberately snapshots the working copy (no `--ignore-working-copy`):
+    // `empty()` reflects committed state, so uncommitted edits in `@` would
+    // otherwise read as empty and we'd wrongly navigate away from them. Safe to
+    // snapshot here because we only reach this point in the rare sibling case.
+    let at_empty = run_jj_cancellable(
+        repo_path,
+        &["log", "-r", "@ & empty()", "--no-graph", "--limit", "1", "-T", r#""x""#],
+        Arc::clone(cancel),
+    ).ok()?;
+    if at_empty.stdout_lossy().trim().is_empty() {
+        return None;
+    }
+
+    // Most recent non-empty leaf descending from `@`'s parent, excluding `@`'s
+    // own (empty) line — i.e. the rebased remainder of the abandoned stack.
+    let args = no_snapshot(&[
+        "log", "-r", "latest((heads((@-)::) ~ (@::)) ~ empty())", "--no-graph",
+        "--limit", "1", "-T", "change_id.short(12)",
+    ]);
+    let id = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()
+        .map(|o| o.stdout_lossy().trim().to_string())
+        .filter(|s| !s.is_empty())?;
+
+    // head_count is unused for an orphaned tip (compute_stack_position returns
+    // None because `@` is not an ancestor of the sibling tip), so 1 is fine.
+    Some(StackTip { change_id: id, head_count: 1 })
 }
 
 /// Info about the bookmark boundary for the current stack position.
@@ -326,10 +420,12 @@ fn compute_stack_position(repo_path: &Path, tip_id: &str) -> Option<(usize, usiz
 impl JjVcs {
     pub fn new(repo_path: PathBuf) -> Result<Self> {
         let from_rev = resolve_base_rev(&repo_path);
+        let op_store_dir = resolve_jj_op_store(&repo_path);
         Ok(Self {
             repo_path,
             from_rev,
             diff_base: AtomicU8::new(0),
+            op_store_dir,
         })
     }
 
@@ -480,6 +576,7 @@ fn process_jj_file(
     changed: &ChangedFile,
     binary_files: &HashSet<String>,
     tip_rev: Option<&str>,
+    at_rev: &str,
     bookmark_changed_files: Option<&HashSet<String>>,
     cancel: &Arc<AtomicBool>,
 ) -> FileProcessResult {
@@ -504,18 +601,21 @@ fn process_jj_file(
         return FileProcessResult::Cancelled;
     }
 
-    // @- content for the committed/staged boundary — try current path first,
-    // fall back to old_path for files renamed in the current commit
-    let parent = file_content_no_snapshot(repo_path, &changed.path, "@-", cancel)
+    // Parent of the current commit, for the committed/staged boundary — try
+    // current path first, fall back to old_path for files renamed in the current
+    // commit. `at_rev` is `@` normally, or the re-anchored sibling tip when `@`
+    // is an orphaned empty commit; its parent is `<at_rev>-`.
+    let at_parent = format!("{at_rev}-");
+    let parent = file_content_no_snapshot(repo_path, &changed.path, &at_parent, cancel)
         .or_else(|| {
             changed.old_path.as_deref()
-                .and_then(|old| file_content_no_snapshot(repo_path, old, "@-", cancel))
+                .and_then(|old| file_content_no_snapshot(repo_path, old, &at_parent, cancel))
         });
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
     }
 
-    let index = file_content_no_snapshot(repo_path, &changed.path, "@", cancel);
+    let index = file_content_no_snapshot(repo_path, &changed.path, at_rev, cancel);
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
     }
@@ -603,12 +703,28 @@ impl crate::vcs::Vcs for JjVcs {
             DiffBase::TrunkTip => &self.from_rev,
         };
 
-        // Resolve stack tip — determines if @ is mid-stack
+        // Resolve stack tip — determines if @ is mid-stack. If @ is at its own
+        // tip, fall back to orphaned-tip recovery (empty @ left by an abandon).
         let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev, cancel_flag);
+        let orphaned = if stack_tip.is_none() {
+            resolve_orphaned_tip(&self.repo_path, &self.from_rev, cancel_flag)
+        } else {
+            None
+        };
+        let orphaned_tip = orphaned.is_some();
+
+        // The commit treated as the current commit (`@`). Normally literally `@`;
+        // for an orphaned empty `@` it's the sibling tip, so that tip's changes
+        // color as the current commit and show in the [commit] view.
+        let at_rev = orphaned.as_ref().map(|t| t.change_id.as_str()).unwrap_or("@");
+        // Visible tip to enumerate and diff against.
         let effective_to = stack_tip
             .as_ref()
+            .or(orphaned.as_ref())
             .map(|t| t.change_id.as_str())
             .unwrap_or("@");
+        // The "above @" (Unstaged) layer only exists for a real stack tip above a
+        // mid-stack @; an orphaned tip *is* the anchor, so nothing sits above it.
         let tip_rev = stack_tip.as_ref().map(|t| t.change_id.as_str());
 
         // Resolve bookmark boundary for BookmarkOnly view mode
@@ -636,6 +752,7 @@ impl crate::vcs::Vcs for JjVcs {
                 changed,
                 &binary_files,
                 tip_rev,
+                at_rev,
                 bookmark_changed_files,
                 cancel_flag,
             )
@@ -664,7 +781,11 @@ impl crate::vcs::Vcs for JjVcs {
         };
         let (base_identifier, base_label_str) =
             self.rev_metadata_no_snapshot(effective_from);
-        let (_, current_branch_str) = self.rev_metadata_no_snapshot("@");
+        // Normally the "to" label is @ (where the working copy sits). When we
+        // re-anchored to an orphaned sibling tip, @ is an empty throwaway commit,
+        // so label the tip we actually diffed against instead.
+        let to_rev = if orphaned_tip { effective_to } else { "@" };
+        let (_, current_branch_str) = self.rev_metadata_no_snapshot(to_rev);
 
         let file_paths: Vec<&str> = files
             .iter()
@@ -700,9 +821,18 @@ impl crate::vcs::Vcs for JjVcs {
             DiffBase::TrunkTip => &self.from_rev,
         };
 
+        // Mirror refresh()'s anchoring so an incremental update stays consistent
+        // with a full refresh, including the orphaned-empty-@ re-anchor.
         let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev, &cancel);
+        let orphaned = if stack_tip.is_none() {
+            resolve_orphaned_tip(&self.repo_path, &self.from_rev, &cancel)
+        } else {
+            None
+        };
+        let at_rev = orphaned.as_ref().map(|t| t.change_id.as_str()).unwrap_or("@");
         let effective_to = stack_tip
             .as_ref()
+            .or(orphaned.as_ref())
             .map(|t| t.change_id.as_str())
             .unwrap_or("@");
 
@@ -715,12 +845,14 @@ impl crate::vcs::Vcs for JjVcs {
         let base_path = old_path.unwrap_or(file_path);
         let base = file_content_no_snapshot(&self.repo_path, base_path, effective_from, &cancel);
 
-        let parent = file_content_no_snapshot(&self.repo_path, file_path, "@-", &cancel)
+        let at_parent = format!("{at_rev}-");
+        let parent = file_content_no_snapshot(&self.repo_path, file_path, &at_parent, &cancel)
             .or_else(|| {
-                old_path.and_then(|old| file_content_no_snapshot(&self.repo_path, old, "@-", &cancel))
+                old_path.and_then(|old| file_content_no_snapshot(&self.repo_path, old, &at_parent, &cancel))
             });
 
-        let index = file_content_no_snapshot(&self.repo_path, file_path, "@", &cancel);
+        let index = file_content_no_snapshot(&self.repo_path, file_path, at_rev, &cancel);
+        // Only a real stack tip sits above @; an orphaned tip is itself the anchor.
         let tip_content = stack_tip
             .as_ref()
             .and_then(|t| file_content_no_snapshot(&self.repo_path, file_path, &t.change_id, &cancel));
@@ -806,11 +938,19 @@ impl crate::vcs::Vcs for JjVcs {
         let jj_dir = self.repo_path.join(".jj");
         VcsWatchPaths {
             files: vec![jj_dir.join("working_copy/checkout")],
-            recursive_dirs: vec![jj_dir.join("repo/op_store")],
+            // The op_store may live outside this workspace (shared via the
+            // `.jj/repo` pointer), so use the resolved path, not a literal join.
+            recursive_dirs: vec![self.op_store_dir.clone()],
         }
     }
 
     fn classify_event(&self, path: &Path) -> VcsEventType {
+        // The shared op_store can sit outside `repo_path` (jj workspace), where
+        // the `.jj`-prefix check below would miss it and mislabel it as Source.
+        if path.starts_with(&self.op_store_dir) {
+            return VcsEventType::Internal;
+        }
+
         let relative = path.strip_prefix(&self.repo_path).unwrap_or(path);
         let first = relative.components().next().map(|c| c.as_os_str());
 
@@ -1252,6 +1392,52 @@ mod tests {
         assert!(paths.recursive_dirs.contains(&PathBuf::from("/repo/.jj/repo/op_store")));
     }
 
+    #[test]
+    fn test_resolve_op_store_default_workspace() {
+        // `.jj/repo` is a real directory: op_store lives directly under it.
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".jj/repo")).unwrap();
+        assert_eq!(
+            resolve_jj_op_store(temp.path()),
+            temp.path().join(".jj/repo/op_store")
+        );
+    }
+
+    #[test]
+    fn test_resolve_op_store_secondary_workspace_pointer() {
+        // `.jj/repo` is a pointer *file* to the shared repo (jj workspace add).
+        let shared = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(shared.path().join("op_store")).unwrap();
+        let ws = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(ws.path().join(".jj")).unwrap();
+        std::fs::write(ws.path().join(".jj/repo"), shared.path().to_string_lossy().as_bytes()).unwrap();
+
+        let resolved = resolve_jj_op_store(ws.path());
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(shared.path().join("op_store")).unwrap(),
+            "should resolve to the shared repo's op_store, not under the workspace"
+        );
+    }
+
+    #[test]
+    fn test_classify_shared_op_store_outside_workspace_is_internal() {
+        // A workspace whose op_store lives elsewhere must still classify that
+        // out-of-tree op_store as Internal (not Source).
+        let shared = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(shared.path().join("op_store")).unwrap();
+        let ws = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(ws.path().join(".jj")).unwrap();
+        std::fs::write(ws.path().join(".jj/repo"), shared.path().to_string_lossy().as_bytes()).unwrap();
+
+        let vcs = JjVcs::new(ws.path().to_path_buf()).unwrap();
+        let canonical_op = std::fs::canonicalize(shared.path().join("op_store")).unwrap();
+        assert_eq!(
+            vcs.classify_event(&canonical_op.join("heads")),
+            VcsEventType::Internal
+        );
+    }
+
     // === Integration tests (require jj installed) ===
 
     fn jj_available() -> bool {
@@ -1366,7 +1552,7 @@ mod tests {
 
         assert!(!result.files.is_empty(), "should detect deleted file");
         let header = &result.lines[0];
-        assert!(header.content.contains("(deleted)"),
+        assert!(header.content.contains("(deleted"),
             "deleted file should have deletion header, got: {}", header.content);
         // With from_rev=@- (no remote), base==head so deletions in @ are DeletedCommitted
         let has_deleted_source = result.lines.iter().any(|l| l.source == LineSource::DeletedCommitted);
@@ -1736,6 +1922,113 @@ mod tests {
         assert_eq!(tip.head_count, 2, "branching stack should have 2 heads");
     }
 
+    // === Orphaned tip resolution tests (empty @ left by abandoning the edited commit) ===
+
+    fn jj_out(repo: &Path, args: &[&str]) -> String {
+        let o = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    /// Build trunk → a → b → c, put @ on b, then abandon b. jj moves @ to a fresh
+    /// empty commit on a and rebases c as a sibling. Returns (repo dir, c's change id).
+    fn setup_orphaned_after_abandon() -> (tempfile::TempDir, tempfile::TempDir, String) {
+        let (temp, remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "a"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "b"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "c"]).current_dir(repo).output().unwrap();
+        // From the empty working copy: @-=c, @--=b. Edit b, capturing c (its child) first.
+        Command::new("jj").args(["edit", "@--"]).current_dir(repo).output().unwrap();
+        let c_id = jj_out(repo, &["log", "-r", "@+", "--no-graph", "-T", "change_id.short(12)"]);
+        Command::new("jj").args(["abandon", "@"]).current_dir(repo).output().unwrap();
+        (temp, remote, c_id)
+    }
+
+    #[test]
+    fn test_resolve_orphaned_tip_follows_sibling_after_abandon() {
+        if !jj_available() { return; }
+
+        let (temp, _remote, c_id) = setup_orphaned_after_abandon();
+        let repo = temp.path();
+
+        let tip = resolve_orphaned_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false)))
+            .expect("orphaned empty @ with a sibling should resolve to the sibling tip");
+        assert!(
+            c_id.starts_with(&tip.change_id) || tip.change_id.starts_with(&c_id),
+            "orphaned tip {} should be c ({c_id})", tip.change_id
+        );
+    }
+
+    #[test]
+    fn test_orphaned_tip_refresh_shows_remaining_stack() {
+        if !jj_available() { return; }
+
+        let (temp, _remote, _c_id) = setup_orphaned_after_abandon();
+        let repo = temp.path();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let result = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+
+        // The diff must include c's file even though @ itself is empty.
+        let shows_c = result.lines.iter().any(|l| l.content.contains("c.txt"));
+        assert!(shows_c, "refresh after abandon should re-anchor to c and show c.txt");
+
+        // c is treated as the current commit: its content must be Staged so the
+        // [commit] view shows c rather than "No changes in current commit".
+        let c_is_staged = result.lines.iter().any(|l| l.source == LineSource::Staged && l.content.contains("c"));
+        assert!(c_is_staged, "c's change should color as the current commit (Staged)");
+    }
+
+    #[test]
+    fn test_resolve_orphaned_tip_none_for_normal_tip() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        // Normal linear stack, @ empty on top — its parent's only child.
+        std::fs::write(repo.join("f.txt"), "x\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "f"]).current_dir(repo).output().unwrap();
+
+        let tip = resolve_orphaned_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false)));
+        assert!(tip.is_none(), "no sibling → must not re-anchor");
+    }
+
+    #[test]
+    fn test_resolve_orphaned_tip_none_when_at_nonempty() {
+        if !jj_available() { return; }
+
+        // @ is non-empty AND has a sibling: deliberate forked work, do not hijack.
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "a"]).current_dir(repo).output().unwrap();
+        let a_id = jj_out(repo, &["log", "-r", "@-", "--no-graph", "-T", "change_id.short(12)"]);
+        // First sibling under a.
+        std::fs::write(repo.join("sib1.txt"), "s1\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "sib1"]).current_dir(repo).output().unwrap();
+        // Second sibling under a, left as a non-empty working copy (@).
+        Command::new("jj").args(["new", &a_id]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("sib2.txt"), "s2\n").unwrap();
+
+        let tip = resolve_orphaned_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false)));
+        assert!(tip.is_none(), "non-empty @ with a sibling must not be re-anchored");
+    }
+
+    #[test]
+    fn test_resolve_orphaned_tip_none_without_trunk() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+
+        let tip = resolve_orphaned_tip(repo, "@-", &Arc::new(AtomicBool::new(false)));
+        assert!(tip.is_none(), "orphaned recovery only applies in trunk() mode");
+    }
+
     #[test]
     fn test_stack_position_mid_stack() {
         if !jj_available() { return; }
@@ -1889,7 +2182,7 @@ mod tests {
 
         assert!(!result.files.is_empty(), "should detect deleted file");
         let header = &result.lines[0];
-        assert!(header.content.contains("(deleted)"),
+        assert!(header.content.contains("(deleted"),
             "deleted file should have deletion header, got: {}", header.content);
         let has_deleted = result.lines.iter().any(|l| l.source == LineSource::DeletedCommitted);
         assert!(has_deleted, "file deleted in current commit should have DeletedCommitted source");

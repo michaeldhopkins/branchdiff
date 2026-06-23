@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use notify_debouncer_mini::{DebouncedEvent, DebouncedEventKind};
@@ -24,14 +24,6 @@ fn is_noisy_path(path_str: &str) -> bool {
         || path_str.contains("/.bundle/")
         || path_str.contains("/log/")
         || path_str.ends_with(".lock")
-}
-
-fn is_vcs_path(path: &Path, repo_root: &Path) -> bool {
-    let relative = path.strip_prefix(repo_root).unwrap_or(path);
-    relative
-        .components()
-        .next()
-        .is_some_and(|c| c.as_os_str() == ".jj" || c.as_os_str() == ".git")
 }
 
 /// Handle file system change events.
@@ -84,10 +76,15 @@ pub(super) fn handle_file_change(
     let filtered_paths: Vec<_> = unique_paths
         .into_iter()
         .filter(|p| {
+            // VCS-relevant events (commits, branch moves, a shared op_store that
+            // may live outside this worktree in a jj workspace) must never be
+            // dropped as "noise" or gitignored away — the backend classifies them.
+            if vcs.classify_event(p) != VcsEventType::Source {
+                return true;
+            }
             let relative = p.strip_prefix(repo_root).unwrap_or(p);
-            !is_noisy_path(&relative.to_string_lossy())
+            !is_noisy_path(&relative.to_string_lossy()) && !app.gitignore_filter.is_ignored(p)
         })
-        .filter(|p| is_vcs_path(p, repo_root) || !app.gitignore_filter.is_ignored(p))
         .collect();
 
     let mut should_refresh = false;
