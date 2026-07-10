@@ -312,6 +312,76 @@ fn bench_update(c: &mut Criterion) {
     group.finish();
 }
 
+/// Whether the `jj` binary is available (the refresh bench needs a real repo).
+fn jj_available() -> bool {
+    std::process::Command::new("jj").arg("--version").output().is_ok()
+}
+
+/// Build a synthetic repo with `total` committed files, then dirty `changed` of
+/// them on disk (un-snapshotted). `external` holds a bare git store *outside* the
+/// worktree — passing `Some` yields a repo with no workdir git index (the
+/// disk-walk fallback target); `None` yields the common colocated layout. Keep
+/// both returned temp dirs alive for the bench's lifetime.
+fn make_bench_repo(
+    total: usize,
+    changed: usize,
+    external: bool,
+) -> (tempfile::TempDir, Option<tempfile::TempDir>, Box<dyn branchdiff::vcs::Vcs>) {
+    use std::process::Command;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo = tmp.path();
+
+    let ext = if external {
+        let e = tempfile::tempdir().expect("ext tempdir");
+        Command::new("git").args(["init", "--bare"]).current_dir(e.path()).output().expect("git init --bare");
+        let arg = format!("--git-repo={}", e.path().display());
+        Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().expect("jj git init --git-repo");
+        Some(e)
+    } else {
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().expect("jj git init");
+        None
+    };
+
+    for f in 0..total {
+        std::fs::write(repo.join(format!("file_{f}.txt")), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+    }
+    Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().expect("jj commit");
+    for f in 0..changed.min(total) {
+        std::fs::write(repo.join(format!("file_{f}.txt")), "one\nCHANGED\nthree\nfour\nfive\n").unwrap();
+    }
+    let vcs = branchdiff::vcs::detect(repo).expect("detect backend");
+    (tmp, ext, vcs)
+}
+
+/// Benchmark the real `refresh()` path — the code the de-snapshot work changes.
+/// Requires `jj`; skipped otherwise. Each iteration re-runs discovery + content
+/// reads + diff over the changed set (the first snapshot is a one-time no-op
+/// after, since the files don't change between iterations).
+fn bench_refresh(c: &mut Criterion) {
+    if !jj_available() {
+        return;
+    }
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut group = c.benchmark_group("refresh");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(10));
+
+    for (total, changed) in [(50usize, 10usize), (500, 25)] {
+        let (_tmp, _ext, vcs) = make_bench_repo(total, changed, false);
+        group.bench_function(BenchmarkId::new("colocated", format!("{total}f_{changed}c")), |b| {
+            b.iter(|| black_box(vcs.refresh(&cancel).expect("refresh")));
+        });
+    }
+
+    // The `!is_colocated()` external-store path (disk-walk fallback target).
+    let (_tmp_ext, _ext_store, vcs_ext) = make_bench_repo(50, 10, true);
+    group.bench_function(BenchmarkId::new("non_colocated", "50f_10c"), |b| {
+        b.iter(|| black_box(vcs_ext.refresh(&cancel).expect("refresh")));
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_frame_context,
@@ -320,5 +390,6 @@ criterion_group!(
     bench_view_mode,
     bench_context_mode,
     bench_update,
+    bench_refresh,
 );
 criterion_main!(benches);

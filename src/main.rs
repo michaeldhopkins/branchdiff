@@ -23,8 +23,8 @@ use branchdiff::message::{
     FALLBACK_REFRESH_SECS,
 };
 use branchdiff::update::{
-    classify_error, update, watchdog_timeout_from_env, ErrorClass, RecoveryAction,
-    RefreshState, Timers, UpdateConfig,
+    classify_error, update, watchdog_timeout_from_env, ErrorClass,
+    RecoveryAction, RefreshState, Timers, UpdateConfig,
 };
 use branchdiff::vcs::{self, ComparisonContext, RefreshResult, Vcs};
 use branchdiff::ui;

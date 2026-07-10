@@ -297,16 +297,7 @@ pub(super) fn batch_file_contents(
 
 /// Get working tree file content
 pub(super) fn get_working_tree_file(repo_path: &Path, file_path: &str) -> Result<Option<String>> {
-    let full_path = repo_path.join(file_path);
-    if !full_path.exists() {
-        return Ok(None);
-    }
-
-    match std::fs::read(&full_path) {
-        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    crate::vcs::shared::read_working_file(repo_path, file_path)
 }
 
 /// Get file content as raw bytes at a specific ref (for binary files like images)
@@ -332,16 +323,7 @@ pub fn get_file_bytes_at_ref(
 
 /// Get working tree file content as raw bytes (for binary files like images)
 pub fn get_working_tree_bytes(repo_path: &Path, file_path: &str) -> Result<Option<Vec<u8>>> {
-    let full_path = repo_path.join(file_path);
-    if !full_path.exists() {
-        return Ok(None);
-    }
-
-    match std::fs::read(&full_path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    crate::vcs::shared::read_working_file_bytes(repo_path, file_path)
 }
 
 /// Check if a file is binary (single file check - prefer get_binary_files for batch operations)

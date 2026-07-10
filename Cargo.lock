@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "branchdiff"
-version = "0.70.2"
+version = "0.71.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3890,9 +3890,9 @@ dependencies = [
 
 [[package]]
 name = "vcs-runner"
-version = "0.13.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cecd866a029e25080e13331bd60e8f712d1975e48efbb78c7ac5fca7bd0d838"
+checksum = "5627b3f7fc20dc6d9d248c22c27e3a2de5a570fb81ec81f21f68f3851c3cdd8e"
 dependencies = [
  "anyhow",
  "procpilot",

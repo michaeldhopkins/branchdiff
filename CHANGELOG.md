@@ -1,5 +1,10 @@
 ## [unreleased]
 
+### Features
+
+- *(jj)* Stop snapshotting the working copy on refresh
+## [0.70.2] - 2026-06-23
+
 ### Bug Fixes
 
 - *(jj)* Parse nested renames and don't adopt sibling workspaces
