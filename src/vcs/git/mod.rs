@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use crate::diff::FileDiff;
 use crate::vcs::{ComparisonContext, RefreshResult, Vcs, VcsBackend};
 
-pub use changed_files::ChangedFile;
+pub use changed_files::{get_all_changed_files, ChangedFile};
 pub use commands::{
     detect_base_branch, fetch_base_branch, get_binary_files, get_current_branch,
     get_file_bytes_at_ref, get_git_version, get_merge_base_preferring_origin, get_repo_root,

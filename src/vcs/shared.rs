@@ -1,11 +1,34 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use anyhow::Result;
 use rayon::prelude::*;
 
 use crate::diff::{DiffLine, FileDiff, LineSource};
 
 use super::{vcs_thread_pool, PARALLEL_THRESHOLD};
+
+// Working-copy file access lives in vcs-runner (the shared VCS layer): reading
+// the working side of a diff from disk — so jj never snapshots to surface
+// un-committed edits — is a cross-app concern (branchdiff + specdiff). These
+// thin wrappers keep branchdiff's `anyhow::Result` call sites unchanged.
+
+/// Read a working-copy file's current on-disk content as text. See
+/// [`vcs_runner::read_working_file`].
+pub(crate) fn read_working_file(repo_path: &Path, file_path: &str) -> Result<Option<String>> {
+    Ok(vcs_runner::read_working_file(repo_path, file_path)?)
+}
+
+/// Bytes variant of [`read_working_file`] (for image/binary handling).
+pub(crate) fn read_working_file_bytes(repo_path: &Path, file_path: &str) -> Result<Option<Vec<u8>>> {
+    Ok(vcs_runner::read_working_file_bytes(repo_path, file_path)?)
+}
+
+/// Whether a working-copy file looks binary (NUL in the first 8 KiB).
+pub(crate) fn working_file_is_binary(repo_path: &Path, file_path: &str) -> bool {
+    vcs_runner::working_file_is_binary(repo_path, file_path)
+}
 
 /// Result of processing a single file in a VCS refresh.
 pub(crate) enum FileProcessResult {

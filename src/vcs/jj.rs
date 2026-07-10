@@ -1,7 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use anyhow::Result;
 
@@ -42,6 +43,42 @@ pub struct JjVcs {
     /// `repo_path`. Watching/classifying it is what lets a workspace notice
     /// operations performed elsewhere.
     op_store_dir: PathBuf,
+    /// Stat-cache for the disk-walk fallback (repos with no workdir git index).
+    /// Unused by colocated repos, which discover via git.
+    disk_manifest: Mutex<DiskManifest>,
+    /// How many base-file content comparisons the last disk-walk performed —
+    /// instrumentation proving a warm refresh reads O(changed), not O(tree).
+    base_read_count: AtomicUsize,
+}
+
+/// Stat-cache for the disk-walk fallback. Caches, per base commit, which
+/// working-copy files differ from the base, so a warm refresh only re-reads
+/// files whose mtime advanced past the last validation — turning an O(tree)
+/// content scan into O(changed).
+struct DiskManifest {
+    /// Base commit id the cache is valid for; a change invalidates everything.
+    base: String,
+    /// Base tree file list (for detecting deletions), valid for `base`.
+    base_files: Vec<String>,
+    /// When the cache was last fully validated. A file whose mtime is `>=` this
+    /// is re-read — the git "racy index" rule: an edit landing in the same tick
+    /// as the previous refresh must never be trusted as clean. Caveat: an edit
+    /// that *preserves* mtime (`cp -p`, `touch -r`) is not detected; acceptable
+    /// for this rare (external-store-only) path.
+    checkpoint: SystemTime,
+    /// Per working-copy path: does its on-disk content differ from the base?
+    differs: HashMap<String, bool>,
+}
+
+impl DiskManifest {
+    fn empty() -> Self {
+        Self {
+            base: String::new(),
+            base_files: Vec::new(),
+            checkpoint: SystemTime::UNIX_EPOCH,
+            differs: HashMap::new(),
+        }
+    }
 }
 
 /// Resolve the shared `op_store` directory for a jj repo. The default workspace
@@ -435,6 +472,8 @@ impl JjVcs {
             from_rev,
             diff_base: AtomicU8::new(0),
             op_store_dir,
+            disk_manifest: Mutex::new(DiskManifest::empty()),
+            base_read_count: AtomicUsize::new(0),
         })
     }
 
@@ -476,6 +515,162 @@ impl JjVcs {
         Ok(parse_jj_summary(&output.stdout_lossy()))
     }
 
+    /// Resolve a jj revision to its git commit id, working-copy-agnostically.
+    fn commit_id_of(&self, rev: &str) -> Option<String> {
+        let out = self
+            .run_jj(&no_snapshot(&["log", "-r", rev, "--no-graph", "--limit", "1", "-T", "commit_id"]))
+            .ok()?;
+        let id = out.trim().to_string();
+        (!id.is_empty()).then_some(id)
+    }
+
+    /// Discover files changed between `effective_from` and the working copy
+    /// (`@` + un-snapshotted edits) WITHOUT snapshotting. Valid only when the
+    /// working copy is the diff target (the common non-stack case,
+    /// `effective_to == "@"`).
+    ///
+    /// Colocated repos reuse git's stat-cached worktree discovery: git HEAD
+    /// tracks `@-`, so `base..HEAD` (committed) plus `git status` (worktree =
+    /// `@` + live edits) equals `base..working`, and git never churns jj's
+    /// oplog. Repos with no workdir git index fall back to a disk walk.
+    fn discover_working_changes(
+        &self,
+        effective_from: &str,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<Vec<ChangedFile>> {
+        if self.is_colocated() {
+            // A missing commit id would make `get_all_changed_files` diff against
+            // git's empty tree and report every file as added — fall back to the
+            // (snapshotting) jj summary rather than render a bogus all-added diff.
+            let Some(base) = self.commit_id_of(effective_from) else {
+                return self.get_changed_files_with_from(effective_from, "@", cancel);
+            };
+            let git_changed = crate::vcs::git::get_all_changed_files(&self.repo_path, &base)?;
+            Ok(git_changed
+                .into_iter()
+                .map(|f| ChangedFile { path: f.path, old_path: f.old_path })
+                .collect())
+        } else {
+            self.diskwalk_changed_files(effective_from, cancel)
+        }
+    }
+
+    /// The base tree's file list, read working-copy-agnostically.
+    fn base_file_list(&self, base: &str) -> Result<Vec<String>> {
+        let out = self.run_jj(&no_snapshot(&["file", "list", "-r", base]))?;
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect())
+    }
+
+    /// Fallback discovery for repos with no workdir git index (the rare
+    /// `jj git init --git-repo=<external>` form): compare the base tree to the
+    /// on-disk working tree directly — no git, no snapshot.
+    ///
+    /// A [`DiskManifest`] stat-cache makes this O(changed) on a warm refresh:
+    /// only files whose mtime advanced past the last validation are re-read and
+    /// re-compared against the base; everything else reuses its cached verdict.
+    /// A base change (commit/rebase) or the first refresh pays the O(tree) cold
+    /// cost once.
+    fn diskwalk_changed_files(
+        &self,
+        effective_from: &str,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<Vec<ChangedFile>> {
+        // Key the cache on the resolved base commit, not the symbolic rev — `@-`
+        // keeps its spelling across commits but points at a different tree.
+        let base_id = self.commit_id_of(effective_from).unwrap_or_default();
+        let mut m = self.disk_manifest.lock().unwrap_or_else(|e| e.into_inner());
+
+        if m.base != base_id {
+            m.base = base_id;
+            m.base_files = self.base_file_list(effective_from)?;
+            m.differs.clear();
+            m.checkpoint = SystemTime::UNIX_EPOCH; // force a cold pass
+        }
+
+        let mut changed = Vec::new();
+        let mut new_differs = HashMap::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        {
+            let base_set: HashSet<&str> = m.base_files.iter().map(String::as_str).collect();
+            let checkpoint = m.checkpoint;
+            for entry in ignore::WalkBuilder::new(&self.repo_path)
+                .hidden(false)
+                .filter_entry(|e| {
+                    let name = e.file_name().to_string_lossy();
+                    name != ".jj" && name != ".git"
+                })
+                .build()
+                .flatten()
+            {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                if !entry.file_type().is_some_and(|t| t.is_file()) {
+                    continue;
+                }
+                let Ok(rel) = entry.path().strip_prefix(&self.repo_path) else { continue };
+                let path = rel.to_string_lossy().replace('\\', "/");
+                let mtime = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|md| md.modified().ok())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                seen.insert(path.clone());
+
+                let differs = if mtime < checkpoint {
+                    // Untouched since the last validation → reuse the verdict.
+                    *m.differs.get(&path).unwrap_or(&false)
+                } else {
+                    self.base_read_count.fetch_add(1, Ordering::Relaxed);
+                    let disk = crate::vcs::shared::read_working_file(&self.repo_path, &path).ok().flatten();
+                    let base = if base_set.contains(path.as_str()) {
+                        file_content_no_snapshot(&self.repo_path, &path, effective_from, cancel)
+                    } else {
+                        None // not in the base tree ⇒ an addition
+                    };
+                    disk.as_deref() != base.as_deref()
+                };
+                new_differs.insert(path.clone(), differs);
+                if differs {
+                    changed.push(ChangedFile { path, old_path: None });
+                }
+            }
+
+            // Deletions: base files no longer present on disk.
+            for bp in &m.base_files {
+                if !seen.contains(bp.as_str()) {
+                    changed.push(ChangedFile { path: bp.clone(), old_path: None });
+                }
+            }
+        }
+
+        // Persist the cache only if the walk ran to completion. A cancelled walk
+        // has a partial `new_differs`; committing it (with a fresh checkpoint)
+        // would make the next refresh trust missing entries as "unchanged" and
+        // silently drop their diffs. Leaving the previous cache is safe — it just
+        // re-validates from the older checkpoint next time.
+        if !cancel.load(Ordering::Relaxed) {
+            m.differs = new_differs;
+            m.checkpoint = SystemTime::now();
+        }
+        Ok(changed)
+    }
+
+    #[cfg(test)]
+    fn base_reads(&self) -> usize {
+        self.base_read_count.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn reset_base_reads(&self) {
+        self.base_read_count.store(0, Ordering::Relaxed);
+    }
+
     /// Detect binary files by checking --stat output for "(binary)" markers.
     /// Uses `--ignore-working-copy` since the snapshot is already fresh from
     /// `get_changed_files`.
@@ -497,6 +692,18 @@ impl JjVcs {
             Ok(output) => parse_binary_from_stat(&output.stdout_lossy()),
             Err(_) => HashSet::new(),
         }
+    }
+
+    /// Binary files on the working side, detected without a snapshot: a changed
+    /// file whose on-disk bytes contain a NUL in the first 8 KiB (git's binary
+    /// heuristic). VCS-neutral and catches untracked binaries, which git's
+    /// `--numstat` misses.
+    fn working_binary_files(&self, changed: &[ChangedFile]) -> HashSet<String> {
+        changed
+            .iter()
+            .filter(|f| crate::vcs::shared::working_file_is_binary(&self.repo_path, &f.path))
+            .map(|f| f.path.clone())
+            .collect()
     }
 
     fn get_file_bytes_at_rev(&self, file_path: &str, rev: &str) -> Result<Option<Vec<u8>>> {
@@ -624,7 +831,14 @@ fn process_jj_file(
         return FileProcessResult::Cancelled;
     }
 
-    let index = file_content_no_snapshot(repo_path, &changed.path, at_rev, cancel);
+    // The working ("current") side of the diff comes from disk — no snapshot
+    // required, so branchdiff never churns the oplog. A committed `at_rev` (the
+    // orphaned-tip / stack case) is still a WC-agnostic jj read.
+    let index = if at_rev == "@" {
+        crate::vcs::shared::read_working_file(repo_path, &changed.path).ok().flatten()
+    } else {
+        file_content_no_snapshot(repo_path, &changed.path, at_rev, cancel)
+    };
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
     }
@@ -740,15 +954,26 @@ impl crate::vcs::Vcs for JjVcs {
         let bookmark_boundary = resolve_bookmark_boundary(&self.repo_path, &self.from_rev, cancel_flag);
         let bookmark_changed_files = bookmark_boundary.as_ref().map(|b| &b.changed_files);
 
-        // First command — triggers working copy auto-snapshot
-        let changed_files = self.get_changed_files_with_from(effective_from, effective_to, cancel_flag)?;
+        // Discover changed files. When the working copy is the diff target (the
+        // common case), do it from disk/git without snapshotting. The stack /
+        // orphaned-tip cases target a committed rev and still use the jj summary.
+        let changed_files = if effective_to == "@" {
+            self.discover_working_changes(effective_from, cancel_flag)?
+        } else {
+            self.get_changed_files_with_from(effective_from, effective_to, cancel_flag)?
+        };
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
         }
 
-        // All subsequent commands use --ignore-working-copy
-        let binary_files = self.get_binary_files_set(effective_from, effective_to, cancel_flag);
+        // Binary detection: from disk for the working target (no snapshot), else
+        // the committed-diff stat for the stack/orphaned cases.
+        let binary_files = if effective_to == "@" {
+            self.working_binary_files(&changed_files)
+        } else {
+            self.get_binary_files_set(effective_from, effective_to, cancel_flag)
+        };
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
@@ -815,6 +1040,7 @@ impl crate::vcs::Vcs for JjVcs {
             bookmark_name: bookmark_boundary.map(|b| b.bookmark_name),
             revision_id: None,
             divergence,
+            // Populated by the worker thread / initial-load path, not the backend.
         })
     }
 
@@ -845,8 +1071,12 @@ impl crate::vcs::Vcs for JjVcs {
             .map(|t| t.change_id.as_str())
             .unwrap_or("@");
 
-        // First command triggers auto-snapshot
-        let changed_files = self.get_changed_files_with_from(effective_from, effective_to, &cancel).ok()?;
+        // Discover from disk/git without snapshotting in the common case.
+        let changed_files = if effective_to == "@" {
+            self.discover_working_changes(effective_from, &cancel).ok()?
+        } else {
+            self.get_changed_files_with_from(effective_from, effective_to, &cancel).ok()?
+        };
         let changed = changed_files.iter().find(|f| f.path == file_path);
         let old_path = changed.and_then(|f| f.old_path.as_deref());
 
@@ -860,7 +1090,12 @@ impl crate::vcs::Vcs for JjVcs {
                 old_path.and_then(|old| file_content_no_snapshot(&self.repo_path, old, &at_parent, &cancel))
             });
 
-        let index = file_content_no_snapshot(&self.repo_path, file_path, at_rev, &cancel);
+        // Working side from disk (see `process_jj_file`); committed `at_rev` via jj.
+        let index = if at_rev == "@" {
+            crate::vcs::shared::read_working_file(&self.repo_path, file_path).ok().flatten()
+        } else {
+            file_content_no_snapshot(&self.repo_path, file_path, at_rev, &cancel)
+        };
         // Only a real stack tip sits above @; an orphaned tip is itself the anchor.
         let tip_content = stack_tip
             .as_ref()
@@ -871,8 +1106,12 @@ impl crate::vcs::Vcs for JjVcs {
             return None;
         }
 
-        let binary_files = self.get_binary_files_set(effective_from, effective_to, &cancel);
-        if binary_files.contains(file_path) {
+        let is_binary = if effective_to == "@" {
+            crate::vcs::shared::working_file_is_binary(&self.repo_path, file_path)
+        } else {
+            self.get_binary_files_set(effective_from, effective_to, &cancel).contains(file_path)
+        };
+        if is_binary {
             return None;
         }
 
@@ -914,21 +1153,26 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn working_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
-        self.get_file_bytes_at_rev(file_path, "@")
+        // The working copy is on disk — read it directly rather than snapshotting.
+        crate::vcs::shared::read_working_file_bytes(&self.repo_path, file_path)
     }
 
     fn binary_files(&self) -> HashSet<String> {
-        // Trait method has no cancel hook — use a never-set flag so the
-        // cancellable helper compiles cleanly. This path is used outside the
-        // refresh hot loop (e.g. image rendering callbacks) where mid-call
-        // cancellation isn't currently wired through the trait.
+        // Used outside the refresh hot loop (e.g. image rendering). Detect from
+        // disk over the working change set so it needs no snapshot.
         let cancel = Arc::new(AtomicBool::new(false));
-        self.get_binary_files_set(&self.from_rev, "@", &cancel)
+        match self.discover_working_changes(&self.from_rev, &cancel) {
+            Ok(changed) => self.working_binary_files(&changed),
+            Err(_) => HashSet::new(),
+        }
     }
 
     fn fetch(&self) -> Result<()> {
         if self.is_colocated() {
-            self.run_jj(&["git", "fetch"])?;
+            // `--ignore-working-copy`: this runs on a timer in the background;
+            // without it, every auto-fetch snapshots the user's in-progress
+            // edits and can move `@` under them.
+            self.run_jj(&no_snapshot(&["git", "fetch"]))?;
         }
         Ok(())
     }
@@ -2456,4 +2700,566 @@ mod tests {
             "refresh with pre-set cancel took {elapsed:?} — cancel isn't propagating"
         );
     }
+
+
+    /// Whether `@` is an empty commit, read without snapshotting.
+    fn at_is_empty(repo: &Path) -> String {
+        jj_out(repo, &["log", "-r", "@", "--no-graph", "--ignore-working-copy", "-T", "empty"])
+    }
+
+    /// The periodic auto-fetch runs on a timer in the background, so it must not
+    /// snapshot the user's in-progress edits (which would fold them into `@` and
+    /// move it under them). We prove it by leaving an un-snapshotted edit and
+    /// asserting `@` stays empty across the fetch.
+    #[test]
+    fn fetch_is_working_copy_agnostic() {
+        if !jj_available() { return; }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        // Un-snapshotted edit to an already-committed file.
+        std::fs::write(repo.join("base.txt"), "dirty working copy edit\n").unwrap();
+        assert_eq!(at_is_empty(repo), "true", "precondition: the edit must be un-snapshotted");
+
+        vcs.fetch().unwrap();
+
+        assert_eq!(
+            at_is_empty(repo),
+            "true",
+            "fetch snapshotted the working copy (@ is no longer empty) — auto-fetch must be \
+             working-copy-agnostic"
+        );
+    }
+
+    /// Count operations in the log, read without snapshotting.
+    fn op_count(repo: &Path) -> usize {
+        jj_out(repo, &["op", "log", "--no-graph", "--ignore-working-copy", "-T", r#""x\n""#])
+            .lines()
+            .count()
+    }
+
+    /// Characterizes the jj rule branchdiff's oplog-churn depends on: a snapshot
+    /// records an operation ONLY when the working copy actually changed. So a
+    /// refresh churns exactly one op per edit — which is why an always-on TUI
+    /// that refreshes on every save is a constant background writer. This test
+    /// pins the assumption; if a future jj changes it, the de-snapshot design
+    /// needs revisiting.
+    #[test]
+    fn jj_snapshot_records_operation_only_on_a_real_change() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let base = op_count(repo);
+        // A working-copy-agnostic read never snapshots.
+        Command::new("jj").args(["diff", "--ignore-working-copy"]).current_dir(repo).output().unwrap();
+        assert_eq!(op_count(repo), base, "ignore-working-copy read must not create an operation");
+        // A snapshot on an unchanged working copy is a no-op.
+        Command::new("jj").args(["diff"]).current_dir(repo).output().unwrap();
+        assert_eq!(op_count(repo), base, "snapshot with no change must not create an operation");
+        // A snapshot on a changed working copy records exactly one operation.
+        std::fs::write(repo.join("f.txt"), "a\nb\n").unwrap();
+        Command::new("jj").args(["diff"]).current_dir(repo).output().unwrap();
+        assert_eq!(op_count(repo), base + 1, "snapshotting a real change records one operation");
+    }
+
+    /// The invariant any de-snapshot refactor MUST preserve: the diff reflects
+    /// the on-disk working copy, including edits jj hasn't snapshotted yet.
+    /// Green today (via the snapshot); must stay green when the working side is
+    /// sourced from disk instead.
+    #[test]
+    fn refresh_diff_includes_unsnapshotted_working_copy_edit() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("f.txt"), "a\nb\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        std::fs::write(repo.join("f.txt"), "a\nb\nUNSNAPSHOTTED\n").unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+
+        assert!(
+            result.lines.iter().any(|l| l.content.contains("UNSNAPSHOTTED")),
+            "refresh must reflect the on-disk working copy, including un-snapshotted edits"
+        );
+    }
+
+    /// Proves the discovery mechanism the colocated de-snapshot design rests on:
+    /// in a colocated repo git HEAD tracks jj `@-`, and git's stat-cached diff
+    /// sees jj's un-snapshotted working-copy edits — WITHOUT churning jj's
+    /// operation log. This is what lets branchdiff learn the changed-file set
+    /// (and live edits) with zero snapshots. (jjpr principle #7: pin the one
+    /// load-bearing assumption.)
+    #[test]
+    fn colocated_git_sees_unsnapshotted_edit_without_churning_jj_oplog() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("f.txt"), "a\nb\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let git_head = {
+            let o = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(repo).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        let jj_parent = jj_out(repo, &["log", "-r", "@-", "--no-graph", "--ignore-working-copy", "-T", "commit_id"]);
+        assert_eq!(git_head, jj_parent, "in a colocated repo, git HEAD must track jj @-");
+
+        let ops_before = op_count(repo);
+        std::fs::write(repo.join("f.txt"), "a\nb\nc\n").unwrap(); // un-snapshotted
+
+        let changed = {
+            let o = Command::new("git").args(["diff", "--name-only", "HEAD"]).current_dir(repo).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        assert!(changed.contains("f.txt"), "git must see the un-snapshotted jj working-copy edit, got: {changed:?}");
+        assert_eq!(
+            op_count(repo), ops_before,
+            "git-based change discovery must not churn the jj operation log"
+        );
+    }
+
+    /// GOAL of the de-snapshot refactor, written failing-first: a refresh over a
+    /// dirty working copy must record NO new jj operation. RED today because
+    /// `refresh()` snapshots via `jj diff --summary --to @`; the refactor makes
+    /// it pass. Kept `#[ignore]` so the suite stays green until then — run with
+    /// `cargo test -- --ignored` to watch it fail, then delete the attribute.
+    #[test]
+    fn refresh_does_not_churn_the_oplog() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        // Construct on a clean tree (no snapshot), THEN dirty the working copy.
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        std::fs::write(repo.join("f.txt"), "a\nb\n").unwrap();
+
+        let before = op_count(repo);
+        let cancel = Arc::new(AtomicBool::new(false));
+        vcs.refresh(&cancel).unwrap();
+
+        assert_eq!(
+            op_count(repo), before,
+            "refresh snapshotted the working copy — it must source the working side without churning the oplog"
+        );
+    }
+
+    /// Sibling of the goal test for the incremental path: a single-file refresh
+    /// must not snapshot either. `single_file_diff` currently reuses the same
+    /// snapshotting `jj diff --summary`, so this is RED today and pins that the
+    /// hot per-keystroke path is churn-free too.
+    #[test]
+    fn single_file_diff_does_not_churn_the_oplog() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        std::fs::write(repo.join("f.txt"), "a\nb\n").unwrap();
+        let before = op_count(repo);
+        let _ = vcs.single_file_diff("f.txt");
+        assert_eq!(
+            op_count(repo), before,
+            "single-file refresh must source the working side without snapshotting"
+        );
+    }
+
+    /// A different observable of the same guarantee, and the one that captures
+    /// the user-facing harm: branchdiff must not silently fold the user's
+    /// in-progress edit into their working-copy commit `@`. RED today (the
+    /// snapshot records the edit into `@`, so `@` stops being empty); GREEN once
+    /// the working side is read from disk and `@` is left exactly as the user
+    /// left it.
+    #[test]
+    fn refresh_does_not_record_the_users_edit_into_at() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        std::fs::write(repo.join("f.txt"), "a\nb\n").unwrap();
+        assert_eq!(at_is_empty(repo), "true", "precondition: the edit is un-snapshotted");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        vcs.refresh(&cancel).unwrap();
+
+        assert_eq!(
+            at_is_empty(repo),
+            "true",
+            "refresh folded the user's in-progress edit into @ — it must leave the working-copy commit untouched"
+        );
+    }
+
+    /// The cumulative goal, encoding the actual objective: an edit-and-watch
+    /// session leaves ZERO branchdiff-authored operations in the log. RED today
+    /// (one op per distinct edit → +3 here); GREEN once refreshes never snapshot.
+    /// Also guards against a partial fix that de-snapshots one path but not all.
+    #[test]
+    fn an_editing_session_produces_no_branchdiff_operations() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let baseline = op_count(repo);
+        let cancel = Arc::new(AtomicBool::new(false));
+        for i in 0..3 {
+            std::fs::write(repo.join("f.txt"), format!("a\nedit {i}\n")).unwrap();
+            vcs.refresh(&cancel).unwrap();
+        }
+        assert_eq!(
+            op_count(repo), baseline,
+            "an edit-and-watch session must add zero operations from branchdiff"
+        );
+    }
+
+    // --- Regression guards for the de-snapshot refactor ---------------------
+    // These pass TODAY (via the snapshot) and MUST stay green once the working
+    // side is sourced from disk. They pin the discovery cases most at risk when
+    // `jj diff --summary` is replaced: delete, rename, binary, and untracked.
+
+    /// Build a colocated repo with `f.txt` committed, return (temp, repo_path).
+    fn repo_with_committed_file(name: &str, content: &str) -> tempfile::TempDir {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join(name), content).unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+        temp
+    }
+
+    // Note: delete and untracked-new are already guarded end-to-end by
+    // `test_jj_refresh_detects_deleted_file` and `test_jj_refresh_detects_new_file`;
+    // no duplicate is added here.
+
+    #[test]
+    fn refresh_reports_a_renamed_file() {
+        if !jj_available() { return; }
+        // Enough identical content that jj's similarity heuristic sees a rename.
+        let temp = repo_with_committed_file("old.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+        let repo = temp.path();
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        std::fs::rename(repo.join("old.txt"), repo.join("new.txt")).unwrap();
+
+        let result = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+        assert!(
+            result.files.iter().any(|f| f.old_path.as_deref() == Some("old.txt")),
+            "a rename must be reported with its old path, got: {:?}",
+            result.files.iter().map(|f| f.old_path.as_deref()).collect::<Vec<_>>()
+        );
+    }
+
+    /// A binary working-copy file must be classified as binary (so its bytes are
+    /// never rendered as diff text). This currently works only *after* a refresh
+    /// snapshots the file into `@` — `binary_files()` reads `@` with
+    /// `--ignore-working-copy`. That coupling is itself a thing the de-snapshot
+    /// refactor must remove (binary detection has to read disk); this guard keeps
+    /// the observable outcome pinned across that change.
+    #[test]
+    fn refresh_detects_a_binary_working_copy_file() {
+        if !jj_available() { return; }
+        let temp = repo_with_committed_file("readme.txt", "text\n");
+        let repo = temp.path();
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        // A NUL byte makes jj classify the file as binary.
+        std::fs::write(repo.join("blob.bin"), [0u8, 1, 2, 0, 255, 0, 42]).unwrap();
+
+        let _ = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+        let binaries = vcs.binary_files();
+        assert!(
+            binaries.contains("blob.bin"),
+            "a binary working-copy file must be detected, got: {binaries:?}"
+        );
+    }
+
+    /// Directly answers the "why is non-colocated special?" question: the
+    /// working-copy read is VCS-neutral. A NON-colocated `jj git init` repo must
+    /// surface an un-snapshotted edit exactly like a colocated one. Green today
+    /// (snapshot), must stay green when read from disk — proving the design
+    /// doesn't hinge on `--colocate`.
+    #[test]
+    fn refresh_includes_unsnapshotted_edit_in_non_colocated_repo() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap(); // NO --colocate
+        std::fs::write(repo.join("f.txt"), "a\nb\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        std::fs::write(repo.join("f.txt"), "a\nb\nNONCOLOCATED\n").unwrap();
+        let result = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+
+        assert!(
+            result.lines.iter().any(|l| l.content.contains("NONCOLOCATED")),
+            "a non-colocated jj repo must still surface un-snapshotted working-copy edits"
+        );
+    }
+
+    /// RED goal, non-colocated variant: the no-churn guarantee must NOT be
+    /// special-cased to colocated repos. Locks that the refactor keeps
+    /// non-colocated refreshes churn-free too (i.e. doesn't fall back to a
+    /// snapshot for them).
+    #[test]
+    fn refresh_does_not_churn_the_oplog_non_colocated() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap(); // NO --colocate
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        std::fs::write(repo.join("f.txt"), "a\nb\n").unwrap();
+        let before = op_count(repo);
+        vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+
+        assert_eq!(
+            op_count(repo), before,
+            "non-colocated refresh must also source the working side without churning the oplog"
+        );
+    }
+
+    // --- The "no git index" boundary (what selects the discovery fallback) ---
+    // The de-snapshot design keys discovery on `is_colocated()` (workdir `.git`
+    // present → git's stat-cached worktree diff is available). These two tests
+    // pin how narrow the fallback case actually is.
+
+    /// The common setups — `jj git init`, `--colocate`, and `jj git clone` — all
+    /// leave a workdir `.git`, so git-based discovery applies to them. (Clone and
+    /// colocate verified out-of-band; plain init is the representative here.)
+    #[test]
+    fn common_jj_init_leaves_a_workdir_git_index() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap(); // no --colocate
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        assert!(
+            vcs.is_colocated(),
+            "plain `jj git init` must leave a workdir .git — the git index is available"
+        );
+    }
+
+    /// The ONLY reachable "no git index" case: a jj repo whose git store lives
+    /// OUTSIDE the worktree (`--git-repo=<external>`). No workdir `.git`, so git's
+    /// worktree diff can't run — this is exactly what the disk-walk fallback is
+    /// for, and `is_colocated()` detects it cleanly. Reading the working copy is
+    /// still plain disk here, so the fallback needs no snapshot.
+    #[test]
+    fn jj_with_external_git_repo_has_no_workdir_git_index() {
+        if !jj_available() { return; }
+        let ext = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(ext.path()).output().unwrap();
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let arg = format!("--git-repo={}", ext.path().display());
+        let out = Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().unwrap();
+        assert!(
+            out.status.success(),
+            "jj git init --git-repo failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        assert!(!vcs.is_colocated(), "external-store jj repo must have no workdir git index");
+        assert!(!repo.join(".git").exists(), "no workdir .git → git worktree-diff is unavailable here");
+
+        // The working copy is still ordinary disk — the fallback needs no snapshot.
+        std::fs::write(repo.join("w.txt"), "live content\n").unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("w.txt")).unwrap(), "live content\n");
+    }
+
+    /// RED goal for the disk-walk fallback itself. In a repo with no workdir git
+    /// index (`!is_colocated()`), discovery can't use git and must not snapshot,
+    /// so the fallback has to walk the tree and read the working file from disk.
+    /// This pins BOTH properties so no shortcut satisfies it: the diff must
+    /// include the un-snapshotted edit (forces the disk read) AND the refresh
+    /// must not churn the oplog (forbids the snapshot). A naive
+    /// `--ignore-working-copy` "fix" keeps the oplog clean but misses the edit,
+    /// failing the first assertion; today's snapshot shows the edit but churns,
+    /// failing the second. Only the disk-walk fallback passes both.
+    #[test]
+    fn refresh_without_git_index_uses_diskwalk_fallback_churn_free() {
+        if !jj_available() { return; }
+        let ext = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(ext.path()).output().unwrap();
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let arg = format!("--git-repo={}", ext.path().display());
+        let out = Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().unwrap();
+        assert!(
+            out.status.success(),
+            "jj git init --git-repo failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::write(repo.join("f.txt"), "a\nb\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        assert!(!vcs.is_colocated(), "precondition: this repo has no workdir git index");
+        std::fs::write(repo.join("f.txt"), "a\nb\nFALLBACK\n").unwrap(); // un-snapshotted edit
+
+        let before = op_count(repo);
+        let result = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+
+        assert!(
+            result.lines.iter().any(|l| l.content.contains("FALLBACK")),
+            "disk-walk fallback must still surface the un-snapshotted edit (no git index available)"
+        );
+        assert_eq!(
+            op_count(repo),
+            before,
+            "disk-walk fallback must discover changes without snapshotting"
+        );
+    }
+
+    /// The perf guard for the fallback stat-cache (deterministic, not a timeout):
+    /// a cold refresh reads every base file, but a warm refresh after a single
+    /// edit must re-read only O(changed) files, not O(tree). Guards against the
+    /// naive read-everything regression the manifest exists to prevent.
+    #[test]
+    fn diskwalk_fallback_warm_refresh_reads_only_changed_files() {
+        if !jj_available() { return; }
+        let ext = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(ext.path()).output().unwrap();
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let arg = format!("--git-repo={}", ext.path().display());
+        Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().unwrap();
+        const N: usize = 40;
+        for i in 0..N {
+            std::fs::write(repo.join(format!("file_{i}.txt")), "base\n").unwrap();
+        }
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        assert!(!vcs.is_colocated(), "precondition: no workdir git index");
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        // Cold refresh: reads every base file's content.
+        vcs.refresh(&cancel).unwrap();
+        let cold = vcs.base_reads();
+        assert!(cold >= N, "cold refresh should read all {N} base files, got {cold}");
+
+        // Warm refresh after changing exactly one file: O(changed), not O(tree).
+        std::thread::sleep(std::time::Duration::from_millis(10)); // mtime > checkpoint
+        vcs.reset_base_reads();
+        std::fs::write(repo.join("file_7.txt"), "changed on disk\n").unwrap();
+        vcs.refresh(&cancel).unwrap();
+        let warm = vcs.base_reads();
+        assert!(
+            warm <= 3,
+            "warm refresh must re-read O(changed) base files, not O(tree); got {warm} (cold was {cold})"
+        );
+    }
+
+    /// Characterization + deliberate non-goal: the mid-stack case intentionally
+    /// snapshots. When a committed stack tip sits above `@`, editing `@` makes jj
+    /// rebase the descendants, and the snapshot is what materializes that rebase
+    /// so the tip reflects the edit. Reading the tip without a snapshot yields a
+    /// *stale* tip (verified empirically), so de-snapshotting here would require
+    /// branchdiff to reproduce jj's rebase — the reimplement-jj-internals
+    /// fragility we reject. This pins the behavior; it flips if a future change
+    /// makes mid-stack stop snapshotting (which would render a stale, wrong diff).
+    #[test]
+    fn mid_stack_refresh_snapshots_to_materialize_the_rebase() {
+        if !jj_available() { return; }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        std::fs::write(repo.join("file.txt"), "commit1\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit1"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "commit2\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit2"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "commit3\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "commit3"]).current_dir(repo).output().unwrap();
+        Command::new("jj").args(["edit", "@---"]).current_dir(repo).output().unwrap(); // @ mid-stack
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        std::fs::write(repo.join("file.txt"), "commit2 EDITED\n").unwrap(); // un-snapshotted
+        let before = op_count(repo);
+        vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+        assert!(
+            op_count(repo) > before,
+            "mid-stack refresh snapshots to materialize jj's descendant rebase"
+        );
+    }
+
+    /// Regression: a cancelled disk-walk must not corrupt the stat-cache. A
+    /// partial walk that persisted a fresh checkpoint would make the next walk
+    /// trust missing entries as "unchanged" and silently drop a real edit.
+    #[test]
+    fn diskwalk_cancel_does_not_corrupt_the_manifest() {
+        if !jj_available() { return; }
+        let ext = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(ext.path()).output().unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let arg = format!("--git-repo={}", ext.path().display());
+        Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().unwrap();
+        for i in 0..8 {
+            std::fs::write(repo.join(format!("f{i}.txt")), "base\n").unwrap();
+        }
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let clear = Arc::new(AtomicBool::new(false));
+        vcs.diskwalk_changed_files("@-", &clear).unwrap(); // cold: populate cache
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(repo.join("f5.txt"), "edited\n").unwrap();
+
+        // A cancelled walk (pre-set flag) must leave the cache intact.
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let _ = vcs.diskwalk_changed_files("@-", &cancelled);
+
+        // The next real walk must still see the edit.
+        let changed = vcs.diskwalk_changed_files("@-", &clear).unwrap();
+        assert!(
+            changed.iter().any(|f| f.path == "f5.txt"),
+            "a cancelled walk corrupted the cache into missing a real change: {:?}",
+            changed.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// RED: a refresh while `@` is orphaned (empty, re-anchored to a sibling tip)
+    /// still routes discovery through the snapshotting jj summary.
+    #[test]
+    fn refresh_does_not_churn_orphaned_tip() {
+        if !jj_available() { return; }
+        let (temp, _remote, _c) = setup_orphaned_after_abandon();
+        let repo = temp.path();
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let before = op_count(repo);
+        vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+        assert_eq!(
+            op_count(repo),
+            before,
+            "an orphaned-@ refresh must not snapshot the working copy"
+        );
+    }
+
 }

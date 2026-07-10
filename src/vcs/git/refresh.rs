@@ -278,5 +278,6 @@ pub(super) fn git_compute_refresh(
         bookmark_name: None,
         revision_id: None,
         divergence,
+        // git has no divergence concept; the trait default returns Ok(empty).
     })
 }
