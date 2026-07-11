@@ -3,6 +3,10 @@
 ### Features
 
 - *(jj)* Stop snapshotting the working copy on refresh
+
+### Miscellaneous
+
+- *(ci)* Add cargo-deny supply-chain gate; patch advisory deps
 ## [0.70.2] - 2026-06-23
 
 ### Bug Fixes
