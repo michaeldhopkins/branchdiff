@@ -132,6 +132,19 @@ fn revset_resolves(repo_path: &Path, revset: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// How many commits a revset resolves to, counting no further than 2.
+///
+/// A caller that needs "exactly one" cannot use [`revset_resolves`]: `--limit 1`
+/// answers ">= 1", and `jj diff --from` takes exactly one revision. Limiting to
+/// 2 is enough to tell none / one / many apart without walking a large set.
+fn revset_commit_count(repo_path: &Path, revset: &str) -> usize {
+    run_jj(repo_path, &[
+        "log", "-r", revset, "--no-graph", "--limit", "2", "-T", r#""x\n""#,
+    ])
+    .map(|o| o.stdout_lossy().lines().filter(|l| !l.trim().is_empty()).count())
+    .unwrap_or(0)
+}
+
 /// Find a trunk bookmark on a preferred remote, e.g. `main@origin`.
 fn preferred_trunk_revset(repo_path: &Path) -> Option<String> {
     for remote in TRUNK_REMOTE_PREFERENCE {
@@ -595,17 +608,26 @@ impl JjVcs {
     /// reads `trunk()`, and `trunk()` is whatever got pinned into repo config at
     /// `jj git init` time.
     ///
-    /// An unresolvable base is a hard error. Left alone it would diff against
-    /// nothing and render as "no changes" — a wrong answer that looks like a
-    /// legitimate one.
+    /// The base must resolve to exactly one commit. Both other outcomes render
+    /// as a plausible-looking wrong answer rather than an error:
+    ///
+    /// - Nothing: diffs against an empty base and reports "no changes".
+    /// - Several: `jj diff --from` takes one revision, so every downstream call
+    ///   fails and the failure is swallowed into an empty base — `--base 'all()'`
+    ///   rendered whole files as added, exit 0, empty stderr.
     pub fn with_base(repo_path: PathBuf, base: Option<&str>) -> Result<Self> {
         let from_rev = match base {
             Some(base) => {
-                if !revset_resolves(&repo_path, base) {
-                    anyhow::bail!(
+                match revset_commit_count(&repo_path, base) {
+                    1 => {}
+                    0 => anyhow::bail!(
                         "--base {base:?} does not resolve to a commit in this jj repo \
                          (expected a revset, e.g. main@origin)"
-                    );
+                    ),
+                    _ => anyhow::bail!(
+                        "--base {base:?} resolves to more than one commit; it must name \
+                         exactly one (e.g. main@origin, or latest({base}))"
+                    ),
                 }
                 base.to_string()
             }
@@ -744,18 +766,30 @@ impl JjVcs {
             .modified()
             .ok()?;
 
-        // `--ignore-working-copy` reads the last snapshot rather than taking a
-        // new one, which is the whole point: it tells us what jj already knew.
-        let args = no_snapshot(&["diff", "--from", effective_from, "--to", "@", "--name-only"]);
-        let output = run_jj_cancellable(&self.repo_path, &args, Arc::clone(cancel)).ok()?;
-
-        let differs = output
+        // The set jj actually knows about: the files tracked in its last
+        // snapshot. Seeding these explicitly as "clean" is what lets an absent
+        // path mean *unknown* rather than *identical to the base*. jj refuses to
+        // snapshot some files (over `snapshot.max-new-file-size`, or excluded by
+        // `snapshot.auto-track`) and they are untracked, not clean — treating
+        // them as clean silently dropped them from the diff.
+        let list_args = no_snapshot(&["file", "list", "-r", "@"]);
+        let tracked = run_jj_cancellable(&self.repo_path, &list_args, Arc::clone(cancel)).ok()?;
+        let mut differs: HashMap<String, bool> = tracked
             .stdout_lossy()
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())
-            .map(|l| (l.replace('\\', "/"), true))
+            .map(|l| (l.replace('\\', "/"), false))
             .collect();
+
+        // `--ignore-working-copy` reads the last snapshot rather than taking a
+        // new one, which is the whole point: it tells us what jj already knew.
+        let args = no_snapshot(&["diff", "--from", effective_from, "--to", "@", "--name-only"]);
+        let output = run_jj_cancellable(&self.repo_path, &args, Arc::clone(cancel)).ok()?;
+        for path in output.stdout_lossy().lines().map(str::trim).filter(|l| !l.is_empty()) {
+            differs.insert(path.replace('\\', "/"), true);
+        }
+
         Some((snapshot_at, differs))
     }
 
@@ -826,9 +860,15 @@ impl JjVcs {
                     .unwrap_or(SystemTime::UNIX_EPOCH);
                 seen.insert(path.clone());
 
-                let differs = if mtime < checkpoint {
-                    // Untouched since the last validation → reuse the verdict.
-                    *m.differs.get(&path).unwrap_or(&false)
+                // Reuse a cached verdict only when the file is untouched since
+                // the last validation AND we actually have a verdict for it.
+                // A missing entry means *unknown*, never *clean*: on a seeded
+                // cold pass it means jj never snapshotted the file (it refuses
+                // some), and on a warm pass it means the file is new since the
+                // last walk. Both must be checked, not assumed identical.
+                let cached = (mtime < checkpoint).then(|| m.differs.get(&path)).flatten();
+                let differs = if let Some(&verdict) = cached {
+                    verdict
                 } else {
                     self.base_read_count.fetch_add(1, Ordering::Relaxed);
                     let disk = crate::vcs::shared::read_working_file(&self.repo_path, &path).ok().flatten();
@@ -2261,6 +2301,37 @@ mod tests {
 
         let vcs = JjVcs::with_base(repo.to_path_buf(), Some("develop@origin")).unwrap();
         assert_eq!(vcs.from_rev, "develop@origin", "an explicit base must win");
+    }
+
+    /// A base that resolves to *several* commits must be rejected too.
+    ///
+    /// `jj diff --from` takes exactly one revision. A multi-resolving base
+    /// passes a ">= 1 commit" check, then every downstream jj call fails and the
+    /// failure is swallowed into an empty base: `--base 'all()'` reported
+    /// "vs <@ itself>" and rendered the whole file as added, exit 0, empty
+    /// stderr. Silently wrong output is the exact thing this validation exists
+    /// to prevent, so "resolves" has to mean "resolves to one commit".
+    #[test]
+    fn test_explicit_base_that_resolves_to_many_commits_is_rejected() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        std::fs::write(repo.join("more.txt"), "more\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "second"]).current_dir(repo).output().unwrap();
+
+        for base in ["all()", "@ | main@origin"] {
+            let result = JjVcs::with_base(repo.to_path_buf(), Some(base));
+            let msg = match result {
+                Ok(v) => panic!(
+                    "--base {base:?} resolves to many commits and must be rejected, \
+                     but was accepted as from_rev={:?}",
+                    v.from_rev
+                ),
+                Err(e) => e.to_string(),
+            };
+            assert!(msg.contains(base), "the error must name the offending base, got: {msg}");
+        }
     }
 
     /// A base that resolves to nothing must fail loudly at startup. Left to run,
@@ -3725,6 +3796,56 @@ mod tests {
              (only f0.txt was touched since jj's snapshot)",
             vcs.base_reads()
         );
+    }
+
+    /// A file jj refuses to snapshot must not vanish from the diff.
+    ///
+    /// The seed lists the paths jj's snapshot knows *differ*. Treating "absent
+    /// from the seed" as "identical to the base" is wrong, because absent also
+    /// means "jj never snapshotted this file at all". jj refuses files over
+    /// `snapshot.max-new-file-size` (1MiB by default) and leaves them untracked,
+    /// so such a file — created before the last snapshot, hence
+    /// `mtime < checkpoint` — was both absent from the seed and never
+    /// content-compared. It disappeared from the diff silently, on default
+    /// config, with no warning from branchdiff.
+    ///
+    /// Absent must mean *unknown* (go and check), never *clean*.
+    #[test]
+    fn cold_disk_walk_does_not_lose_files_jj_refused_to_snapshot() {
+        if !jj_available() { return; }
+        let root = tempfile::TempDir::new().unwrap();
+        let main_repo = root.path().join("repo");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        Command::new("jj").args(["git", "init"]).current_dir(&main_repo).output().unwrap();
+        std::fs::write(main_repo.join("tracked.txt"), "base\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "base"]).current_dir(&main_repo).output().unwrap();
+
+        let ws = root.path().join("ws");
+        Command::new("jj")
+            .args(["workspace", "add", "--name", "ws", ws.to_str().unwrap()])
+            .current_dir(&main_repo).output().unwrap();
+
+        // Over jj's default 1MiB snapshot limit: jj refuses it and leaves it untracked.
+        std::fs::write(ws.join("big.txt"), "a".repeat(2 * 1024 * 1024)).unwrap();
+
+        // Make the refused file strictly older than the snapshot that follows,
+        // so it lands on the `mtime < checkpoint` (trust-the-seed) branch.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(ws.join("tracked.txt"), "base\nedit\n").unwrap();
+        Command::new("jj").args(["status"]).current_dir(&ws).output().unwrap(); // snapshot
+
+        let vcs = JjVcs::new(ws.clone()).unwrap();
+        assert!(!vcs.is_colocated(), "fixture must exercise the disk-walk path");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let changed = vcs.discover_working_changes(&vcs.from_rev.clone(), &cancel).unwrap();
+        let names: Vec<&str> = changed.iter().map(|c| c.path.as_str()).collect();
+
+        assert!(
+            names.contains(&"big.txt"),
+            "a file jj refused to snapshot must still be reported as an addition; \
+             seeding 'absent means clean' silently loses it. got: {names:?}"
+        );
+        assert!(names.contains(&"tracked.txt"), "the ordinary edit must still be found");
     }
 
     /// RED goal, non-colocated variant: the no-churn guarantee must NOT be
