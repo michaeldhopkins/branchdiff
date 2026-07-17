@@ -21,6 +21,9 @@ pub struct TuiSession {
     parser: Parser,
     output_rx: Receiver<Vec<u8>>,
     writer: Box<dyn std::io::Write + Send>,
+    /// Every byte the app has written, before parsing. Lets tests assert on the
+    /// escape sequences branchdiff emits, not just the screen they produce.
+    raw_output: Vec<u8>,
     _child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
@@ -78,6 +81,7 @@ impl TuiSession {
             parser,
             output_rx: rx,
             writer,
+            raw_output: Vec::new(),
             _child: child,
         };
 
@@ -93,17 +97,53 @@ impl TuiSession {
     fn poll(&mut self) {
         loop {
             match self.output_rx.try_recv() {
-                Ok(data) => self.parser.process(&data),
+                Ok(data) => {
+                    self.raw_output.extend_from_slice(&data);
+                    self.parser.process(&data);
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }
         }
     }
 
+    /// Whether the app has written the given byte sequence to the terminal.
+    pub fn emitted(&mut self, bytes: &[u8]) -> bool {
+        self.poll();
+        self.raw_output
+            .windows(bytes.len())
+            .any(|w| w == bytes)
+    }
+
     /// Get the current screen contents as plain text.
     pub fn text(&mut self) -> String {
         self.poll();
         self.parser.screen().contents()
+    }
+
+    /// Wipe the terminal's screen *behind the application's back*.
+    ///
+    /// This is the "came back to my desk and it's half painted" bug in a form
+    /// that reproduces in milliseconds. Real terminals lose or rewrite their
+    /// screen for reasons the app is never told about — display sleep, the
+    /// terminal repainting itself, a reattach. ratatui keeps an in-memory copy
+    /// of the previous frame and writes only the cells that differ from it, so
+    /// once the real screen and that copy disagree, an ordinary draw repairs
+    /// nothing: every stale cell is "already correct" as far as ratatui knows.
+    ///
+    /// Processing the erase into the parser (rather than sending it to the app)
+    /// is what makes this faithful: the bytes never reach branchdiff, exactly
+    /// like the real thing.
+    pub fn simulate_terminal_wiped(&mut self) {
+        self.poll(); // fold in anything already rendered
+        self.parser.process(b"\x1b[2J");
+    }
+
+    /// Send a raw byte sequence, e.g. a terminal-generated event.
+    pub fn send_raw(&mut self, bytes: &[u8]) {
+        self.writer.write_all(bytes).expect("failed to send bytes");
+        self.writer.flush().expect("failed to flush");
+        thread::sleep(Duration::from_millis(50));
     }
 
     /// Send a key press (single character).
