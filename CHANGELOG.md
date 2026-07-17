@@ -1,5 +1,10 @@
 ## [unreleased]
 
+### Bug Fixes
+
+- *(jj)* Scope bookmark boundary to trunk's remote
+## [0.71.0] - 2026-07-12
+
 ### Features
 
 - *(jj)* Stop snapshotting the working copy on refresh

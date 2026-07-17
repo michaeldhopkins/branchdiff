@@ -317,6 +317,65 @@ fn resolve_orphaned_tip(
     Some(StackTip { change_id: id, head_count: 1 })
 }
 
+/// Remotes jj's `trunk()` is allowed to resolve against, in preference order.
+/// Mirrors jj's own documented fallback ("the remote named `upstream` or
+/// `origin`"), with `origin` first since that is the overwhelmingly common
+/// review remote and the one a deploy remote must never displace.
+const TRUNK_REMOTE_PREFERENCE: [&str; 2] = ["origin", "upstream"];
+
+/// Choose trunk's remote from the newline-separated remote names of the
+/// bookmarks at `trunk()`.
+///
+/// Several remotes commonly hold a bookmark at the same commit — pushing `main`
+/// to both `origin` and a deploy remote is routine — and jj emits them
+/// alphabetically, so "first one wins" would hand `heroku_test` the win over
+/// `origin`. Prefer the remotes jj itself resolves `trunk()` against, and only
+/// fall back to the sole remaining remote for repos using a custom name.
+///
+/// `git` is jj's colocated-git pseudo-remote, not a real one, so it is skipped.
+/// Names containing quotes or backslashes are rejected rather than escaped —
+/// they cannot appear safely in a revset string literal, and no real remote uses
+/// them.
+fn pick_trunk_remote(raw: &str) -> Option<String> {
+    let remotes: Vec<&str> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|r| !r.is_empty() && *r != "git" && !r.contains(['"', '\\']))
+        .collect();
+
+    TRUNK_REMOTE_PREFERENCE
+        .iter()
+        .find(|preferred| remotes.contains(*preferred))
+        .map(|preferred| (*preferred).to_string())
+        .or_else(|| remotes.first().map(|r| (*r).to_string()))
+}
+
+/// The remote `trunk()` resolves on, if it can be determined.
+fn trunk_remote(repo_path: &Path, cancel: &Arc<AtomicBool>) -> Option<String> {
+    let args = no_snapshot(&[
+        "log", "-r", "trunk()", "--no-graph", "--limit", "1",
+        "-T", r#"remote_bookmarks.map(|b| b.remote()).join("\n")"#,
+    ]);
+    let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
+    pick_trunk_remote(&output.stdout_lossy())
+}
+
+/// Build the revset that finds the bookmark boundary below `change_id`.
+///
+/// Remote bookmarks are scoped to `trunk_remote`. An unscoped
+/// `remote_bookmarks()` matches *every* remote, and because `latest()` picks by
+/// committer timestamp rather than by remote precedence, a bookmark on a deploy
+/// remote (heroku etc.) sitting inside the stack range can displace the real
+/// stack segment and truncate the current bookmark's file scope. With no known
+/// trunk remote, consider local bookmarks only.
+fn boundary_revset(change_id: &str, trunk_remote: Option<&str>) -> String {
+    let bookmarks = match trunk_remote {
+        Some(remote) => format!(r#"bookmarks() | remote_bookmarks(remote=exact:"{remote}")"#),
+        None => "bookmarks()".to_string(),
+    };
+    format!("latest((trunk()..\"{change_id}\"-) & ({bookmarks}))")
+}
+
 /// Info about the bookmark boundary for the current stack position.
 struct BookmarkBoundary {
     /// Name of the current bookmark.
@@ -365,13 +424,11 @@ fn resolve_bookmark_boundary(
         return None;
     }
 
-    // Step 2: Find the previous bookmark (nearest ancestor bookmark below the current one)
-    // Use both local and remote bookmarks — stacks often have only remote-tracking bookmarks
-    // for already-pushed segments.
-    let revset = format!(
-        "latest((trunk()..\"{}\"-) & (bookmarks() | remote_bookmarks()))",
-        current_bm_id
-    );
+    // Step 2: Find the previous bookmark (nearest ancestor bookmark below the current one).
+    // Local bookmarks plus trunk's remote — stacks often have only remote-tracking
+    // bookmarks for already-pushed segments, but other remotes must not participate.
+    let remote = trunk_remote(repo_path, cancel);
+    let revset = boundary_revset(&current_bm_id, remote.as_deref());
     let prev_args = no_snapshot(&[
         "log", "-r", &revset, "--no-graph", "--limit", "1",
         "-T", "change_id.short(12)",
@@ -2623,19 +2680,138 @@ mod tests {
             "Base with change_source NOT in bookmark file should be marked false");
     }
 
-    /// Verify the boundary revset format includes remote_bookmarks() so that
-    /// stacks with only remote-tracking bookmarks for pushed segments are handled.
+    /// Verify the boundary revset includes remote bookmarks so that stacks with
+    /// only remote-tracking bookmarks for pushed segments are handled.
     #[test]
     fn test_boundary_revset_includes_remote_bookmarks() {
-        let change_id = "abc123def456";
-        let revset = format!(
-            "latest((trunk()..\"{}\"-) & (bookmarks() | remote_bookmarks()))",
-            change_id
-        );
-        assert!(revset.contains("remote_bookmarks()"),
-            "Boundary revset must include remote_bookmarks() for pushed bookmark segments");
-        assert!(revset.contains(&format!("\"{}\"", change_id)),
+        let revset = boundary_revset("abc123def456", Some("origin"));
+        assert!(revset.contains("remote_bookmarks("),
+            "Boundary revset must include remote bookmarks for pushed bookmark segments");
+        assert!(revset.contains("\"abc123def456\""),
             "Boundary revset must reference the current bookmark's change ID");
+    }
+
+    /// The remote must be scoped: an unscoped `remote_bookmarks()` matches every
+    /// remote, letting a deploy remote displace the real stack segment.
+    #[test]
+    fn test_boundary_revset_scopes_remote_bookmarks_to_trunk_remote() {
+        let revset = boundary_revset("abc123def456", Some("origin"));
+        assert!(revset.contains(r#"remote_bookmarks(remote=exact:"origin")"#),
+            "Boundary revset must scope remote bookmarks to trunk's remote, got: {revset}");
+        assert!(!revset.contains("remote_bookmarks()"),
+            "Boundary revset must never use an unscoped remote_bookmarks(), got: {revset}");
+    }
+
+    /// With no known trunk remote, fall back to local bookmarks only rather than
+    /// admitting every remote.
+    #[test]
+    fn test_boundary_revset_without_trunk_remote_is_local_only() {
+        let revset = boundary_revset("abc123def456", None);
+        assert!(!revset.contains("remote_bookmarks"),
+            "Without a trunk remote, no remote bookmarks may be considered, got: {revset}");
+        assert!(revset.contains("bookmarks()"),
+            "Local bookmarks must still be considered, got: {revset}");
+    }
+
+    /// jj emits trunk's remotes alphabetically, so a deploy remote sorting
+    /// before `origin` must not win by position. This is the routine shape for a
+    /// deployed app: `main` pushed to both `origin` and the deploy remote.
+    #[test]
+    fn test_pick_trunk_remote_prefers_origin_over_alphabetically_earlier_remote() {
+        assert_eq!(
+            pick_trunk_remote("git\nheroku_test\norigin").as_deref(),
+            Some("origin"),
+            "origin must win over a deploy remote that sorts earlier"
+        );
+    }
+
+    #[test]
+    fn test_pick_trunk_remote_skips_colocated_git_pseudo_remote() {
+        assert_eq!(pick_trunk_remote("git\norigin").as_deref(), Some("origin"));
+        assert_eq!(pick_trunk_remote("git").as_deref(), None,
+            "the colocated git pseudo-remote alone is not a real remote");
+    }
+
+    #[test]
+    fn test_pick_trunk_remote_falls_back_to_upstream_then_custom() {
+        assert_eq!(pick_trunk_remote("git\nheroku_test\nupstream").as_deref(), Some("upstream"),
+            "upstream is a remote jj resolves trunk() against; a deploy remote is not");
+        assert_eq!(pick_trunk_remote("git\ncompany-fork").as_deref(), Some("company-fork"),
+            "a lone custom-named remote is trunk's remote by elimination");
+    }
+
+    #[test]
+    fn test_pick_trunk_remote_empty_and_unsafe_names() {
+        assert_eq!(pick_trunk_remote("").as_deref(), None);
+        assert_eq!(pick_trunk_remote("\n  \n").as_deref(), None);
+        assert_eq!(pick_trunk_remote(r#"we"ird"#).as_deref(), None,
+            "a name that cannot be safely quoted in a revset must be rejected");
+        assert_eq!(pick_trunk_remote("back\\slash").as_deref(), None);
+    }
+
+    /// Regression: a bookmark on a non-origin remote (e.g. a heroku deploy
+    /// remote) sitting inside the stack range must not become the boundary.
+    /// `latest()` picks by committer timestamp, so an unscoped
+    /// `remote_bookmarks()` lets the newer deploy bookmark displace `feature-1`
+    /// and truncate the current bookmark's file scope.
+    #[test]
+    fn test_boundary_ignores_non_origin_remote_bookmark() {
+        if !jj_available() { return; }
+
+        let origin_dir = tempfile::TempDir::new().unwrap();
+        let heroku_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(origin_dir.path()).output().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(heroku_dir.path()).output().unwrap();
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        jj(&["git", "init"]);
+        jj(&["git", "remote", "add", "origin", &origin_dir.path().to_string_lossy()]);
+        jj(&["git", "remote", "add", "heroku_test", &heroku_dir.path().to_string_lossy()]);
+
+        // trunk, pushed to BOTH remotes — the routine shape for a deployed app,
+        // and the one that makes trunk's remote ambiguous. jj lists trunk's
+        // remotes alphabetically, so "heroku_test" precedes "origin" here.
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test", "--allow-new"]);
+
+        // Stack segment 1: feature-1, pushed to origin.
+        std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+        jj(&["commit", "-m", "feature 1 work"]);
+        jj(&["bookmark", "set", "feature-1", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "feature-1", "--remote", "origin"]);
+
+        // A deploy bookmark that exists ONLY on heroku_test. `forget` drops the
+        // local bookmark and untracks the remote, which is the shape you get
+        // from fetching a remote under git.auto-local-bookmark = false.
+        std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+        jj(&["commit", "-m", "deploy work"]);
+        jj(&["bookmark", "set", "deploy", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "deploy", "--remote", "heroku_test"]);
+        jj(&["bookmark", "forget", "deploy"]);
+
+        // Stack segment 2: feature-2, the current bookmark at @.
+        std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+        jj(&["describe", "-m", "feature 2 work"]);
+        jj(&["bookmark", "set", "feature-2", "-r", "@"]);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let boundary = resolve_bookmark_boundary(repo, "trunk()", &cancel)
+            .expect("boundary should resolve for a stack on trunk()");
+
+        assert_eq!(boundary.bookmark_name, "feature-2");
+        assert!(
+            boundary.changed_files.contains("b.txt"),
+            "boundary must be feature-1 (origin), so b.txt is in feature-2's scope; \
+             deploy@heroku_test won latest() and truncated the scope. changed_files={:?}",
+            boundary.changed_files
+        );
     }
 
     /// `try_recover` with a pre-set cancel flag must bail before spawning jj —
