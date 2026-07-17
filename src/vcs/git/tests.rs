@@ -762,8 +762,9 @@ fn test_git_vcs_binary_files() {
     fs::write(temp.path().join("binary.bin"), [0u8, 1, 2, 255]).unwrap();
     git_cmd(temp.path(), &["add", "binary.bin"]);
 
-    let vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
-    let binaries = vcs.binary_files();
+    // The live path: refresh detects binaries via get_binary_files.
+    let merge_base = get_merge_base_preferring_origin(temp.path(), "main").unwrap();
+    let binaries = get_binary_files(temp.path(), &merge_base);
     assert!(binaries.contains("binary.bin"));
 }
 
@@ -811,7 +812,6 @@ fn test_git_vcs_through_dyn_trait() {
     let working_bytes = vcs.working_file_bytes("file.txt").unwrap();
     assert_eq!(working_bytes.unwrap(), b"changed\n");
 
-    assert!(vcs.binary_files().is_empty());
 }
 
 // === rename support tests ===

@@ -856,7 +856,16 @@ impl JjVcs {
     ) -> Result<Vec<ChangedFile>> {
         // Key the cache on the resolved base commit, not the symbolic rev — `@-`
         // keeps its spelling across commits but points at a different tree.
-        let base_id = self.commit_id_of(effective_from).unwrap_or_default();
+        //
+        // An unresolved base must not fall back to "": a fresh DiskManifest also
+        // starts empty, so the two would compare equal, the reseed would be
+        // skipped, `base_files` would stay empty, and every file on disk would
+        // read as an addition with no deletions. Without a base there is nothing
+        // to diff against, so say so.
+        let base_id = self
+            .commit_id_of(effective_from)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("could not resolve base revision {effective_from:?}"))?;
         let mut m = self.disk_manifest.lock().unwrap_or_else(|e| e.into_inner());
 
         if m.base != base_id {
@@ -928,6 +937,13 @@ impl JjVcs {
                 if differs {
                     changed.push(ChangedFile { path, old_path: None });
                 }
+            }
+
+            // A cancelled walk has a partial `seen`, so the deletions below
+            // would mark every path it never reached as deleted. Bail before
+            // fabricating them — the caller wanted no answer, not a wrong one.
+            if cancel.load(Ordering::Relaxed) {
+                anyhow::bail!("disk walk cancelled");
             }
 
             // Deletions: base files no longer present on disk.
@@ -1453,16 +1469,6 @@ impl crate::vcs::Vcs for JjVcs {
     fn working_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
         // The working copy is on disk — read it directly rather than snapshotting.
         crate::vcs::shared::read_working_file_bytes(&self.repo_path, file_path)
-    }
-
-    fn binary_files(&self) -> HashSet<String> {
-        // Used outside the refresh hot loop (e.g. image rendering). Detect from
-        // disk over the working change set so it needs no snapshot.
-        let cancel = Arc::new(AtomicBool::new(false));
-        match self.discover_working_changes(&self.from_rev, &cancel) {
-            Ok(changed) => self.working_binary_files(&changed),
-            Err(_) => HashSet::new(),
-        }
     }
 
     fn fetch(&self) -> Result<()> {
@@ -3877,7 +3883,11 @@ mod tests {
         std::fs::write(repo.join("blob.bin"), [0u8, 1, 2, 0, 255, 0, 42]).unwrap();
 
         let _ = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
-        let binaries = vcs.binary_files();
+        // Exercise the live path refresh itself uses (the Vcs::binary_files
+        // trait method was dead API and is gone).
+        let cancel = Arc::new(AtomicBool::new(false));
+        let changed = vcs.discover_working_changes(&vcs.from_rev.clone(), &cancel).unwrap();
+        let binaries = vcs.working_binary_files(&changed);
         assert!(
             binaries.contains("blob.bin"),
             "a binary working-copy file must be detected, got: {binaries:?}"
@@ -4003,6 +4013,79 @@ mod tests {
              seeding 'absent means clean' silently loses it. got: {names:?}"
         );
         assert!(names.contains(&"tracked.txt"), "the ordinary edit must still be found");
+    }
+
+    /// An unresolvable base must fail, not report the whole repo as new.
+    ///
+    /// `commit_id_of(..).unwrap_or_default()` yielded `""`, and a fresh
+    /// `DiskManifest` also starts with `base: ""`. So a base that fails to
+    /// resolve on the *first* walk compares equal to the empty cache: the reseed
+    /// is skipped, `base_files` stays empty, and every file on disk reads as an
+    /// addition with no deletions — a plausible-looking wrong answer.
+    #[test]
+    fn diskwalk_with_an_unresolvable_base_errors_rather_than_reporting_everything_new() {
+        if !jj_available() { return; }
+        let root = tempfile::TempDir::new().unwrap();
+        let main_repo = root.path().join("repo");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        Command::new("jj").args(["git", "init"]).current_dir(&main_repo).output().unwrap();
+        std::fs::write(main_repo.join("a.txt"), "a\n").unwrap();
+        std::fs::write(main_repo.join("b.txt"), "b\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "base"]).current_dir(&main_repo).output().unwrap();
+        let ws = root.path().join("ws");
+        Command::new("jj")
+            .args(["workspace", "add", "--name", "ws", ws.to_str().unwrap()])
+            .current_dir(&main_repo).output().unwrap();
+
+        let vcs = JjVcs::new(ws.clone()).unwrap();
+        assert!(!vcs.is_colocated(), "fixture must exercise the disk-walk path");
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        match vcs.discover_working_changes("no-such-revset-xyz", &cancel) {
+            Err(_) => {}
+            Ok(changed) => panic!(
+                "an unresolvable base must be an error, not {} files reported as new: {:?}",
+                changed.len(),
+                changed.iter().map(|c| &c.path).collect::<Vec<_>>()
+            ),
+        }
+    }
+
+    /// A cancelled walk must not invent deletions.
+    ///
+    /// The walk `break`s out on cancel with a partial `seen` set, then still ran
+    /// the "base files no longer on disk" loop — so every file it had not reached
+    /// yet came back marked deleted. The existing cancel guard protects the
+    /// cache, not the returned value.
+    #[test]
+    fn cancelled_diskwalk_does_not_fabricate_deletions() {
+        if !jj_available() { return; }
+        let root = tempfile::TempDir::new().unwrap();
+        let main_repo = root.path().join("repo");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        Command::new("jj").args(["git", "init"]).current_dir(&main_repo).output().unwrap();
+        for i in 0..10 {
+            std::fs::write(main_repo.join(format!("f{i}.txt")), "x\n").unwrap();
+        }
+        Command::new("jj").args(["commit", "-m", "base"]).current_dir(&main_repo).output().unwrap();
+        let ws = root.path().join("ws");
+        Command::new("jj")
+            .args(["workspace", "add", "--name", "ws", ws.to_str().unwrap()])
+            .current_dir(&main_repo).output().unwrap();
+
+        let vcs = JjVcs::new(ws.clone()).unwrap();
+        assert!(!vcs.is_colocated(), "fixture must exercise the disk-walk path");
+
+        // Every file is present on disk and unchanged; nothing is deleted.
+        let cancel = Arc::new(AtomicBool::new(true)); // already cancelled
+        match vcs.discover_working_changes(&vcs.from_rev.clone(), &cancel) {
+            Err(_) => {}
+            Ok(changed) => panic!(
+                "a cancelled walk must not return a result; it reported {} phantom changes: {:?}",
+                changed.len(),
+                changed.iter().map(|c| &c.path).collect::<Vec<_>>()
+            ),
+        }
     }
 
     /// RED goal, non-colocated variant: the no-churn guarantee must NOT be

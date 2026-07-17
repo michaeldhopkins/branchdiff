@@ -5,7 +5,6 @@ pub mod types;
 
 pub use types::{ComparisonContext, DiffBase, RefreshResult, StackPosition, UpstreamDivergence, VcsBackend, VcsEventType, VcsWatchPaths};
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -113,9 +112,6 @@ pub trait Vcs: Send + Sync {
 
     /// Get file bytes from the working tree (for image diffs).
     fn working_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>>;
-
-    /// Get the set of binary files in the current diff.
-    fn binary_files(&self) -> HashSet<String>;
 
     /// Fetch updates from remote (e.g., git fetch).
     fn fetch(&self) -> Result<()>;

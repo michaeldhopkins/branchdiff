@@ -13,6 +13,7 @@
 - Keep repaint working while the search box is open
 - *(jj)* Don't lose files jj refused to snapshot; reject multi-commit --base
 - Follow each VCS's own rule for the base branch
+- *(jj)* Close the three latent disk-walk bugs found in review
 
 ### Performance
 

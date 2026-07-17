@@ -237,7 +237,6 @@ impl branchdiff::vcs::Vcs for BenchVcs {
     fn base_identifier(&self) -> anyhow::Result<String> { unimplemented!() }
     fn base_file_bytes(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> { unimplemented!() }
     fn working_file_bytes(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> { unimplemented!() }
-    fn binary_files(&self) -> std::collections::HashSet<String> { unimplemented!() }
     fn fetch(&self) -> anyhow::Result<()> { unimplemented!() }
     fn has_conflicts(&self) -> anyhow::Result<bool> { unimplemented!() }
     fn is_locked(&self) -> bool { false }
