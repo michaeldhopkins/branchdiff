@@ -686,15 +686,58 @@ impl JjVcs {
             .collect())
     }
 
-    /// Fallback discovery for repos with no workdir git index (the rare
-    /// `jj git init --git-repo=<external>` form): compare the base tree to the
+    /// Seed the stat-cache from jj's own last working-copy snapshot.
+    ///
+    /// jj already recorded which files differ from the base when it last
+    /// snapshotted, so only files touched *since* that snapshot need their base
+    /// content read. `.jj/working_copy/tree_state`'s mtime is when that snapshot
+    /// happened, which makes it a valid checkpoint to start from: anything older
+    /// is already accounted for in the snapshot's diff, anything newer is a live
+    /// edit we must compare ourselves.
+    ///
+    /// Without this a cold pass read base content for every file in the repo —
+    /// one `jj file show` subprocess each, 22s on a 2000-file repo — which every
+    /// secondary workspace paid on every one-shot `--print`, since the cache is
+    /// per-process and never warms.
+    ///
+    /// Returns `None` when the snapshot can't be trusted (no tree_state, or the
+    /// diff failed), leaving the caller to do the full cold pass.
+    fn seed_from_snapshot(
+        &self,
+        effective_from: &str,
+        cancel: &Arc<AtomicBool>,
+    ) -> Option<(SystemTime, HashMap<String, bool>)> {
+        let snapshot_at = std::fs::metadata(self.repo_path.join(".jj/working_copy/tree_state"))
+            .ok()?
+            .modified()
+            .ok()?;
+
+        // `--ignore-working-copy` reads the last snapshot rather than taking a
+        // new one, which is the whole point: it tells us what jj already knew.
+        let args = no_snapshot(&["diff", "--from", effective_from, "--to", "@", "--name-only"]);
+        let output = run_jj_cancellable(&self.repo_path, &args, Arc::clone(cancel)).ok()?;
+
+        let differs = output
+            .stdout_lossy()
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(|l| (l.replace('\\', "/"), true))
+            .collect();
+        Some((snapshot_at, differs))
+    }
+
+    /// Fallback discovery for repos with no workdir git index: secondary
+    /// workspaces (which have no `.git` of their own) and the rare
+    /// `jj git init --git-repo=<external>` form. Compares the base tree to the
     /// on-disk working tree directly — no git, no snapshot.
     ///
     /// A [`DiskManifest`] stat-cache makes this O(changed) on a warm refresh:
     /// only files whose mtime advanced past the last validation are re-read and
     /// re-compared against the base; everything else reuses its cached verdict.
-    /// A base change (commit/rebase) or the first refresh pays the O(tree) cold
-    /// cost once.
+    /// A cold pass (first refresh, or a base change) seeds that cache from jj's
+    /// last snapshot rather than re-reading the whole tree — see
+    /// [`Self::seed_from_snapshot`].
     fn diskwalk_changed_files(
         &self,
         effective_from: &str,
@@ -708,8 +751,17 @@ impl JjVcs {
         if m.base != base_id {
             m.base = base_id;
             m.base_files = self.base_file_list(effective_from)?;
-            m.differs.clear();
-            m.checkpoint = SystemTime::UNIX_EPOCH; // force a cold pass
+            match self.seed_from_snapshot(effective_from, cancel) {
+                Some((snapshot_at, differs)) => {
+                    m.differs = differs;
+                    m.checkpoint = snapshot_at;
+                }
+                None => {
+                    // Can't trust jj's snapshot — pay the full O(tree) cold pass.
+                    m.differs.clear();
+                    m.checkpoint = SystemTime::UNIX_EPOCH;
+                }
+            }
         }
 
         let mut changed = Vec::new();
@@ -3187,6 +3239,90 @@ mod tests {
         );
     }
 
+    /// The stack machinery must work when the base is an explicit bookmark
+    /// rather than the literal `trunk()`.
+    ///
+    /// `resolve_base_rev` hands back `main@origin` whenever `trunk()` is pinned
+    /// to a remote jj wouldn't have chosen. Every one of these revsets used to
+    /// hardcode `trunk()` and every guard compared `from_rev != "trunk()"`, so
+    /// this configuration would have silently disabled fork-point / stack-tip /
+    /// boundary detection while still diffing against the deploy remote. Assert
+    /// the revsets interpolate and still resolve.
+    #[test]
+    fn stack_machinery_works_with_an_explicit_bookmark_base() {
+        if !jj_available() { return; }
+
+        let origin_dir = tempfile::TempDir::new().unwrap();
+        let heroku_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(origin_dir.path()).output().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(heroku_dir.path()).output().unwrap();
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        jj(&["git", "init"]);
+        jj(&["git", "remote", "add", "origin", &origin_dir.path().to_string_lossy()]);
+        jj(&["git", "remote", "add", "heroku_test", &heroku_dir.path().to_string_lossy()]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test", "--allow-new"]);
+        pin_trunk_alias(repo, "main@heroku_test");
+
+        // origin advances past the deploy remote, so the override engages.
+        std::fs::write(repo.join("shipped.txt"), "landed\n").unwrap();
+        jj(&["commit", "-m", "landed on origin"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        assert_eq!(vcs.from_rev, "main@origin", "fixture must exercise the bookmark base");
+
+        // A two-commit stack on top of origin's main.
+        std::fs::write(repo.join("stack.txt"), "from earlier commit\n").unwrap();
+        jj(&["commit", "-m", "stack commit 1"]);
+        std::fs::write(repo.join("stack.txt"), "from earlier commit\nfrom current commit\n").unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        // The revsets must interpolate `main@origin` and still resolve. Before
+        // the refactor these silently returned None on a non-"trunk()" base.
+        let tip = resolve_stack_tip(repo, &vcs.from_rev, &cancel);
+        assert!(tip.is_none() || tip.is_some(), "resolve_stack_tip must not panic on a bookmark base");
+        assert!(
+            resolve_orphaned_tip(repo, &vcs.from_rev, &cancel).is_none(),
+            "no sibling here, so no orphaned tip"
+        );
+
+        // Fork point resolves and is a real commit id, not an empty string.
+        if let Some(fork) = resolve_fork_point(repo, &vcs.from_rev, &cancel) {
+            assert!(!fork.is_empty(), "fork point must be a real commit id");
+        }
+
+        // And the refresh that all of it feeds still colours the stack.
+        let result = vcs.refresh(&cancel).unwrap();
+        assert!(
+            result.lines.iter().any(|l| l.source == LineSource::Committed),
+            "the earlier stack commit's lines must still be Committed with a bookmark base"
+        );
+        assert!(
+            result.lines.iter().any(|l| l.source == LineSource::Staged),
+            "the current commit's lines must still be Staged with a bookmark base"
+        );
+        // The origin-side commit must NOT appear as the user's work.
+        let headers: Vec<&str> = result.lines.iter()
+            .filter(|l| l.source == LineSource::FileHeader)
+            .map(|l| l.content.as_str())
+            .collect();
+        assert!(
+            !headers.iter().any(|h| h.contains("shipped.txt")),
+            "a commit already on origin/main must not be reported as a local change; headers={headers:?}"
+        );
+    }
+
     /// A jj *secondary workspace* must not be mistaken for a colocated repo.
     ///
     /// The colocated fast path assumes git's worktree view tracks jj `@-` (see
@@ -3433,6 +3569,53 @@ mod tests {
         );
     }
 
+    /// A *cold* disk walk must read base content for O(changed) files, not for
+    /// every file in the repo.
+    ///
+    /// The stat cache lives in the process, so a one-shot `branchdiff --print`
+    /// never warms it — every run is a cold pass. Each cold content comparison
+    /// spawns a `jj file show` subprocess, so O(tree) meant 2000 subprocesses
+    /// and 22s on a 2000-file repo (vs 0.83s on the colocated git path). jj's
+    /// last snapshot already knows what differs from the base; only files
+    /// touched since it need reading.
+    #[test]
+    fn cold_disk_walk_reads_base_content_only_for_changed_files() {
+        if !jj_available() { return; }
+        let root = tempfile::TempDir::new().unwrap();
+        let main_repo = root.path().join("repo");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        Command::new("jj").args(["git", "init"]).current_dir(&main_repo).output().unwrap();
+        for i in 0..40 {
+            std::fs::write(main_repo.join(format!("f{i}.txt")), format!("content {i}\n")).unwrap();
+        }
+        Command::new("jj").args(["commit", "-m", "init"]).current_dir(&main_repo).output().unwrap();
+
+        // A secondary workspace has no `.git` of its own, so it is the disk-walk
+        // path — this is what `workon`-style checkouts land on.
+        let ws = root.path().join("ws");
+        Command::new("jj")
+            .args(["workspace", "add", "--name", "ws", ws.to_str().unwrap()])
+            .current_dir(&main_repo).output().unwrap();
+
+        // A fresh Vcs = a cold cache, exactly like a one-shot --print.
+        let vcs = JjVcs::new(ws.clone()).unwrap();
+        assert!(!vcs.is_colocated(), "fixture must exercise the disk-walk path");
+        std::fs::write(ws.join("f0.txt"), "content 0\nlive edit\n").unwrap();
+
+        vcs.reset_base_reads();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let changed = vcs.discover_working_changes(&vcs.from_rev.clone(), &cancel).unwrap();
+
+        let names: Vec<&str> = changed.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(names, ["f0.txt"], "the live edit must still be found");
+        assert!(
+            vcs.base_reads() <= 4,
+            "a cold walk must not read every file's base content: {} reads for 40 files \
+             (only f0.txt was touched since jj's snapshot)",
+            vcs.base_reads()
+        );
+    }
+
     /// RED goal, non-colocated variant: the no-churn guarantee must NOT be
     /// special-cased to colocated repos. Locks that the refactor keeps
     /// non-colocated refreshes churn-free too (i.e. doesn't fall back to a
@@ -3554,9 +3737,15 @@ mod tests {
     }
 
     /// The perf guard for the fallback stat-cache (deterministic, not a timeout):
-    /// a cold refresh reads every base file, but a warm refresh after a single
-    /// edit must re-read only O(changed) files, not O(tree). Guards against the
-    /// naive read-everything regression the manifest exists to prevent.
+    /// neither a cold nor a warm refresh may read O(tree) base files.
+    ///
+    /// This used to assert the *cold* pass read every base file — encoding the
+    /// slow path as an invariant. It isn't one: a cold pass now seeds its
+    /// checkpoint from jj's last snapshot, which is what stops a one-shot
+    /// `--print` in a secondary workspace from spawning a `jj file show` per
+    /// file in the repo. Each assertion is paired with a correctness check,
+    /// because "read nothing" would otherwise satisfy the perf bound by simply
+    /// missing the change.
     #[test]
     fn diskwalk_fallback_warm_refresh_reads_only_changed_files() {
         if !jj_available() { return; }
@@ -3577,20 +3766,29 @@ mod tests {
         assert!(!vcs.is_colocated(), "precondition: no workdir git index");
         let cancel = Arc::new(AtomicBool::new(false));
 
-        // Cold refresh: reads every base file's content.
+        // Cold refresh over a clean tree: jj's snapshot already says nothing
+        // differs, so no base content need be read at all.
         vcs.refresh(&cancel).unwrap();
         let cold = vcs.base_reads();
-        assert!(cold >= N, "cold refresh should read all {N} base files, got {cold}");
+        assert!(
+            cold <= 3,
+            "a cold refresh must seed from jj's snapshot, not read all {N} base files; got {cold}"
+        );
 
-        // Warm refresh after changing exactly one file: O(changed), not O(tree).
+        // Warm refresh after changing exactly one file: O(changed), not O(tree),
+        // and the change must actually be found.
         std::thread::sleep(std::time::Duration::from_millis(10)); // mtime > checkpoint
         vcs.reset_base_reads();
         std::fs::write(repo.join("file_7.txt"), "changed on disk\n").unwrap();
-        vcs.refresh(&cancel).unwrap();
+        let result = vcs.refresh(&cancel).unwrap();
         let warm = vcs.base_reads();
         assert!(
             warm <= 3,
             "warm refresh must re-read O(changed) base files, not O(tree); got {warm} (cold was {cold})"
+        );
+        assert!(
+            result.lines.iter().any(|l| l.content.contains("changed on disk")),
+            "the live edit must be surfaced — a perf bound met by reading nothing is a bug, not a win"
         );
     }
 
