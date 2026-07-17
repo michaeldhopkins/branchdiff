@@ -4,6 +4,7 @@
 
 - *(jj)* Scope bookmark boundary to trunk's remote
 - *(jj)* Prefer origin when trunk() is pinned to a deploy remote
+- *(jj)* Don't treat a secondary workspace as colocated
 ## [0.71.0] - 2026-07-12
 
 ### Features
