@@ -10,6 +10,7 @@
 - *(jj)* Scope bookmark boundary to trunk's remote
 - *(jj)* Prefer origin when trunk() is pinned to a deploy remote
 - *(jj)* Don't treat a secondary workspace as colocated
+- Keep repaint working while the search box is open
 
 ### Performance
 

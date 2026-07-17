@@ -223,12 +223,28 @@ fn test_screen_wiped_behind_our_back_is_repaired_by_repaint_triggers() {
     // An ordinary redraw cannot repair it: ratatui diffs against a previous
     // frame that no longer matches reality, so the stale cells are never
     // rewritten. This is the bug, and it is why waiting doesn't help.
-    session.press("j");
+    //
+    // Counting bytes is what makes this an honest assertion rather than a
+    // vacuous one: it distinguishes "the app redrew and it didn't help" from
+    // "the app never redrew", which would leave the screen blank for a reason
+    // that has nothing to do with the bug.
+    let before = session.bytes_written();
+    session.press("?"); // toggle help: unambiguously changes what should be on screen
+    let after = session.bytes_written();
+    assert!(
+        after > before,
+        "precondition: the app must actually have drawn something ({before} -> {after} bytes), \
+         otherwise 'the screen stayed blank' proves nothing"
+    );
     assert!(
         !session.text().contains("src/main.rs"),
-        "BUG REPRODUCED CHECK: a normal redraw should not have repaired the screen — \
-         if this now passes, the diff-render assumption changed and this test is stale"
+        "BUG REPRODUCED CHECK: the app redrew ({} bytes) and the screen is STILL not repaired, \
+         because ratatui only rewrites cells that differ from a previous frame that no longer \
+         matches reality. If this starts failing, the diff-render assumption changed and this \
+         test is stale",
+        after - before
     );
+    session.press("?"); // close help again
 
     // FocusGained (CSI I) — what a terminal sends when you switch back to it.
     session.send_raw(b"\x1b[I");
@@ -342,5 +358,47 @@ fn test_base_flag_overrides_the_diff_base() {
     assert!(
         !err.contains("Not a git or jj repository"),
         "a bad --base must not be reported as a missing repo; got:\n{err}"
+    );
+}
+
+/// The repaint escape hatch must survive having the search box open.
+///
+/// `collect_messages` routes every event to the search handler while search is
+/// active, so this path bypasses the normal keymap entirely. That made the
+/// search box the one place where returning to a stale terminal left you stuck:
+/// no focus repaint, and Ctrl+L typed nothing and did nothing.
+#[test]
+#[cfg(unix)]
+fn test_repaint_still_works_while_the_search_box_is_open() {
+    let repo = TestRepo::new();
+    repo.add_file("src/main.rs", "fn main() {}");
+    repo.commit("add main.rs");
+    repo.create_branch("feature");
+    repo.modify_file("src/main.rs", "fn main() {\n    println!(\"hi\");\n}");
+
+    let mut session = TuiSession::launch(repo.path());
+    session.assert_contains("src/main.rs");
+
+    session.press("/"); // open search
+    session.press("m"); // type into the query, so search is unambiguously active
+
+    session.simulate_terminal_wiped();
+    assert!(!session.text().contains("src/main.rs"), "precondition: wiped");
+
+    session.send_raw(b"\x0c"); // Ctrl+L
+    assert!(
+        session.text().contains("src/main.rs"),
+        "Ctrl+L must repair the screen even with the search box open; screen was:\n{}",
+        session.text()
+    );
+
+    session.simulate_terminal_wiped();
+    assert!(!session.text().contains("src/main.rs"), "precondition: wiped again");
+
+    session.send_raw(b"\x1b[I"); // FocusGained
+    assert!(
+        session.text().contains("src/main.rs"),
+        "FocusGained must repair the screen even with the search box open; screen was:\n{}",
+        session.text()
     );
 }

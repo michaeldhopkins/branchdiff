@@ -727,6 +727,13 @@ impl JjVcs {
     ///
     /// Returns `None` when the snapshot can't be trusted (no tree_state, or the
     /// diff failed), leaving the caller to do the full cold pass.
+    ///
+    /// `--to @` is only valid because every caller of [`Self::diskwalk_changed_files`]
+    /// reaches it via [`Self::discover_working_changes`], which `refresh` and
+    /// `single_file_diff` call *only* when `effective_to == "@"` (the stack-tip
+    /// and orphaned-tip targets go through `get_changed_files_with_from`
+    /// instead). If that gate ever changes, this seed would describe a different
+    /// tree than the one being diffed and would silently mis-seed verdicts.
     fn seed_from_snapshot(
         &self,
         effective_from: &str,
