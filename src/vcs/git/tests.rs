@@ -896,6 +896,7 @@ fn classify(repo_path: &Path, relative: &str) -> VcsEventType {
     let vcs = GitVcs {
         repo_path: repo_path.to_path_buf(),
         base_branch: "main".to_string(),
+        base_label: "main".to_string(),
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     vcs.classify_event(&repo_path.join(relative))
@@ -992,6 +993,7 @@ fn test_classify_path_outside_repo() {
     let vcs = GitVcs {
         repo_path: repo.to_path_buf(),
         base_branch: "main".to_string(),
+        base_label: "main".to_string(),
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     // Path outside repo — strip_prefix fails, treated as source
@@ -1007,6 +1009,7 @@ fn test_watch_paths_includes_index_and_head() {
     let vcs = GitVcs {
         repo_path: repo.to_path_buf(),
         base_branch: "main".to_string(),
+        base_label: "main".to_string(),
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     let paths = vcs.watch_paths();
@@ -1021,6 +1024,7 @@ fn test_watch_paths_includes_refs_dir() {
     let vcs = GitVcs {
         repo_path: repo.to_path_buf(),
         base_branch: "main".to_string(),
+        base_label: "main".to_string(),
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     let paths = vcs.watch_paths();
@@ -1224,8 +1228,12 @@ fn test_git_explicit_base_overrides_detection() {
     assert_eq!(GitVcs::new(temp.path().to_path_buf()).unwrap().base_branch(), "main",
         "precondition: detection would pick main");
 
+    // The stored ref is fully qualified (that is how the local-vs-origin
+    // ambiguity is settled once, up front); the user-facing label stays plain.
     let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
-    assert_eq!(vcs.base_branch(), "develop", "an explicit base must win over detection");
+    assert_eq!(vcs.base_branch(), "refs/heads/develop", "an explicit base must win over detection");
+    assert_eq!(vcs.comparison_context().unwrap().from_label, "develop",
+        "an unambiguous base needs no qualifier on screen");
 }
 
 /// A base git can't resolve must fail at startup rather than diff against
@@ -1267,4 +1275,184 @@ fn test_git_no_explicit_base_falls_back_to_detection() {
     let temp = create_test_repo();
     let vcs = GitVcs::with_base(temp.path().to_path_buf(), None).unwrap();
     assert_eq!(vcs.base_branch(), "main");
+}
+
+// === base branch detection: git's own rule ===
+
+/// Build a clone whose remote default branch is neither main nor master.
+fn clone_with_default_branch(branch: &str) -> (TempDir, TempDir) {
+    let upstream = tempfile::tempdir().unwrap();
+    git_cmd(upstream.path(), &["init", "--initial-branch", branch]);
+    git_cmd(upstream.path(), &["config", "user.email", "test@test.com"]);
+    git_cmd(upstream.path(), &["config", "user.name", "Test"]);
+    fs::write(upstream.path().join("file.txt"), "base\n").unwrap();
+    git_cmd(upstream.path(), &["add", "."]);
+    git_cmd(upstream.path(), &["commit", "-m", "initial"]);
+
+    let dest = tempfile::tempdir().unwrap();
+    let clone_path = dest.path().join("clone");
+    Command::new("git")
+        .args(["clone", "-q", &upstream.path().to_string_lossy(), &clone_path.to_string_lossy()])
+        .output()
+        .unwrap();
+    git_cmd(&clone_path, &["config", "user.email", "test@test.com"]);
+    git_cmd(&clone_path, &["config", "user.name", "Test"]);
+    (upstream, dest)
+}
+
+/// git records the remote's default branch in refs/remotes/origin/HEAD at clone
+/// time. That is git's own answer to "what is trunk", so it must win over
+/// guessing main/master — otherwise a repo whose default branch is anything else
+/// silently compares against a base that does not exist and reports "no changes".
+#[test]
+fn test_detect_base_branch_honours_origin_head() {
+    let (_upstream, dest) = clone_with_default_branch("release");
+    let repo = dest.path().join("clone");
+
+    let no_main = Command::new("git")
+        .args(["rev-parse", "--verify", "main"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(!no_main.status.success(), "fixture: this repo must have no main branch at all");
+    assert_eq!(
+        detect_base_branch(&repo).unwrap(),
+        "release",
+        "must use git's own default-branch ref, not a main/master guess"
+    );
+}
+
+/// End result of the above: real changes must actually be reported.
+#[test]
+fn test_repo_with_non_main_default_branch_reports_changes() {
+    let (_upstream, dest) = clone_with_default_branch("release");
+    let repo = dest.path().join("clone");
+    git_cmd(&repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "base\nmy work\n").unwrap();
+    git_cmd(&repo, &["add", "."]);
+    git_cmd(&repo, &["commit", "-m", "my work"]);
+
+    let vcs = GitVcs::new(repo.clone()).unwrap();
+    assert_eq!(vcs.base_branch(), "release");
+    let result = vcs.refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).unwrap();
+    assert!(
+        result.lines.iter().any(|l| l.content.contains("my work")),
+        "a repo whose default branch is not main/master must still show its changes"
+    );
+}
+
+/// main/master stays the fallback when origin/HEAD is absent (a repo that was
+/// never cloned, or whose remote HEAD was never set).
+#[test]
+fn test_detect_base_branch_falls_back_to_convention_without_origin_head() {
+    let temp = create_test_repo(); // local repo, no remote at all
+    assert_eq!(detect_base_branch(temp.path()).unwrap(), "main");
+}
+
+// === explicit --base ref precedence ===
+
+/// Build a repo where local `develop` and `origin/develop` point at different
+/// commits, with local `develop` an ancestor of HEAD.
+fn repo_with_diverging_local_and_remote_develop() -> TempDir {
+    let temp = create_test_repo();
+    let p = temp.path();
+    // local develop
+    git_cmd(p, &["checkout", "-b", "develop"]);
+    fs::write(p.join("file.txt"), "initial\nlocal-develop\n").unwrap();
+    git_cmd(p, &["add", "."]);
+    git_cmd(p, &["commit", "-m", "local develop"]);
+    // a different commit, published as origin/develop
+    git_cmd(p, &["checkout", "-b", "sidebranch", "main"]);
+    fs::write(p.join("other.txt"), "remote side\n").unwrap();
+    git_cmd(p, &["add", "."]);
+    git_cmd(p, &["commit", "-m", "remote develop"]);
+    let sha = {
+        let o = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(p).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    git_cmd(p, &["update-ref", "refs/remotes/origin/develop", &sha]);
+    // work on top of local develop
+    git_cmd(p, &["checkout", "develop"]);
+    git_cmd(p, &["checkout", "-b", "feature"]);
+    fs::write(p.join("file.txt"), "initial\nlocal-develop\nmy work\n").unwrap();
+    git_cmd(p, &["add", "."]);
+    git_cmd(p, &["commit", "-m", "my work"]);
+    temp
+}
+
+/// `--base develop` must mean git's `develop`: the local branch. Silently
+/// substituting `origin/develop` hands back a different diff with nothing on
+/// screen to say so.
+#[test]
+fn test_git_explicit_base_prefers_the_local_ref_over_origin() {
+    let temp = repo_with_diverging_local_and_remote_develop();
+    let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
+    assert_eq!(vcs.base_branch(), "refs/heads/develop", "git resolves a bare name to the local branch");
+}
+
+/// ...and when both exist and disagree, the status bar has to admit which was used.
+#[test]
+fn test_git_ambiguous_base_is_labelled_local() {
+    let temp = repo_with_diverging_local_and_remote_develop();
+    let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
+    let ctx = vcs.comparison_context().unwrap();
+    assert_eq!(ctx.from_label, "develop (local)",
+        "an ambiguous base must say which side it took");
+}
+
+/// `origin/develop` still selects the remote one explicitly.
+#[test]
+fn test_git_explicit_origin_qualified_base_selects_the_remote() {
+    let temp = repo_with_diverging_local_and_remote_develop();
+    let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("origin/develop")).unwrap();
+    let ctx = vcs.comparison_context().unwrap();
+    assert_eq!(ctx.from_label, "origin/develop");
+}
+
+/// With no local branch of that name, a bare name still finds the remote one —
+/// labelled, so it isn't mistaken for a local branch.
+#[test]
+fn test_git_base_falls_back_to_remote_when_no_local_branch() {
+    let temp = create_test_repo();
+    let p = temp.path();
+    let sha = {
+        let o = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(p).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    git_cmd(p, &["update-ref", "refs/remotes/origin/release", &sha]);
+    git_cmd(p, &["checkout", "-b", "feature"]);
+
+    let vcs = GitVcs::with_base(p.to_path_buf(), Some("release")).unwrap();
+    assert_eq!(vcs.base_branch(), "refs/remotes/origin/release");
+    assert_eq!(vcs.comparison_context().unwrap().from_label, "origin/release");
+}
+
+/// An unambiguous local-only branch needs no qualifier in the label.
+#[test]
+fn test_git_local_only_base_is_not_labelled() {
+    let temp = create_test_repo();
+    git_cmd(temp.path(), &["checkout", "-b", "develop"]);
+    git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+    let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
+    assert_eq!(vcs.comparison_context().unwrap().from_label, "develop");
+}
+
+/// The label must survive a refresh.
+///
+/// `App::apply_refresh_result` overwrites `comparison.from_label` with the
+/// refresh's own `base_label`, so a correct `comparison_context` is not enough —
+/// asserting only on that passed while the binary still displayed the raw
+/// `refs/heads/develop`. Pin the label the user actually ends up seeing.
+#[test]
+fn test_git_ambiguous_base_label_survives_refresh() {
+    let temp = repo_with_diverging_local_and_remote_develop();
+    let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
+    let result = vcs
+        .refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        .unwrap();
+    assert_eq!(
+        result.base_label.as_deref(),
+        Some("develop (local)"),
+        "the refresh result carries the label that wins on screen"
+    );
 }

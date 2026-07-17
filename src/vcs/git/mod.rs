@@ -25,8 +25,50 @@ pub use commands::{
 /// Git backend for branchdiff.
 pub struct GitVcs {
     repo_path: PathBuf,
+    /// The ref to compare against. For an explicit `--base` this is fully
+    /// qualified (`refs/heads/x`, `refs/remotes/origin/x`), which resolves the
+    /// local-vs-remote ambiguity once here rather than at every merge-base call.
     base_branch: String,
+    /// What to show the user. Usually the same as `base_branch`, but says
+    /// `x (local)` when a local `x` and an `origin/x` disagreed and git's rule
+    /// picked the local one — otherwise nothing on screen would reveal which.
+    base_label: String,
     git_version: GitVersion,
+}
+
+/// Resolve an explicit `--base` the way git itself would, plus a label.
+///
+/// The detected-base path deliberately tries `origin/<name>` first, which is
+/// right for a *guessed* trunk. It is wrong for a ref the user named: `git
+/// merge-base develop HEAD` uses the local `develop`, so silently substituting
+/// `origin/develop` hands back a different diff with nothing on screen to say
+/// so. Prefer the exact ref, and when both exist and disagree, mark the label.
+///
+/// Returns `(ref_to_use, label)`. Anything that isn't a branch name — a tag, a
+/// SHA, an already-qualified ref — falls through to git's own resolution.
+fn resolve_explicit_base(repo_path: &Path, base: &str) -> Result<(String, String)> {
+    let local = format!("refs/heads/{base}");
+    let remote = format!("refs/remotes/origin/{base}");
+
+    match (commands::rev_id(repo_path, &local), commands::rev_id(repo_path, &remote)) {
+        // Ambiguous: git resolves to the local branch. Say which we took.
+        (Some(l), Some(r)) if l != r => Ok((local, format!("{base} (local)"))),
+        (Some(_), _) => Ok((local, base.to_string())),
+        // Only the remote-tracking branch exists. Using it is the helpful
+        // reading of `--base develop`, but label it so it isn't mistaken for a
+        // local branch of that name.
+        (None, Some(_)) => Ok((remote, format!("origin/{base}"))),
+        (None, None) => {
+            if commands::rev_id(repo_path, base).is_some() {
+                Ok((base.to_string(), base.to_string()))
+            } else {
+                anyhow::bail!(
+                    "--base {base:?} is not a branch, tag or commit in this repo \
+                     (looked for {local}, {remote}, and {base})"
+                )
+            }
+        }
+    }
 }
 
 impl GitVcs {
@@ -46,21 +88,29 @@ impl GitVcs {
     /// every refresh performs, so if it fails here it would fail on every
     /// refresh — but silently, rendering as "no changes" rather than an error.
     pub fn with_base(repo_path: PathBuf, base: Option<&str>) -> Result<Self> {
-        let base_branch = match base {
+        let (base_branch, base_label) = match base {
             Some(base) => {
-                get_merge_base_preferring_origin(&repo_path, base).with_context(|| {
-                    format!(
-                        "--base {base:?} is not a branch or commit in this repo \
-                         (tried origin/{base} and {base})"
-                    )
+                let resolved = resolve_explicit_base(&repo_path, base)?;
+                // Prove it can actually produce a merge-base: that is the lookup
+                // every refresh performs, and a failure here would otherwise
+                // surface as a silent "0 files" rather than an error.
+                get_merge_base_preferring_origin(&repo_path, &resolved.0).with_context(|| {
+                    format!("--base {base:?} has no common ancestor with HEAD")
                 })?;
-                base.to_string()
+                resolved
             }
-            None => detect_base_branch(&repo_path).unwrap_or_else(|_| "main".to_string()),
+            // Deliberately not defaulted to "main": a base that doesn't exist
+            // makes every merge-base lookup fail and renders as "0 files", so a
+            // repo with no discoverable trunk silently looked clean. Fail with
+            // something actionable instead.
+            None => {
+                let detected = detect_base_branch(&repo_path)?;
+                (detected.clone(), detected)
+            }
         };
         let git_version = get_git_version()
             .context("Failed to detect git version")?;
-        Ok(Self { repo_path, base_branch, git_version })
+        Ok(Self { repo_path, base_branch, base_label, git_version })
     }
 
     /// The base branch name (e.g., "main" or "master").
@@ -79,7 +129,7 @@ impl Vcs for GitVcs {
         let to_label = current_branch.unwrap_or_else(|| "HEAD".to_string());
 
         Ok(ComparisonContext {
-            from_label: self.base_branch.clone(),
+            from_label: self.base_label.clone(),
             to_label,
             stack_position: None,
             vcs_backend: VcsBackend::Git,
@@ -89,7 +139,7 @@ impl Vcs for GitVcs {
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
-        refresh::git_compute_refresh(&self.repo_path, &self.base_branch, cancel_flag)
+        refresh::git_compute_refresh(&self.repo_path, &self.base_branch, &self.base_label, cancel_flag)
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {

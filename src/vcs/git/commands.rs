@@ -82,11 +82,44 @@ fn ref_exists(repo_path: &Path, git_ref: &str) -> bool {
     run_git(repo_path, &["rev-parse", "--verify", git_ref]).is_ok()
 }
 
-/// Detect whether the base branch is 'main' or 'master'.
+/// The commit a ref points at, or `None` if it doesn't resolve.
+pub(super) fn rev_id(repo_path: &Path, git_ref: &str) -> Option<String> {
+    let output = run_git(repo_path, &["rev-parse", "--verify", git_ref]).ok()?;
+    let id = output.stdout_lossy().trim().to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+/// The remote's default branch, as git itself records it.
 ///
-/// Prefers origin remote-tracking refs so that a local branch tracking a
-/// non-origin remote (e.g. heroku) doesn't win over origin.
+/// `refs/remotes/origin/HEAD` is a symbolic ref git writes at clone time (and
+/// `git remote set-head origin -a` refreshes) naming origin's default branch.
+/// It is git's own answer to "what is trunk" — the closest equivalent to jj's
+/// `trunk()` — so it beats guessing at names.
+fn origin_head_branch(repo_path: &Path) -> Option<String> {
+    let output = run_git(repo_path, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).ok()?;
+    let full = output.stdout_lossy().trim().to_string();
+    full.strip_prefix("origin/")
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
+/// Detect the base branch to compare against.
+///
+/// Follows git's own rule first: `refs/remotes/origin/HEAD`. Probing only
+/// `main`/`master` meant any repo whose default branch is something else (a
+/// `release`/`develop`/`trunk` default) fell through to a hardcoded "main" that
+/// did not exist, and branchdiff silently reported "no changes" for real work.
+///
+/// `main`/`master` remain the fallback for repos with no `origin/HEAD` — never
+/// cloned, or the remote head was never set. Origin remote-tracking refs are
+/// preferred over local branches so that a local branch tracking a non-origin
+/// remote (e.g. heroku) doesn't win over origin.
 pub fn detect_base_branch(repo_path: &Path) -> Result<String> {
+    // git's own notion of origin's default branch.
+    if let Some(branch) = origin_head_branch(repo_path) {
+        return Ok(branch);
+    }
+
     // Prefer origin remote-tracking refs
     for branch in &["main", "master"] {
         if ref_exists(repo_path, &format!("origin/{}", branch)) {
@@ -101,7 +134,10 @@ pub fn detect_base_branch(repo_path: &Path) -> Result<String> {
         }
     }
 
-    Err(anyhow!("Could not find 'main' or 'master' branch"))
+    Err(anyhow!(
+        "Could not determine a base branch: origin has no default branch (origin/HEAD) \
+         and there is no 'main' or 'master'. Pass --base to name one explicitly."
+    ))
 }
 
 /// Get the merge-base between HEAD and the base branch, preferring origin

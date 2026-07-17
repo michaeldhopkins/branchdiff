@@ -12,6 +12,7 @@
 - *(jj)* Don't treat a secondary workspace as colocated
 - Keep repaint working while the search box is open
 - *(jj)* Don't lose files jj refused to snapshot; reject multi-commit --base
+- Follow each VCS's own rule for the base branch
 
 ### Performance
 
