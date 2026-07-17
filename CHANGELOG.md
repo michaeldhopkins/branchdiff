@@ -1,5 +1,9 @@
 ## [unreleased]
 
+### Features
+
+- Repaint on focus regain, resize, and Ctrl+L
+
 ### Bug Fixes
 
 - *(jj)* Scope bookmark boundary to trunk's remote

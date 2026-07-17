@@ -112,6 +112,24 @@ pub struct UpdateResult {
     pub open_editor: Option<OpenTarget>,
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
+    /// How much of the screen the next draw must rewrite.
+    pub repaint: Repaint,
+}
+
+/// How much of the screen the next draw must rewrite.
+///
+/// ratatui writes only the cells that differ from its in-memory copy of the
+/// previous frame. That is right until the terminal's contents change without
+/// us — display sleep, the terminal repainting itself, returning from a
+/// full-screen editor — at which point that copy is a lie and a diffed draw
+/// leaves stale cells on screen.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Repaint {
+    /// Diff against the previous frame; write only what changed.
+    #[default]
+    Diff,
+    /// Drop the previous-frame buffer first, so every cell is rewritten.
+    Full,
 }
 
 #[cfg(test)]

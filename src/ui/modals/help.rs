@@ -128,6 +128,10 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw("  Copy git patch format"),
         ]),
         Line::from(vec![
+            Span::styled("    Ctrl+l       ", Style::default().fg(Color::Cyan)),
+            Span::raw("  Redraw the screen"),
+        ]),
+        Line::from(vec![
             Span::styled("    q / Esc / ^c", Style::default().fg(Color::Cyan)),
             Span::raw("  Quit"),
         ]),

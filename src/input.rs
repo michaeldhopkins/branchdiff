@@ -31,6 +31,8 @@ pub enum AppAction {
     /// `jj workspace update-stale`). A no-op when nothing is pending.
     RunRecovery,
     Resize,
+    /// Throw away what we believe is on screen and repaint every cell.
+    ForceRepaint,
     None,
 }
 
@@ -39,7 +41,15 @@ pub fn handle_event(event: Event) -> AppAction {
     match event {
         Event::Key(key) => handle_key_event(key.code, key.modifiers),
         Event::Mouse(mouse) => handle_mouse_event(mouse.kind, mouse.column, mouse.row),
-        Event::Resize(_, _) => AppAction::Resize,
+        // A resize repaints in full rather than relying on ratatui's autoresize:
+        // autoresize only invalidates when the *dimensions* changed, so a
+        // same-size SIGWINCH — what a lid-open or tmux reattach typically
+        // delivers — would otherwise diff against a buffer we can no longer
+        // trust and write almost nothing.
+        Event::Resize(_, _) => AppAction::ForceRepaint,
+        // The terminal was hidden or the display slept while we were focused
+        // out; whatever is on screen now is not ours to trust.
+        Event::FocusGained => AppAction::ForceRepaint,
         _ => AppAction::None,
     }
 }
@@ -53,6 +63,11 @@ fn handle_key_event(code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         // Ctrl+C: copy if selection exists, otherwise quit
         // (Cmd+C on macOS is intercepted by the terminal, not the app)
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => AppAction::CopyOrQuit,
+
+        // Ctrl+L: the universal "redraw this screen" convention (readline, vim
+        // :redraw, less). The always-available escape hatch when the terminal
+        // has been repainted underneath us and no focus event told us so.
+        (KeyCode::Char('l'), KeyModifiers::CONTROL) => AppAction::ForceRepaint,
 
         (KeyCode::Up, _) => AppAction::ScrollUp(1),
         (KeyCode::Down, _) => AppAction::ScrollDown(1),
@@ -148,6 +163,47 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         })
+    }
+
+    /// Returning to a terminal that was hidden or asleep is the whole bug: the
+    /// screen may have been repainted underneath us while we sat idle drawing
+    /// nothing, so trust nothing and rewrite it all.
+    #[test]
+    fn test_focus_gained_forces_a_repaint() {
+        assert_eq!(handle_event(Event::FocusGained), AppAction::ForceRepaint);
+    }
+
+    /// Losing focus changes nothing on screen — don't do work for it.
+    #[test]
+    fn test_focus_lost_is_a_no_op() {
+        assert_eq!(handle_event(Event::FocusLost), AppAction::None);
+    }
+
+    /// A same-size SIGWINCH (lid open, tmux reattach) must still repaint:
+    /// ratatui's autoresize only invalidates when the dimensions actually
+    /// changed, so relying on it would leave the stale screen in place.
+    #[test]
+    fn test_resize_forces_a_repaint() {
+        assert_eq!(handle_event(Event::Resize(80, 24)), AppAction::ForceRepaint);
+    }
+
+    /// Ctrl+L is the universal redraw convention and the escape hatch for
+    /// terminals that never send focus events at all.
+    #[test]
+    fn test_ctrl_l_forces_a_repaint() {
+        assert_eq!(
+            handle_event(key_event(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            AppAction::ForceRepaint
+        );
+    }
+
+    /// A bare `l` must stay free for normal use — only the Ctrl chord repaints.
+    #[test]
+    fn test_plain_l_is_not_a_repaint() {
+        assert_ne!(
+            handle_event(key_event(KeyCode::Char('l'), KeyModifiers::NONE)),
+            AppAction::ForceRepaint
+        );
     }
 
     fn mouse_event(kind: MouseEventKind) -> Event {
