@@ -107,22 +107,77 @@ fn resolve_jj_op_store(repo_path: &Path) -> PathBuf {
     repo_dir.join("op_store")
 }
 
-/// Probe whether `trunk()` points to a real remote-tracking bookmark.
-/// `trunk()` falls back to `root()` when no remote exists, which would diff
-/// the entire repo history — so only use it when it resolves to an actual branch.
-fn resolve_base_rev(repo_path: &Path) -> String {
+/// The base used when no trunk can be found: @'s parent.
+const PARENT_BASE: &str = "@-";
+
+/// Bookmark names jj itself tries when resolving `trunk()`, in order.
+const TRUNK_BOOKMARK_CANDIDATES: [&str; 3] = ["main", "master", "trunk"];
+
+/// Whether `from_rev` is a trunk-like base rather than the `@-` fallback.
+///
+/// The stack features (fork point, stack tip, bookmark boundary) are only
+/// meaningful when comparing against trunk; with `@-` there is no stack to
+/// reason about. Previously this was spelled `from_rev != "trunk()"`, which
+/// conflated "is trunk" with the one literal revset that expressed it.
+fn is_trunk_base(from_rev: &str) -> bool {
+    from_rev != PARENT_BASE
+}
+
+/// Whether a revset resolves to at least one commit.
+fn revset_resolves(repo_path: &Path, revset: &str) -> bool {
     run_jj(repo_path, &[
-        "log", "-r", "trunk() ~ root()", "--no-graph",
-        "--limit", "1", "-T", "change_id.short(12)",
+        "log", "-r", revset, "--no-graph", "--limit", "1", "-T", r#""x""#,
     ])
-    .map(|o| {
-        if o.stdout_lossy().trim().is_empty() {
-            "@-".to_string()
-        } else {
-            "trunk()".to_string()
+    .map(|o| !o.stdout_lossy().trim().is_empty())
+    .unwrap_or(false)
+}
+
+/// Find a trunk bookmark on a preferred remote, e.g. `main@origin`.
+fn preferred_trunk_revset(repo_path: &Path) -> Option<String> {
+    for remote in TRUNK_REMOTE_PREFERENCE {
+        for bookmark in TRUNK_BOOKMARK_CANDIDATES {
+            let revset = format!("{bookmark}@{remote}");
+            if revset_resolves(repo_path, &revset) {
+                return Some(revset);
+            }
         }
-    })
-    .unwrap_or_else(|_| "@-".to_string())
+    }
+    None
+}
+
+/// Resolve the base revset to compare against.
+///
+/// Normally this is jj's `trunk()`, but `trunk()` is pinned into repo config at
+/// `jj git init` time from whatever remote was default, so in a repo that also
+/// has a deploy remote it can end up pinned to e.g. `main@heroku_test` — and
+/// then every diff is against the deploy remote. When `trunk()` resolves on a
+/// remote jj would not itself have chosen, prefer an explicit trunk bookmark on
+/// `origin`/`upstream` instead.
+///
+/// A `trunk()` that already resolves on a preferred remote is left alone: it may
+/// legitimately point somewhere other than main (`develop@origin`), and that is
+/// the user's deliberate choice to make.
+///
+/// `trunk()` falls back to `root()` when no remote exists, which would diff the
+/// entire repo history — so only use it when it resolves to an actual branch.
+fn resolve_base_rev(repo_path: &Path) -> String {
+    if !revset_resolves(repo_path, "trunk() ~ root()") {
+        return PARENT_BASE.to_string();
+    }
+
+    // Asks which remotes hold a bookmark at trunk's *commit*, not which remote
+    // the alias names. So a trunk() pinned to a deploy remote still reads as
+    // "on origin" while the two agree — which is the point: the diff is then
+    // identical either way, and the narrower we intervene the better. Once the
+    // deploy remote falls behind, origin drops out and the override kicks in.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let on_preferred_remote = trunk_remote(repo_path, &cancel)
+        .is_some_and(|r| TRUNK_REMOTE_PREFERENCE.contains(&r.as_str()));
+    if on_preferred_remote {
+        return "trunk()".to_string();
+    }
+
+    preferred_trunk_revset(repo_path).unwrap_or_else(|| "trunk()".to_string())
 }
 
 /// Find the fork point: the most recent common ancestor of trunk() and @.
@@ -133,12 +188,13 @@ fn resolve_fork_point(
     from_rev: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Option<String> {
-    if from_rev != "trunk()" {
+    if !is_trunk_base(from_rev) {
         return None;
     }
 
+    let fork_revset = format!("heads(::({from_rev}) & ::@)");
     let args = no_snapshot(&[
-        "log", "-r", "heads(::trunk() & ::@)", "--no-graph",
+        "log", "-r", &fork_revset, "--no-graph",
         "--limit", "1", "-T", "commit_id.short(12)",
     ]);
     let fork_id = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()
@@ -148,7 +204,7 @@ fn resolve_fork_point(
     // Check if fork point equals trunk tip — if so, no divergence
     let trunk_commit = {
         let args = no_snapshot(&[
-            "log", "-r", "trunk()", "--no-graph", "--limit", "1",
+            "log", "-r", from_rev, "--no-graph", "--limit", "1",
             "-T", "commit_id.short(12)",
         ]);
         run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()
@@ -168,10 +224,11 @@ fn resolve_fork_point(
 fn compute_jj_divergence(
     repo_path: &Path,
     fork_point: &str,
+    from_rev: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Option<UpstreamDivergence> {
     // Count commits between fork point and trunk
-    let revset = format!("\"{}\"..trunk()", fork_point);
+    let revset = format!("\"{fork_point}\"..({from_rev})");
     let count_args = no_snapshot(&[
         "log", "-r", &revset,
         "--no-graph", "-T", r#""\n""#,
@@ -186,7 +243,7 @@ fn compute_jj_divergence(
 
     // Get files changed between fork point and trunk
     let diff_args = no_snapshot(&[
-        "diff", "--from", fork_point, "--to", "trunk()", "--summary",
+        "diff", "--from", fork_point, "--to", from_rev, "--summary",
     ]);
     let upstream_files = run_jj_cancellable(repo_path, &diff_args, Arc::clone(cancel))
         .map(|o| {
@@ -219,12 +276,13 @@ fn resolve_stack_tip(
     from_rev: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Option<StackTip> {
-    if from_rev != "trunk()" {
+    if !is_trunk_base(from_rev) {
         return None;
     }
 
+    let tip_revset = format!("heads(({from_rev})..(@::))");
     let args = no_snapshot(&[
-        "log", "-r", "heads(trunk()..(@::))", "--no-graph",
+        "log", "-r", &tip_revset, "--no-graph",
         "-T", r#"change_id.short(12) ++ "\n""#,
     ]);
     let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
@@ -263,7 +321,7 @@ fn resolve_orphaned_tip(
     from_rev: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Option<StackTip> {
-    if from_rev != "trunk()" {
+    if !is_trunk_base(from_rev) {
         return None;
     }
 
@@ -352,8 +410,13 @@ fn pick_trunk_remote(raw: &str) -> Option<String> {
 
 /// The remote `trunk()` resolves on, if it can be determined.
 fn trunk_remote(repo_path: &Path, cancel: &Arc<AtomicBool>) -> Option<String> {
+    remote_of(repo_path, "trunk()", cancel)
+}
+
+/// The remote(s) holding a bookmark at `revset`, reduced to a single preferred one.
+fn remote_of(repo_path: &Path, revset: &str, cancel: &Arc<AtomicBool>) -> Option<String> {
     let args = no_snapshot(&[
-        "log", "-r", "trunk()", "--no-graph", "--limit", "1",
+        "log", "-r", revset, "--no-graph", "--limit", "1",
         "-T", r#"remote_bookmarks.map(|b| b.remote()).join("\n")"#,
     ]);
     let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
@@ -368,12 +431,12 @@ fn trunk_remote(repo_path: &Path, cancel: &Arc<AtomicBool>) -> Option<String> {
 /// remote (heroku etc.) sitting inside the stack range can displace the real
 /// stack segment and truncate the current bookmark's file scope. With no known
 /// trunk remote, consider local bookmarks only.
-fn boundary_revset(change_id: &str, trunk_remote: Option<&str>) -> String {
+fn boundary_revset(change_id: &str, from_rev: &str, trunk_remote: Option<&str>) -> String {
     let bookmarks = match trunk_remote {
         Some(remote) => format!(r#"bookmarks() | remote_bookmarks(remote=exact:"{remote}")"#),
         None => "bookmarks()".to_string(),
     };
-    format!("latest((trunk()..\"{change_id}\"-) & ({bookmarks}))")
+    format!("latest((({from_rev})..\"{change_id}\"-) & ({bookmarks}))")
 }
 
 /// Info about the bookmark boundary for the current stack position.
@@ -396,7 +459,7 @@ fn resolve_bookmark_boundary(
     from_rev: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Option<BookmarkBoundary> {
-    if from_rev != "trunk()" {
+    if !is_trunk_base(from_rev) {
         return None;
     }
 
@@ -427,8 +490,8 @@ fn resolve_bookmark_boundary(
     // Step 2: Find the previous bookmark (nearest ancestor bookmark below the current one).
     // Local bookmarks plus trunk's remote — stacks often have only remote-tracking
     // bookmarks for already-pushed segments, but other remotes must not participate.
-    let remote = trunk_remote(repo_path, cancel);
-    let revset = boundary_revset(&current_bm_id, remote.as_deref());
+    let remote = remote_of(repo_path, from_rev, cancel);
+    let revset = boundary_revset(&current_bm_id, from_rev, remote.as_deref());
     let prev_args = no_snapshot(&[
         "log", "-r", &revset, "--no-graph", "--limit", "1",
         "-T", "change_id.short(12)",
@@ -498,8 +561,8 @@ fn get_change_id_static(repo_path: &Path, rev: &str, cancel: &Arc<AtomicBool>) -
 
 /// Compute @'s position in the stack from trunk to tip.
 /// Returns (1-based position of @, total commits in stack).
-fn compute_stack_position(repo_path: &Path, tip_id: &str) -> Option<(usize, usize)> {
-    let revset = format!("trunk()..\"{}\"", tip_id);
+fn compute_stack_position(repo_path: &Path, tip_id: &str, from_rev: &str) -> Option<(usize, usize)> {
+    let revset = format!("({from_rev})..\"{tip_id}\"");
     let args = no_snapshot(&[
         "log", "-r", &revset, "--no-graph",
         "-T", r#"if(self.contained_in("@"), "@", ".") ++ "\n""#,
@@ -975,7 +1038,7 @@ impl crate::vcs::Vcs for JjVcs {
         // Resolve fork point for divergence detection and fork-point mode
         let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev, cancel_flag);
         let divergence = fork_point.as_deref()
-            .and_then(|fp| compute_jj_divergence(&self.repo_path, fp, cancel_flag));
+            .and_then(|fp| compute_jj_divergence(&self.repo_path, fp, &self.from_rev, cancel_flag));
 
         // Determine the effective --from rev based on diff_base mode
         let effective_from = match self.load_diff_base() {
@@ -1058,7 +1121,7 @@ impl crate::vcs::Vcs for JjVcs {
         let all_lines = assembled.lines;
 
         let stack_position = stack_tip.as_ref().and_then(|tip| {
-            let (current, total) = compute_stack_position(&self.repo_path, &tip.change_id)?;
+            let (current, total) = compute_stack_position(&self.repo_path, &tip.change_id, &self.from_rev)?;
             Some(StackPosition {
                 current,
                 total,
@@ -2084,6 +2147,118 @@ mod tests {
     // === resolve_base_rev tests ===
 
     #[test]
+    fn test_is_trunk_base() {
+        assert!(is_trunk_base("trunk()"));
+        assert!(is_trunk_base("main@origin"), "an explicit trunk bookmark is still a trunk base");
+        assert!(!is_trunk_base("@-"), "the parent fallback is not a trunk base");
+    }
+
+    /// Set a repo-level `trunk()` alias, as `jj git init` itself does.
+    fn pin_trunk_alias(repo: &Path, value: &str) {
+        Command::new("jj")
+            .args(["config", "set", "--repo", r#"revset-aliases."trunk()""#, value])
+            .current_dir(repo).output().unwrap();
+    }
+
+    /// jj pins `trunk()` into repo config at init from whatever remote was
+    /// default. In a repo with a deploy remote that can be e.g.
+    /// `main@heroku_test`, making every diff compare against the deploy remote
+    /// and showing commits already on origin as the user's own work.
+    ///
+    /// The deploy remote must be genuinely *behind* origin for this to bite: a
+    /// deploy bookmark sitting on the same commit as origin's yields an
+    /// identical diff, and branchdiff deliberately leaves `trunk()` alone then
+    /// rather than rewriting a base that isn't hurting anyone.
+    #[test]
+    fn test_resolve_base_rev_prefers_origin_when_deploy_remote_is_behind() {
+        if !jj_available() { return; }
+
+        let origin_dir = tempfile::TempDir::new().unwrap();
+        let heroku_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(origin_dir.path()).output().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(heroku_dir.path()).output().unwrap();
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        jj(&["git", "init"]);
+        jj(&["git", "remote", "add", "origin", &origin_dir.path().to_string_lossy()]);
+        jj(&["git", "remote", "add", "heroku_test", &heroku_dir.path().to_string_lossy()]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test", "--allow-new"]);
+
+        pin_trunk_alias(repo, "main@heroku_test");
+
+        // origin advances; the deploy remote stays where it was.
+        std::fs::write(repo.join("shipped.txt"), "on origin, not deployed\n").unwrap();
+        jj(&["commit", "-m", "landed on origin"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
+
+        assert_eq!(resolve_base_rev(repo), "main@origin",
+            "a trunk() pinned to a deploy remote that has fallen behind origin \
+             must not become the diff base");
+    }
+
+    /// When the deploy remote still agrees with origin there is nothing to fix,
+    /// and `trunk()` produces an identical diff — leave it alone.
+    #[test]
+    fn test_resolve_base_rev_leaves_trunk_alone_when_remotes_agree() {
+        if !jj_available() { return; }
+
+        let origin_dir = tempfile::TempDir::new().unwrap();
+        let heroku_dir = tempfile::TempDir::new().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(origin_dir.path()).output().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(heroku_dir.path()).output().unwrap();
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        jj(&["git", "init"]);
+        jj(&["git", "remote", "add", "origin", &origin_dir.path().to_string_lossy()]);
+        jj(&["git", "remote", "add", "heroku_test", &heroku_dir.path().to_string_lossy()]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test", "--allow-new"]);
+
+        pin_trunk_alias(repo, "main@heroku_test");
+
+        assert_eq!(resolve_base_rev(repo), "trunk()",
+            "with the deploy remote level with origin, trunk() is already correct");
+    }
+
+    /// A `trunk()` already resolving on origin is the user's call — it may point
+    /// at something other than main on purpose. Don't hijack it.
+    #[test]
+    fn test_resolve_base_rev_respects_deliberate_trunk_on_origin() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        std::fs::write(repo.join("dev.txt"), "dev\n").unwrap();
+        jj(&["commit", "-m", "develop work"]);
+        jj(&["bookmark", "set", "develop", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "develop", "--remote", "origin", "--allow-new"]);
+
+        pin_trunk_alias(repo, "develop@origin");
+
+        assert_eq!(resolve_base_rev(repo), "trunk()",
+            "a deliberate trunk() on origin must be respected, not rewritten to main@origin");
+    }
+
+    #[test]
     fn test_resolve_base_rev_fallback_without_remote() {
         if !jj_available() { return; }
 
@@ -2427,7 +2602,7 @@ mod tests {
         Command::new("jj").args(["edit", "@---"]).current_dir(repo).output().unwrap();
 
         let tip = resolve_stack_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false))).expect("should have a tip");
-        let (current, total) = compute_stack_position(repo, &tip.change_id)
+        let (current, total) = compute_stack_position(repo, &tip.change_id, "trunk()")
             .expect("should compute position");
 
         assert!(current >= 1 && current <= total,
@@ -2684,7 +2859,7 @@ mod tests {
     /// only remote-tracking bookmarks for pushed segments are handled.
     #[test]
     fn test_boundary_revset_includes_remote_bookmarks() {
-        let revset = boundary_revset("abc123def456", Some("origin"));
+        let revset = boundary_revset("abc123def456", "trunk()", Some("origin"));
         assert!(revset.contains("remote_bookmarks("),
             "Boundary revset must include remote bookmarks for pushed bookmark segments");
         assert!(revset.contains("\"abc123def456\""),
@@ -2695,7 +2870,7 @@ mod tests {
     /// remote, letting a deploy remote displace the real stack segment.
     #[test]
     fn test_boundary_revset_scopes_remote_bookmarks_to_trunk_remote() {
-        let revset = boundary_revset("abc123def456", Some("origin"));
+        let revset = boundary_revset("abc123def456", "trunk()", Some("origin"));
         assert!(revset.contains(r#"remote_bookmarks(remote=exact:"origin")"#),
             "Boundary revset must scope remote bookmarks to trunk's remote, got: {revset}");
         assert!(!revset.contains("remote_bookmarks()"),
@@ -2706,7 +2881,7 @@ mod tests {
     /// admitting every remote.
     #[test]
     fn test_boundary_revset_without_trunk_remote_is_local_only() {
-        let revset = boundary_revset("abc123def456", None);
+        let revset = boundary_revset("abc123def456", "trunk()", None);
         assert!(!revset.contains("remote_bookmarks"),
             "Without a trunk remote, no remote bookmarks may be considered, got: {revset}");
         assert!(revset.contains("bookmarks()"),
