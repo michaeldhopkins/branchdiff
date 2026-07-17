@@ -863,9 +863,18 @@ impl JjVcs {
         }
     }
 
-    /// Check if repo is colocated (has .git directory alongside .jj).
+    /// Whether this is a colocated repo: a real `.git` **directory** beside `.jj`.
+    ///
+    /// Must be `is_dir()`, not `exists()`. A git worktree — and any jj secondary
+    /// workspace that tooling has planted worktree plumbing beside — has `.git`
+    /// as a *file* holding `gitdir: ...`. Those are not colocated: the colocated
+    /// fast path assumes git's worktree view tracks jj `@-`, which is only true
+    /// in the default workspace. A worktree git dir has no index of its own, so
+    /// git reports every tracked file deleted and every file on disk untracked,
+    /// and the diff fills with the whole repo plus jj's `.jj/` internals.
+    /// Non-colocated repos fall back to the disk walk, which is correct here.
     fn is_colocated(&self) -> bool {
-        self.repo_path.join(".git").exists()
+        self.repo_path.join(".git").is_dir()
     }
 }
 
@@ -3176,6 +3185,63 @@ mod tests {
             op_count(repo), ops_before,
             "git-based change discovery must not churn the jj operation log"
         );
+    }
+
+    /// A jj *secondary workspace* must not be mistaken for a colocated repo.
+    ///
+    /// The colocated fast path assumes git's worktree view tracks jj `@-` (see
+    /// `colocated_git_sees_unsnapshotted_edit_without_churning_jj_oplog`). That
+    /// holds only in the default workspace. `workon`-style tooling adds git
+    /// worktree plumbing beside a `jj workspace add` checkout so git commands
+    /// work, which leaves a `.git` *file* — and the worktree git dir has no
+    /// index, so `git status` there reports every tracked file deleted and every
+    /// file on disk untracked. Taking the colocated path then floods the diff
+    /// with the whole repo plus jj's own `.jj/` internals.
+    #[test]
+    fn secondary_workspace_with_git_worktree_file_is_not_colocated() {
+        if !jj_available() { return; }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path();
+        let main_repo = root.join("repo");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(&main_repo).output().unwrap();
+        for i in 1..=4 {
+            std::fs::write(main_repo.join(format!("file{i}.txt")), format!("content {i}\n")).unwrap();
+        }
+        Command::new("jj").args(["commit", "-m", "base"]).current_dir(&main_repo).output().unwrap();
+
+        let ws = root.join("ws1");
+        Command::new("jj")
+            .args(["workspace", "add", "--name", "ws1", ws.to_str().unwrap()])
+            .current_dir(&main_repo).output().unwrap();
+
+        // Replicate the git worktree plumbing `workon` plants beside the workspace.
+        let wt_git_dir = main_repo.join(".git/worktrees/ws1");
+        std::fs::create_dir_all(&wt_git_dir).unwrap();
+        std::fs::write(wt_git_dir.join("gitdir"), format!("{}/.git\n", ws.display())).unwrap();
+        std::fs::write(wt_git_dir.join("commondir"), "../..\n").unwrap();
+        let head = {
+            let o = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&main_repo).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        std::fs::write(wt_git_dir.join("HEAD"), format!("{head}\n")).unwrap();
+        std::fs::write(ws.join(".git"), format!("gitdir: {}\n", wt_git_dir.display())).unwrap();
+
+        assert!(ws.join(".git").exists(), "fixture: workspace .git must exist");
+        assert!(!ws.join(".git").is_dir(), "fixture: workspace .git must be a FILE, not a dir");
+
+        let vcs = JjVcs::new(ws.clone()).unwrap();
+        assert!(!vcs.is_colocated(),
+            "a secondary workspace whose .git is a worktree pointer file is not colocated");
+
+        // And the discovery it gates must report only the real edit.
+        std::fs::write(ws.join("file1.txt"), "content 1\nmy actual change\n").unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let changed = vcs.discover_working_changes(&vcs.from_rev.clone(), &cancel).unwrap();
+        let names: Vec<&str> = changed.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(names, ["file1.txt"],
+            "only the edited file may be reported; jj internals and untouched files must not leak in");
     }
 
     /// GOAL of the de-snapshot refactor, written failing-first: a refresh over a
