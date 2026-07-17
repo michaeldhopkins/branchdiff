@@ -109,6 +109,7 @@ The benchmark simulates scrolling, file navigation, and view mode changes while 
 | `Y` | Copy entire diff |
 | `D` | Copy git patch format |
 | `?` | Toggle help |
+| `Ctrl+l` | Redraw the screen (if the terminal repainted underneath branchdiff) |
 | `q` / `Esc` / `Ctrl+c` | Quit |
 
 ### Mouse

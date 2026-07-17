@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::app::App;
 use crate::app::selection::MULTI_CLICK_MS;
 use crate::input::AppAction;
-use crate::message::{LoopAction, OpenTarget, RefreshTrigger, UpdateResult};
+use crate::message::{LoopAction, OpenTarget, Repaint, RefreshTrigger, UpdateResult};
 
 use super::RefreshState;
 const POSITION_TOLERANCE: u16 = 2;
@@ -95,6 +95,10 @@ pub(super) fn handle_input(
 ) -> UpdateResult {
     let mut result = UpdateResult {
         needs_redraw: !matches!(action, AppAction::None),
+        repaint: match action {
+            AppAction::ForceRepaint => Repaint::Full,
+            _ => Repaint::Diff,
+        },
         ..Default::default()
     };
 
@@ -193,8 +197,9 @@ pub(super) fn handle_input(
             }
         }
 
-        // No-op actions
-        AppAction::Resize | AppAction::None => {}
+        // Nothing to update: the repaint is the main loop's job (it owns the
+        // terminal), and `force_repaint` above already asked for it.
+        AppAction::ForceRepaint | AppAction::Resize | AppAction::None => {}
     }
 
     result
@@ -289,6 +294,27 @@ mod tests {
 
         let result = handle_input(AppAction::Resize, &mut app, &mut refresh_state);
         assert!(result.needs_redraw);
+    }
+
+    #[test]
+    fn test_handle_input_force_repaint_asks_the_loop_to_repaint() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::ForceRepaint, &mut app, &mut refresh_state);
+        assert_eq!(result.repaint, Repaint::Full, "the main loop must drop its screen buffer");
+        assert!(result.needs_redraw, "a forced repaint must also draw");
+    }
+
+    /// Only a forced repaint discards the buffer — ordinary input must not pay
+    /// for a full-screen rewrite.
+    #[test]
+    fn test_handle_input_ordinary_action_does_not_force_repaint() {
+        let mut app = TestAppBuilder::new().build();
+        let mut refresh_state = RefreshState::Idle;
+
+        let result = handle_input(AppAction::ScrollDown(1), &mut app, &mut refresh_state);
+        assert_eq!(result.repaint, Repaint::Diff);
     }
 
     #[test]

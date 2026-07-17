@@ -19,7 +19,7 @@ use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::{handle_event, AppAction};
 use branchdiff::limits;
 use branchdiff::message::{
-    FetchResult, LoopAction, Message, OpenTarget, RefreshOutcome, RefreshTrigger,
+    FetchResult, LoopAction, Message, OpenTarget, Repaint, RefreshOutcome, RefreshTrigger,
     FALLBACK_REFRESH_SECS,
 };
 use branchdiff::update::{
@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture},
+    event::{self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -66,7 +66,7 @@ impl TerminalGuard {
     fn new() -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableFocusChange)?;
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         Ok(Self { terminal })
     }
@@ -78,6 +78,7 @@ impl Drop for TerminalGuard {
         let _ = disable_raw_mode();
         let _ = execute!(
             self.terminal.backend_mut(),
+            DisableFocusChange,
             LeaveAlternateScreen,
             DisableMouseCapture
         );
@@ -94,6 +95,7 @@ impl SuspendGuard {
         disable_raw_mode()?;
         execute!(
             io::stdout(),
+            DisableFocusChange,
             LeaveAlternateScreen,
             DisableMouseCapture,
             crossterm::cursor::Show
@@ -105,8 +107,41 @@ impl SuspendGuard {
 impl Drop for SuspendGuard {
     fn drop(&mut self) {
         let _ = enable_raw_mode();
-        let _ = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture);
+        let _ = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, EnableFocusChange);
     }
+}
+
+/// Discard ratatui's belief about what is on screen and repaint every cell.
+///
+/// ratatui renders by diffing against an in-memory copy of the previous frame.
+/// That is right until the terminal's contents change without us — returning
+/// from a full-screen editor, waking from display sleep, the terminal
+/// repainting itself — at which point that copy is a lie and a diffed draw
+/// leaves stale cells behind. Resetting the buffer is what forces the next
+/// `draw` to write everything.
+///
+/// Use `resize`, NOT `Terminal::clear`. Reading the ratatui source suggests they
+/// should be equivalent here (`resize` calls `clear` internally, and for
+/// `Viewport::Fullscreen` `clear` looks like a plain `ESC[2J`), but at runtime
+/// they are not: `clear` returns "The cursor position could not be read within a
+/// normal duration" — crossterm's DSR timeout — under a terminal that doesn't
+/// answer, which includes the PTY tests. The failure is worse than it sounds.
+/// `clear` emits its escape *before* resetting the back buffer and returns early
+/// on the error, so the screen is wiped while ratatui still believes the old
+/// frame is on it; the next draw diffs to zero changes and the screen stays
+/// blank permanently. `resize` does not take that path and works.
+///
+/// Verified empirically (v0.72.0): `clear` errors and blanks the screen in
+/// `test_e_opens_current_file_in_editor`; `resize` passes. The exact DSR call
+/// site was not located in the dependency sources — the observed behaviour is
+/// the authority here, not the reading. Don't "simplify" this to `clear`.
+fn force_repaint<B: Backend>(terminal: &mut Terminal<B>) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
+    let area: ratatui::layout::Rect = terminal.size()?.into();
+    terminal.resize(area)?;
+    Ok(())
 }
 
 fn run_external<B: Backend>(terminal: &mut Terminal<B>, cmd: &ExternalCommand) -> Result<()>
@@ -120,11 +155,7 @@ where
                 let _guard = SuspendGuard::new()?;
                 Command::new(&cmd.program).args(&cmd.args).status()
             };
-            // Force a full repaint via `resize`, not `Terminal::clear`: clear()
-            // snapshots the cursor with a DSR query that blocks reading the
-            // terminal's reply, hanging under a non-responding terminal (tests).
-            let area: ratatui::layout::Rect = terminal.size()?.into();
-            terminal.resize(area)?;
+            force_repaint(terminal)?;
             // Propagate only spawn/wait failures (e.g. editor not found); a
             // non-zero editor exit is not our concern.
             status?;
@@ -961,6 +992,13 @@ where
                     needs_redraw = true;
                 }
                 None => {}
+            }
+
+            // Full always implies a draw: dropping the buffer without redrawing
+            // would leave the screen blank.
+            if result.repaint == Repaint::Full {
+                force_repaint(terminal)?;
+                needs_redraw = true;
             }
         }
 
