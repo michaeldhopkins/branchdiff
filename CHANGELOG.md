@@ -13,6 +13,10 @@
 ### Performance
 
 - *(jj)* Seed the disk-walk cache from jj's last snapshot
+
+### Testing
+
+- Reproduce the stale-paint bug deterministically
 ## [0.71.0] - 2026-07-12
 
 ### Features

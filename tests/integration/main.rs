@@ -189,3 +189,90 @@ fn test_quit_with_q() {
     session.press("q");
     // The process should exit - if it doesn't, the harness will timeout
 }
+
+/// Reproduces the "came back to my desk and the screen is half painted" bug
+/// deterministically, in milliseconds, and pins each repaint trigger.
+///
+/// The bug needs no sleeping or real display: it only needs the terminal's
+/// screen and ratatui's in-memory copy of it to disagree. `simulate_terminal_wiped`
+/// creates exactly that disagreement without the app being told, which is what
+/// display sleep / a terminal repaint / a reattach do in the wild.
+///
+/// The middle of this test is the important part: after the wipe, an ordinary
+/// redraw does NOT repair the screen. That is the whole bug — branchdiff was
+/// relying on incidental redraws to heal it, and they can't.
+#[test]
+#[cfg(unix)]
+fn test_screen_wiped_behind_our_back_is_repaired_by_repaint_triggers() {
+    let repo = TestRepo::new();
+    repo.add_file("src/main.rs", "fn main() {}");
+    repo.commit("add main.rs");
+    repo.create_branch("feature");
+    repo.modify_file("src/main.rs", "fn main() {\n    println!(\"hi\");\n}");
+
+    let mut session = TuiSession::launch(repo.path());
+    session.assert_contains("src/main.rs");
+
+    // The terminal loses its contents; branchdiff is never told.
+    session.simulate_terminal_wiped();
+    assert!(
+        !session.text().contains("src/main.rs"),
+        "precondition: the wipe must actually clear the screen"
+    );
+
+    // An ordinary redraw cannot repair it: ratatui diffs against a previous
+    // frame that no longer matches reality, so the stale cells are never
+    // rewritten. This is the bug, and it is why waiting doesn't help.
+    session.press("j");
+    assert!(
+        !session.text().contains("src/main.rs"),
+        "BUG REPRODUCED CHECK: a normal redraw should not have repaired the screen — \
+         if this now passes, the diff-render assumption changed and this test is stale"
+    );
+
+    // FocusGained (CSI I) — what a terminal sends when you switch back to it.
+    session.send_raw(b"\x1b[I");
+    assert!(
+        session.text().contains("src/main.rs"),
+        "FocusGained must force a full repaint; screen was:\n{}",
+        session.text()
+    );
+
+    // And Ctrl+L, the escape hatch for terminals that never report focus.
+    session.simulate_terminal_wiped();
+    assert!(!session.text().contains("src/main.rs"), "precondition: wiped again");
+    session.send_raw(b"\x0c");
+    assert!(
+        session.text().contains("src/main.rs"),
+        "Ctrl+L must force a full repaint; screen was:\n{}",
+        session.text()
+    );
+}
+
+/// branchdiff must actually *ask* the terminal to report focus.
+///
+/// Handling `FocusGained` is useless if we never enable focus reporting: no
+/// terminal sends `CSI I` unbidden. This asserts the DECSET 1004 request goes
+/// out on startup, which is the half of the mechanism that can't be verified by
+/// injecting an event into the harness.
+///
+/// Terminals that don't implement 1004 parse and discard it, so this is inert
+/// where unsupported rather than junk on screen.
+#[test]
+#[cfg(unix)]
+fn test_enables_focus_reporting_on_startup() {
+    let repo = TestRepo::new();
+    repo.add_file("src/main.rs", "fn main() {}");
+    repo.commit("add main.rs");
+    repo.create_branch("feature");
+    repo.modify_file("src/main.rs", "fn main() {\n    println!(\"hi\");\n}");
+
+    let mut session = TuiSession::launch(repo.path());
+    session.assert_contains("src/main.rs");
+
+    assert!(
+        session.emitted(b"\x1b[?1004h"),
+        "branchdiff must enable focus reporting (DECSET 1004) or no terminal will ever \
+         send FocusGained and the repaint-on-return fix is dead code"
+    );
+}
