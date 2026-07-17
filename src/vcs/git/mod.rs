@@ -32,8 +32,32 @@ pub struct GitVcs {
 impl GitVcs {
     /// Create a new GitVcs for the given repository.
     pub fn new(repo_path: PathBuf) -> Result<Self> {
-        let base_branch = detect_base_branch(&repo_path)
-            .unwrap_or_else(|_| "main".to_string());
+        Self::with_base(repo_path, None)
+    }
+
+    /// Create a backend, optionally overriding the base branch.
+    ///
+    /// `base` may be a bare branch name (`develop`), a remote-qualified one
+    /// (`origin/develop`) or a raw commit — [`get_merge_base_preferring_origin`]
+    /// tries `origin/<base>` and falls back to `<base>`, so each spelling
+    /// resolves through one path or the other.
+    ///
+    /// Validated by computing the merge-base up front: that is the same lookup
+    /// every refresh performs, so if it fails here it would fail on every
+    /// refresh — but silently, rendering as "no changes" rather than an error.
+    pub fn with_base(repo_path: PathBuf, base: Option<&str>) -> Result<Self> {
+        let base_branch = match base {
+            Some(base) => {
+                get_merge_base_preferring_origin(&repo_path, base).with_context(|| {
+                    format!(
+                        "--base {base:?} is not a branch or commit in this repo \
+                         (tried origin/{base} and {base})"
+                    )
+                })?;
+                base.to_string()
+            }
+            None => detect_base_branch(&repo_path).unwrap_or_else(|_| "main".to_string()),
+        };
         let git_version = get_git_version()
             .context("Failed to detect git version")?;
         Ok(Self { repo_path, base_branch, git_version })

@@ -3,6 +3,7 @@
 ### Features
 
 - Repaint on focus regain, resize, and Ctrl+L
+- Add --base to override the detected diff base
 
 ### Bug Fixes
 

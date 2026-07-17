@@ -276,3 +276,71 @@ fn test_enables_focus_reporting_on_startup() {
          send FocusGained and the repaint-on-return fix is dead code"
     );
 }
+
+/// `--base` end to end: the flag must actually move the diff base, and a base
+/// that doesn't resolve must say so rather than render an empty diff.
+///
+/// Runs the real binary in `--print` mode (no PTY needed) because the flag's
+/// whole job is to be reachable from the command line.
+#[test]
+#[cfg(unix)]
+fn test_base_flag_overrides_the_diff_base() {
+    use std::process::Command;
+
+    let repo = TestRepo::new();
+    repo.add_file("base.txt", "base\n");
+    repo.commit("base commit");
+    // `develop` carries a commit that main does not.
+    repo.create_branch("develop");
+    repo.add_file("on-develop.txt", "shipped\n");
+    repo.commit("landed on develop");
+    repo.create_branch("feature");
+    repo.add_file("mine.txt", "my work\n");
+    repo.commit("my feature");
+
+    let run = |args: &[&str]| -> (String, String, bool) {
+        let out = Command::new("branchdiff")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .expect("failed to run branchdiff");
+        (
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+            out.status.success(),
+        )
+    };
+
+    // Against main (detected), the develop commit is part of "my" changes.
+    let (default_out, _, ok) = run(&["-p"]);
+    assert!(ok, "default run should succeed");
+    assert!(
+        default_out.contains("on-develop.txt"),
+        "precondition: against main, the develop commit shows as ours; got:\n{default_out}"
+    );
+
+    // Against develop, it is not.
+    let (based_out, _, ok) = run(&["-p", "--base", "develop"]);
+    assert!(ok, "--base develop should succeed");
+    assert!(
+        based_out.contains("mine.txt"),
+        "--base must still show the real change; got:\n{based_out}"
+    );
+    assert!(
+        !based_out.contains("on-develop.txt"),
+        "--base develop must exclude what already exists on develop; got:\n{based_out}"
+    );
+
+    // A base that doesn't resolve fails loudly, naming the base — and must not
+    // be mistaken for "not a repository".
+    let (_, err, ok) = run(&["-p", "--base", "no-such-ref"]);
+    assert!(!ok, "an unresolvable --base must exit non-zero, not print an empty diff");
+    assert!(
+        err.contains("no-such-ref"),
+        "the error must name the offending base; got:\n{err}"
+    );
+    assert!(
+        !err.contains("Not a git or jj repository"),
+        "a bad --base must not be reported as a missing repo; got:\n{err}"
+    );
+}

@@ -1208,3 +1208,63 @@ fn test_has_merge_conflicts_distinguishes_conflict_from_error() {
     assert_eq!(result.ok(), Some(true),
         "conflicting local vs origin should report conflicts");
 }
+
+// === --base override tests ===
+
+/// An explicit base wins over `detect_base_branch`'s main/master probing.
+#[test]
+fn test_git_explicit_base_overrides_detection() {
+    let temp = create_test_repo();
+    git_cmd(temp.path(), &["checkout", "-b", "develop"]);
+    fs::write(temp.path().join("dev.txt"), "dev\n").unwrap();
+    git_cmd(temp.path(), &["add", "dev.txt"]);
+    git_cmd(temp.path(), &["commit", "-m", "develop work"]);
+    git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+
+    assert_eq!(GitVcs::new(temp.path().to_path_buf()).unwrap().base_branch(), "main",
+        "precondition: detection would pick main");
+
+    let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
+    assert_eq!(vcs.base_branch(), "develop", "an explicit base must win over detection");
+}
+
+/// A base git can't resolve must fail at startup rather than diff against
+/// nothing and render as "no changes".
+#[test]
+fn test_git_explicit_base_that_does_not_resolve_is_rejected() {
+    let temp = create_test_repo();
+    let result = GitVcs::with_base(temp.path().to_path_buf(), Some("no-such-branch"));
+    let msg = match result {
+        Ok(_) => panic!("an unresolvable base must be rejected"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(msg.contains("no-such-branch"), "the error must name the offending base, got: {msg}");
+}
+
+/// Bare names, remote-qualified names and raw SHAs must all work: the
+/// merge-base lookup tries `origin/<base>` first and falls back to `<base>`, so
+/// each spelling resolves through one path or the other.
+#[test]
+fn test_git_explicit_base_accepts_a_raw_commit_sha() {
+    let temp = create_test_repo();
+    let sha = {
+        let out = Command::new("git").args(["rev-parse", "HEAD"])
+            .current_dir(temp.path()).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+    fs::write(temp.path().join("file.txt"), "changed\n").unwrap();
+    git_cmd(temp.path(), &["add", "file.txt"]);
+    git_cmd(temp.path(), &["commit", "-m", "change"]);
+
+    let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some(&sha)).unwrap();
+    assert_eq!(vcs.base_branch(), sha);
+}
+
+/// No base = inference untouched.
+#[test]
+fn test_git_no_explicit_base_falls_back_to_detection() {
+    let temp = create_test_repo();
+    let vcs = GitVcs::with_base(temp.path().to_path_buf(), None).unwrap();
+    assert_eq!(vcs.base_branch(), "main");
+}
