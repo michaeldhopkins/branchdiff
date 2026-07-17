@@ -5,7 +5,6 @@ mod refresh;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -161,12 +160,6 @@ impl Vcs for GitVcs {
 
     fn working_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
         get_working_tree_bytes(&self.repo_path, file_path)
-    }
-
-    fn binary_files(&self) -> HashSet<String> {
-        let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
-            .unwrap_or_default();
-        get_binary_files(&self.repo_path, &merge_base)
     }
 
     fn fetch(&self) -> Result<()> {

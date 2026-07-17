@@ -3,7 +3,7 @@
 //! This module provides a builder pattern for creating test App instances,
 //! eliminating duplication across test modules.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -222,7 +222,6 @@ impl crate::vcs::Vcs for StubVcs {
 
     fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
 
-    fn binary_files(&self) -> HashSet<String> { HashSet::new() }
 
     fn fetch(&self) -> Result<()> { unimplemented!() }
 
