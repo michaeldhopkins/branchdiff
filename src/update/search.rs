@@ -1,7 +1,7 @@
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind};
 
 use crate::app::App;
-use crate::message::UpdateResult;
+use crate::message::{Repaint, UpdateResult};
 
 /// Handle raw input events when the search bar is active.
 pub(super) fn handle_search_input(event: Event, app: &mut App) -> UpdateResult {
@@ -11,7 +11,20 @@ pub(super) fn handle_search_input(event: Event, app: &mut App) -> UpdateResult {
     };
 
     match event {
+        // A repaint request is orthogonal to search: the screen is stale
+        // regardless of which widget has focus. Without these, opening the
+        // search box silently disabled both the automatic repaint and its
+        // manual escape hatch — leave search open, walk away, come back, and
+        // there was no way to fix the screen.
+        Event::FocusGained | Event::Resize(_, _) => {
+            result.repaint = Repaint::Full;
+            return result;
+        }
         Event::Key(key) => match (key.code, key.modifiers) {
+            // Before the printable-char arm, which only matches NONE|SHIFT and
+            // so would never see this — but keep the ordering explicit so a
+            // future edit can't make Ctrl+L type an 'l' into the query.
+            (KeyCode::Char('l'), KeyModifiers::CONTROL) => result.repaint = Repaint::Full,
             (KeyCode::Esc, _) => app.close_search(),
             (KeyCode::Enter, m) if m.contains(KeyModifiers::SHIFT) => app.search_prev(),
             (KeyCode::Enter, _) => app.search_next(),
@@ -67,6 +80,54 @@ mod tests {
             .build();
         app.open_search();
         app
+    }
+
+    /// A stale screen is stale regardless of which widget has focus. Every
+    /// other mode repaints on FocusGained; search must not be the one place
+    /// where returning to the terminal leaves a half-painted screen.
+    #[test]
+    fn test_search_focus_gained_forces_a_repaint() {
+        let mut app = build_app_with_search();
+        let result = handle_search_input(Event::FocusGained, &mut app);
+        assert_eq!(result.repaint, Repaint::Full,
+            "FocusGained must repaint even while the search box is open");
+        assert!(result.needs_redraw);
+    }
+
+    /// Ctrl+L is the advertised "always works" escape hatch. If it silently
+    /// stops working with the search box open, it isn't one.
+    #[test]
+    fn test_search_ctrl_l_forces_a_repaint() {
+        let mut app = build_app_with_search();
+        let result = handle_search_input(key(KeyCode::Char('l'), KeyModifiers::CONTROL), &mut app);
+        assert_eq!(result.repaint, Repaint::Full,
+            "Ctrl+L must repaint even while the search box is open");
+    }
+
+    /// ...and it must not be mistaken for typing the letter 'l' into the query.
+    #[test]
+    fn test_search_ctrl_l_does_not_type_into_the_query() {
+        let mut app = build_app_with_search();
+        handle_search_input(key(KeyCode::Char('l'), KeyModifiers::CONTROL), &mut app);
+        assert_eq!(app.search.as_ref().unwrap().query, "", "Ctrl+L is a command, not input");
+    }
+
+    /// A plain 'l' must still type.
+    #[test]
+    fn test_search_plain_l_still_types() {
+        let mut app = build_app_with_search();
+        handle_search_input(key(KeyCode::Char('l'), KeyModifiers::NONE), &mut app);
+        assert_eq!(app.search.as_ref().unwrap().query, "l");
+    }
+
+    /// Resize while searching must repaint too: ratatui's autoresize only
+    /// invalidates on a dimension change, so a same-size SIGWINCH would leave
+    /// the stale screen exactly as it is.
+    #[test]
+    fn test_search_resize_forces_a_repaint() {
+        let mut app = build_app_with_search();
+        let result = handle_search_input(Event::Resize(80, 24), &mut app);
+        assert_eq!(result.repaint, Repaint::Full);
     }
 
     #[test]

@@ -115,6 +115,13 @@ impl TuiSession {
             .any(|w| w == bytes)
     }
 
+    /// How many bytes the app has written so far. Lets a test tell "the app
+    /// redrew and it didn't help" apart from "the app never redrew".
+    pub fn bytes_written(&mut self) -> usize {
+        self.poll();
+        self.raw_output.len()
+    }
+
     /// Get the current screen contents as plain text.
     pub fn text(&mut self) -> String {
         self.poll();
