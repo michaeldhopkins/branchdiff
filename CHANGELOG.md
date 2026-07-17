@@ -11,6 +11,7 @@
 - *(jj)* Prefer origin when trunk() is pinned to a deploy remote
 - *(jj)* Don't treat a secondary workspace as colocated
 - Keep repaint working while the search box is open
+- *(jj)* Don't lose files jj refused to snapshot; reject multi-commit --base
 
 ### Performance
 
