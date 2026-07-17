@@ -254,9 +254,16 @@ fn main() -> Result<()> {
         .context("Failed to resolve repository path")?;
 
     // Try to detect VCS - for non-TUI modes, fail immediately if not found
-    let detected = match vcs::detect(&repo_path) {
+    let detected = match vcs::detect_with_base(&repo_path, cli.base.as_deref()) {
         Ok(vcs) => Some(vcs),
-        Err(_) => {
+        Err(e) => {
+            // Only "there is no repo here" may be reported as such. When a repo
+            // *is* present, the failure is the caller's --base (or a real VCS
+            // error), and reporting that as "Not a git or jj repository" would
+            // send them looking in exactly the wrong place.
+            if vcs::detect_repo_dir(&repo_path).is_some() {
+                return Err(e);
+            }
             if cli.output.mode() != OutputMode::Tui {
                 anyhow::bail!("Not a git or jj repository");
             }
@@ -323,9 +330,9 @@ fn main() -> Result<()> {
             if let Some(frames) = cli.benchmark {
                 return run_benchmark(vcs, repo_root, frames);
             }
-            run_main_app(vcs, repo_root, !cli.no_auto_fetch)
+            run_main_app(vcs, repo_root, !cli.no_auto_fetch, cli.base.as_deref())
         }
-        None => run_waiting_for_vcs(&repo_path, !cli.no_auto_fetch),
+        None => run_waiting_for_vcs(&repo_path, !cli.no_auto_fetch, cli.base.as_deref()),
     }
 }
 
@@ -335,7 +342,7 @@ fn main() -> Result<()> {
 /// creation, with a polling fallback. Once a VCS directory is found, retries
 /// full `vcs::detect()` (which runs external commands) with backoff until it
 /// succeeds — surfacing errors on screen so PATH issues are visible.
-fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
+fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Result<()> {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::widgets::{Block, Borders, Paragraph};
     use ratatui::layout::Alignment;
@@ -431,12 +438,12 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool) -> Result<()> {
             && last_detect_attempt.elapsed() >= retry_delay
         {
             last_detect_attempt = Instant::now();
-            match vcs::detect(path) {
+            match vcs::detect_with_base(path, base) {
                 Ok(detected) => {
                     let repo_root = detected.repo_path().to_path_buf();
                     // Restore before handing off; run_main_app installs its own guard.
                     drop(guard);
-                    return run_main_app(detected, repo_root, auto_fetch);
+                    return run_main_app(detected, repo_root, auto_fetch, base);
                 }
                 Err(e) => {
                     last_error = Some(format!("{e:#}"));
@@ -452,6 +459,7 @@ fn run_main_app(
     mut detected: Box<dyn Vcs>,
     mut repo_root: PathBuf,
     auto_fetch: bool,
+    base: Option<&str>,
 ) -> Result<()> {
     // Initialize image protocol picker (once — survives restarts)
     let in_multiplexer = std::env::var("ZELLIJ").is_ok()
@@ -532,7 +540,7 @@ fn run_main_app(
         match loop_action {
             LoopAction::Quit => break,
             LoopAction::RestartVcs => {
-                match vcs::detect(&repo_root) {
+                match vcs::detect_with_base(&repo_root, base) {
                     Ok(new_vcs) => {
                         repo_root = new_vcs.repo_path().to_path_buf();
                         detected = new_vcs;

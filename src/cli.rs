@@ -64,6 +64,16 @@ pub struct Cli {
     #[arg(default_value = ".")]
     pub path: PathBuf,
 
+    /// Compare against this base instead of the detected one.
+    ///
+    /// jj: any revset (e.g. `main@origin`, `develop`, a change id).
+    /// git: a branch name, `origin/`-qualified name, or commit.
+    ///
+    /// Use this when the detected base is wrong — most often a jj repo whose
+    /// `trunk()` was pinned to the wrong remote when it was created.
+    #[arg(long, value_name = "REV")]
+    pub base: Option<String>,
+
     /// Disable automatic fetching of base branch
     #[arg(long)]
     pub no_auto_fetch: bool,

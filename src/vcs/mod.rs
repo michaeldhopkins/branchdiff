@@ -60,21 +60,30 @@ pub fn detect_repo_dir(path: &Path) -> Option<(&'static str, PathBuf)> {
 /// Checks jj first (takes precedence in colocated repos where both
 /// .jj/ and .git/ exist), then falls back to git.
 pub fn detect(path: &Path) -> Result<Box<dyn Vcs>> {
+    detect_with_base(path, None)
+}
+
+/// Detect the VCS backend, optionally overriding the base to compare against.
+///
+/// `base` is interpreted by whichever backend wins: a revset for jj, a
+/// branch/ref for git. An unresolvable base is an error rather than an empty
+/// diff — see each backend's `with_base`.
+pub fn detect_with_base(path: &Path, base: Option<&str>) -> Result<Box<dyn Vcs>> {
     // jj first — in colocated repos, jj is the primary VCS.
     // Check the path itself, then walk up parent dirs.
     if path.join(".jj").is_dir()
         && let Ok(root) = jj::get_repo_root(path)
     {
-        return Ok(Box::new(jj::JjVcs::new(root)?));
+        return Ok(Box::new(jj::JjVcs::with_base(root, base)?));
     }
     if let Some(ancestor) = path.ancestors().find(|p| p.join(".jj").is_dir())
         && let Ok(root) = jj::get_repo_root(ancestor)
     {
-        return Ok(Box::new(jj::JjVcs::new(root)?));
+        return Ok(Box::new(jj::JjVcs::with_base(root, base)?));
     }
     // Fall back to git
     if let Ok(root) = git::get_repo_root(path) {
-        return Ok(Box::new(git::GitVcs::new(root)?));
+        return Ok(Box::new(git::GitVcs::with_base(root, base)?));
     }
     anyhow::bail!("Not a git or jj repository")
 }

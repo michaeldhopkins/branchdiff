@@ -65,10 +65,35 @@ If no repository is found, branchdiff waits and automatically starts when `git i
 | `-p`, `--print` | Print diff to stdout and exit (non-interactive mode) |
 | `-d`, `--diff` | Output unified patch format to stdout (for `git apply` / `patch`) |
 | `--html` | Output self-contained styled HTML to stdout (great for iPad review) |
+| `--base REV` | Compare against `REV` instead of the detected base (jj: any revset, e.g. `main@origin`; git: a branch, `origin/`-qualified name, or commit) |
 | `--no-auto-fetch` | Disable automatic fetching of base branch |
 | `--benchmark N` | Run stress test rendering N frames (for profiling) |
 | `-h`, `--help` | Print help |
 | `-v`, `-V`, `--version` | Print version |
+
+### Choosing the base
+
+By default branchdiff works out what to compare against: `origin/main` or
+`origin/master` under git, and jj's `trunk()` under jj.
+
+Under jj it prefers a trunk bookmark on `origin` (or `upstream`) when `trunk()`
+resolves somewhere else. `trunk()` is pinned into repo config when the repo is
+created, from whatever remote was default at the time — in a repo with a deploy
+remote that can leave it pointing at, say, `main@heroku_test`, so every diff
+compares against what's deployed instead of what's on origin. A `trunk()` that
+already resolves on `origin` is left alone: it may point at `develop@origin`
+deliberately.
+
+When the guess is wrong, say so:
+
+```bash
+branchdiff --base main@origin      # jj: any revset
+branchdiff --base develop          # git: a branch name
+branchdiff --base origin/release   # ...or a remote-qualified one
+branchdiff --base a1b2c3d          # ...or a commit
+```
+
+A base that doesn't resolve is an error, not an empty diff.
 
 ### Profiling
 

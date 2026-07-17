@@ -585,7 +585,32 @@ fn compute_stack_position(repo_path: &Path, tip_id: &str, from_rev: &str) -> Opt
 
 impl JjVcs {
     pub fn new(repo_path: PathBuf) -> Result<Self> {
-        let from_rev = resolve_base_rev(&repo_path);
+        Self::with_base(repo_path, None)
+    }
+
+    /// Create a backend, optionally overriding the base revset.
+    ///
+    /// `base` is any jj revset (`main@origin`, `develop`, a change id). It wins
+    /// over [`resolve_base_rev`]'s inference, which is the point: the inference
+    /// reads `trunk()`, and `trunk()` is whatever got pinned into repo config at
+    /// `jj git init` time.
+    ///
+    /// An unresolvable base is a hard error. Left alone it would diff against
+    /// nothing and render as "no changes" — a wrong answer that looks like a
+    /// legitimate one.
+    pub fn with_base(repo_path: PathBuf, base: Option<&str>) -> Result<Self> {
+        let from_rev = match base {
+            Some(base) => {
+                if !revset_resolves(&repo_path, base) {
+                    anyhow::bail!(
+                        "--base {base:?} does not resolve to a commit in this jj repo \
+                         (expected a revset, e.g. main@origin)"
+                    );
+                }
+                base.to_string()
+            }
+            None => resolve_base_rev(&repo_path),
+        };
         let op_store_dir = resolve_jj_op_store(&repo_path);
         Ok(Self {
             repo_path,
@@ -2203,6 +2228,85 @@ mod tests {
         assert!(change_id.starts_with(&label),
             "without bookmark, label should be shortest prefix of change_id: label={label}, id={change_id}");
         assert!(label.len() >= 4, "shortest ID should be at least 4 chars, got: {label}");
+    }
+
+    // === --base override tests ===
+
+    /// An explicit base wins over everything branchdiff would infer, including
+    /// a `trunk()` that resolves perfectly well. The whole point of the flag is
+    /// to override a heuristic that guessed wrong.
+    #[test]
+    fn test_explicit_base_overrides_inferred_trunk() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        std::fs::write(repo.join("dev.txt"), "dev\n").unwrap();
+        jj(&["commit", "-m", "develop work"]);
+        jj(&["bookmark", "set", "develop", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "develop", "--remote", "origin", "--allow-new"]);
+
+        assert_eq!(JjVcs::new(repo.to_path_buf()).unwrap().from_rev, "trunk()",
+            "precondition: this repo would otherwise infer trunk()");
+
+        let vcs = JjVcs::with_base(repo.to_path_buf(), Some("develop@origin")).unwrap();
+        assert_eq!(vcs.from_rev, "develop@origin", "an explicit base must win");
+    }
+
+    /// A base that resolves to nothing must fail loudly at startup. Left to run,
+    /// it produces an empty or nonsense diff that looks like "no changes".
+    #[test]
+    fn test_explicit_base_that_does_not_resolve_is_rejected() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let result = JjVcs::with_base(temp.path().to_path_buf(), Some("no-such-bookmark@origin"));
+        let msg = match result {
+            Ok(_) => panic!("a base that resolves to nothing must be rejected, not silently diffed"),
+            Err(e) => e.to_string(),
+        };
+        assert!(msg.contains("no-such-bookmark@origin"),
+            "the error must name the offending base, got: {msg}");
+    }
+
+    /// Passing no base keeps the inferred behaviour untouched.
+    #[test]
+    fn test_no_explicit_base_falls_back_to_inference() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let vcs = JjVcs::with_base(temp.path().to_path_buf(), None).unwrap();
+        assert_eq!(vcs.from_rev, "trunk()");
+    }
+
+    /// The stack machinery must interpolate an explicit base the same way it
+    /// does an inferred `main@origin` — the guards key off "not @-", not off any
+    /// particular spelling.
+    #[test]
+    fn test_explicit_base_still_drives_the_stack_machinery() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        std::fs::write(repo.join("stack.txt"), "earlier\n").unwrap();
+        jj(&["commit", "-m", "stack commit 1"]);
+        std::fs::write(repo.join("stack.txt"), "earlier\ncurrent\n").unwrap();
+
+        let vcs = JjVcs::with_base(repo.to_path_buf(), Some("main@origin")).unwrap();
+        assert!(is_trunk_base(&vcs.from_rev), "an explicit base is still a trunk base");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let result = vcs.refresh(&cancel).unwrap();
+        assert!(result.lines.iter().any(|l| l.source == LineSource::Committed),
+            "stack colouring must survive an explicit base");
+        assert!(result.lines.iter().any(|l| l.source == LineSource::Staged),
+            "stack colouring must survive an explicit base");
     }
 
     // === resolve_base_rev tests ===
