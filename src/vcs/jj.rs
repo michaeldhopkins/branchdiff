@@ -145,17 +145,43 @@ fn revset_commit_count(repo_path: &Path, revset: &str) -> usize {
     .unwrap_or(0)
 }
 
-/// Find a trunk bookmark on a preferred remote, e.g. `main@origin`.
+/// Committer timestamp (epoch seconds) of the commit a revset resolves to, or
+/// `None` if it resolves to nothing.
+fn revset_committer_epoch(repo_path: &Path, revset: &str) -> Option<i64> {
+    let output = run_jj(repo_path, &[
+        "log", "-r", revset, "--no-graph", "--limit", "1",
+        "-T", r#"committer.timestamp().utc().format("%s")"#,
+    ])
+    .ok()?;
+    output.stdout_lossy().trim().parse::<i64>().ok()
+}
+
+/// Find the trunk bookmark jj itself would land on, e.g. `main@origin`.
+///
+/// Mirrors jj's documented fallback: try `main`/`master`/`trunk` on the
+/// `upstream` and `origin` remotes, and "if more than one potential trunk commit
+/// exists, the newest one is chosen". Newest wins rather than first-by-remote —
+/// on a fork (`origin` = your fork, `upstream` = canonical) a stale
+/// `main@origin` would otherwise beat a newer `main@upstream`, reporting every
+/// commit already merged upstream as the user's own work.
+///
+/// This function exists to correct a `trunk()` pinned to the wrong remote, so it
+/// should land where jj's own resolution would have — not somewhere we invented.
+/// Ties keep [`TRUNK_REMOTE_PREFERENCE`] order, so `origin` wins a dead heat.
 fn preferred_trunk_revset(repo_path: &Path) -> Option<String> {
+    let mut best: Option<(i64, String)> = None;
     for remote in TRUNK_REMOTE_PREFERENCE {
         for bookmark in TRUNK_BOOKMARK_CANDIDATES {
             let revset = format!("{bookmark}@{remote}");
-            if revset_resolves(repo_path, &revset) {
-                return Some(revset);
+            let Some(epoch) = revset_committer_epoch(repo_path, &revset) else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(best_epoch, _)| epoch > *best_epoch) {
+                best = Some((epoch, revset));
             }
         }
     }
-    None
+    best.map(|(_, revset)| revset)
 }
 
 /// Resolve the base revset to compare against.
@@ -388,10 +414,16 @@ fn resolve_orphaned_tip(
     Some(StackTip { change_id: id, head_count: 1 })
 }
 
-/// Remotes jj's `trunk()` is allowed to resolve against, in preference order.
-/// Mirrors jj's own documented fallback ("the remote named `upstream` or
-/// `origin`"), with `origin` first since that is the overwhelmingly common
-/// review remote and the one a deploy remote must never displace.
+/// The remotes jj's `trunk()` is allowed to resolve against, per its own docs
+/// ("the remote named `upstream` or `origin`").
+///
+/// Serves two distinct purposes, both keyed off this list:
+/// - *Membership*: which remotes a trunk candidate may live on. Order is
+///   irrelevant here — [`preferred_trunk_revset`] picks the newest, as jj does.
+/// - *Preference*: which remote to scope stack bookmarks to when several hold a
+///   bookmark at the same commit ([`pick_trunk_remote`]). Order matters there,
+///   and `origin` leads because it is the review remote a deploy remote must
+///   never displace.
 const TRUNK_REMOTE_PREFERENCE: [&str; 2] = ["origin", "upstream"];
 
 /// Choose trunk's remote from the newline-separated remote names of the
@@ -629,7 +661,20 @@ impl JjVcs {
                          exactly one (e.g. main@origin, or latest({base}))"
                     ),
                 }
-                base.to_string()
+                // `@-` is our own sentinel for "this repo has no trunk", which
+                // switches the stack machinery off. A user who *names* @- as the
+                // base means the opposite: compare against that commit, stack and
+                // all. Resolve the spelling away so an explicit base is never
+                // mistaken for the fallback — every other spelling of the same
+                // commit already behaves that way.
+                if base == PARENT_BASE {
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    get_change_id_static(&repo_path, base, &cancel)
+                        .filter(|id| !id.is_empty())
+                        .unwrap_or_else(|| base.to_string())
+                } else {
+                    base.to_string()
+                }
             }
             None => resolve_base_rev(&repo_path),
         };
@@ -2303,6 +2348,33 @@ mod tests {
         assert_eq!(vcs.from_rev, "develop@origin", "an explicit base must win");
     }
 
+    /// `--base @-` must behave exactly like naming that same commit any other
+    /// way. `"@-"` is branchdiff's own sentinel for "this repo has no trunk", so
+    /// an explicit `--base @-` was mistaken for it and silently disabled
+    /// stack-tip detection — dropping commits stacked above `@` that every other
+    /// spelling of the same commit shows.
+    #[test]
+    fn test_explicit_base_parent_is_not_mistaken_for_the_no_trunk_sentinel() {
+        if !jj_available() { return; }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        let vcs = JjVcs::with_base(repo.to_path_buf(), Some("@-")).unwrap();
+        assert!(
+            is_trunk_base(&vcs.from_rev),
+            "an explicitly named base must keep the stack machinery on, but from_rev={:?} \
+             reads as the no-trunk fallback",
+            vcs.from_rev
+        );
+
+        // ...and it must still mean the same commit.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let named = get_change_id_static(repo, &vcs.from_rev, &cancel).expect("base resolves");
+        let parent = get_change_id_static(repo, "@-", &cancel).expect("@- resolves");
+        assert_eq!(named, parent, "--base @- must still point at @'s parent");
+    }
+
     /// A base that resolves to *several* commits must be rejected too.
     ///
     /// `jj diff --from` takes exactly one revision. A multi-resolving base
@@ -2385,6 +2457,91 @@ mod tests {
             "stack colouring must survive an explicit base");
         assert!(result.lines.iter().any(|l| l.source == LineSource::Staged),
             "stack colouring must survive an explicit base");
+    }
+
+    /// jj's documented rule: try main/master/trunk on the `upstream` and
+    /// `origin` remotes, and "if more than one potential trunk commit exists,
+    /// the newest one is chosen". Not first-match-by-remote.
+    ///
+    /// This matters for a fork: `origin` is your fork, `upstream` is canonical.
+    /// A stale `main@origin` must not beat a newer `main@upstream`, or every
+    /// commit already merged upstream is reported as your own work.
+    #[test]
+    fn test_preferred_trunk_picks_the_newest_candidate_not_origin_by_default() {
+        if !jj_available() { return; }
+
+        let origin_dir = tempfile::TempDir::new().unwrap();
+        let upstream_dir = tempfile::TempDir::new().unwrap();
+        for d in [&origin_dir, &upstream_dir] {
+            Command::new("git").args(["init", "--bare"]).current_dir(d.path()).output().unwrap();
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        // Pin committer timestamps: the whole point is which candidate is
+        // *newer*, and two commits made back to back land in the same second.
+        let jj_at = |stamp: &str, args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo)
+                .env("JJ_TIMESTAMP", stamp).output().unwrap();
+        };
+        jj(&["git", "init"]);
+        jj(&["git", "remote", "add", "origin", &origin_dir.path().to_string_lossy()]);
+        jj(&["git", "remote", "add", "upstream", &upstream_dir.path().to_string_lossy()]);
+
+        // The fork's main, pushed to origin and then left behind. Never pushed
+        // to origin again, so main@origin stays on this older commit.
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        jj_at("2020-01-01T00:00:00Z", &["commit", "-m", "base"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
+
+        // Canonical upstream's main: a year newer.
+        std::fs::write(repo.join("upstream.txt"), "landed upstream\n").unwrap();
+        jj_at("2021-01-01T00:00:00Z", &["commit", "-m", "landed upstream"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "upstream", "--allow-new"]);
+
+        let origin_epoch = revset_committer_epoch(repo, "main@origin").expect("main@origin");
+        let upstream_epoch = revset_committer_epoch(repo, "main@upstream").expect("main@upstream");
+        assert!(upstream_epoch > origin_epoch,
+            "fixture: upstream's main must be newer ({upstream_epoch} vs {origin_epoch})");
+
+        let newest = preferred_trunk_revset(repo).expect("a trunk candidate must be found");
+        assert_eq!(newest, "main@upstream",
+            "jj picks the newest trunk candidate; a stale fork's main@origin must not win");
+    }
+
+    /// With nothing to separate them, order decides — and origin leads, because
+    /// it is the review remote this whole path exists to protect.
+    #[test]
+    fn test_preferred_trunk_breaks_ties_toward_origin() {
+        if !jj_available() { return; }
+
+        let origin_dir = tempfile::TempDir::new().unwrap();
+        let upstream_dir = tempfile::TempDir::new().unwrap();
+        for d in [&origin_dir, &upstream_dir] {
+            Command::new("git").args(["init", "--bare"]).current_dir(d.path()).output().unwrap();
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        jj(&["git", "init"]);
+        jj(&["git", "remote", "add", "origin", &origin_dir.path().to_string_lossy()]);
+        jj(&["git", "remote", "add", "upstream", &upstream_dir.path().to_string_lossy()]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        Command::new("jj").args(["commit", "-m", "base"]).current_dir(repo)
+            .env("JJ_TIMESTAMP", "2020-01-01T00:00:00Z").output().unwrap();
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        // Same commit on both remotes.
+        jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "upstream", "--allow-new"]);
+
+        assert_eq!(preferred_trunk_revset(repo).as_deref(), Some("main@origin"));
     }
 
     // === resolve_base_rev tests ===

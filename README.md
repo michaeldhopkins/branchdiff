@@ -73,27 +73,38 @@ If no repository is found, branchdiff waits and automatically starts when `git i
 
 ### Choosing the base
 
-By default branchdiff works out what to compare against: `origin/main` or
-`origin/master` under git, and jj's `trunk()` under jj.
+branchdiff follows each VCS's own rule for what "trunk" means, rather than
+guessing:
 
-Under jj it prefers a trunk bookmark on `origin` (or `upstream`) when `trunk()`
-resolves somewhere else. `trunk()` is pinned into repo config when the repo is
-created, from whatever remote was default at the time — in a repo with a deploy
-remote that can leave it pointing at, say, `main@heroku_test`, so every diff
-compares against what's deployed instead of what's on origin. A `trunk()` that
-already resolves on `origin` is left alone: it may point at `develop@origin`
-deliberately.
+- **git**: `refs/remotes/origin/HEAD` — the remote's default branch, recorded at
+  clone time. Falls back to `main`/`master` when it isn't set.
+- **jj**: `trunk()`.
 
-When the guess is wrong, say so:
+Under jj there's one correction. `trunk()` is pinned into repo config when the
+repo is created, from whatever remote was default at the time — in a repo with a
+deploy remote that can leave it pointing at, say, `main@heroku_test`, so every
+diff compares against what's deployed instead of what's on origin. When `trunk()`
+resolves on some other remote, branchdiff falls back to jj's own rule: try
+`main`/`master`/`trunk` on `upstream` and `origin`, newest wins. A `trunk()` that
+already resolves on `origin` or `upstream` is left alone — it may point at
+`develop@origin` deliberately.
+
+When the answer is still wrong, say so:
 
 ```bash
-branchdiff --base main@origin      # jj: any revset
-branchdiff --base develop          # git: a branch name
-branchdiff --base origin/release   # ...or a remote-qualified one
-branchdiff --base a1b2c3d          # ...or a commit
+branchdiff --base main@origin      # jj: any revset (must name exactly one commit)
+branchdiff --base origin/develop   # git: prefer the remote-qualified form
+branchdiff --base develop          # ...a bare name means the *local* branch, as in git
+branchdiff --base a1b2c3d          # ...or a tag or commit
 ```
 
-A base that doesn't resolve is an error, not an empty diff.
+For git, prefer `origin/yourbranch`: a bare `develop` resolves to your **local**
+`develop`, exactly as `git merge-base develop HEAD` does. When a local branch and
+its `origin/` counterpart disagree, the status bar says `develop (local)` so it's
+never a silent choice.
+
+A base that doesn't resolve — or that resolves to more than one commit — is an
+error, not an empty diff.
 
 ### Profiling
 

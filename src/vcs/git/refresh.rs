@@ -185,6 +185,7 @@ pub(super) fn collect_fetch_paths<'a>(
 pub(super) fn git_compute_refresh(
     repo_path: &Path,
     base_branch: &str,
+    base_label: &str,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<RefreshResult> {
     let merge_base = get_merge_base_preferring_origin(repo_path, base_branch)
@@ -270,7 +271,7 @@ pub(super) fn git_compute_refresh(
         files,
         lines,
         base_identifier: merge_base,
-        base_label: Some(base_branch.to_string()),
+        base_label: Some(base_label.to_string()),
         current_branch,
         metrics,
         file_links,
