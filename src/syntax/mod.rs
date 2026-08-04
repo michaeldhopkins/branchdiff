@@ -1,4 +1,7 @@
+mod cache;
 mod theme;
+
+pub(crate) use cache::HighlightCache;
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -31,13 +34,13 @@ pub struct SyntaxHighlighter {
 }
 
 /// Thread-local state for multi-line syntax highlighting
-struct HighlightState<'a> {
+struct StreamState<'a> {
     file_path: String,
     highlighter: HighlightLines<'a>,
 }
 
 thread_local! {
-    static HIGHLIGHT_STATE: RefCell<Option<HighlightState<'static>>> = const { RefCell::new(None) };
+    static HIGHLIGHT_STATE: RefCell<Option<StreamState<'static>>> = const { RefCell::new(None) };
 }
 
 static HIGHLIGHTER: OnceLock<SyntaxHighlighter> = OnceLock::new();
@@ -97,7 +100,7 @@ impl SyntaxHighlighter {
             };
 
             if needs_reset {
-                *state = Some(HighlightState {
+                *state = Some(StreamState {
                     file_path: path.to_string(),
                     highlighter: HighlightLines::new(syntax, &self.theme),
                 });
@@ -105,8 +108,13 @@ impl SyntaxHighlighter {
 
             let hl_state = state.as_mut().unwrap();
 
-            // Append newline so syntect properly terminates line comments (e.g., // in JS)
-            // Without this, line comments bleed into subsequent lines.
+            // The syntax set is the "newlines" variant, so a line has to be
+            // handed over with its terminator or constructs that end at
+            // end-of-line never close — an unterminated string swallows
+            // everything below it. Pinned by
+            // `test_unterminated_string_does_not_bleed`; note that the effect
+            // is invisible in Rust and Markdown, so a test in those languages
+            // would pass either way.
             let content_with_newline = format!("{}\n", content);
 
             match hl_state
@@ -123,11 +131,7 @@ impl SyntaxHighlighter {
                         } else {
                             Some(SyntaxSegment {
                                 text: text.to_string(),
-                                fg_color: Color::Rgb(
-                                    style.foreground.r,
-                                    style.foreground.g,
-                                    style.foreground.b,
-                                ),
+                                fg_color: style_color(style),
                             })
                         }
                     })
@@ -142,6 +146,14 @@ impl SyntaxHighlighter {
             }
         })
     }
+}
+
+fn style_color(style: syntect::highlighting::Style) -> Color {
+    Color::Rgb(
+        style.foreground.r,
+        style.foreground.g,
+        style.foreground.b,
+    )
 }
 
 /// Reset the highlight state - call when switching files or after non-sequential rendering
@@ -294,6 +306,28 @@ mod tests {
         assert_eq!(content.len(), MAX_HIGHLIGHT_LINE_LEN);
         let segments = highlight_line(&content, Some("test.js"));
         assert!(segments.len() > 1);
+    }
+
+    /// The newline appended before parsing is what closes a construct at the
+    /// end of its line. `test_js_line_comment_does_not_bleed` below reads like
+    /// it pins this but does not — it passes with the newline removed. An
+    /// unterminated string does catch it.
+    #[test]
+    fn test_unterminated_string_does_not_bleed() {
+        reset_highlight_state();
+        let opener = highlight_line("const s = \"unterminated", Some("test.js"));
+        let after = highlight_line("const AFTER = [];", Some("test.js"));
+
+        let string_colour = opener
+            .iter()
+            .find(|s| s.text.contains("unterminated"))
+            .expect("opening line should have string content")
+            .fg_color;
+
+        assert!(
+            after.iter().any(|s| s.fg_color != string_colour),
+            "line below is entirely coloured as the unterminated string: {after:?}"
+        );
     }
 
     #[test]

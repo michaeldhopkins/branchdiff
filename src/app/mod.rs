@@ -15,12 +15,14 @@ pub use search::SearchState;
 pub use selection::{Position, Selection};
 pub use view_state::ViewState;
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use ratatui_image::picker::Picker;
 
 use crate::diff::{DiffLine, FileDiff};
+use crate::syntax::HighlightCache;
 use crate::update::RecoveryHint;
 use crate::vcs::{ComparisonContext, DiffBase, VcsBackend};
 use crate::gitignore::GitignoreFilter;
@@ -50,8 +52,11 @@ pub struct App {
     pub base_identifier: String,
     /// All file diffs
     pub files: Vec<FileDiff>,
-    /// Flattened lines for display
-    pub lines: Vec<DiffLine>,
+    /// Flattened lines for display. Private because `highlight_cache` and
+    /// `change_counts` are keyed on it: replacing it without dropping them
+    /// serves highlighting and +/- counts from the previous diff. Read it
+    /// through `lines()`, replace it through `replace_lines`.
+    lines: Vec<DiffLine>,
     /// Error message to display (if any)
     pub error: Option<String>,
     /// If `error` is recoverable, the action we can offer to fix it.
@@ -76,6 +81,13 @@ pub struct App {
     pub search: Option<SearchState>,
     /// Whether to diff from the fork point (stable) or trunk tip (full divergence).
     pub diff_base: DiffBase,
+    /// Syntax highlighting memoized against `lines` indices. Invalidated
+    /// wherever `lines` is rebuilt; rendering only borrows `&App`, hence the
+    /// `RefCell`.
+    pub(crate) highlight_cache: RefCell<HighlightCache>,
+    /// Memoized `(additions, deletions)` over `lines`. Invalidated alongside
+    /// `highlight_cache`.
+    pub(crate) change_counts: Cell<Option<(usize, usize)>>,
 }
 
 impl App {
@@ -115,6 +127,8 @@ impl App {
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
             search: None,
             diff_base: DiffBase::default(),
+            highlight_cache: RefCell::new(HighlightCache::new()),
+            change_counts: Cell::new(None),
         }
     }
 
@@ -149,10 +163,38 @@ impl App {
             font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
             search: None,
             diff_base: DiffBase::default(),
+            highlight_cache: RefCell::new(HighlightCache::new()),
+            change_counts: Cell::new(None),
         };
 
         app.apply_refresh_result(initial);
         app
+    }
+
+    /// The flattened diff lines.
+    pub fn lines(&self) -> &[DiffLine] {
+        &self.lines
+    }
+
+    /// Drop every line's inline spans so they are recomputed on next use.
+    ///
+    /// Safe to expose where whole-line mutation is not: nothing cached against
+    /// `lines` depends on inline spans — the highlight cache keys on `content`,
+    /// and the +/- counts on `source`/`change_source`.
+    pub fn clear_inline_spans(&mut self) {
+        for line in &mut self.lines {
+            line.inline_spans.clear();
+        }
+    }
+
+    /// Replace the diff lines, dropping everything keyed on the old ones.
+    ///
+    /// The single write path, so no caller can install new lines while a cache
+    /// still answers for the previous set.
+    fn replace_lines(&mut self, lines: Vec<DiffLine>) {
+        self.lines = lines;
+        self.highlight_cache.get_mut().invalidate();
+        self.change_counts.set(None);
     }
 
     /// Toggle between fork-point and trunk-tip diff base.
@@ -284,7 +326,7 @@ impl App {
         }
         self.comparison.stack_position = result.stack_position;
         self.files = result.files;
-        self.lines = result.lines;
+        self.replace_lines(result.lines);
         self.file_links = result.file_links;
         self.comparison.bookmark_name = result.bookmark_name;
         self.comparison.divergence = result.divergence;
@@ -413,11 +455,12 @@ impl App {
     fn regenerate_lines(&mut self) {
         use crate::diff::LineSource;
 
-        self.lines.clear();
+        let mut lines = Vec::new();
         for file in &self.files {
-            self.lines.extend(file.lines.iter().cloned());
-            self.lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
+            lines.extend(file.lines.iter().cloned());
+            lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
         }
+        self.replace_lines(lines);
     }
 
     pub fn toggle_help(&mut self) {
@@ -1913,6 +1956,102 @@ mod tests {
 
         assert!(app.has_related_file("handler.go"));
         assert!(!app.has_related_file("other.go"));
+    }
+
+    /// The benchmark seam is real API: it must actually drop the spans, or the
+    /// thing it exists to reset silently stops resetting.
+    #[test]
+    fn clear_inline_spans_drops_every_lines_spans() {
+        use crate::diff::LineSource;
+
+        let mut line = DiffLine::new(LineSource::Committed, "let x = 2;".to_string(), '+', Some(1));
+        line.old_content = Some("let x = 1;".to_string());
+        line.ensure_inline_spans();
+        assert!(!line.inline_spans.is_empty(), "fixture should have spans");
+
+        let mut app = TestAppBuilder::new().with_lines(vec![line]).build();
+        app.clear_inline_spans();
+
+        assert!(app.lines()[0].inline_spans.is_empty());
+    }
+
+    /// A single-file refresh rebuilds the flattened lines from `files`. If that
+    /// stops happening the view keeps rendering the previous contents of a file
+    /// that has just changed on disk.
+    #[test]
+    fn updating_one_file_rebuilds_the_flattened_lines() {
+        use crate::diff::{FileDiff, LineSource};
+
+        let original = FileDiff::new(vec![
+            DiffLine::file_header("a.rs").with_file_path("a.rs"),
+            DiffLine::new(LineSource::Base, "before".to_string(), ' ', Some(1))
+                .with_file_path("a.rs"),
+        ]);
+        let mut app = TestAppBuilder::new().with_files(vec![original]).build();
+
+        let updated = FileDiff::new(vec![
+            DiffLine::file_header("a.rs").with_file_path("a.rs"),
+            DiffLine::new(LineSource::Committed, "after".to_string(), '+', Some(1))
+                .with_file_path("a.rs"),
+        ]);
+        app.update_single_file("a.rs", Some(updated));
+
+        assert!(
+            app.lines().iter().any(|l| l.content == "after"),
+            "the new contents never reached the flattened lines: {:?}",
+            app.lines().iter().map(|l| l.content.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /// A refresh replaces the lines the highlight cache and +/- counts are
+    /// keyed on, so both must be dropped with them. Serving either from the
+    /// previous diff paints stale colours and a stale status bar.
+    #[test]
+    fn a_refresh_drops_the_caches_keyed_on_the_old_lines() {
+        use crate::diff::LineSource;
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::new(
+                LineSource::Committed,
+                "let old = 1;".to_string(),
+                '+',
+                Some(1),
+            )])
+            .build();
+
+        // Populate both caches against the first set of lines.
+        let stale = app.highlight_cache.borrow_mut().segments(app.lines(), 0);
+        assert_eq!(
+            stale.iter().map(|s| s.text.as_str()).collect::<String>(),
+            "let old = 1;"
+        );
+        assert_eq!(app.additions_count(), 1);
+
+        let result = RefreshResult {
+            files: vec![],
+            lines: vec![
+                DiffLine::new(LineSource::Committed, "let new = 2;".to_string(), '+', Some(1)),
+                DiffLine::new(LineSource::Committed, "let also_new = 3;".to_string(), '+', Some(2)),
+            ],
+            base_identifier: "abc".to_string(),
+            base_label: None,
+            current_branch: None,
+            metrics: crate::limits::DiffMetrics::default(),
+            file_links: std::collections::HashMap::new(),
+            stack_position: None,
+            bookmark_name: None,
+            revision_id: None,
+            divergence: None,
+        };
+        app.apply_refresh_result(result);
+
+        let fresh = app.highlight_cache.borrow_mut().segments(app.lines(), 0);
+        assert_eq!(
+            fresh.iter().map(|s| s.text.as_str()).collect::<String>(),
+            "let new = 2;",
+            "highlighting came from the previous diff"
+        );
+        assert_eq!(app.additions_count(), 2, "+/- counts came from the previous diff");
     }
 
     #[test]

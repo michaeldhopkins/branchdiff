@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, ViewMode};
+use crate::app::{App, FrameContext, ViewMode};
 use crate::vcs::DiffBase;
 use super::selection::{apply_selection_to_span, get_line_selection_range};
 
@@ -60,7 +60,7 @@ fn branch_info(app: &App) -> String {
 }
 
 /// Determine how many lines the status bar needs based on content and width
-pub fn status_bar_height(app: &App, width: u16) -> u16 {
+pub fn status_bar_height(app: &App, ctx: &FrameContext, width: u16) -> u16 {
     let width = width as usize;
 
     let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
@@ -75,7 +75,7 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
         app.additions_count(),
         app.deletions_count(),
         mode,
-        app.scroll_percentage()
+        app.scroll_percentage_with_frame(ctx)
     );
 
     let full_status = format!("{} | {}", branch_info, stats);
@@ -89,7 +89,7 @@ pub fn status_bar_height(app: &App, width: u16) -> u16 {
 }
 
 /// Build stats spans with colored +/- counts
-fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
+fn build_stats_spans(app: &App, ctx: &FrameContext) -> Vec<Span<'static>> {
     let file_count = app.files.len();
     let mode = view_mode_label(app);
 
@@ -102,7 +102,7 @@ fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
         Span::styled(" ", Style::default().fg(Color::Cyan)),
         Span::styled(format!("-{}", app.deletions_count()), Style::default().fg(Color::Red)),
         Span::styled(
-            format!("{} | {}%", mode, app.scroll_percentage()),
+            format!("{} | {}%", mode, app.scroll_percentage_with_frame(ctx)),
             Style::default().fg(Color::Cyan),
         ),
     ];
@@ -119,7 +119,7 @@ fn build_stats_spans(app: &App) -> Vec<Span<'static>> {
 }
 
 /// Build full status spans (branch info + stats) with colored +/- counts
-fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
+fn build_full_status_spans(app: &App, ctx: &FrameContext) -> Vec<Span<'static>> {
     let branch_info = branch_info(app);
     let file_count = app.files.len();
     let mode = view_mode_label(app);
@@ -151,7 +151,7 @@ fn build_full_status_spans(app: &App) -> Vec<Span<'static>> {
         Span::styled(" ", Style::default().fg(Color::Cyan)),
         Span::styled(format!("-{}", app.deletions_count()), Style::default().fg(Color::Red)),
         Span::styled(
-            format!("{} | {}%", mode, app.scroll_percentage()),
+            format!("{} | {}%", mode, app.scroll_percentage_with_frame(ctx)),
             Style::default().fg(Color::Cyan),
         ),
     ]);
@@ -199,7 +199,7 @@ fn apply_status_bar_selection(line: Line<'static>, selection: &Option<crate::app
 }
 
 /// Draw the status bar (may use 1 or 2 lines depending on available width)
-pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+pub fn draw_status_bar(frame: &mut Frame, app: &App, ctx: &FrameContext, area: Rect) {
     let width = area.width as usize;
 
     // Build help text
@@ -215,7 +215,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         app.additions_count(),
         app.deletions_count(),
         mode,
-        app.scroll_percentage()
+        app.scroll_percentage_with_frame(ctx)
     );
 
     let branch_info = branch_info(app);
@@ -254,7 +254,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         };
 
         let line2_content = if stats.len() <= width {
-            Line::from(build_stats_spans(app))
+            Line::from(build_stats_spans(app, ctx))
         } else {
             let truncated = truncate_with_ellipsis(&stats, width);
             Line::from(Span::styled(truncated, Style::default().fg(Color::Cyan)))
@@ -271,20 +271,20 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let line = if full_status.len() + help.len() + 2 <= width {
             // Full status + help fit
             let padding = width.saturating_sub(full_status.len() + help.len());
-            let mut spans = build_full_status_spans(app);
+            let mut spans = build_full_status_spans(app, ctx);
             spans.push(Span::raw(" ".repeat(padding)));
             spans.push(Span::styled(help, Style::default().fg(Color::DarkGray)));
             Line::from(spans)
         } else if full_status.len() + help_short.len() + 2 <= width {
             // Full status + short help fit
             let padding = width.saturating_sub(full_status.len() + help_short.len());
-            let mut spans = build_full_status_spans(app);
+            let mut spans = build_full_status_spans(app, ctx);
             spans.push(Span::raw(" ".repeat(padding)));
             spans.push(Span::styled(help_short, Style::default().fg(Color::DarkGray)));
             Line::from(spans)
         } else if full_status.len() <= width {
             // Just status fits
-            Line::from(build_full_status_spans(app))
+            Line::from(build_full_status_spans(app, ctx))
         } else {
             // Need to truncate - fall back to plain cyan (truncation loses coloring)
             if stats.len() + 3 <= width {
@@ -310,7 +310,7 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Get the plain text content of the status bar for selection support.
 /// Returns one or two lines matching the same layout logic as `draw_status_bar`.
-pub fn status_bar_plain_text(app: &App, width: u16) -> Vec<String> {
+pub fn status_bar_plain_text(app: &App, ctx: &FrameContext, width: u16) -> Vec<String> {
     let width = width as usize;
     let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
     let help_short = " ?:help ";
@@ -323,13 +323,13 @@ pub fn status_bar_plain_text(app: &App, width: u16) -> Vec<String> {
         app.additions_count(),
         app.deletions_count(),
         mode,
-        app.scroll_percentage()
+        app.scroll_percentage_with_frame(ctx)
     );
 
     let branch_info = branch_info(app);
     let full_status = format!("{} | {}", branch_info, stats);
 
-    let height = status_bar_height(app, width as u16);
+    let height = status_bar_height(app, ctx, width as u16);
     if height >= 2 {
         let line1 = if branch_info.len() + help.len() + 2 <= width {
             let padding = width.saturating_sub(branch_info.len() + help.len());
@@ -383,6 +383,93 @@ mod tests {
         assert_eq!(repo_name(&app), "test");
     }
 
+    /// `status_bar_plain_text` is the copy/selection mirror of what
+    /// `draw_status_bar` paints (`App::view::status_bar_lines`, consumed by
+    /// `app::selection`). Nothing rendered the status bar before, so the two
+    /// could drift apart and selecting from it would silently copy text that
+    /// was never on screen.
+    #[test]
+    fn the_plain_text_mirror_matches_what_is_painted() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // Widths chosen to reach each layout arm: a wide single line, the
+        // two-line split, and narrow enough that the stats line has to be
+        // truncated rather than built from spans.
+        for width in [120u16, 60, 24] {
+            let app = create_status_bar_test_app(Some("feature"), "main", 3);
+            let ctx = FrameContext::new(&app);
+            let height = status_bar_height(&app, &ctx, width);
+
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|f| {
+                    draw_status_bar(f, &app, &ctx, Rect::new(0, 0, width, height));
+                })
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            let painted: Vec<String> = (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect();
+
+            let mirror: Vec<String> = status_bar_plain_text(&app, &ctx, width)
+                .into_iter()
+                .map(|l| l.trim_end().to_string())
+                .collect();
+
+            assert_eq!(
+                mirror, painted,
+                "at width {width} the copy mirror disagrees with the painted status bar"
+            );
+        }
+    }
+
+    /// `status_bar_height` returns 1 only when the *full* help fits, and
+    /// `draw_status_bar`'s one-line layout tests the same condition first — so
+    /// its shorter-help arm is unreachable through that path. The two live 200
+    /// lines apart, so pin the coupling behaviourally: any one-line status bar
+    /// must carry the long help. If the thresholds ever diverge, the shorter
+    /// arm becomes live and this fails.
+    #[test]
+    fn a_one_line_status_bar_always_shows_the_full_help() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let app = create_status_bar_test_app(Some("feature"), "main", 3);
+        let ctx = FrameContext::new(&app);
+        let mut checked = 0;
+
+        for width in (40u16..=240).step_by(4) {
+            if status_bar_height(&app, &ctx, width) != 1 {
+                continue;
+            }
+            checked += 1;
+
+            let backend = TestBackend::new(width, 1);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|f| draw_status_bar(f, &app, &ctx, Rect::new(0, 0, width, 1)))
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            let painted: String = (0..width).map(|x| buf[(x, 0)].symbol()).collect();
+            assert!(
+                painted.contains("g/G:top/bottom"),
+                "one-line status bar at width {width} fell back to the short help: {painted:?}"
+            );
+        }
+
+        assert!(checked > 0, "no width produced a one-line status bar");
+    }
+
     #[test]
     fn test_branch_info_includes_repo_name() {
         let app = TestAppBuilder::new()
@@ -391,7 +478,7 @@ mod tests {
             .build();
 
         // Manually construct what build_full_status_spans produces
-        let spans = build_full_status_spans(&app);
+        let spans = build_full_status_spans(&app, &FrameContext::new(&app));
         let combined: String = spans.iter().map(|s| s.content.to_string()).collect();
 
         assert!(
@@ -408,7 +495,7 @@ mod tests {
             .with_base_branch("master")
             .build();
 
-        let spans = build_full_status_spans(&app);
+        let spans = build_full_status_spans(&app, &FrameContext::new(&app));
         let combined: String = spans.iter().map(|s| s.content.to_string()).collect();
 
         assert!(
@@ -573,13 +660,13 @@ mod tests {
     #[test]
     fn test_status_bar_height_wide_terminal_uses_one_line() {
         let app = create_status_bar_test_app(Some("feature-branch"), "main", 5);
-        assert_eq!(status_bar_height(&app, 120), 1);
+        assert_eq!(status_bar_height(&app, &FrameContext::new(&app), 120), 1);
     }
 
     #[test]
     fn test_status_bar_height_narrow_terminal_uses_two_lines() {
         let app = create_status_bar_test_app(Some("feature-branch"), "main", 5);
-        assert_eq!(status_bar_height(&app, 40), 2);
+        assert_eq!(status_bar_height(&app, &FrameContext::new(&app), 40), 2);
     }
 
     #[test]
@@ -589,18 +676,19 @@ mod tests {
             "main",
             5,
         );
-        assert_eq!(status_bar_height(&app, 80), 2);
+        assert_eq!(status_bar_height(&app, &FrameContext::new(&app), 80), 2);
     }
 
     #[test]
     fn test_status_bar_height_no_current_branch_uses_head() {
         let app = create_status_bar_test_app(None, "main", 5);
-        assert_eq!(status_bar_height(&app, 120), 1);
+        assert_eq!(status_bar_height(&app, &FrameContext::new(&app), 120), 1);
     }
 
     #[test]
     fn test_status_bar_height_boundary_case() {
         let app = create_status_bar_test_app(Some("feat"), "main", 1);
+        let ctx = FrameContext::new(&app);
 
         let help = " q:quit  j/k:files  g/G:top/bottom  ?:help ";
         let branch_info = "test | feat vs main [fork]";
@@ -612,16 +700,16 @@ mod tests {
             app.additions_count(),
             app.deletions_count(),
             " [all lines]",
-            app.scroll_percentage()
+            app.scroll_percentage_with_frame(&ctx)
         );
         let full_status = format!("{} | {}", branch_info, stats);
 
         let threshold = full_status.len() + help.len() + 2;
 
-        assert_eq!(status_bar_height(&app, threshold as u16), 1,
+        assert_eq!(status_bar_height(&app, &FrameContext::new(&app), threshold as u16), 1,
             "At threshold width {} should use 1 line", threshold);
 
-        assert_eq!(status_bar_height(&app, (threshold - 1) as u16), 2,
+        assert_eq!(status_bar_height(&app, &FrameContext::new(&app), (threshold - 1) as u16), 2,
             "At width {} (one below threshold) should use 2 lines", threshold - 1);
     }
 

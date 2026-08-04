@@ -283,7 +283,7 @@ fn main() -> Result<()> {
 
             match mode {
                 OutputMode::Diff => {
-                    let patch = branchdiff::patch::generate_patch(&app.lines);
+                    let patch = branchdiff::patch::generate_patch(app.lines());
                     print!("{}", patch);
                 }
                 OutputMode::Print | OutputMode::Html => {
@@ -568,12 +568,12 @@ fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> R
     let load_time = load_start.elapsed();
     eprintln!(
         "Loaded {} lines across {} files in {:?}",
-        app.lines.len(),
+        app.lines().len(),
         app.files.len(),
         load_time
     );
 
-    if app.lines.is_empty() {
+    if app.lines().is_empty() {
         eprintln!("No changes to benchmark. Try running in a repo with uncommitted changes.");
         return Ok(());
     }
@@ -751,7 +751,7 @@ mod startup_tests {
         assert_eq!(hint.key_hint, 'u');
         // Empty data so the diff view renders nothing under the banner.
         assert!(app.files.is_empty());
-        assert!(app.lines.is_empty());
+        assert!(app.lines().is_empty());
     }
 
     /// Failure with an unrecognized error: banner shows the message but no
@@ -896,11 +896,18 @@ where
 
     let (fetch_tx, fetch_rx) = mpsc::channel::<FetchResult>();
 
-    // Draw initial frame before entering event loop
-    // Must set viewport_height AND content_width BEFORE creating FrameContext,
-    // which snapshots them for visible_range calculation
+    // Draw initial frame before entering event loop.
+    //
+    // The sizing is circular: the status bar's height depends on the scroll
+    // percentage, the percentage needs a FrameContext, and the viewport height
+    // the context wants to snapshot is derived *from* that status height. So
+    // this first context is deliberately built before the sizing below — it
+    // feeds the percentage in a height estimate and nothing else. The context
+    // that renders is built after, which is what the rule below is about:
+    // viewport_height and content_width must be set before creating the
+    // FrameContext used for the visible_range calculation.
     let terminal_size = terminal.size()?;
-    let status_height = ui::status_bar_height(app, terminal_size.width);
+    let status_height = ui::status_bar_height(app, &FrameContext::new(app), terminal_size.width);
     let content_height = (terminal_size.height - status_height).saturating_sub(2) as usize;
     app.set_viewport_height(content_height);
     app.estimate_content_width(terminal_size.width);

@@ -11,11 +11,27 @@ impl App {
     }
 
     pub fn additions_count(&self) -> usize {
-        self.lines.iter().filter(|line| line.is_addition()).count()
+        self.change_counts().0
     }
 
     pub fn deletions_count(&self) -> usize {
-        self.lines.iter().filter(|line| line.is_deletion()).count()
+        self.change_counts().1
+    }
+
+    /// `(additions, deletions)`, scanned once per set of lines. The status bar
+    /// asks for these several times a frame, and a full scan of a large diff
+    /// each time showed up while scrolling.
+    fn change_counts(&self) -> (usize, usize) {
+        if let Some(counts) = self.change_counts.get() {
+            return counts;
+        }
+        let mut counts = (0, 0);
+        for line in &self.lines {
+            counts.0 += usize::from(line.is_addition());
+            counts.1 += usize::from(line.is_deletion());
+        }
+        self.change_counts.set(Some(counts));
+        counts
     }
 
     /// Compute visibility using a predicate to determine "interesting" lines.

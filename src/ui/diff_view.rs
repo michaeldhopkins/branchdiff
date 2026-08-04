@@ -3,7 +3,9 @@
 //! The DiffViewModel provides a pure view model for rendering, enabling
 //! easier unit testing without requiring a full App instance.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use unicode_width::UnicodeWidthStr;
 use ratatui::{
@@ -17,7 +19,7 @@ use ratatui::{
 use crate::app::{App, DisplayableItem, FrameContext, SearchState, Selection};
 use crate::diff::{DiffLine, LineSource};
 use crate::image_diff::{ImageCache, IMAGE_PANEL_OVERHEAD};
-use crate::syntax::reset_highlight_state;
+use crate::syntax::{HighlightCache, SyntaxSegment};
 use crate::vcs::VcsBackend;
 
 use super::colors::{line_style, status_symbol, SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
@@ -61,6 +63,8 @@ pub struct DiffViewModel<'a> {
     pub reviewed_files: &'a HashMap<String, u64>,
     /// Wrapped rows of the first visible item to skip (mid-line scroll position).
     pub top_sub_row: usize,
+    /// Memoized syntax highlighting, keyed on indices into `lines`.
+    pub highlight_cache: &'a RefCell<HighlightCache>,
 }
 
 /// Position where an image should be rendered after text render
@@ -98,12 +102,12 @@ impl<'a> DiffViewModel<'a> {
         let top_sub_row = items
             .first()
             .and_then(|it| it.as_line_index())
-            .filter(|&idx| app.lines[idx].is_image_marker())
+            .filter(|&idx| app.lines()[idx].is_image_marker())
             .map_or(app.view.sub_row, |_| 0);
 
         Self {
             items,
-            lines: &app.lines,
+            lines: app.lines(),
             selection: &app.view.selection,
             collapsed_files: &app.view.collapsed_files,
             area,
@@ -116,7 +120,21 @@ impl<'a> DiffViewModel<'a> {
             upstream_files: app.comparison.divergence.as_ref().map(|d| &d.upstream_files),
             reviewed_files: &app.view.reviewed_files,
             top_sub_row,
+            highlight_cache: &app.highlight_cache,
         }
+    }
+
+    /// Syntax segments for a line, parsed only if not already cached.
+    fn syntax_segments(&self, line_idx: usize) -> Arc<[SyntaxSegment]> {
+        self.highlight_cache.borrow_mut().segments(self.lines, line_idx)
+    }
+
+    /// Syntax segments for the deletion side of a modified line, which carries
+    /// the line's previous text rather than the text in `lines`.
+    fn deletion_syntax_segments(&self, line_idx: usize, old_content: &str) -> Arc<[SyntaxSegment]> {
+        self.highlight_cache
+            .borrow_mut()
+            .alt_segments(self.lines, line_idx, old_content)
     }
 
     /// Check if a file is collapsed.
@@ -136,10 +154,6 @@ impl<'a> DiffViewModel<'a> {
 
     /// Render the diff view and return output data.
     pub fn render(&self, frame: &mut Frame) -> RenderOutput {
-        // Reset syntax highlight state at the start of each render to avoid
-        // stale state from previous renders causing flickering or incorrect colors
-        reset_highlight_state();
-
         // Global max (all lines, not just visible) so `content_width` is constant
         // as you scroll. The scroll engine caches wrap heights against it; a width
         // that shifted with the visible window would desync them and a deep
@@ -667,11 +681,11 @@ impl<'a> DiffViewModel<'a> {
             };
 
             let old_content = diff_line.old_content.as_deref().unwrap_or("");
+            let del_segments = self.deletion_syntax_segments(line_idx, old_content);
             let del_spans = build_deletion_spans_with_highlight(
                 &diff_line.inline_spans,
                 del_source,
-                old_content,
-                diff_line.file_path.as_deref(),
+                &del_segments,
             );
 
             // Split the skip window across the concatenated del ++ ins rows. The
@@ -727,8 +741,7 @@ impl<'a> DiffViewModel<'a> {
             let ins_spans = build_insertion_spans_with_highlight(
                 &diff_line.inline_spans,
                 ins_source,
-                new_content,
-                diff_line.file_path.as_deref(),
+                &self.syntax_segments(line_idx),
             );
             let ins_spans = apply_search_to_content(ins_spans, self.search, line_idx);
 
@@ -765,8 +778,7 @@ impl<'a> DiffViewModel<'a> {
                     let highlight_style = line_style_with_highlight(highlight_source);
                     let content_spans = syntax_highlight_inline_spans(
                         &diff_line.inline_spans,
-                        &diff_line.content,
-                        diff_line.file_path.as_deref(),
+                        &self.syntax_segments(line_idx),
                         style,
                         highlight_style,
                     );
@@ -810,8 +822,7 @@ impl<'a> DiffViewModel<'a> {
         let highlight_style = line_style_with_highlight(highlight_source);
         let content_spans = syntax_highlight_inline_spans(
             &diff_line.inline_spans,
-            &diff_line.content,
-            diff_line.file_path.as_deref(),
+            &self.syntax_segments(line_idx),
             style,
             highlight_style,
         );
@@ -866,11 +877,7 @@ impl<'a> DiffViewModel<'a> {
         let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
 
         // Apply syntax highlighting - foreground from syntax, background from diff style
-        let content_spans = syntax_highlight_content(
-            &diff_line.content,
-            diff_line.file_path.as_deref(),
-            style,
-        );
+        let content_spans = syntax_highlight_content(&self.syntax_segments(line_idx), style);
 
         let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
 
@@ -1313,6 +1320,77 @@ mod tests {
             draw(&mut app);
         }
         start.elapsed() / frames
+    }
+
+    /// Render one frame at `scroll_offset` and report how many lines the
+    /// highlighter had to parse to do it.
+    #[cfg(test)]
+    fn parses_for_frame(app: &mut App, scroll_offset: usize, width: u16, height: u16) -> usize {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        app.view.scroll_offset = scroll_offset;
+        let before = app.highlight_cache.borrow().parse_count();
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(app);
+                crate::ui::draw_with_frame(f, app, &ctx);
+            })
+            .unwrap();
+
+        app.highlight_cache.borrow().parse_count() - before
+    }
+
+    /// The whole point of the highlight cache: a one-row scroll must cost what
+    /// it exposed, not what is on screen. Before the cache, every frame
+    /// re-parsed the entire viewport — which is why scrolling through long
+    /// prose paragraphs crawled while short code lines stayed smooth.
+    #[test]
+    fn scrolling_one_row_only_parses_newly_exposed_lines() {
+        let width: u16 = 120;
+        let height: u16 = 30;
+        let viewport = height as usize - 2;
+
+        let lines: Vec<DiffLine> = std::iter::once(DiffLine::file_header("notes.md"))
+            .chain((0..200).map(|i| {
+                let mut line = DiffLine::new(
+                    LineSource::Base,
+                    format!("Paragraph {i}. {}", "the quick brown fox jumps over it. ".repeat(20)),
+                    ' ',
+                    Some(i + 1),
+                );
+                line.file_path = Some("notes.md".to_string());
+                line
+            }))
+            .collect();
+
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_viewport_height(viewport)
+            .with_view_mode(crate::app::ViewMode::Full)
+            .build();
+        app.estimate_content_width(width);
+
+        let first = parses_for_frame(&mut app, 0, width, height);
+        assert!(first > 0, "the first frame should have parsed something");
+
+        // Same position again: nothing new is exposed, so nothing is parsed.
+        assert_eq!(
+            parses_for_frame(&mut app, 0, width, height),
+            0,
+            "a repeat frame re-parsed the viewport"
+        );
+
+        // These paragraphs wrap to many rows each, so scrolling one item down
+        // exposes at most a couple of lines however tall they are.
+        let scrolled = parses_for_frame(&mut app, 1, width, height);
+        assert!(
+            scrolled <= 2,
+            "one scroll step parsed {scrolled} lines; expected at most 2"
+        );
     }
 
     #[test]
@@ -1763,7 +1841,7 @@ mod tests {
                 })
                 .unwrap();
 
-            let status_h = crate::ui::status_bar_height(&app, width);
+            let status_h = crate::ui::status_bar_height(&app, &FrameContext::new(&app), width);
             let diff_h = height - status_h;
             verify_diff_area_borders(frame.buffer, width, diff_h);
         }
@@ -1778,7 +1856,7 @@ mod tests {
                 })
                 .unwrap();
 
-            let status_h = crate::ui::status_bar_height(&app, width);
+            let status_h = crate::ui::status_bar_height(&app, &FrameContext::new(&app), width);
             let diff_h = height - status_h;
             verify_diff_area_borders(frame.buffer, width, diff_h);
         }
@@ -1822,7 +1900,7 @@ mod tests {
                 })
                 .unwrap();
 
-            let status_h = crate::ui::status_bar_height(&app, width);
+            let status_h = crate::ui::status_bar_height(&app, &FrameContext::new(&app), width);
             let diff_h = height - status_h;
             verify_diff_area_borders(frame.buffer, width, diff_h);
         }
@@ -2077,7 +2155,7 @@ mod tests {
             })
             .unwrap();
 
-        let status_h = crate::ui::status_bar_height(&app, width);
+        let status_h = crate::ui::status_bar_height(&app, &FrameContext::new(&app), width);
         let diff_h = height - status_h;
         verify_diff_area_borders(frame.buffer, width, diff_h);
     }
@@ -2836,7 +2914,7 @@ mod tests {
         let mut s = SearchState::new();
         s.query = "XX".to_string();
         s.input_active = false;
-        s.matches = compute_matches(&app.lines, "XX");
+        s.matches = compute_matches(app.lines(), "XX");
         s.current = 0;
         app.search = Some(s);
 
@@ -3055,7 +3133,7 @@ mod tests {
         let mut s = SearchState::new();
         s.query = "ZZ".to_string();
         s.input_active = false;
-        s.matches = compute_matches(&app.lines, "ZZ");
+        s.matches = compute_matches(app.lines(), "ZZ");
         s.current = 0;
         app.search = Some(s);
 
@@ -3129,7 +3207,7 @@ mod tests {
         let mut s = SearchState::new();
         s.query = "abcd".to_string();
         s.input_active = false;
-        s.matches = compute_matches(&app.lines, "abcd");
+        s.matches = compute_matches(app.lines(), "abcd");
         s.current = 0;
         app.search = Some(s);
 

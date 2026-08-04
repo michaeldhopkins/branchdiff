@@ -2,7 +2,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::diff::{InlineSpan, LineSource};
-use crate::syntax::highlight_line;
+use crate::syntax::SyntaxSegment;
 use super::colors::{line_style, line_style_with_highlight, ensure_contrast, DEFAULT_FG};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,21 +198,13 @@ pub fn get_insertion_source(spans: &[InlineSpan]) -> LineSource {
 pub fn build_deletion_spans_with_highlight(
     inline_spans: &[InlineSpan],
     del_source: LineSource,
-    old_content: &str,
-    file_path: Option<&str>,
+    syntax_segments: &[SyntaxSegment],
 ) -> Vec<Span<'static>> {
     let base_style = line_style(del_source);
     let highlight_style = line_style_with_highlight(del_source);
     let highlight_bg = highlight_style.bg.unwrap_or(ratatui::style::Color::Reset);
 
-    // Get syntax colors for the old content
-    let syntax_segments = highlight_line(old_content, file_path);
-    let mut syntax_colors: Vec<ratatui::style::Color> = Vec::with_capacity(old_content.len());
-    for seg in &syntax_segments {
-        for _ in seg.text.chars() {
-            syntax_colors.push(seg.fg_color);
-        }
-    }
+    let syntax_colors = per_char_colors(syntax_segments);
 
     let coalesced = coalesce_spans(inline_spans);
     let mut result = Vec::new();
@@ -271,21 +263,13 @@ pub fn build_deletion_spans_with_highlight(
 pub fn build_insertion_spans_with_highlight(
     inline_spans: &[InlineSpan],
     ins_source: LineSource,
-    new_content: &str,
-    file_path: Option<&str>,
+    syntax_segments: &[SyntaxSegment],
 ) -> Vec<Span<'static>> {
     let base_style = line_style(ins_source);
     let highlight_style = line_style_with_highlight(ins_source);
     let highlight_bg = highlight_style.bg.unwrap_or(ratatui::style::Color::Reset);
 
-    // Get syntax colors for the new content
-    let syntax_segments = highlight_line(new_content, file_path);
-    let mut syntax_colors: Vec<ratatui::style::Color> = Vec::with_capacity(new_content.len());
-    for seg in &syntax_segments {
-        for _ in seg.text.chars() {
-            syntax_colors.push(seg.fg_color);
-        }
-    }
+    let syntax_colors = per_char_colors(syntax_segments);
 
     let coalesced = coalesce_spans(inline_spans);
     let mut result = Vec::new();
@@ -338,21 +322,30 @@ pub fn build_insertion_spans_with_highlight(
     result
 }
 
+/// Flatten segments into one color per character, for the span builders that
+/// need to re-cut the line along inline-diff boundaries rather than syntax ones.
+fn per_char_colors(segments: &[SyntaxSegment]) -> Vec<ratatui::style::Color> {
+    let mut colors = Vec::with_capacity(segments.iter().map(|s| s.text.len()).sum());
+    for seg in segments {
+        for _ in seg.text.chars() {
+            colors.push(seg.fg_color);
+        }
+    }
+    colors
+}
+
 /// Apply syntax highlighting to line content.
 /// Returns spans with syntax-based foreground colors and the base style's background preserved.
 pub fn syntax_highlight_content(
-    content: &str,
-    file_path: Option<&str>,
+    segments: &[SyntaxSegment],
     base_style: Style,
 ) -> Vec<Span<'static>> {
-    let segments = highlight_line(content, file_path);
-
     segments
-        .into_iter()
+        .iter()
         .map(|seg| {
             // Preserve background from base_style, use foreground from syntax
             let style = base_style.fg(seg.fg_color);
-            Span::styled(seg.text, style)
+            Span::styled(seg.text.clone(), style)
         })
         .collect()
 }
@@ -362,21 +355,13 @@ pub fn syntax_highlight_content(
 /// diff provides background based on whether the segment is changed or unchanged.
 pub fn syntax_highlight_inline_spans(
     inline_spans: &[InlineSpan],
-    content: &str,
-    file_path: Option<&str>,
+    syntax_segments: &[SyntaxSegment],
     base_style: Style,
     highlight_style: Style,
 ) -> Vec<Span<'static>> {
-    let syntax_segments = highlight_line(content, file_path);
     let highlight_bg = highlight_style.bg.unwrap_or(ratatui::style::Color::Reset);
 
-    // Build a character-indexed color map from syntax highlighting
-    let mut syntax_colors: Vec<ratatui::style::Color> = Vec::with_capacity(content.len());
-    for seg in &syntax_segments {
-        for _ in seg.text.chars() {
-            syntax_colors.push(seg.fg_color);
-        }
-    }
+    let syntax_colors = per_char_colors(syntax_segments);
 
     let coalesced = coalesce_spans(inline_spans);
     let mut result = Vec::new();
@@ -436,15 +421,37 @@ pub fn syntax_highlight_inline_spans(
 mod tests {
     use super::*;
     use crate::ui::colors::{line_style, line_style_with_highlight};
-    use crate::diff::{InlineSpan, LineSource, compute_inline_diff_merged};
-    use crate::syntax::reset_highlight_state;
+    use crate::diff::{DiffLine, InlineSpan, LineSource, compute_inline_diff_merged};
+    use crate::syntax::HighlightCache;
     use ratatui::style::Color;
+
+    /// Highlight one standalone line, the way the renderer would via the cache.
+    fn segments_for(content: &str, file_path: Option<&str>) -> Vec<SyntaxSegment> {
+        let mut line = DiffLine::new(LineSource::Base, content.to_string(), ' ', None);
+        line.file_path = file_path.map(str::to_string);
+        HighlightCache::new().segments(&[line], 0).to_vec()
+    }
+
+    /// One colour per *character*, not per byte — the inline-diff spans that
+    /// consume this index it by char position, so a byte-based expansion would
+    /// smear colours across multi-byte text.
+    #[test]
+    fn per_char_colors_expands_each_segment_across_its_characters() {
+        let segments = vec![
+            SyntaxSegment { text: "ab".to_string(), fg_color: Color::Red },
+            SyntaxSegment { text: "é🎉".to_string(), fg_color: Color::Blue },
+        ];
+
+        assert_eq!(
+            per_char_colors(&segments),
+            vec![Color::Red, Color::Red, Color::Blue, Color::Blue],
+        );
+    }
 
     #[test]
     fn test_syntax_highlight_content_rust() {
-        reset_highlight_state();
         let base_style = Style::default().bg(ratatui::style::Color::Rgb(25, 50, 50));
-        let spans = syntax_highlight_content("fn main() {}", Some("test.rs"), base_style);
+        let spans = syntax_highlight_content(&segments_for("fn main() {}", Some("test.rs")), base_style);
 
         assert!(!spans.is_empty());
         // Should preserve background from base_style
@@ -455,18 +462,16 @@ mod tests {
 
     #[test]
     fn test_syntax_highlight_content_empty() {
-        reset_highlight_state();
         let base_style = Style::default();
-        let spans = syntax_highlight_content("", Some("test.rs"), base_style);
+        let spans = syntax_highlight_content(&segments_for("", Some("test.rs")), base_style);
 
         assert!(spans.is_empty());
     }
 
     #[test]
     fn test_syntax_highlight_content_no_file_path() {
-        reset_highlight_state();
         let base_style = Style::default();
-        let spans = syntax_highlight_content("some text", None, base_style);
+        let spans = syntax_highlight_content(&segments_for("some text", None), base_style);
 
         // Should still work without file path (plain text)
         assert!(!spans.is_empty());
@@ -474,7 +479,6 @@ mod tests {
 
     #[test]
     fn test_syntax_highlight_inline_spans_unchanged() {
-        reset_highlight_state();
         let inline_spans = vec![
             InlineSpan {
                 text: "fn test()".to_string(),
@@ -488,8 +492,7 @@ mod tests {
 
         let spans = syntax_highlight_inline_spans(
             &inline_spans,
-            "fn test()",
-            Some("test.rs"),
+            &segments_for("fn test()", Some("test.rs")),
             base_style,
             highlight_style,
         );
@@ -503,7 +506,6 @@ mod tests {
 
     #[test]
     fn test_syntax_highlight_inline_spans_with_changes() {
-        reset_highlight_state();
         let inline_spans = vec![
             InlineSpan {
                 text: "let ".to_string(),
@@ -527,8 +529,7 @@ mod tests {
 
         let spans = syntax_highlight_inline_spans(
             &inline_spans,
-            "let x = 1;",
-            Some("test.rs"),
+            &segments_for("let x = 1;", Some("test.rs")),
             base_style,
             highlight_style,
         );
@@ -543,7 +544,6 @@ mod tests {
 
     #[test]
     fn test_syntax_highlight_inline_spans_renders_deletions_inline() {
-        reset_highlight_state();
         let inline_spans = vec![
             InlineSpan {
                 text: "old".to_string(),
@@ -562,8 +562,7 @@ mod tests {
 
         let spans = syntax_highlight_inline_spans(
             &inline_spans,
-            "new",
-            Some("test.rs"),
+            &segments_for("new", Some("test.rs")),
             base_style,
             highlight_style,
         );
@@ -579,7 +578,6 @@ mod tests {
 
     #[test]
     fn test_inline_deletion_with_unchanged_context() {
-        reset_highlight_state();
         // Simulates: "pub mod gh;" → "pub mod forges;"
         let inline_result = compute_inline_diff_merged(
             "pub mod gh;",
@@ -593,8 +591,7 @@ mod tests {
 
         let spans = syntax_highlight_inline_spans(
             &inline_result.spans,
-            "pub mod forges;",
-            Some("mod.rs"),
+            &segments_for("pub mod forges;", Some("mod.rs")),
             base_style,
             highlight_style,
         );
@@ -606,7 +603,6 @@ mod tests {
 
     #[test]
     fn test_syntax_highlight_inline_spans_empty_input() {
-        reset_highlight_state();
         let inline_spans: Vec<InlineSpan> = vec![];
 
         let base_style = Style::default();
@@ -614,8 +610,7 @@ mod tests {
 
         let spans = syntax_highlight_inline_spans(
             &inline_spans,
-            "",
-            Some("test.rs"),
+            &segments_for("", Some("test.rs")),
             base_style,
             highlight_style,
         );
@@ -1218,7 +1213,7 @@ mod tests {
             make_span("inserted", Some(LineSource::Committed), false),
         ];
 
-        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "unchanged deleted", None);
+        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("unchanged deleted", None));
 
         // Should include unchanged and deletion, but NOT insertion
         assert_eq!(result.len(), 2, "Should have 2 spans (unchanged + deletion)");
@@ -1233,7 +1228,7 @@ mod tests {
             make_span("deleted", Some(LineSource::DeletedBase), true),
         ];
 
-        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "unchanged deleted", None);
+        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("unchanged deleted", None));
 
         // Unchanged should have base style (no background highlight)
         let base_style = line_style(LineSource::DeletedBase);
@@ -1252,7 +1247,7 @@ mod tests {
             make_span("inserted", Some(LineSource::Committed), false),
         ];
 
-        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "unchanged inserted", None);
+        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("unchanged inserted", None));
 
         // Should include unchanged and insertion, but NOT deletion
         assert_eq!(result.len(), 2, "Should have 2 spans (unchanged + insertion)");
@@ -1267,7 +1262,7 @@ mod tests {
             make_span("inserted", Some(LineSource::Committed), false),
         ];
 
-        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "unchanged inserted", None);
+        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("unchanged inserted", None));
 
         // Unchanged should have base style (no background highlight)
         let base_style = line_style(LineSource::Committed);
@@ -1282,8 +1277,8 @@ mod tests {
     fn test_build_spans_with_highlight_empty_input() {
         let spans: Vec<InlineSpan> = vec![];
 
-        let del_result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "", None);
-        let ins_result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "", None);
+        let del_result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("", None));
+        let ins_result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("", None));
 
         assert!(del_result.is_empty(), "Empty input should produce empty deletion spans");
         assert!(ins_result.is_empty(), "Empty input should produce empty insertion spans");
@@ -1298,8 +1293,8 @@ mod tests {
             make_span("earth", Some(LineSource::Committed), false),
         ];
 
-        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "hello world", None);
-        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "hello earth", None);
+        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("hello world", None));
+        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("hello earth", None));
 
         // Deletion line should be "hello world"
         let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1324,8 +1319,8 @@ mod tests {
             make_span("c", None, false),
         ];
 
-        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, "aold1bold2c", None);
-        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed, "anew1bnew2c", None);
+        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("aold1bold2c", None));
+        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("anew1bnew2c", None));
 
         // After coalescing, short gaps get absorbed
         // Deletion text should be: aold1bold2c (coalesced into fewer spans)
@@ -1413,7 +1408,7 @@ mod tests {
             make_span("inserted", Some(LineSource::Unstaged), false),
         ];
 
-        let result = build_insertion_spans_with_highlight(&spans, LineSource::Unstaged, "unchanged inserted", None);
+        let result = build_insertion_spans_with_highlight(&spans, LineSource::Unstaged, &segments_for("unchanged inserted", None));
 
         // The inserted span should have dark foreground
         let inserted_span = &result[1];
@@ -1437,8 +1432,8 @@ mod tests {
         let result = build_insertion_spans_with_highlight(
             &spans,
             LineSource::Unstaged,
-            "// unchanged inserted",
-            Some("test.rs"),  // Rust file triggers syntax highlighting
+            // Rust file triggers syntax highlighting
+            &segments_for("// unchanged inserted", Some("test.rs")),
         );
 
         // Find the span that contains "inserted" - it should have dark foreground
@@ -1464,7 +1459,7 @@ mod tests {
             make_span("deleted", Some(LineSource::DeletedStaged), true),
         ];
 
-        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedStaged, "unchanged deleted", None);
+        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedStaged, &segments_for("unchanged deleted", None));
 
         // The deleted span should have light foreground (reddish bg works with light text)
         let deleted_span = &result[1];
@@ -1495,8 +1490,7 @@ mod tests {
         let del_spans = build_deletion_spans_with_highlight(
             &result.spans,
             LineSource::DeletedBase,
-            old_content,
-            None,
+            &segments_for(old_content, None),
         );
         let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(del_text, old_content, "deletion line should show old content");
@@ -1504,8 +1498,7 @@ mod tests {
         let ins_spans = build_insertion_spans_with_highlight(
             &result.spans,
             LineSource::Committed,
-            new_content,
-            None,
+            &segments_for(new_content, None),
         );
         let ins_text: String = ins_spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(ins_text, new_content, "insertion line should show new content");
@@ -1522,8 +1515,7 @@ mod tests {
         let del_spans = build_deletion_spans_with_highlight(
             &result.spans,
             LineSource::DeletedBase,
-            old_content,
-            None,
+            &segments_for(old_content, None),
         );
         let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(del_text, ".*}o)");

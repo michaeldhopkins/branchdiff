@@ -41,7 +41,7 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
     let size = frame.area();
 
     let has_warning = app.conflict_warning.is_some() || app.error.is_some();
-    let status_height = status_bar_height(app, size.width);
+    let status_height = status_bar_height(app, ctx, size.width);
 
     // Banner height depends on content: actionable errors get a 2-row layout
     // (summary + key hint); long unrecognized errors wrap and grow up to a
@@ -89,10 +89,10 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
     app.set_viewport_height(content_height);
 
     diff_view::draw_diff_view_with_frame(frame, app, diff_area, ctx);
-    draw_status_bar(frame, app, status_area);
+    draw_status_bar(frame, app, ctx, status_area);
 
     // Store status bar text and position for selection support
-    app.view.status_bar_lines = status_bar_plain_text(app, status_area.width);
+    app.view.status_bar_lines = status_bar_plain_text(app, ctx, status_area.width);
     app.view.status_bar_screen_y = status_area.y;
 
     if app.view.show_help {
