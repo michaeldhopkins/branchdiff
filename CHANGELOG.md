@@ -1,5 +1,14 @@
 ## [unreleased]
 
+### Performance
+
+- [**breaking**] Cache syntax highlighting instead of re-parsing every frame
+
+### Miscellaneous
+
+- *(repo)* Add mutation-testing setup and record its findings
+## [0.73.4] - 2026-07-17
+
 ### Features
 
 - Repaint on focus regain, resize, and Ctrl+L
