@@ -1,3 +1,10 @@
 /target/
 /vendor/
 .DS_Store
+
+# Playwright MCP session artifacts: page snapshots, console logs, screenshots.
+.playwright-mcp/
+
+# cargo-mutants scratch output. The config in .cargo/mutants.toml IS committed.
+mutants.out/
+mutants.out.old/

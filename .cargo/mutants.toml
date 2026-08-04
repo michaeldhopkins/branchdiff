@@ -1,0 +1,17 @@
+# cargo-mutants configuration.
+#
+# Run the suite as `--lib` only. The integration tests spawn `branchdiff` from
+# PATH (tests/integration/main.rs), so they exercise the *installed* binary and
+# cannot observe a mutation in the copied tree — they add cost and, being
+# PTY-timing-sensitive, can report a mutant as caught for reasons unrelated to
+# the mutation.
+additional_cargo_test_args = ["--lib"]
+
+# The baseline suite takes ~20s. Three mutants in `advance_over`'s length guard
+# (`|| -> &&`, `> -> ==`, `> -> <`) are detected by *timeout* rather than by a
+# failing assertion: each one lets over-long lines reach the parser, which is
+# exactly what MAX_HIGHLIGHT_LINE_LEN exists to prevent, so the suite grinds
+# instead of failing. That is a real detection, so they are deliberately not
+# excluded — but it means a clean run exits 3, not 0. Give them room to be
+# distinguished from genuine hangs.
+timeout_multiplier = 8.0

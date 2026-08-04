@@ -94,6 +94,58 @@ Constants and magic numbers:
 - Place shared constants in a central location (e.g., `src/image_diff.rs` for image-related constants)
 - Clippy does not catch duplicate magic numbers - this requires manual vigilance
 
+## Mutation Testing
+
+Config lives in `.cargo/mutants.toml`; a bare `cargo mutants` picks it up.
+
+**Two traps specific to this crate, both of which produced vacuous tests:**
+
+- **`DEFAULT_FG` is the same RGB the syntax theme gives unstyled text**
+  (`Rgb(200, 200, 200)` in both `ui::colors` and `syntax::theme`). So asserting
+  `fg_color == DEFAULT_FG` does **not** prove a line skipped highlighting — a
+  parsed-but-unstyled line is identical. Prove it with
+  `HighlightCache::parse_count()` instead, which counts what actually reached
+  the parser.
+- **Upper-bound assertions on `parse_count()` cannot catch under-counting.**
+  `assert!(count <= n)` passes just as happily when a counter stops incrementing.
+  Every guarantee that matters here is "no *more* than one parse per exposed
+  line", so pair those with at least one exact assertion over a case that really
+  replays context.
+
+**Measured on `src/syntax/cache.rs` (2026-08-04),** with the config above, at
+`-j1`, nothing else running: 61 mutants in **25 min** — 41 caught, 1 missed,
+16 unviable, 3 timeouts → **98%** (41/42, unviable excluded).
+
+Baseline is 32s cold build + 20s test, so this tree is *test*-bound and
+restricting the suite is the useful lever. Do not run it at `-j2` alongside
+other work: doing so manufactured 8 timeouts that dropped to 3 when re-run
+serially (the tell was 148-197s build times against 2-3s). Timing is sensitive
+to the timeout setting — the same file took 33 min with `--timeout 300`, purely
+because the three timeout mutants each waited longer before being called.
+
+- The one survivor is **equivalent**: `MAX_CONTEXT_REPLAY = CHECKPOINT_EVERY * 2`
+  mutated to `+ 2` still exceeds the 16-step guarantee the checkpoint grid
+  already provides, so the backstop never binds either way and no test can tell.
+  (`/ 2` **is** killable and is pinned by
+  `the_longest_possible_context_walk_still_reaches_a_checkpoint`.)
+- The 3 timeouts all break `advance_over`'s length guard, which lets over-long
+  lines reach the parser — the suite grinds instead of failing, so **a clean run
+  exits 3, not 0.** That is a real detection; do not exclude them.
+
+**`src/ui/status_bar.rs`:** 13 caught, 2 missed. Both survivors are the padding
+arithmetic in `draw_status_bar`'s *shorter-help* one-line arm, which is
+unreachable: `status_bar_height` returns 1 only when the full help fits, and the
+one-line layout tests that same condition first. The coupling is pinned
+behaviourally by `a_one_line_status_bar_always_shows_the_full_help`, so if the
+two thresholds ever diverge that arm goes live and the test fails.
+
+Run the per-change gate with the prefix override, or it silently selects nothing:
+
+```sh
+git -c diff.mnemonicPrefix=false -c diff.noprefix=false diff main -- src/ > /tmp/b.diff
+cargo mutants --no-shuffle -j1 --in-diff /tmp/b.diff
+```
+
 ## Committing
 
 Before committing, bump the version in `Cargo.toml` according to semver rules below. Every commit that changes behavior or fixes bugs requires a version bump. Run `cargo install --path .` after bumping to update `Cargo.lock`.
@@ -162,5 +214,14 @@ For this TUI app with CLI mode, "breaking change" means:
 - Scripts using `-p` print mode would break
 - Users' muscle memory for keybindings would be invalidated
 - Documented behavior changes incompatibly
+
+**The crate also publishes a library** (`src/lib.rs`, and `release.yml` runs
+`cargo publish`). Nothing is known to depend on it — branchdiff is consumed as a
+CLI, and crates.io mainly serves `cargo install` — but the API is public
+regardless, so **removing or re-signing a `pub` item bumps MINOR**, not patch,
+even when nothing user-facing changes. Check with
+`git diff main -- src/ | grep -E '^[+-] *pub '` before choosing the bump; a
+signature change buried in a refactor is easy to miss, and shipping one as a
+patch breaks `cargo build` for anyone who did depend on it.
 
 Commits prefixed with `feat:` should bump minor. Commits prefixed with `fix:` should bump patch. Commits prefixed with `chore:`, `refactor:`, `test:`, `docs:`, `perf:`, `build:` should bump patch (or nothing if purely internal).
