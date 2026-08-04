@@ -94,7 +94,7 @@ fn bench_inline_spans(c: &mut Criterion) {
     app.view.viewport_height = 50;
 
     // Count lines that need inline spans
-    let lines_with_old: usize = app.lines.iter()
+    let lines_with_old: usize = app.lines().iter()
         .filter(|l| l.old_content.is_some())
         .count();
 
@@ -103,11 +103,9 @@ fn bench_inline_spans(c: &mut Criterion) {
         |b| {
             b.iter(|| {
                 // Reset inline spans
-                for line in &mut app.lines {
-                    line.inline_spans.clear();
-                }
+                app.clear_inline_spans();
                 app.ensure_inline_spans_for_visible(50);
-                black_box(app.lines.iter().filter(|l| !l.inline_spans.is_empty()).count())
+                black_box(app.lines().iter().filter(|l| !l.inline_spans.is_empty()).count())
             })
         },
     );

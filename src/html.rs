@@ -71,6 +71,11 @@ fn encode_image_to_base64(img: &CachedImage) -> Option<String> {
 pub fn render_html(data: &OutputData, images: &ImageCache) -> Result<()> {
     let mut stdout = io::stdout().lock();
 
+    // This export streams through `syntax::highlight_line`, which carries
+    // parser state across calls. Start from a known-clean state rather than
+    // whatever the thread was last left in.
+    syntax::reset_highlight_state();
+
     write_header(&mut stdout, data)?;
 
     let line_num_width = data

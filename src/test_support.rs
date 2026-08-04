@@ -3,7 +3,6 @@
 //! This module provides a builder pattern for creating test App instances,
 //! eliminating duplication across test modules.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -13,7 +12,6 @@ use anyhow::Result;
 use crate::app::{App, ViewMode, ViewState};
 use crate::diff::{DiffLine, FileDiff, LineSource};
 use crate::gitignore::GitignoreFilter;
-use crate::image_diff::ImageCache;
 use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsBackend, VcsEventType, VcsWatchPaths};
 
 /// Builder for creating test App instances with sensible defaults.
@@ -107,57 +105,50 @@ impl TestAppBuilder {
     pub fn build(self) -> App {
         let repo_path = PathBuf::from("/tmp/test");
         let to_label = self.current_branch.unwrap_or_else(|| "HEAD".to_string());
-        App {
-            gitignore_filter: GitignoreFilter::new(&repo_path),
-            repo_path,
-            comparison: ComparisonContext {
-                from_label: self.base_branch,
-                to_label,
-                stack_position: self.stack_position,
-                vcs_backend: self.vcs_backend,
-                bookmark_name: None,
-                divergence: None,
-            },
-            base_identifier: "abc123".to_string(),
-            files: self.files,
-            lines: self.lines,
-            error: None,
-            pending_recovery: None,
-            conflict_warning: None,
-            performance_warning: None,
-            file_links: HashMap::new(),
-            image_cache: ImageCache::new(),
-            image_picker: None,
-            font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
-            search: None,
-            diff_base: crate::vcs::DiffBase::default(),
-            view: ViewState {
-                scroll_offset: self.scroll_offset,
-                sub_row: 0,
-                viewport_height: self.viewport_height,
-                view_mode: self.view_mode,
-                content_offset: (1, 1),
-                line_num_width: 0,
-                content_width: 80,
-                panel_width: 80,
-                show_help: false,
-                selection: None,
-                word_selection_anchor: None,
-                line_selection_anchor: None,
-                row_map: Vec::new(),
-                collapsed_files: Default::default(),
-                manually_toggled: Default::default(),
-                reviewed_files: Default::default(),
-                reviewed_flash: None,
-                needs_inline_spans: true,
-                path_copied_at: None,
-                status_flash: None,
-                last_click: None,
-                pending_copy: None,
-                status_bar_lines: Vec::new(),
-                status_bar_screen_y: 0,
-            },
-        }
+
+        // Via the constructor rather than a struct literal: `lines` is private
+        // so that nothing can install new lines without dropping the caches
+        // keyed on them.
+        let mut app = App::new_for_bench(self.lines);
+        app.gitignore_filter = GitignoreFilter::new(&repo_path);
+        app.repo_path = repo_path;
+        app.comparison = ComparisonContext {
+            from_label: self.base_branch,
+            to_label,
+            stack_position: self.stack_position,
+            vcs_backend: self.vcs_backend,
+            bookmark_name: None,
+            divergence: None,
+        };
+        app.base_identifier = "abc123".to_string();
+        app.files = self.files;
+        app.view = ViewState {
+            scroll_offset: self.scroll_offset,
+            sub_row: 0,
+            viewport_height: self.viewport_height,
+            view_mode: self.view_mode,
+            content_offset: (1, 1),
+            line_num_width: 0,
+            content_width: 80,
+            panel_width: 80,
+            show_help: false,
+            selection: None,
+            word_selection_anchor: None,
+            line_selection_anchor: None,
+            row_map: Vec::new(),
+            collapsed_files: Default::default(),
+            manually_toggled: Default::default(),
+            reviewed_files: Default::default(),
+            reviewed_flash: None,
+            needs_inline_spans: true,
+            path_copied_at: None,
+            status_flash: None,
+            last_click: None,
+            pending_copy: None,
+            status_bar_lines: Vec::new(),
+            status_bar_screen_y: 0,
+        };
+        app
     }
 }
 
