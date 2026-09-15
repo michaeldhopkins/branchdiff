@@ -6,6 +6,7 @@ Before every commit, verify:
 3. [ ] Version bumped in `Cargo.toml` (patch for fixes, minor for features)
 4. [ ] `cargo install --path .` run after version bump (also refreshes `Cargo.lock`, which CI checks with `--locked`)
 5. [ ] Changelog regenerated — see [Releasing](#releasing-jj--ci) for the exact jj-aware command
+6. [ ] No file under `src/` over 400 production lines (`tests/file_length.rs`; inline test modules and test-only module files are not counted). Files already over when the gate went in (2026-09-14) are pinned at that size and may only shrink. New code goes in a new module, never into a pinned file.
 
 After building or making changes, always run `cargo install --path .` to install the binary.
 
