@@ -1,5 +1,6 @@
 pub mod git;
 pub mod jj;
+mod jj_events;
 pub(crate) mod shared;
 pub mod types;
 
