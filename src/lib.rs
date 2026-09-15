@@ -4,6 +4,7 @@ pub mod app;
 pub mod cli;
 pub mod diff;
 pub mod external;
+pub mod fetch;
 pub mod file_events;
 pub mod file_links;
 pub mod image_diff;

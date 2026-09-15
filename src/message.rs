@@ -23,7 +23,7 @@ pub const FALLBACK_REFRESH_SECS: u64 = 5;
 pub struct FetchResult {
     /// Whether the remote has conflicting changes.
     pub has_conflicts: bool,
-    /// New merge base if it changed after fetch.
+    /// The base as it stands after the fetch, when the fetch moved it.
     pub new_merge_base: Option<String>,
 }
 

@@ -1017,7 +1017,7 @@ impl JjVcs {
 
     /// Get the current change ID for a revision.
     fn get_change_id(&self, rev: &str) -> Result<String> {
-        let output = self.run_jj(&["log", "-r", rev, "-T", "change_id.short(12)", "--no-graph", "--limit", "1"])?;
+        let output = self.run_jj(&no_snapshot(&["log", "-r", rev, "-T", "change_id.short(12)", "--no-graph", "--limit", "1"]))?;
         Ok(output.trim().to_string())
     }
 
@@ -3492,6 +3492,24 @@ mod tests {
             "fetch snapshotted the working copy (@ is no longer empty) — auto-fetch must be \
              working-copy-agnostic"
         );
+    }
+
+    /// The auto-fetch reads the base on either side of the fetch, so reading it
+    /// is on the same timer and must not snapshot either: a snapshot every 30s
+    /// folds edits into `@` and writes `.jj/`, which wakes the watcher again.
+    #[test]
+    fn base_identifier_is_working_copy_agnostic() {
+        if !jj_available() { return; }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        std::fs::write(repo.join("base.txt"), "dirty working copy edit\n").unwrap();
+        assert_eq!(at_is_empty(repo), "true", "precondition: the edit must be un-snapshotted");
+
+        vcs.base_identifier().unwrap();
+
+        assert_eq!(at_is_empty(repo), "true", "base_identifier snapshotted the working copy");
     }
 
     /// Count operations in the log, read without snapshotting.
