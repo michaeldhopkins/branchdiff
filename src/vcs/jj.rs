@@ -2345,7 +2345,7 @@ mod tests {
         std::fs::write(repo.join("dev.txt"), "dev\n").unwrap();
         jj(&["commit", "-m", "develop work"]);
         jj(&["bookmark", "set", "develop", "-r", "@-"]);
-        jj(&["git", "push", "--bookmark", "develop", "--remote", "origin", "--allow-new"]);
+        jj(&["git", "push", "--bookmark", "develop", "--remote", "origin"]);
 
         assert_eq!(JjVcs::new(repo.to_path_buf()).unwrap().from_rev, "trunk()",
             "precondition: this repo would otherwise infer trunk()");
@@ -2508,7 +2508,8 @@ mod tests {
         std::fs::write(repo.join("upstream.txt"), "landed upstream\n").unwrap();
         jj_at("2021-01-01T00:00:00Z", &["commit", "-m", "landed upstream"]);
         jj(&["bookmark", "set", "main", "-r", "@-"]);
-        jj(&["git", "push", "--bookmark", "main", "--remote", "upstream", "--allow-new"]);
+        jj(&["bookmark", "track", "main@upstream"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "upstream"]);
 
         let origin_epoch = revset_committer_epoch(repo, "main@origin").expect("main@origin");
         let upstream_epoch = revset_committer_epoch(repo, "main@upstream").expect("main@upstream");
@@ -2545,7 +2546,8 @@ mod tests {
         jj(&["bookmark", "set", "main", "-r", "@-"]);
         // Same commit on both remotes.
         jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
-        jj(&["git", "push", "--bookmark", "main", "--remote", "upstream", "--allow-new"]);
+        jj(&["bookmark", "track", "main@upstream"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "upstream"]);
 
         assert_eq!(preferred_trunk_revset(repo).as_deref(), Some("main@origin"));
     }
@@ -2596,7 +2598,8 @@ mod tests {
         jj(&["commit", "-m", "base"]);
         jj(&["bookmark", "set", "main", "-r", "@-"]);
         jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
-        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test", "--allow-new"]);
+        jj(&["bookmark", "track", "main@heroku_test"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test"]);
 
         pin_trunk_alias(repo, "main@heroku_test");
 
@@ -2634,7 +2637,8 @@ mod tests {
         jj(&["commit", "-m", "base"]);
         jj(&["bookmark", "set", "main", "-r", "@-"]);
         jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
-        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test", "--allow-new"]);
+        jj(&["bookmark", "track", "main@heroku_test"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test"]);
 
         pin_trunk_alias(repo, "main@heroku_test");
 
@@ -2656,7 +2660,7 @@ mod tests {
         std::fs::write(repo.join("dev.txt"), "dev\n").unwrap();
         jj(&["commit", "-m", "develop work"]);
         jj(&["bookmark", "set", "develop", "-r", "@-"]);
-        jj(&["git", "push", "--bookmark", "develop", "--remote", "origin", "--allow-new"]);
+        jj(&["git", "push", "--bookmark", "develop", "--remote", "origin"]);
 
         pin_trunk_alias(repo, "develop@origin");
 
@@ -3360,7 +3364,8 @@ mod tests {
         jj(&["commit", "-m", "base"]);
         jj(&["bookmark", "set", "main", "-r", "@-"]);
         jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
-        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test", "--allow-new"]);
+        jj(&["bookmark", "track", "main@heroku_test"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test"]);
 
         // Stack segment 1: feature-1, pushed to origin.
         std::fs::write(repo.join("a.txt"), "a\n").unwrap();
@@ -3614,7 +3619,8 @@ mod tests {
         jj(&["commit", "-m", "base"]);
         jj(&["bookmark", "set", "main", "-r", "@-"]);
         jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
-        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test", "--allow-new"]);
+        jj(&["bookmark", "track", "main@heroku_test"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "heroku_test"]);
         pin_trunk_alias(repo, "main@heroku_test");
 
         // origin advances past the deploy remote, so the override engages.
