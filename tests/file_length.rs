@@ -43,10 +43,10 @@ fn pinned() -> HashMap<&'static str, usize> {
     ])
 }
 
-/// Is this item compiled only for tests (`#[test]`, `#[cfg(test)]`)?
+/// Is this item compiled only for tests (`#[test]`, `#[tokio::test]`, `#[cfg(test)]`)?
 fn test_only(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
-        a.path().is_ident("test")
+        a.path().segments.last().is_some_and(|s| s.ident == "test")
             || (a.path().is_ident("cfg") && a.parse_args::<syn::Meta>().is_ok_and(|m| m.path().is_ident("test")))
     })
 }
@@ -120,11 +120,16 @@ impl<'a> Visit<'a> for TestItems {
     }
 }
 
-fn test_items(source: &str) -> TestItems {
-    let file = syn::parse_file(source).unwrap_or_else(|e| panic!("does not parse: {e}"));
+fn test_items(source: &str) -> syn::Result<TestItems> {
+    let file = syn::parse_file(source)?;
     let mut tests = TestItems::default();
     tests.visit_file(&file);
-    tests
+    Ok(tests)
+}
+
+/// A source file's text. The gate fails on a file it cannot read rather than count it as empty.
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
 /// The file's lines outside its test-only items (`#[cfg(test)]` modules, helpers and impls,
@@ -135,10 +140,10 @@ fn test_items(source: &str) -> TestItems {
 /// tests waved through arbitrarily large files, stopping at the first test module measured a
 /// 7,993-line file at 74, and ending a module at the first `}` in column 0 was fooled by fixture
 /// strings.
-fn production_lines(source: &str) -> usize {
-    let tests = test_items(source);
+fn production_lines(source: &str) -> syn::Result<usize> {
+    let tests = test_items(source)?;
     let total = source.lines().count();
-    (1..=total).filter(|line| !tests.lines.iter().any(|(a, b)| (a..=b).contains(&line))).count()
+    Ok((1..=total).filter(|line| !tests.lines.iter().any(|(a, b)| (a..=b).contains(&line))).count())
 }
 
 /// Where the body of an out-of-line module declared in `file` lives, per the reference's module
@@ -159,8 +164,8 @@ fn module_files(file: &Path, m: &OutOfLine) -> Vec<PathBuf> {
 fn test_module_files(files: &[PathBuf]) -> HashSet<PathBuf> {
     let mut roots = Vec::new();
     for file in files {
-        let source = std::fs::read_to_string(file).unwrap_or_default();
-        for m in test_items(&source).out_of_line {
+        let items = test_items(&read(file)).unwrap_or_else(|e| panic!("{} does not parse: {e}", file.display()));
+        for m in items.out_of_line {
             roots.extend(module_files(file, &m));
         }
     }
@@ -181,13 +186,17 @@ fn crate_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
+/// Every `.rs` file under `dir`. Symlinks are not followed, so a link cycle cannot loop the walk,
+/// and a directory it cannot read fails the gate rather than go unmeasured.
 fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()));
         let path = entry.path();
-        if path.is_dir() {
+        let kind = entry.file_type().unwrap_or_else(|e| panic!("cannot stat {}: {e}", path.display()));
+        if kind.is_dir() {
             sources(&path, found);
-        } else if path.extension().is_some_and(|e| e == "rs") {
+        } else if kind.is_file() && path.extension().is_some_and(|e| e == "rs") {
             found.push(path);
         }
     }
@@ -231,8 +240,8 @@ fn no_file_outgrows_its_limit() {
     let mut failures = Vec::new();
     for path in files.iter().filter(|f| !test_files.contains(*f)) {
         let relative = path.strip_prefix(&root).unwrap_or(path).to_string_lossy().replace('\\', "/");
-        let source = std::fs::read_to_string(path).unwrap_or_default();
-        if let Some(f) = verdict(&relative, production_lines(&source), LIMIT, &pinned) {
+        let lines = production_lines(&read(path)).unwrap_or_else(|e| panic!("{relative} does not parse: {e}"));
+        if let Some(f) = verdict(&relative, lines, LIMIT, &pinned) {
             failures.push(f);
         }
     }
@@ -265,9 +274,10 @@ fn every_pinned_file_still_exists() {
 
 #[test]
 fn only_test_items_are_left_out_of_the_count() {
-    assert_eq!(production_lines("fn a() {}\nfn b() {}\n#[cfg(test)]\nmod tests {\n // lots\n}\n"), 2);
-    assert_eq!(production_lines("fn a() {}\n"), 1, "a file with no tests counts whole");
-    assert_eq!(production_lines(""), 0);
+    let count = |source: &str| production_lines(source).expect("parses");
+    assert_eq!(count("fn a() {}\nfn b() {}\n#[cfg(test)]\nmod tests {\n // lots\n}\n"), 2);
+    assert_eq!(count("fn a() {}\n"), 1, "a file with no tests counts whole");
+    assert_eq!(count(""), 0);
     let cases: &[(&str, &str, usize)] = &[
         ("a test-only mod declaration is its own line, not the rest of the file", "mod real;\n#[cfg(test)]\nmod test_support;\n\nfn a() {}\nfn b() {}\n", 4),
         ("a test-only helper is the helper, not the rest of the file", "fn a() {}\n#[cfg(test)]\nfn helper() {}\nfn b() {}\nfn c() {}\n", 3),
@@ -283,10 +293,25 @@ fn only_test_items_are_left_out_of_the_count() {
         ("`#[cfg(test)]` in a string or comment is not an attribute", "// #[cfg(test)]\nconst A: &str = \"\n#[cfg(test)]\nmod x {\";\nfn b() {}\n", 5),
         ("a test-only method in a production impl", "impl A {\n    fn a() {}\n    #[cfg(test)]\n    fn t() {}\n}\n", 3),
         ("doc comments go with their item", "/// tests\n#[cfg(test)]\nmod t {}\nfn b() {}\n", 1),
+        ("an async test under a runtime's attribute is a test", "#[tokio::test]\nasync fn t() {\n}\nfn b() {}\n", 1),
     ];
     for (why, source, expected) in cases {
-        assert_eq!(production_lines(source), *expected, "{why}");
+        assert_eq!(count(source), *expected, "{why}");
     }
+    assert!(production_lines("fn a( {").is_err(), "a file that does not parse is an error, not a count");
+}
+
+#[test]
+#[cfg(unix)]
+fn the_walk_does_not_follow_symlinks() {
+    let root = std::env::temp_dir().join(format!("branchdiff-walk-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+    std::os::unix::fs::symlink(&root, root.join("src/loop")).unwrap();
+    let mut found = Vec::new();
+    sources(&root.join("src"), &mut found);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(found, vec![root.join("src/a.rs")], "a link back to an ancestor is not walked into");
 }
 
 #[test]
