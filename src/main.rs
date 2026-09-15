@@ -863,14 +863,8 @@ fn spawn_refresh(
 
 fn spawn_fetch(vcs: Arc<dyn Vcs>, fetch_tx: mpsc::Sender<FetchResult>) {
     thread::spawn(move || {
-        if vcs.fetch().is_ok() {
-            let has_conflicts = vcs.has_conflicts().unwrap_or(false);
-            let new_merge_base = vcs.base_identifier().ok();
-
-            let _ = fetch_tx.send(FetchResult {
-                has_conflicts,
-                new_merge_base,
-            });
+        if let Some(result) = branchdiff::fetch::fetch_and_compare(vcs.as_ref()) {
+            let _ = fetch_tx.send(result);
         }
     });
 }
