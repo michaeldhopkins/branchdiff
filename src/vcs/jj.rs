@@ -1502,29 +1502,7 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn classify_event(&self, path: &Path) -> VcsEventType {
-        // The shared op_store can sit outside `repo_path` (jj workspace), where
-        // the `.jj`-prefix check below would miss it and mislabel it as Source.
-        if path.starts_with(&self.op_store_dir) {
-            return VcsEventType::Internal;
-        }
-
-        let relative = path.strip_prefix(&self.repo_path).unwrap_or(path);
-        let first = relative.components().next().map(|c| c.as_os_str());
-
-        if first.is_some_and(|c| c == ".jj") {
-            let path_str = relative.to_string_lossy();
-            return if path_str.contains("working_copy/") {
-                VcsEventType::RevisionChange
-            } else {
-                VcsEventType::Internal
-            };
-        }
-
-        if first.is_some_and(|c| c == ".git") && self.is_colocated() {
-            return VcsEventType::Internal;
-        }
-
-        VcsEventType::Source
+        super::jj_events::classify(path, &self.repo_path, &self.op_store_dir, || self.is_colocated())
     }
 
     fn backend(&self) -> VcsBackend {

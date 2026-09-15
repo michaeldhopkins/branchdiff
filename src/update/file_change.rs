@@ -234,6 +234,32 @@ mod tests {
         assert!(!result.needs_redraw);
     }
 
+    /// Every jj command, even one that changes nothing, creates and removes these. They used to
+    /// read as a revision change, so each `jj st` anyone ran in the repo cost a full refresh.
+    #[test]
+    fn a_jj_command_that_changes_nothing_does_not_refresh() {
+        let vcs = crate::vcs::jj::JjVcs::new(PathBuf::from("/repo")).unwrap();
+        let batch = |paths: &[&str]| -> Vec<DebouncedEvent> {
+            paths.iter().map(|p| DebouncedEvent::new(PathBuf::from(p), DebouncedEventKind::Any)).collect()
+        };
+        let transient = [
+            "/repo/.jj/working_copy/working_copy.lock",
+            "/repo/.jj/working_copy/.tmpDQjqj9",
+            "/repo/.jj/repo/git_import_export.lock",
+        ];
+
+        let mut app = TestAppBuilder::new().build();
+        let (mut refresh_state, mut vcs_lock, mut timers) = (RefreshState::Idle, VcsLockState::default(), Timers::default());
+        let result = handle_file_change(batch(&transient), &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        assert_eq!(result.refresh, RefreshTrigger::None);
+        assert!(timers.pending_vcs_event.is_none(), "nor queue a delayed one");
+
+        let mut real_change = transient.to_vec();
+        real_change.push("/repo/.jj/working_copy/checkout");
+        let result = handle_file_change(batch(&real_change), &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        assert_eq!(result.refresh, RefreshTrigger::Full, "a command that moves the working copy still refreshes");
+    }
+
     #[test]
     fn test_handle_file_change_skips_refresh_when_locked() {
         use tempfile::TempDir;

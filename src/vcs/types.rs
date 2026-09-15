@@ -117,7 +117,8 @@ pub enum VcsEventType {
     Internal,
     /// Branch/revision change (e.g., .git/HEAD, .git/refs/) — triggers refresh
     RevisionChange,
-    /// Lock file (external operation in progress) — defer refresh
+    /// Lock or temporary file of an operation in progress — never refreshes by itself; a lock
+    /// held by an external operation defers refresh
     Lock,
     /// Regular source file — triggers immediate refresh
     Source,
