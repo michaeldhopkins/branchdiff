@@ -38,7 +38,6 @@ fn pinned() -> HashMap<&'static str, usize> {
         ("src/ui/diff_view.rs", 1257),
         ("src/ui/image_view.rs", 433),
         ("src/ui/spans.rs", 419),
-        ("src/vcs/git/commands.rs", 458),
         ("src/vcs/jj.rs", 1608),
     ])
 }

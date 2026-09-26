@@ -1066,7 +1066,7 @@ impl JjVcs {
 /// Parse combined `bookmarks ++ "\0" ++ change_id ++ "\0" ++ shortest_id` template output.
 /// Returns (change_id, display_label) where label annotates bookmarks with the shortest
 /// unique change ID prefix: `"main (knmq)"`.
-fn parse_rev_metadata(raw: &str) -> (String, String) {
+pub(crate) fn parse_rev_metadata(raw: &str) -> (String, String) {
     let raw = raw.trim();
     let parts: Vec<&str> = raw.splitn(3, '\0').collect();
     if parts.len() >= 2 {
@@ -1537,7 +1537,7 @@ impl crate::vcs::Vcs for JjVcs {
 
 /// Changed file from jj diff --summary output.
 #[derive(Debug, Clone)]
-struct ChangedFile {
+pub(crate) struct ChangedFile {
     path: String,
     old_path: Option<String>,
 }
@@ -1545,7 +1545,7 @@ struct ChangedFile {
 /// Parse `jj diff --summary` output into changed files.
 ///
 /// Renames use the format `R {old_path => new_path}`.
-fn parse_jj_summary(output: &str) -> Vec<ChangedFile> {
+pub(crate) fn parse_jj_summary(output: &str) -> Vec<ChangedFile> {
     output
         .lines()
         .filter_map(|line| {
@@ -1581,7 +1581,7 @@ fn parse_jj_summary(output: &str) -> Vec<ChangedFile> {
 /// matched only the root form, silently dropping every nested rename. jj always
 /// braces renames in `--summary`, so a string without a `{ … => … }` is treated
 /// as malformed and skipped.
-fn parse_rename(s: &str) -> Option<ChangedFile> {
+pub(crate) fn parse_rename(s: &str) -> Option<ChangedFile> {
     let open = s.find('{')?;
     let close = s.find('}')?;
     if close < open {
@@ -1603,7 +1603,7 @@ fn parse_rename(s: &str) -> Option<ChangedFile> {
 /// Parse `jj diff --stat` output to find binary files (marked with "(binary)").
 ///
 /// Handles renamed files: `{old => new} | (binary)` extracts just the new name.
-fn parse_binary_from_stat(output: &str) -> HashSet<String> {
+pub(crate) fn parse_binary_from_stat(output: &str) -> HashSet<String> {
     output
         .lines()
         .filter(|line| line.contains("(binary)"))

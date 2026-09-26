@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -7,6 +7,8 @@ use anyhow::{anyhow, Context, Result};
 
 use vcs_runner::{Cmd, run_git, run_git_with_retry, run_git_with_timeout, is_transient_error as vcs_is_transient};
 use crate::vcs::UpstreamDivergence;
+
+use super::parse::{parse_numstat_binaries, read_cat_file_batch};
 
 /// Git version required for merge-tree --write-tree (conflict detection)
 const MERGE_TREE_MIN_VERSION: (u32, u32) = (2, 38);
@@ -48,7 +50,7 @@ pub fn is_index_locked(repo_path: &Path) -> bool {
 }
 
 /// Parse git version from "git version X.Y.Z" string
-pub(super) fn parse_git_version(s: &str) -> Result<GitVersion> {
+pub(crate) fn parse_git_version(s: &str) -> Result<GitVersion> {
     // Format: "git version 2.34.1" or "git version 2.50.1 (Apple Git-155)"
     let version_part = s
         .trim()
@@ -280,50 +282,7 @@ pub(super) fn batch_file_contents(
         let _ = writer.flush();
     });
 
-    let mut reader = BufReader::new(child_stdout);
-    let mut results = HashMap::with_capacity(file_paths.len());
-    let mut header_line = String::new();
-
-    // Responses arrive in the same order as specs — one response per spec.
-    for &path in file_paths {
-        header_line.clear();
-        if reader.read_line(&mut header_line).unwrap_or(0) == 0 {
-            break;
-        }
-        let header = header_line.trim_end();
-
-        // Success format: "<sha> <type> <size>" (3 fields).
-        // Error formats have 2 fields: "<spec> missing", "<spec> ambiguous", etc.
-        // Split into exactly 3 fields to distinguish success from error.
-        let parts: Vec<&str> = header.splitn(4, ' ').collect();
-        if parts.len() < 3 {
-            // 2-field response: missing, ambiguous, submodule, excluded — skip
-            continue;
-        }
-
-        let obj_type = parts[1];
-        let size: usize = match parts[2].parse() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-
-        // Read the content bytes + trailing LF regardless of object type,
-        // to keep the stream in sync for subsequent responses.
-        let mut content_buf = vec![0u8; size];
-        if reader.read_exact(&mut content_buf).is_err() {
-            break;
-        }
-        let mut trailing = [0u8; 1];
-        let _ = reader.read_exact(&mut trailing);
-
-        // Only collect blob content; skip trees, commits, tags.
-        if obj_type == "blob" {
-            results.insert(
-                path.to_string(),
-                String::from_utf8_lossy(&content_buf).into_owned(),
-            );
-        }
-    }
+    let results = read_cat_file_batch(&mut BufReader::new(child_stdout), file_paths);
 
     let _ = writer_handle.join();
     let _ = child.wait();
@@ -373,8 +332,6 @@ pub fn is_binary_file(repo_path: &Path, file_path: &str) -> bool {
 /// Returns a HashSet of file paths that are binary.
 /// This is more efficient than calling is_binary_file() for each file.
 pub fn get_binary_files(repo_path: &Path, merge_base: &str) -> HashSet<String> {
-    let mut binaries = HashSet::new();
-
     // Compare merge_base to working tree (covers committed + staged + unstaged changes)
     // If merge_base is empty (new repo), check against empty tree
     let base_ref = if merge_base.is_empty() {
@@ -384,24 +341,9 @@ pub fn get_binary_files(repo_path: &Path, merge_base: &str) -> HashSet<String> {
     };
 
     // git diff --numstat <ref> (with no second ref) compares ref to working tree
-    if let Ok(output) = run_git(repo_path, &["diff", "--numstat", base_ref]) {
-        let s = output.stdout_lossy();
-        for line in s.lines() {
-            // Binary files show as "-\t-\tfilename" in numstat output
-            // Renames show as "-\t-\told => new"
-            if let Some(path) = line.strip_prefix("-\t-\t") {
-                let actual_path = if path.contains(" => ") {
-                    // Extract the new filename from "old => new" format
-                    path.split(" => ").last().unwrap_or(path)
-                } else {
-                    path
-                };
-                binaries.insert(actual_path.to_string());
-            }
-        }
-    }
-
-    binaries
+    run_git(repo_path, &["diff", "--numstat", base_ref])
+        .map(|output| parse_numstat_binaries(&output.stdout_lossy()))
+        .unwrap_or_default()
 }
 
 pub fn fetch_base_branch(repo_path: &Path, base_branch: &str) -> Result<()> {
