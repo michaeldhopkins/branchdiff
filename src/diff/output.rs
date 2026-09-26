@@ -90,13 +90,14 @@ where
 
         LineSource::Staged => {
             if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
-                && let Some((_head_idx, old_content)) = head_index_mods.get(&index_idx)
+                && let Some((head_idx, old_content)) = head_index_mods.get(&index_idx)
             {
-                let original_source = if let Some(head_idx) = index_from_head.get(index_idx).copied().flatten() {
-                    trace_head_source(head_idx)
-                } else {
-                    LineSource::Base
-                };
+                // The line's origin is the HEAD line it was modified from. Looking it
+                // up through `index_from_head` always missed (a modified line has no
+                // exact match), so every staged edit claimed to come from base, and
+                // the `--diff` patch deleted a base line that never existed. Found by
+                // the `diff_patch` fuzz target.
+                let original_source = trace_head_source(*head_idx);
 
                 return DiffLine::new(original_source, content, ' ', Some(line_num))
                     .with_file_path(path)

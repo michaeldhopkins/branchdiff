@@ -262,24 +262,17 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
         }
     };
 
-    // Find base position for a working line (via provenance or modification maps)
-    let get_working_base_pos = |working_idx: usize| -> Option<usize> {
-        if let Some(index_idx) = working_from_index.get(working_idx).copied().flatten()
-            && let Some(head_idx) = index_from_head.get(index_idx).copied().flatten()
-            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
-        {
-            return Some(base_idx);
-        }
-
-        if let Some((index_idx, _)) = index_working_mods.get(&working_idx)
-            && let Some(head_idx) = index_from_head.get(*index_idx).copied().flatten()
-            && let Some(base_idx) = head_from_base.get(head_idx).copied().flatten()
-        {
-            return Some(base_idx);
-        }
-
-        None
-    };
+    // The base line a working line stands for: exactly the inverse of
+    // `base_to_working`, so deletions are ordered by the same notion of "still
+    // present" that decides whether a base line is deleted at all. A separate
+    // provenance trace here missed modifications made on the branch, so such a
+    // line went out before the base deletions above it and the `--diff` patch
+    // did not apply (found by the `diff_patch` fuzz target).
+    let mut working_to_base: Vec<Option<usize>> = vec![None; working_lines.len()];
+    for (base_idx, working_idx) in base_to_working.iter().enumerate() {
+        if let Some(w) = working_idx { working_to_base[*w] = Some(base_idx); }
+    }
+    let get_working_base_pos = |working_idx: usize| working_to_base[working_idx];
 
     // Find head position for a working line (via provenance or modification maps)
     let get_working_head_idx = |working_idx: usize| -> Option<usize> {

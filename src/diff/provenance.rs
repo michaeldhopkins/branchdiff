@@ -233,19 +233,19 @@ pub(super) fn build_modification_map<'a>(
             .filter(|(content, _)| !content.trim().is_empty())
             .collect();
 
-        // Match deletions with insertions based on content similarity
-        let mut paired_inserts: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // Match deletions with insertions based on content similarity, in order:
+        // each pairing starts after the previous one's insertion. Crossed pairs
+        // (old A with new B, old B with new A) cannot be shown as in-place edits
+        // without one line appearing out of order, and in the `--diff` patch that
+        // deleted base lines out of order (found by the `diff_patch` fuzz target).
+        let mut next_insert = 0;
 
         for (old_content, old_i) in &deletions {
-            for (ins_idx, (new_content, new_i)) in insertions.iter().enumerate() {
-                if paired_inserts.contains(&ins_idx) {
-                    continue;
-                }
-
+            for (ins_idx, (new_content, new_i)) in insertions.iter().enumerate().skip(next_insert) {
                 let inline_result =
                     compute_inline_diff_merged(old_content, new_content, LineSource::Unstaged);
                 if inline_result.is_meaningful {
-                    paired_inserts.insert(ins_idx);
+                    next_insert = ins_idx + 1;
                     result.insert(*new_i, (*old_i, old_lines[*old_i]));
                     break;
                 }
@@ -470,5 +470,18 @@ fn five() {\n    println!(\"five\");\n}".lines().collect();
         assert_eq!(prov[4], Some(8), "fn five should map to old[8]");
         assert_eq!(prov[5], Some(9));
         assert_eq!(prov[6], Some(10));
+    }
+
+    #[test]
+    fn modification_pairs_never_cross() {
+        // "n() {" is most like the second new line and "    l" like the first.
+        // Pairing both would put the pairs out of order; only the first holds.
+        let old = ["n() {", "    l"];
+        let new = ["    l\u{fffd}", "\u{1}n() {"];
+        let mods = build_modification_map(&old, &new, LineSource::Committed);
+        let mut pairs: Vec<(usize, usize)> = mods.iter().map(|(n, (o, _))| (*o, *n)).collect();
+        pairs.sort_unstable();
+        assert!(!pairs.is_empty(), "the similar lines should still pair");
+        assert!(pairs.windows(2).all(|w| w[0].1 < w[1].1), "crossed pairs: {pairs:?}");
     }
 }
