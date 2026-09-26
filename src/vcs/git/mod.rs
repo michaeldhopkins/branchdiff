@@ -1,5 +1,6 @@
-mod changed_files;
-mod commands;
+pub(crate) mod changed_files;
+pub(crate) mod commands;
+pub(crate) mod parse;
 mod refresh;
 
 #[cfg(test)]

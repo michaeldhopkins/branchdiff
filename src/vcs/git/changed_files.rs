@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 
 use vcs_runner::{Cmd, run_git, run_git_with_retry, is_transient_error};
 
+use super::parse::parse_status_porcelain;
+
 /// A file that has changes
 #[derive(Debug, Clone)]
 pub struct ChangedFile {
@@ -141,35 +143,16 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
         is_transient_error,
     )?;
 
-    {
-        let status_str = status_output.stdout_lossy();
-        for line in status_str.lines() {
-            if line.len() < 3 {
-                continue;
-            }
-
-            let status_codes = &line[..2];
-            let path_part = line[3..].to_string();
-
-            // Track worktree-deleted files (second char is 'D') and untracked files (??)
-            // for unstaged rename detection
-            if status_codes.as_bytes()[1] == b'D' {
-                worktree_deleted.push(path_part.clone());
-            } else if status_codes == "??" {
-                untracked.push(path_part.clone());
-            }
-
-            // Handle renames which have "old -> new" format (staged renames)
-            let (path, old_path) = if path_part.contains(" -> ") {
-                let parts: Vec<&str> = path_part.split(" -> ").collect();
-                (parts[1].to_string(), Some(parts[0].to_string()))
-            } else {
-                (path_part, None)
-            };
-
-            // Only update old_path if we don't already have one (committed rename takes precedence)
-            files.entry(path).or_insert(old_path);
+    for entry in parse_status_porcelain(&status_output.stdout_lossy()) {
+        // Worktree-deleted and untracked files feed unstaged rename detection.
+        if entry.worktree_deleted {
+            worktree_deleted.push(entry.raw_path);
+        } else if entry.untracked {
+            untracked.push(entry.raw_path);
         }
+
+        // Only update old_path if we don't already have one (committed rename takes precedence)
+        files.entry(entry.path).or_insert(entry.old_path);
     }
 
     // 3. Detect unstaged renames (worktree mv without staging)
@@ -197,11 +180,11 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
 /// Represents a file transition in a git diff.
 /// All git diff statuses (A/D/M/R) describe a transition from one state to another.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FileTransition {
+pub(crate) struct FileTransition {
     /// Source path (None for added files)
-    pub(super) from: Option<String>,
+    pub(crate) from: Option<String>,
     /// Destination path (None for deleted files)
-    pub(super) to: Option<String>,
+    pub(crate) to: Option<String>,
 }
 
 impl FileTransition {
@@ -215,7 +198,7 @@ impl FileTransition {
 
 /// Parse a single line of `git diff --name-status` output into a FileTransition.
 /// Returns None for unrecognized formats.
-pub(super) fn parse_diff_line(line: &str) -> Option<FileTransition> {
+pub(crate) fn parse_diff_line(line: &str) -> Option<FileTransition> {
     let parts: Vec<&str> = line.split('\t').collect();
     match parts.as_slice() {
         [status, path] if status.starts_with('A') => Some(FileTransition {
