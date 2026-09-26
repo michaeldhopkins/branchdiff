@@ -147,6 +147,75 @@ git -c diff.mnemonicPrefix=false -c diff.noprefix=false diff main -- src/ > /tmp
 cargo mutants --no-shuffle -j1 --in-diff /tmp/b.diff
 ```
 
+## Fuzzing
+
+cargo-fuzz targets live in `fuzz/`, a standalone workspace built only by
+`cargo +nightly fuzz` (the `rust-fuzzing` skill has the general method). CI:
+`fuzz-replay.yml` replays each target's saved corpus on every push to `main` and
+every PR (the gate); `fuzz.yml` gives each target ~180s of mutation on each push
+to `main` through `fuzz/burst.sh` and saves the grown corpus (not a gate, no
+schedule; `workflow_dispatch` takes a longer budget). `tests/fuzz_targets_wired.rs`
+fails if a `[[bin]]` in `fuzz/Cargo.toml` is missing from either workflow.
+
+```sh
+cargo +nightly fuzz build
+fuzz/burst.sh fuzz/target/aarch64-apple-darwin/release/diff_patch diff_patch 60
+fuzz/target/aarch64-apple-darwin/release/diff_patch -runs=0 fuzz/corpus/diff_patch   # replay
+```
+
+The crate-private parsers are reached through `src/fuzz_api.rs`, compiled only
+under `--cfg fuzzing` (which cargo-fuzz sets), so the published library API does
+not grow. A new target that needs a private function gets a wrapper there.
+
+| Target | Kind | Asserts |
+|---|---|---|
+| `vcs_output` | never-panics | Every parser over git/jj stdout: `git status --porcelain`, `diff --name-status`, `--numstat`, `git --version`, jj `diff --summary`/`--stat`, the rev-metadata template. |
+| `cat_file_batch` | roundtrip + never-panics | A `git cat-file --batch` stream built from fuzzed responses (blob, tree, `missing`, `ambiguous`, with fuzzed paths) reads back as exactly its blobs; a raw stream never panics or allocates what a header claims. |
+| `diff_patch` | structural invariant | `compute_four_way_diff` over four fuzzed file versions, turned into the `--diff` patch and applied to the base, gives the working tree; hunk headers match their bodies. |
+
+**Input vocabulary.** `fuzz/dict/vcs_output.dict` and `cat_file_batch.dict` are
+the literals the parsers branch on (`src/vcs/git/parse.rs`,
+`src/vcs/git/changed_files.rs`, `src/vcs/jj.rs`); update them when a parser
+starts matching a new token. `diff_patch` input is text,
+`base\0head\0index\0working` (a missing part repeats the previous one), so seeds
+are written by hand and byte mutation produces layers that share lines. It was
+first written with an `arbitrary` struct of line tokens and ran 60s without
+reaching the modified-line bug the first hand-written text seed hit at once.
+
+**Bugs found (2026-09-26), each with a unit test and a `seed-*`:**
+- `vcs_output`: a status line whose columns end inside a multi-byte character panicked on a byte slice.
+- `cat_file_batch`: a header's claimed size was allocated up front (OOM abort);
+  an error response for a path like `a blob 5` was read as a blob and
+  desynchronised every later response.
+- `diff_patch`: `--diff` wrote a modified line as context, so a branch that only
+  edited lines gave an empty patch; deletions were ordered by a trace that
+  ignored branch modifications; a staged edit of a committed line claimed to come
+  from base; modification pairs could cross.
+
+**What the `diff_patch` frame hides.** HEAD, index and working are always
+present, so `check_file_deletion` (a file absent at one layer) is not exercised.
+The comparison is modulo trailing whitespace and on `str::lines()`, because
+branchdiff trims each line's end and `lines()` drops the `\r` of `\r\n`: as a
+result `--diff` output does not apply with plain `git apply` to a file with CRLF
+endings or trailing whitespace on a context line (verified 2026-09-26), and a
+whitespace-only change is invisible. That is a known limitation, not something
+this target checks.
+
+**Not fuzzed, and why.**
+- vcs-runner's own parsing (`read_working_file`, run/retry helpers): that crate's
+  own fuzzing covers it. Only branchdiff's code is fuzzed here.
+- Image decoding (`image`, `resvg`) and syntax highlighting (`syntect`):
+  third-party parsers that branchdiff only calls.
+- HTML output (`src/html.rs`) is in the binary, not the library, so the fuzz
+  crate cannot reach it; every text it writes goes through `html_escape`, which
+  is unit-tested.
+- Terminal control sequences: branchdiff does not promise to strip them. `-p`
+  writes file content through verbatim, so an escape sequence in a changed file
+  reaches the terminal. There is no sanitising code to fuzz; adding it is a
+  product decision.
+- jj's change-id and stack-position output is split by line and compared, with
+  no indexing that could panic.
+
 ## Committing
 
 Before committing, bump the version in `Cargo.toml` according to semver rules below. Every commit that changes behavior or fixes bugs requires a version bump. Run `cargo install --path .` after bumping to update `Cargo.lock`.

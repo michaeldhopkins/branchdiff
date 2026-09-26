@@ -1,5 +1,34 @@
 ## [unreleased]
 
+### Bug Fixes
+
+- Auto-fetch refreshes only when the fetch moved the base
+- *(jj)* A jj command that changes nothing no longer triggers a refresh
+- *(git)* Parse status and cat-file output without panics or desync
+- *(patch)* --diff output applies to the base for modified lines
+
+### Refactor
+
+- *(git)* Move git stdout parsers into their own module
+
+### Documentation
+
+- *(repo)* Move agent instructions to AGENTS.md, imported by CLAUDE.md
+- *(fuzz)* Record the fuzz targets, their findings and what is not fuzzed
+
+### Testing
+
+- Add a file-length gate that ratchets oversized files
+- *(jj)* Track a second remote's bookmark before pushing to it
+- The file-length gate fails loudly instead of measuring nothing
+- *(fuzz)* Fuzz git/jj output, the cat-file stream, and --diff patches
+
+### Miscellaneous
+
+- *(release)* Trigger the michaeldhopkins.com release index on publish
+- *(fuzz)* Replay the corpus per push and PR, burst each push to main
+## [0.74.0] - 2026-08-04
+
 ### Performance
 
 - [**breaking**] Cache syntax highlighting instead of re-parsing every frame
