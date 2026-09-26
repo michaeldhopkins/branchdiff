@@ -4,7 +4,7 @@
 //! change its shape.
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 
 /// One line of `git status --porcelain=v1`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,12 +24,14 @@ pub(crate) struct StatusEntry {
 pub(crate) fn parse_status_porcelain(output: &str) -> Vec<StatusEntry> {
     let mut entries = Vec::new();
     for line in output.lines() {
-        if line.len() < 3 {
+        // `get`, not slicing: a line that is not two ASCII status columns and a
+        // space (a multi-byte character, from anything that is not git status)
+        // would put the slice inside a character and panic. Found by the
+        // `vcs_output` fuzz target.
+        let (Some(status_codes), Some(raw_path)) = (line.get(..2), line.get(3..)) else {
             continue;
-        }
-
-        let status_codes = &line[..2];
-        let raw_path = line[3..].to_string();
+        };
+        let raw_path = raw_path.to_string();
 
         let worktree_deleted = status_codes.as_bytes()[1] == b'D';
         let untracked = !worktree_deleted && status_codes == "??";
@@ -84,29 +86,40 @@ pub(crate) fn read_cat_file_batch<R: BufRead>(
         }
         let header = header_line.trim_end();
 
-        // Success format: "<sha> <type> <size>" (3 fields).
-        // Error formats have 2 fields: "<spec> missing", "<spec> ambiguous", etc.
-        let parts: Vec<&str> = header.splitn(4, ' ').collect();
-        if parts.len() < 3 {
+        // Success format: "<oid> <type> <size>", exactly 3 fields with a hex oid.
+        // Error formats are "<spec> missing", "<spec> ambiguous", etc., and echo
+        // the requested `<ref>:<path>` back, so a path with spaces in it can have
+        // any number of fields. Counting only "at least 3" read the error for a
+        // path like `a blob 5` as a 5-byte blob and desynchronised every
+        // response after it. Found by the `cat_file_batch` fuzz target. The spec
+        // always contains `:`, so it can never pass for an oid.
+        let parts: Vec<&str> = header.split(' ').collect();
+        let [oid, obj_type, size] = parts.as_slice() else {
+            continue;
+        };
+        if oid.is_empty() || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
             continue;
         }
 
-        let obj_type = parts[1];
-        let size: usize = match parts[2].parse() {
+        let size: u64 = match size.parse() {
             Ok(n) => n,
             Err(_) => continue,
         };
 
         // Read the content bytes + trailing LF regardless of object type,
-        // to keep the stream in sync for subsequent responses.
-        let mut content_buf = vec![0u8; size];
-        if reader.read_exact(&mut content_buf).is_err() {
+        // to keep the stream in sync for subsequent responses. The buffer grows
+        // as bytes arrive rather than being allocated at the header's claimed
+        // size up front: `vec![0; size]` for a header claiming 56 GB aborted the
+        // process. Found by the `cat_file_batch` fuzz target.
+        let mut content_buf = Vec::new();
+        let read = reader.by_ref().take(size).read_to_end(&mut content_buf);
+        if read.is_err() || content_buf.len() as u64 != size {
             break;
         }
         let mut trailing = [0u8; 1];
         let _ = reader.read_exact(&mut trailing);
 
-        if obj_type == "blob" {
+        if *obj_type == "blob" {
             results.insert(
                 path.to_string(),
                 String::from_utf8_lossy(&content_buf).into_owned(),
@@ -141,6 +154,14 @@ mod tests {
     }
 
     #[test]
+    fn status_skips_a_line_whose_columns_split_a_character() {
+        // "Rí00…": the two status bytes end inside the two-byte 'í'.
+        let entries = parse_status_porcelain("R\u{ed}00\ta.rs\n€ab\nM  ok.rs\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "ok.rs");
+    }
+
+    #[test]
     fn numstat_keeps_only_binaries_and_a_renames_new_name() {
         let found = parse_numstat_binaries("-\t-\timg.png\n3\t1\ttext.rs\n-\t-\ta.bin => b.bin\n");
         assert_eq!(found, HashSet::from(["img.png".to_string(), "b.bin".to_string()]));
@@ -153,6 +174,20 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert_eq!(got["a"], "hello");
         assert_eq!(got["d"], "");
+    }
+
+    #[test]
+    fn cat_file_batch_error_for_a_path_with_spaces_does_not_desync_the_stream() {
+        let stream = b"HEAD:a blob 5 missing\nabc blob 5\nhello\nHEAD:x 2 missing\n";
+        let got = read_cat_file_batch(&mut &stream[..], &["a blob 5", "b", "x 2"]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["b"], "hello");
+    }
+
+    #[test]
+    fn cat_file_batch_does_not_allocate_a_claimed_size_up_front() {
+        let got = read_cat_file_batch(&mut &b"abc blob 18446744073709551615\nshort"[..], &["a"]);
+        assert!(got.is_empty());
     }
 
     #[test]
