@@ -1,0 +1,5 @@
+M	src/lib.rs
+A	new.rs
+D	old.rs
+R100	a.rs	b.rs
+R087	dir/x.rs	dir/y.rs

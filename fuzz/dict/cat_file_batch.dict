@@ -1,0 +1,8 @@
+# The cat-file --batch response grammar (src/vcs/git/parse.rs).
+" blob "
+" tree "
+" commit "
+" missing"
+" ambiguous"
+"HEAD:"
+"\x0a"

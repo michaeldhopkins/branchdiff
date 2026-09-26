@@ -65,6 +65,10 @@ clap_complete = "4"
 name = "performance"
 harness = false
 
+[lints.rust]
+# `cargo fuzz` builds with `--cfg fuzzing`, which gates `src/fuzz_api.rs`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [lints.clippy]
 # Enforce enums over boolean state flags
 struct-excessive-bools = "deny"
