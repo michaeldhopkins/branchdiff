@@ -155,6 +155,30 @@ fn diff_lines_to_patch_lines(lines: &[DiffLine]) -> Vec<PatchLine> {
             continue;
         };
 
+        // A base line modified on the branch is shown once: the new text, with
+        // the base text in `old_content` for the inline highlight. In a patch it
+        // is a deletion of the base text followed by an addition. Found by the
+        // `diff_patch` fuzz target; emitting it as context gave an empty patch.
+        if prefix == ' '
+            && let Some(old) = &diff_line.old_content
+        {
+            old_line_num += 1;
+            new_line_num += 1;
+            patch_lines.push(PatchLine {
+                prefix: '-',
+                content: old.trim_end().to_string(),
+                old_line: Some(old_line_num),
+                new_line: None,
+            });
+            patch_lines.push(PatchLine {
+                prefix: '+',
+                content: diff_line.content.clone(),
+                old_line: None,
+                new_line: Some(new_line_num),
+            });
+            continue;
+        }
+
         // Track line numbers based on prefix
         let (old_line, new_line) = match prefix {
             ' ' => {
@@ -718,5 +742,73 @@ mod tests {
         assert_eq!(format_range(1, 3), "1,3");
         assert_eq!(format_range(10, 0), "10,0");
         assert_eq!(format_range(0, 0), "0,0");
+    }
+
+    fn diff_to_patch(base: &str, working: &str) -> String {
+        use crate::diff::{compute_four_way_diff, DiffInput};
+        let diff = compute_four_way_diff(DiffInput {
+            path: "f.rs",
+            base: Some(base),
+            head: Some(working),
+            index: Some(working),
+            working: Some(working),
+            old_path: None,
+        });
+        generate_patch(&diff.lines)
+    }
+
+    #[test]
+    fn a_modified_line_is_deleted_and_re_added() {
+        // The diff shows a modified line once, as the new text with the old text
+        // attached for the inline highlight. The patch must still delete the old
+        // line; emitting it as context produced an empty patch.
+        let patch = diff_to_patch("hello world\n", "hello world!\n");
+        assert!(patch.contains("\n-hello world\n+hello world!\n"), "{patch}");
+    }
+
+    #[test]
+    fn a_deletion_above_a_modified_line_comes_first() {
+        // Base line 1 is deleted and base line 2 modified. The deletion was
+        // emitted after the modification, so the patch did not apply.
+        let patch = diff_to_patch("\n}ai(a}", "}ai(a");
+        assert!(patch.contains("\n-\n-}ai(a}\n+}ai(a\n"), "{patch}");
+    }
+
+    #[test]
+    fn a_committed_line_edited_in_the_index_is_only_an_addition() {
+        use crate::diff::{compute_four_way_diff, DiffInput};
+        // Base has nothing; HEAD adds "1n mai"; the index edits it to "n mai".
+        // Against base that is one added line. The staged edit claimed to come
+        // from base, so the patch also deleted "1n mai", which base never had.
+        let diff = compute_four_way_diff(DiffInput {
+            path: "f.rs",
+            base: Some(""),
+            head: Some("1n mai"),
+            index: Some("n mai"),
+            working: Some("n mai"),
+            old_path: None,
+        });
+        let patch = generate_patch(&diff.lines);
+        assert!(patch.contains("@@ -0,0 +1 @@\n+n mai\n"), "{patch}");
+        assert!(!patch.contains("-1n mai"), "{patch}");
+    }
+
+    #[test]
+    fn a_line_modified_twice_still_deletes_its_base_line() {
+        use crate::diff::{compute_four_way_diff, DiffInput};
+        // Base "= 3;3" is edited in HEAD and edited again in the index. The base
+        // line must still be deleted: the working line traces back to it only
+        // through two edits, which the patch cannot express as one modification.
+        let diff = compute_four_way_diff(DiffInput {
+            path: "f.rs",
+            base: Some("= 3;3"),
+            head: Some(" = 3;3"),
+            index: Some(" = 3;"),
+            working: Some(" = 3;"),
+            old_path: None,
+        });
+        let patch = generate_patch(&diff.lines);
+        assert!(patch.contains("-= 3;3\n"), "{patch}");
+        assert!(patch.contains("+ = 3;\n"), "{patch}");
     }
 }

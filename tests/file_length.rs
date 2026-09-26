@@ -32,7 +32,7 @@ fn pinned() -> HashMap<&'static str, usize> {
         ("src/app/mod.rs", 706),
         ("src/app/selection.rs", 798),
         ("src/app/view_mode.rs", 458),
-        ("src/diff/algorithm.rs", 484),
+        ("src/diff/algorithm.rs", 477),
         ("src/html.rs", 480),
         ("src/main.rs", 1203),
         ("src/ui/diff_view.rs", 1257),
