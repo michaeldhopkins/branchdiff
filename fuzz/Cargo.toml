@@ -1,0 +1,47 @@
+# Standalone workspace (see the empty `[workspace]` below): the root
+# `cargo build` / `test` / `clippy` / `deny` never see it, so the main crate stays
+# on stable while this builds only under `cargo fuzz`, which needs nightly for
+# `-Zsanitizer`.
+
+[package]
+name = "branchdiff-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.branchdiff]
+path = ".."
+
+[workspace]
+
+# Line-level debug info so a crash stack trace names the branchdiff function.
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "vcs_output"
+path = "fuzz_targets/vcs_output.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cat_file_batch"
+path = "fuzz_targets/cat_file_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "diff_patch"
+path = "fuzz_targets/diff_patch.rs"
+test = false
+doc = false
+bench = false

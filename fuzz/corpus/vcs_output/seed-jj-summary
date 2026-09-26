@@ -1,0 +1,6 @@
+M src/lib.rs
+A new.rs
+D old.rs
+R {old.rs => new.rs}
+R app/{a => b}/f.js
+C sub/{x => y}

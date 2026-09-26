@@ -10,6 +10,10 @@ pub mod file_links;
 pub mod image_diff;
 pub mod gitignore;
 pub mod vcs;
+
+#[cfg(fuzzing)]
+#[doc(hidden)]
+pub mod fuzz_api;
 pub mod input;
 pub mod limits;
 pub mod message;

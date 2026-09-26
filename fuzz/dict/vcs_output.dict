@@ -1,0 +1,16 @@
+# Literals the git/jj stdout parsers branch on (src/vcs/git/parse.rs,
+# src/vcs/git/changed_files.rs, src/vcs/git/commands.rs, src/vcs/jj.rs).
+" -> "
+" => "
+"{"
+"}"
+"(binary)"
+"|"
+"\x09"
+"-\x09-\x09"
+"git version "
+"??"
+" D "
+"R100\x09"
+"\x00"
+"\x0a"

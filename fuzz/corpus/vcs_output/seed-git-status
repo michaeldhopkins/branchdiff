@@ -1,0 +1,6 @@
+M  src/main.rs
+ M README.md
+R  old.rs -> new.rs
+ D gone.rs
+?? untracked.txt
+A  added.rs
