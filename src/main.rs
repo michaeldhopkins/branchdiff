@@ -11,6 +11,7 @@ mod print;
 
 use branchdiff::app::{self, App, FrameContext};
 use branchdiff::cli::{Cli, OutputMode};
+use branchdiff::startup::{self, DetectFailure};
 use branchdiff::external::{self, ExternalCommand, LaunchMode};
 use clap::Parser;
 use branchdiff::file_events::VcsLockState;
@@ -177,18 +178,11 @@ where
     Ok(())
 }
 
-/// The VCS-configured editor, but only looked up when no editor env var is set —
-/// the lookup runs a subprocess, so we skip it when `$VISUAL`/`$EDITOR` already
-/// decide.
 fn vcs_editor_if_unset(app: &App, repo_path: &Path) -> Option<String> {
-    let env_set = ["VISUAL", "EDITOR"]
-        .iter()
-        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()));
-    if env_set {
-        None
-    } else {
-        external::vcs_configured_editor(app.comparison.vcs_backend, repo_path)
-    }
+    external::vcs_editor_if_unset(
+        |k| std::env::var(k).ok(),
+        || external::vcs_configured_editor(app.comparison.vcs_backend, repo_path),
+    )
 }
 
 /// Run a resolved external command, turning any spawn failure into a title flash
@@ -256,25 +250,17 @@ fn main() -> Result<()> {
     // Try to detect VCS - for non-TUI modes, fail immediately if not found
     let detected = match vcs::detect_with_base(&repo_path, cli.base.as_deref()) {
         Ok(vcs) => Some(vcs),
-        Err(e) => {
-            // Only "there is no repo here" may be reported as such. When a repo
-            // *is* present, the failure is the caller's --base (or a real VCS
-            // error), and reporting that as "Not a git or jj repository" would
-            // send them looking in exactly the wrong place.
-            if vcs::detect_repo_dir(&repo_path).is_some() {
-                return Err(e);
-            }
-            if cli.output.mode() != OutputMode::Tui {
-                anyhow::bail!("Not a git or jj repository");
-            }
-            None
-        }
+        Err(e) => match startup::on_detect_failure(vcs::detect_repo_dir(&repo_path).is_some(), cli.output.mode()) {
+            DetectFailure::Propagate => return Err(e),
+            DetectFailure::NotARepo => anyhow::bail!("Not a git or jj repository"),
+            DetectFailure::WaitForRepo => None,
+        },
     };
 
     // Non-interactive modes (detected is always Some here due to bail above)
     if let Some(vcs) = &detected {
         let mode = cli.output.mode();
-        if mode != OutputMode::Tui {
+        if startup::is_one_shot(mode) {
             let repo_root = vcs.repo_path().to_path_buf();
             let comparison = vcs.comparison_context()?;
             let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -287,26 +273,12 @@ fn main() -> Result<()> {
                     print!("{}", patch);
                 }
                 OutputMode::Print | OutputMode::Html => {
-                    // Print shows everything; HTML defaults to context mode
-                    app.view.view_mode = match mode {
-                        OutputMode::Print => app::ViewMode::Full,
-                        _ => app::ViewMode::Context,
-                    };
-
+                    app.view.view_mode = startup::view_mode_for(mode);
                     let data = branchdiff::output::prepare(&mut app);
 
-                    // Pre-load images for HTML embedding
-                    if mode == OutputMode::Html {
-                        for file in &data.files {
-                            for line in &file.lines {
-                                if line.is_image_marker()
-                                    && let Some(ref path) = line.file_path
-                                    && !app.image_cache.contains(path)
-                                    && let Some(state) = branchdiff::image_diff::load_image_diff(vcs.as_ref(), path)
-                                {
-                                    app.image_cache.insert(path.clone(), state);
-                                }
-                            }
+                    for path in startup::images_to_preload(mode, &data, &app.image_cache) {
+                        if let Some(state) = branchdiff::image_diff::load_image_diff(vcs.as_ref(), &path) {
+                            app.image_cache.insert(path, state);
                         }
                     }
 
@@ -330,9 +302,9 @@ fn main() -> Result<()> {
             if let Some(frames) = cli.benchmark {
                 return run_benchmark(vcs, repo_root, frames);
             }
-            run_main_app(vcs, repo_root, !cli.no_auto_fetch, cli.base.as_deref())
+            run_main_app(vcs, repo_root, cli.auto_fetch(), cli.base.as_deref())
         }
-        None => run_waiting_for_vcs(&repo_path, !cli.no_auto_fetch, cli.base.as_deref()),
+        None => run_waiting_for_vcs(&repo_path, cli.auto_fetch(), cli.base.as_deref()),
     }
 }
 
@@ -390,16 +362,8 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Res
                 .alignment(Alignment::Center)
                 .block(Block::default().borders(Borders::NONE));
 
-            let y = area.height / 2;
             let line_count: u16 = display_msg.lines().count().try_into().unwrap_or(4);
-            let box_height = (line_count + 2).min(area.height);
-            let centered_area = ratatui::layout::Rect {
-                x: 0,
-                y: y.saturating_sub(line_count / 2),
-                width: area.width,
-                height: box_height,
-            };
-            f.render_widget(message, centered_area);
+            f.render_widget(message, startup::waiting_message_area(area, line_count));
         })?;
 
         // Handle keyboard events.
@@ -1436,5 +1400,69 @@ mod tests {
         // Then: we can watch a directory through the trait object
         let result = debouncer.watcher().watch(temp_dir.path(), NonRecursive);
         assert!(result.is_ok());
+    }
+
+    use ratatui::backend::TestBackend;
+
+    fn test_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(20, 3)).expect("test terminal")
+    }
+
+    fn draw_hello(terminal: &mut Terminal<TestBackend>) {
+        terminal
+            .draw(|f| f.render_widget(ratatui::widgets::Paragraph::new("hello"), f.area()))
+            .expect("draw");
+    }
+
+    fn first_row(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width).map(|x| buffer[(x, 0)].symbol()).collect()
+    }
+
+    /// The screen is wiped behind ratatui's back (an editor took it over).
+    /// Without the repaint, the next draw diffs against the stale frame, sees
+    /// nothing to change, and leaves the screen blank.
+    #[test]
+    fn force_repaint_redraws_a_screen_wiped_behind_ratatuis_back() {
+        let mut terminal = test_terminal();
+        draw_hello(&mut terminal);
+        terminal.backend_mut().clear().expect("clear");
+        assert!(!first_row(&terminal).contains("hello"), "precondition: the screen was wiped");
+
+        force_repaint(&mut terminal).expect("repaint");
+        draw_hello(&mut terminal);
+        assert!(first_row(&terminal).starts_with("hello"), "got {:?}", first_row(&terminal));
+    }
+
+    fn missing_program() -> ExternalCommand {
+        ExternalCommand {
+            program: "/nonexistent/branchdiff-test-editor".to_string(),
+            args: Vec::new(),
+            mode: LaunchMode::Detached,
+        }
+    }
+
+    #[test]
+    fn run_external_reports_a_program_that_cannot_start() {
+        assert!(run_external(&mut test_terminal(), &missing_program()).is_err());
+    }
+
+    #[test]
+    fn launch_or_flash_turns_a_failed_launch_into_a_flash() {
+        let mut app = App::new(
+            PathBuf::from("/tmp/r"),
+            ComparisonContext {
+                from_label: "main".to_string(),
+                to_label: "feature".to_string(),
+                stack_position: None,
+                vcs_backend: branchdiff::vcs::VcsBackend::Git,
+                bookmark_name: None,
+                divergence: None,
+            },
+            RefreshResult::empty(),
+        );
+        launch_or_flash(&mut test_terminal(), &mut app, &missing_program());
+        let flash = app.status_flash_message().expect("a flash");
+        assert!(flash.starts_with("Editor failed:"), "got {flash:?}");
     }
 }

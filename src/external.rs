@@ -151,6 +151,19 @@ pub fn os_open_command(file: &Path) -> ExternalCommand {
     }
 }
 
+/// The VCS-configured editor, looked up only when neither `$VISUAL` nor
+/// `$EDITOR` is set to something non-blank: the lookup runs a subprocess, and
+/// the env vars win anyway.
+pub fn vcs_editor_if_unset(
+    env_get: impl Fn(&str) -> Option<String>,
+    lookup: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let env_set = ["VISUAL", "EDITOR"]
+        .iter()
+        .any(|k| env_get(k).is_some_and(|v| !v.trim().is_empty()));
+    if env_set { None } else { lookup() }
+}
+
 /// The editor configured in the active VCS (`git core.editor` / `jj ui.editor`).
 /// Runs a subprocess, so call only when the env vars are unset.
 pub fn vcs_configured_editor(backend: VcsBackend, repo_path: &Path) -> Option<String> {
@@ -314,6 +327,34 @@ mod tests {
     fn dir_opener_falls_back_when_unset() {
         let cmd = resolve_dir_opener(&dir(), |_| None, None);
         assert_eq!(cmd, os_open_command(&dir()));
+    }
+
+    fn env<'a>(pairs: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |k| pairs.iter().find(|(name, _)| *name == k).map(|(_, v)| v.to_string())
+    }
+
+    #[test]
+    fn vcs_editor_is_consulted_only_when_no_env_editor_is_set() {
+        let vcs = || Some("hx".to_string());
+        assert_eq!(vcs_editor_if_unset(env(&[]), vcs), Some("hx".into()));
+        assert_eq!(vcs_editor_if_unset(env(&[("VISUAL", "code")]), vcs), None);
+        assert_eq!(vcs_editor_if_unset(env(&[("EDITOR", "vim")]), vcs), None);
+    }
+
+    #[test]
+    fn a_blank_env_editor_counts_as_unset() {
+        let vcs = || Some("hx".to_string());
+        assert_eq!(vcs_editor_if_unset(env(&[("VISUAL", "  "), ("EDITOR", "")]), vcs), Some("hx".into()));
+    }
+
+    #[test]
+    fn the_vcs_lookup_is_skipped_when_env_decides() {
+        let called = std::cell::Cell::new(false);
+        let _ = vcs_editor_if_unset(env(&[("EDITOR", "vim")]), || {
+            called.set(true);
+            None
+        });
+        assert!(!called.get(), "the VCS lookup runs a subprocess and must be skipped");
     }
 
     #[test]
