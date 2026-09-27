@@ -140,7 +140,50 @@ one-line layout tests that same condition first. The coupling is pinned
 behaviourally by `a_one_line_status_bar_always_shows_the_full_help`, so if the
 two thresholds ever diverge that arm goes live and the test fails.
 
-Run the per-change gate with the prefix override, or it silently selects nothing:
+**The test command is `--lib --bins`**, the set CI's test step runs.
+`src/main.rs`, `src/html.rs` and `src/print.rs` belong to the binary and carry
+their own test modules, so `--lib` alone (the config until 2026-09-27) reported
+every mutant in them as missed. The PTY integration target stays out: it runs
+the installed binary, and four of its tests fail on this Mac regardless of the
+code.
+
+**Per change** (`.github/workflows/mutants.yml`, not gating): every PR and push
+to `main` runs `--in-diff` over the changed code, skipped with a warning above
+16 selected mutants; each push to `main` also runs one **rotating slice**,
+`--shard $((run_number % 220))/220`. The workflow installs a pinned jj, because
+73 tests in `src/vcs/jj.rs` return early without it and their mutants would
+come back missed, and sets `JJ_USER`/`JJ_EMAIL`: with no jj identity (an
+empty `JJ_CONFIG` and `HOME`, as on a runner) ten of those tests fail, the
+baseline fails, and cargo-mutants exits 4 having tested nothing. ci.yml never
+installs jj, so these tests have not run in CI before. There is no whole-tree
+sweep.
+
+**Choosing N (2026-09-27).** The tree has 3,124 mutants. Slice `0/100` (32
+mutants) took **23 min** at `-j2` with other builds loading the machine
+(load average 25-55): ~43 s per mutant, the unit suite's 20 s stretched to ~90 s
+per run by contention. Ten minutes is ~14 mutants, so N = 220. CI's runner is
+uncontended but single-job, so re-measure from the slice job's timings once a
+few have run, and adjust N if slices finish far from ten minutes.
+
+**Slice 0 findings (2026-09-27): 0 caught, 28 missed, 4 unviable** — the slice
+was all `src/main.rs` process-edge code, none of it unit-tested. Resolved:
+
+- Tests added: `force_repaint` (a screen wiped behind ratatui's back is redrawn,
+  using `TestBackend`), `run_external` (a program that cannot start is an
+  error), `launch_or_flash` (that error becomes a flash).
+- Logic moved out of `main.rs` into tested library code: the detect-failure
+  policy, one-shot mode, the one-shot view mode and HTML image preloading
+  (`src/startup.rs`), the waiting screen's layout (`startup::waiting_message_area`),
+  the `$VISUAL`/`$EDITOR` lookup policy (`external::vcs_editor_if_unset`), and
+  `Cli::auto_fetch`.
+- Excluded in `.cargo/mutants.toml`, each with its reason: the terminal Drop
+  guards, `main`, `run_waiting_for_vcs`, `open_*_in_editor` and the env-binding
+  `vcs_editor_if_unset` wrapper. What remains in them is wiring to the TTY,
+  environment, argv or a spawned editor. Later slices reach more of `main.rs`
+  (`run_main_app`, `run_app`, the watcher setup); extract before excluding.
+
+Run the per-change check locally with the prefix override, or it silently
+selects nothing:
 
 ```sh
 git -c diff.mnemonicPrefix=false -c diff.noprefix=false diff main -- src/ > /tmp/b.diff
