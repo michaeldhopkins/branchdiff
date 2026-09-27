@@ -1,0 +1,318 @@
+name: Mutants
+
+# Mutation testing, in two brief jobs and never a long one.
+#
+# `cargo mutants` generates plausible bugs and reports the ones the tests fail to
+# notice. The whole tree is ~3,100 mutants at tens of seconds each — many hours —
+# so there is no sweep and no schedule. Instead:
+#
+#   in-diff  every PR and every push to main: only the mutants overlapping the
+#            changed regions, which puts a finding in front of whoever made it.
+#   slice    every push to main: one rotating shard of the whole tree, so old
+#            code nobody touches still gets looked at, a little at a time.
+#
+# Neither gates anything. General method: the `rust-mutation-testing` skill;
+# branchdiff's specifics (N, slice time, findings): AGENTS.md "Mutation Testing".
+# The test command (`--lib --bins`) comes from .cargo/mutants.toml.
+on:
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # 73 unit tests in src/vcs/jj.rs return early when `jj` is not on PATH, and a
+  # skipped test reports as passed, so without jj every mutant only those tests
+  # cover would come back MISSED. ci.yml does not install jj; this workflow must.
+  # Pinned so a jj release cannot change what this job reports overnight; this is
+  # the version the suite was verified against locally. Bump deliberately.
+  JJ_VERSION: v0.45.1
+  # A runner has no jj identity, and with none, 10+ stack tests in jj.rs fail
+  # (measured with an empty JJ_CONFIG and HOME) — which fails the baseline, so
+  # cargo-mutants exits 4 having tested nothing. ci.yml never sees this because
+  # it never installs jj.
+  JJ_USER: branchdiff-ci
+  JJ_EMAIL: ci@example.invalid
+
+jobs:
+  in-diff:
+    name: Mutants in changed code
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Need history to diff against the base ref (PR) or the previous
+          # commit (push). A shallow clone has neither.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Prebuilt binary; `cargo install` would rebuild it on every run.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Install jj
+        run: |
+          set -euo pipefail
+          url="https://github.com/jj-vcs/jj/releases/download/${JJ_VERSION}/jj-${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          # Extract the whole archive and install the one file: the archive
+          # stores `./jj`, and whether a bare `jj` member matches differs between
+          # GNU tar and bsdtar.
+          tmp="$(mktemp -d)"
+          curl -fsSL "$url" | tar xz -C "$tmp"
+          mkdir -p "$HOME/.local/bin"
+          install -m755 "$tmp/jj" "$HOME/.local/bin/jj"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/jj" --version
+
+      # branchdiff lands work by pushing to main as well as by PR, so both need a
+      # diff. A PR diffs against its base; a push against the commit it replaced.
+      # `github.event.before` is all-zeros for a new branch: fall back to HEAD~1.
+      - name: Compute diff
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            before="${{ github.event.before }}"
+            if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              base="HEAD~1"
+            else
+              base="$before"
+            fi
+          fi
+          echo "Diffing against $base"
+          # Force standard a/ b/ prefixes. `diff.mnemonicPrefix` emits `i/` and
+          # `w/` instead, which cargo-mutants does not recognise: it matches no
+          # files, logs "No mutants to filter" and EXITS 0 — a silent pass.
+          git -c diff.mnemonicPrefix=false -c diff.noprefix=false \
+              diff "$base".. > mutants.diff
+          wc -l mutants.diff
+          # If the diff is non-empty it must carry the prefixes cargo-mutants
+          # reads, so a regression above fails loudly instead of looking like
+          # "nothing to test".
+          if [ -s mutants.diff ] && ! grep -q '^diff --git a/' mutants.diff; then
+            echo "::error::diff lacks a/ b/ prefixes — cargo-mutants would silently match nothing"
+            head -3 mutants.diff
+            exit 1
+          fi
+
+      - name: Mutants
+        id: mutants
+        run: |
+          set -euo pipefail
+          # Every exit path records WHY, because Summarise has no other way to
+          # tell "tested nothing" from "tested everything and found nothing".
+          echo "ran" > mutants-status.txt
+
+          if [ ! -s mutants.diff ]; then
+            echo "empty" > mutants-status.txt
+            echo "::notice::empty diff — nothing to mutate"
+            exit 0
+          fi
+          selected=$(cargo mutants --list --in-diff mutants.diff | wc -l)
+          echo "$selected" > mutants-selected.txt
+          echo "Selected $selected mutants in changed regions"
+          if [ "$selected" -eq 0 ]; then
+            echo "none" > mutants-status.txt
+            echo "::notice::no mutants overlap the changed regions (test- or doc-only change)"
+            exit 0
+          fi
+
+          # A reformat or mass refactor touches many functions without changing
+          # behaviour and would select a large share of the tree. Skip it loudly
+          # rather than run past the job timeout or report a sampled run as a
+          # pass. At the ~43s per mutant measured locally (AGENTS.md), 16
+          # mutants is ~11 minutes, leaving room for setup and the baseline
+          # inside the 20-minute job timeout.
+          MAX_SELECTED=16
+          if [ "$selected" -gt "$MAX_SELECTED" ]; then
+            echo "skipped" > mutants-status.txt
+            echo "::warning::Mutants skipped: $selected selected, over the limit of $MAX_SELECTED. A diff this broad is a sweep rather than a changed-code check. Nothing was mutation-tested for this push."
+            exit 0
+          fi
+          # Exit codes: 2 a mutant was MISSED (the finding); 3 a mutant TIMED
+          # OUT (see AGENTS.md: three length-guard mutants are caught this way);
+          # 4 the baseline failed; 5/6 the diff is wrong — harness bugs in the
+          # step above, not findings about branchdiff.
+          code=0
+          cargo mutants --no-shuffle -vV --in-diff mutants.diff || code=$?
+          echo "$code" > mutants-exit.txt
+          exit "$code"
+
+      - name: Summarise
+        if: always()
+        run: |
+          set -euo pipefail
+          status="$(cat mutants-status.txt 2>/dev/null || echo unknown)"
+          selected="$(cat mutants-selected.txt 2>/dev/null || echo '?')"
+          {
+            echo '## Mutants in changed code'
+            echo
+            echo "_step outcome: ${{ steps.mutants.outcome }}_"
+            echo
+            case "$status" in
+              empty)
+                echo 'No diff to analyse. Nothing was mutation-tested.'
+                ;;
+              none)
+                echo 'No mutants overlap the changed regions — a test-only or'
+                echo 'docs-only change. Nothing was mutation-tested, and that is'
+                echo 'expected: cargo-mutants does not mutate test code.'
+                ;;
+              skipped)
+                echo "**Skipped: $selected mutants selected, over the limit.**"
+                echo
+                echo 'A diff this broad selects a large share of the tree and cannot'
+                echo 'finish in the job budget. **Nothing was mutation-tested.**'
+                echo 'The rotating slice covers that code over later pushes.'
+                ;;
+              unknown)
+                echo 'The mutants step did not run — an earlier step failed'
+                echo '(Compute diff, or the jj install). **Nothing was mutation-tested.**'
+                ;;
+              *)
+                if [ ! -d mutants.out ]; then
+                  echo 'cargo-mutants started but produced no results directory —'
+                  echo 'it failed before reporting (exit 4, 5 or 6: see the step log).'
+                  echo '**Treat this as no coverage, not as a pass.**'
+                  exit 0
+                fi
+                # Exit 4 leaves a results directory with every count at zero,
+                # which would read as a clean pass.
+                if [ "$(cat mutants-exit.txt 2>/dev/null)" = 4 ]; then
+                  echo 'The unmutated baseline failed (exit 4), so no mutant was'
+                  echo 'tested. See mutants.out/log/baseline.log in the artifact.'
+                  echo '**Treat this as no coverage, not as a pass.**'
+                  exit 0
+                fi
+                for kind in missed caught unviable timeout; do
+                  f="mutants.out/$kind.txt"
+                  n=0
+                  [ -f "$f" ] && n=$(wc -l < "$f" | tr -d ' ')
+                  echo "- **$kind**: $n"
+                done
+                if [ -s mutants.out/missed.txt ]; then
+                  echo
+                  echo '### Missed — a bug was inserted here and no test noticed'
+                  echo
+                  echo '```'
+                  cat mutants.out/missed.txt
+                  echo '```'
+                  echo
+                  echo 'Write a test that fails on it; or judge it an *equivalent*'
+                  echo 'mutant that cannot change behaviour; or exclude the code with'
+                  echo 'a comment saying why.'
+                fi
+                ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Archive mutants.out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-in-diff
+          path: mutants.out
+          if-no-files-found: ignore
+
+  # Old code is never selected by --in-diff, so each push to main also runs one
+  # rotating slice of the whole tree: shard k of N, k advancing with the run
+  # number. Every N pushes the tree has been looked at once and no job runs long.
+  # The tree changes between slices, so coverage is approximate, which is fine.
+  # N and how it was chosen are in AGENTS.md.
+  slice:
+    name: Mutants, rotating slice
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SLICES: 220
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      # Same reason and pin as the in-diff job.
+      - name: Install jj
+        run: |
+          set -euo pipefail
+          url="https://github.com/jj-vcs/jj/releases/download/${JJ_VERSION}/jj-${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          tmp="$(mktemp -d)"
+          curl -fsSL "$url" | tar xz -C "$tmp"
+          mkdir -p "$HOME/.local/bin"
+          install -m755 "$tmp/jj" "$HOME/.local/bin/jj"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/jj" --version
+
+      - name: Mutants
+        run: |
+          set -euo pipefail
+          k=$(( ${{ github.run_number }} % SLICES ))
+          echo "$k" > mutants-slice.txt
+          echo "Slice $k of $SLICES"
+          code=0
+          cargo mutants --no-shuffle -vV --shard "$k/$SLICES" || code=$?
+          echo "$code" > mutants-exit.txt
+          exit "$code"
+
+      - name: Summarise
+        if: always()
+        run: |
+          set -euo pipefail
+          k="$(cat mutants-slice.txt 2>/dev/null || echo '?')"
+          {
+            echo "## Mutants, slice $k of $SLICES"
+            echo
+            if [ ! -d mutants.out ]; then
+              echo 'No results directory: the run failed before reporting.'
+              echo '**Treat this as no coverage, not as a pass.**'
+              exit 0
+            fi
+            if [ "$(cat mutants-exit.txt 2>/dev/null)" = 4 ]; then
+              echo 'The unmutated baseline failed (exit 4), so no mutant was'
+              echo 'tested. See mutants.out/log/baseline.log in the artifact.'
+              echo '**Treat this as no coverage, not as a pass.**'
+              exit 0
+            fi
+            for kind in missed caught unviable timeout; do
+              f="mutants.out/$kind.txt"
+              n=0
+              [ -f "$f" ] && n=$(wc -l < "$f" | tr -d ' ')
+              echo "- **$kind**: $n"
+            done
+            if [ -s mutants.out/missed.txt ]; then
+              echo
+              echo '### Missed in this slice'
+              echo
+              echo '```'
+              cat mutants.out/missed.txt
+              echo '```'
+              echo
+              echo 'Old code, not this push: give each a test or an exclusion'
+              echo 'with its reason, as for any other miss.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Archive mutants.out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-slice
+          path: mutants.out
+          if-no-files-found: ignore
