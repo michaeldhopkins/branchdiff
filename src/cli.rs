@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 /// Output mode for the application
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OutputMode {
     /// Interactive TUI mode (default)
     #[default]
@@ -86,6 +86,14 @@ pub struct Cli {
     pub benchmark: Option<usize>,
 }
 
+impl Cli {
+    /// Whether to fetch the base branch in the background: on unless
+    /// `--no-auto-fetch`.
+    pub fn auto_fetch(&self) -> bool {
+        !self.no_auto_fetch
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +109,16 @@ mod tests {
     /// type be `Debug`) won't compile — assert on the kind directly.
     fn version_kind(arg: &str) -> Option<ErrorKind> {
         Cli::try_parse_from(["branchdiff", arg]).err().map(|e| e.kind())
+    }
+
+    #[test]
+    fn auto_fetch_is_on_by_default_and_off_with_the_flag() {
+        let parse = |args: &[&str]| {
+            let Ok(cli) = Cli::try_parse_from(args) else { panic!("{args:?} should parse") };
+            cli
+        };
+        assert!(parse(&["branchdiff"]).auto_fetch());
+        assert!(!parse(&["branchdiff", "--no-auto-fetch"]).auto_fetch());
     }
 
     #[test]

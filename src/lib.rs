@@ -19,6 +19,7 @@ pub mod limits;
 pub mod message;
 pub mod output;
 pub mod patch;
+pub mod startup;
 pub mod syntax;
 pub mod update;
 pub mod ui;
