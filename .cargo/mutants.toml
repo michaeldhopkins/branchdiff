@@ -1,11 +1,14 @@
 # cargo-mutants configuration.
 #
-# Run the suite as `--lib` only. The integration tests spawn `branchdiff` from
-# PATH (tests/integration/main.rs), so they exercise the *installed* binary and
-# cannot observe a mutation in the copied tree — they add cost and, being
-# PTY-timing-sensitive, can report a mutant as caught for reasons unrelated to
-# the mutation.
-additional_cargo_test_args = ["--lib"]
+# Run the lib and bin unit tests only (the same set CI's test step runs). The
+# integration tests spawn `branchdiff` from PATH (tests/integration/main.rs), so
+# they exercise the *installed* binary and cannot observe a mutation in the
+# copied tree — they add cost and, being PTY-timing-sensitive, can report a
+# mutant as caught (or flake the baseline) for reasons unrelated to the mutation.
+# `--bins` matters: src/main.rs, src/html.rs and src/print.rs belong to the
+# binary and carry their own test modules, so `--lib` alone reports every mutant
+# in them as MISSED.
+additional_cargo_test_args = ["--lib", "--bins"]
 
 # The baseline suite takes ~20s. Three mutants in `advance_over`'s length guard
 # (`|| -> &&`, `> -> ==`, `> -> <`) are detected by *timeout* rather than by a
@@ -15,3 +18,28 @@ additional_cargo_test_args = ["--lib"]
 # excluded — but it means a clean run exits 3, not 0. Give them room to be
 # distinguished from genuine hangs.
 timeout_multiplier = 8.0
+
+# Process-edge code in the binary, excluded because no unit test can observe it.
+# Each binds the real terminal, the process environment, or argv/stdout, and the
+# only tests that drive it are the PTY integration tests, which (above) run the
+# installed binary and so never see a mutation. The decisions these functions
+# used to make inline were moved to tested library code (src/startup.rs,
+# external::vcs_editor_if_unset, Cli::auto_fetch) so that what is excluded here
+# is wiring, not logic. Before adding a line, try extracting the logic instead.
+exclude_re = [
+    # Raw mode / alternate screen teardown: needs a real TTY to observe.
+    '^src/main\.rs:.*<impl Drop for (TerminalGuard|SuspendGuard)>::drop',
+    # Reads $VISUAL/$EDITOR from the real environment and runs git/jj config;
+    # the policy is external::vcs_editor_if_unset, tested there.
+    '^src/main\.rs:.*vcs_editor_if_unset',
+    # Launch the user's real editor or file manager: a test (or a mutant that
+    # skips the "not on disk" check) would spawn it.
+    '^src/main\.rs:.*open_(file|repo)_in_editor',
+    # argv -> dispatch -> stdout. Its decisions are in src/startup.rs.
+    '^src/main\.rs:.*replace main ->',
+    '^src/main\.rs:.* in main$',
+    # Terminal event loop waiting for `git init`; its layout is
+    # startup::waiting_message_area, and its timing mutants hang or change nothing
+    # observable.
+    '^src/main\.rs:.*run_waiting_for_vcs',
+]
