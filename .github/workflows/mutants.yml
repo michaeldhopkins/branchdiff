@@ -141,12 +141,17 @@ jobs:
             exit 0
           fi
           # Exit codes: 2 a mutant was MISSED (the finding); 3 a mutant TIMED
-          # OUT (see AGENTS.md: three length-guard mutants are caught this way);
+          # OUT (see AGENTS.md: three length-guard mutants are caught this way),
+          # counted as caught and passed, though mutants-exit.txt keeps the 3;
           # 4 the baseline failed; 5/6 the diff is wrong — harness bugs in the
           # step above, not findings about branchdiff.
           code=0
           cargo mutants --no-shuffle -vV --in-diff mutants.diff || code=$?
           echo "$code" > mutants-exit.txt
+          if [ "$code" -eq 3 ]; then
+            echo "::notice::timeouts counted as caught; see mutants.out/timeout.txt"
+            code=0
+          fi
           exit "$code"
 
       - name: Summarise
@@ -269,6 +274,10 @@ jobs:
           code=0
           cargo mutants --no-shuffle -vV --shard "$k/$SLICES" || code=$?
           echo "$code" > mutants-exit.txt
+          if [ "$code" -eq 3 ]; then
+            echo "::notice::timeouts counted as caught; see mutants.out/timeout.txt"
+            code=0
+          fi
           exit "$code"
 
       - name: Summarise
