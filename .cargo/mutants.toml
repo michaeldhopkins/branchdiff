@@ -42,4 +42,7 @@ exclude_re = [
     # startup::waiting_message_area, and its timing mutants hang or change nothing
     # observable.
     '^src/main\.rs:.*run_waiting_for_vcs',
+    # Reads the real terminal. What becomes of the event it returns is
+    # message::collect_messages, tested there.
+    '^src/main\.rs:.*poll_input',
 ]
