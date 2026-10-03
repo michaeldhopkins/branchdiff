@@ -95,13 +95,13 @@ impl App {
     pub fn new_for_bench(lines: Vec<DiffLine>) -> Self {
         let repo_path = PathBuf::from("/bench");
         Self {
+            // Only what is read before a first draw; the draw's set_content_layout
+            // supplies the rest of the layout (content offset, line-number and
+            // panel widths).
             view: ViewState {
                 viewport_height: 50,
                 view_mode: ViewMode::Full,
-                content_offset: (1, 1),
-                line_num_width: 4,
                 content_width: 120,
-                panel_width: 120,
                 ..ViewState::default()
             },
             gitignore_filter: GitignoreFilter::new(&repo_path),
@@ -709,6 +709,22 @@ mod tests {
     use super::*;
     use crate::diff::{DiffLine, LineSource};
     use crate::test_support::{base_line, change_line, TestAppBuilder};
+
+    /// The benchmarks page through a bench app without drawing it, so it must
+    /// start with a real viewport: 50 rows, a page of 48.
+    #[test]
+    fn a_bench_app_pages_by_its_fifty_row_viewport() {
+        let mut app = App::new_for_bench(crate::test_support::base_lines(200));
+        app.page_down();
+        assert_eq!(app.view.scroll_offset, 48);
+    }
+
+    /// Likewise the wrap benchmarks measure wrapping at a 120-column width.
+    #[test]
+    fn a_bench_app_wraps_at_its_120_column_content_width() {
+        let app = App::new_for_bench(vec![base_line(&"x".repeat(300))]);
+        assert_eq!(FrameContext::new(&app).total_rows(&app), 3);
+    }
 
     /// Helper to get line from DisplayableItem (returns None for Elided)
     fn item_to_line<'a>(app: &'a App, item: &DisplayableItem) -> Option<&'a DiffLine> {

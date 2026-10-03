@@ -484,13 +484,12 @@ fn run_main_app(
 
         let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshOutcome>();
 
-        let config = UpdateConfig {
+        let config = UpdateConfig::for_session(
             auto_fetch,
             needs_fallback_refresh,
-            repo_path: repo_root.clone(),
-            refresh_watchdog_timeout: watchdog_timeout_from_env(),
-            ..Default::default()
-        };
+            repo_root.clone(),
+            watchdog_timeout_from_env(),
+        );
 
         let loop_action = run_app(
             &mut *terminal,
@@ -1133,7 +1132,7 @@ fn setup_linux_watches(
 /// becomes invalid when the directory is removed.
 ///
 /// Linux only - macOS/Windows use recursive watching which handles this automatically.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn watch_new_directories(
     watcher: &mut (impl notify::Watcher + ?Sized),
     repo_root: &Path,
@@ -1173,7 +1172,7 @@ fn watch_new_directories(
 /// included when respecting gitignore rules.
 ///
 /// Linux only - used by watch_new_directories.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn is_directory_watchable(dir_path: &Path) -> bool {
     let parent = match dir_path.parent() {
         Some(p) => p,
@@ -1201,7 +1200,7 @@ fn is_directory_watchable(dir_path: &Path) -> bool {
 /// Respects watch_limit to avoid exceeding kernel inotify limits.
 ///
 /// Linux only - macOS/Windows use recursive watching.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn add_watches_for_visible_directories(
     watcher: &mut (impl notify::Watcher + ?Sized),
     repo_root: &Path,
@@ -1369,60 +1368,78 @@ mod tests {
         assert_eq!((metrics.directory_count, metrics.skipped_count), (4, 1));
     }
 
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn test_add_watches_for_visible_directories_respects_limit() {
-        use std::fs;
-
-        // Given: a temp repo with 10 subdirectories
+    /// A git repo root with visible directories `a`, `b` and `c`, and `ignored`,
+    /// which its `.gitignore` hides.
+    fn repo_with_an_ignored_directory() -> TempDir {
         let temp_dir = TempDir::new().unwrap();
-        let repo_root = temp_dir.path();
-        fs::create_dir(repo_root.join(".git")).unwrap();
-        for i in 0..10 {
-            fs::create_dir(repo_root.join(format!("dir{}", i))).unwrap();
+        let root = temp_dir.path();
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
+        for dir in ["a", "b", "c", "ignored"] {
+            std::fs::create_dir(root.join(dir)).unwrap();
         }
+        temp_dir
+    }
 
-        let (tx, _rx) = mpsc::channel();
-        let config = DebouncerConfig::default()
-            .with_timeout(Duration::from_millis(100))
-            .with_notify_config(
-                notify::Config::default().with_poll_interval(Duration::from_millis(500)),
-            );
-        let mut debouncer =
-            AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(config, tx).unwrap());
-
-        // When: we add watches with a limit of 3
-        // Then: the function should complete without panic (limit is enforced)
-        // Note: We can't directly count watches added, but setup_linux_watches
-        // tests verify the limit logic which add_watches_for_visible_directories shares
-        add_watches_for_visible_directories(debouncer.watcher(), repo_root, Some(3));
+    fn changed(paths: &[PathBuf]) -> Vec<notify_debouncer_mini::DebouncedEvent> {
+        paths
+            .iter()
+            .map(|p| notify_debouncer_mini::DebouncedEvent::new(p.clone(), notify_debouncer_mini::DebouncedEventKind::Any))
+            .collect()
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
-    fn test_add_watches_for_visible_directories_no_limit() {
-        use std::fs;
+    fn a_new_visible_directory_is_watched_and_nothing_else_is() {
+        let repo = repo_with_an_ignored_directory();
+        let root = repo.path();
+        let elsewhere = TempDir::new().unwrap();
+        std::fs::write(root.join("file.rs"), "").unwrap();
+        let mut watcher = RecordingWatcher::default();
 
-        // Given: a temp repo with 5 subdirectories
-        let temp_dir = TempDir::new().unwrap();
-        let repo_root = temp_dir.path();
-        fs::create_dir(repo_root.join(".git")).unwrap();
-        for i in 0..5 {
-            fs::create_dir(repo_root.join(format!("dir{}", i))).unwrap();
-        }
+        let events = changed(&[
+            root.join("file.rs"),
+            elsewhere.path().to_path_buf(),
+            root.join(".git/objects"),
+            root.join("ignored"),
+            root.join("gone"),
+            root.join("a"),
+        ]);
+        watch_new_directories(&mut watcher, root, &events);
 
-        let (tx, _rx) = mpsc::channel();
-        let config = DebouncerConfig::default()
-            .with_timeout(Duration::from_millis(100))
-            .with_notify_config(
-                notify::Config::default().with_poll_interval(Duration::from_millis(500)),
-            );
-        let mut debouncer =
-            AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(config, tx).unwrap());
+        assert_eq!(watcher.watched, vec![(root.join("a"), NonRecursive)]);
+    }
 
-        // When: we add watches with no limit (None)
-        // Then: function should complete without panic
-        add_watches_for_visible_directories(debouncer.watcher(), repo_root, None);
+    #[test]
+    fn a_directory_is_watchable_unless_gitignored() {
+        let repo = repo_with_an_ignored_directory();
+        assert!(is_directory_watchable(&repo.path().join("a")));
+        assert!(!is_directory_watchable(&repo.path().join("ignored")));
+        assert!(!is_directory_watchable(Path::new("/")));
+    }
+
+    #[test]
+    fn re_adding_watches_covers_every_visible_directory() {
+        let repo = repo_with_an_ignored_directory();
+        let root = repo.path();
+        let mut watcher = RecordingWatcher::default();
+
+        add_watches_for_visible_directories(&mut watcher, root, None);
+
+        let mut watched: Vec<_> = watcher.watched.iter().map(|(p, _)| p.clone()).collect();
+        watched.sort();
+        assert_eq!(watched, vec![root.to_path_buf(), root.join("a"), root.join("b"), root.join("c")]);
+    }
+
+    #[test]
+    fn re_adding_watches_stops_at_the_limit_and_refusals_do_not_count() {
+        let repo = repo_with_an_ignored_directory();
+        let root = repo.path();
+        let mut watcher = RecordingWatcher { refuse: Some(root.join("a")), ..Default::default() };
+
+        add_watches_for_visible_directories(&mut watcher, root, Some(2));
+
+        assert_eq!(watcher.watched.len(), 2, "watched {:?}", watcher.watched);
+        assert!(watcher.watched.iter().all(|(p, _)| *p != root.join("a")));
     }
 
     // =========================================================================
