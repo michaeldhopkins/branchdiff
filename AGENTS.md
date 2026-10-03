@@ -182,6 +182,24 @@ was all `src/main.rs` process-edge code, none of it unit-tested. Resolved:
   environment, argv or a spawned editor. Later slices reach more of `main.rs`
   (`run_main_app`, `run_app`, the watcher setup); extract before excluding.
 
+**CI slice of 2026-10-03 (run 37100249276): 9 missed** in `run_app`,
+`collect_messages` and the watcher setup. Resolved without exclusions except
+`poll_input`, the one function left that reads the terminal:
+
+- `collect_messages` moved to `message::collect_messages`, taking the polled
+  event as an argument; `LoopAction::ends_loop` replaced the inline quit check.
+- `run_app` takes its input source as a closure, so its tests drive the real
+  loop over a `TestBackend` with scripted keys (`run_script`).
+- The watcher setup takes `VcsWatchPaths` and a root instead of a `Vcs`, and is
+  tested with a `RecordingWatcher`. `setup_linux_watches` compiles under test on
+  every platform, so its limit logic is tested on this Mac too; the old Linux
+  test asserted lower bounds that the `>=` → `<` mutant also satisfied.
+- Still owed: four `delete field … from struct UpdateConfig expression in
+  run_main_app` mutants, which a `--re` naming other functions selected anyway
+  (cargo-mutants 27 seems not to filter field deletions by name). The struct
+  ends in `..Default::default()`, so each deletion falls back to a default;
+  testing them means extracting the config from `run_main_app`.
+
 Run the per-change check locally with the prefix override, or it silently
 selects nothing:
 

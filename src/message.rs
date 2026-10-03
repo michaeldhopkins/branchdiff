@@ -4,6 +4,7 @@
 //! centralized state management and easier testing.
 
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 use crossterm::event::Event;
 use notify_debouncer_mini::DebouncedEvent;
@@ -132,6 +133,58 @@ pub enum Repaint {
     Full,
 }
 
+impl LoopAction {
+    /// Whether the event loop stops here, to quit or to restart on a newly detected VCS.
+    pub fn ends_loop(self) -> bool {
+        matches!(self, Self::Quit | Self::RestartVcs)
+    }
+}
+
+/// File-watcher output as the debouncer delivers it.
+pub type FileEvents = mpsc::Receiver<Result<Vec<DebouncedEvent>, notify::Error>>;
+
+/// Gather what happened since the last loop iteration, always ending with a `Tick`.
+///
+/// `input` is the terminal event the caller polled for, if any, so that this
+/// never touches the terminal itself. The channels are drained without blocking.
+pub fn collect_messages(
+    input: Option<Event>,
+    file_events: &FileEvents,
+    refresh_rx: &mpsc::Receiver<RefreshOutcome>,
+    fetch_rx: &mpsc::Receiver<FetchResult>,
+    search_input_active: bool,
+) -> Vec<Message> {
+    let mut messages = Vec::new();
+
+    if let Some(event) = input {
+        if search_input_active {
+            messages.push(Message::SearchInput(event));
+        } else {
+            let action = crate::input::handle_event(event);
+            if action != AppAction::None {
+                messages.push(Message::Input(action));
+            }
+        }
+    }
+
+    if let Ok(outcome) = refresh_rx.try_recv() {
+        messages.push(Message::RefreshCompleted(Box::new(outcome)));
+    }
+
+    if let Ok(Ok(events)) = file_events.try_recv()
+        && !events.is_empty()
+    {
+        messages.push(Message::FileChanged(events));
+    }
+
+    if let Ok(result) = fetch_rx.try_recv() {
+        messages.push(Message::FetchCompleted(result));
+    }
+
+    messages.push(Message::Tick);
+    messages
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +230,125 @@ mod tests {
         };
         assert!(result.has_conflicts);
         assert_eq!(result.new_merge_base, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn only_quit_and_restart_end_the_loop() {
+        assert!(!LoopAction::Continue.ends_loop());
+        assert!(LoopAction::Quit.ends_loop());
+        assert!(LoopAction::RestartVcs.ends_loop());
+    }
+
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use notify_debouncer_mini::DebouncedEventKind;
+    use std::path::Path;
+
+    /// The four sources a loop iteration drains, with their senders kept alive
+    /// so an empty channel reads as "nothing yet" rather than "disconnected".
+    struct Sources {
+        file_tx: mpsc::Sender<Result<Vec<DebouncedEvent>, notify::Error>>,
+        file_rx: FileEvents,
+        refresh_tx: mpsc::Sender<RefreshOutcome>,
+        refresh_rx: mpsc::Receiver<RefreshOutcome>,
+        fetch_tx: mpsc::Sender<FetchResult>,
+        fetch_rx: mpsc::Receiver<FetchResult>,
+    }
+
+    impl Sources {
+        fn new() -> Self {
+            let (file_tx, file_rx) = mpsc::channel();
+            let (refresh_tx, refresh_rx) = mpsc::channel();
+            let (fetch_tx, fetch_rx) = mpsc::channel();
+            Self { file_tx, file_rx, refresh_tx, refresh_rx, fetch_tx, fetch_rx }
+        }
+
+        fn collect(&self, input: Option<Event>, search_input_active: bool) -> Vec<Message> {
+            collect_messages(input, &self.file_rx, &self.refresh_rx, &self.fetch_rx, search_input_active)
+        }
+    }
+
+    fn key(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+    }
+
+    fn file_event(path: &str) -> DebouncedEvent {
+        DebouncedEvent::new(PathBuf::from(path), DebouncedEventKind::Any)
+    }
+
+    #[test]
+    fn a_quiet_iteration_still_ticks() {
+        let messages = Sources::new().collect(None, false);
+        assert!(matches!(messages.as_slice(), [Message::Tick]), "got {messages:?}");
+    }
+
+    #[test]
+    fn a_key_becomes_its_action_before_the_tick() {
+        let messages = Sources::new().collect(Some(key('q')), false);
+        assert!(
+            matches!(messages.as_slice(), [Message::Input(AppAction::Quit), Message::Tick]),
+            "got {messages:?}"
+        );
+    }
+
+    #[test]
+    fn an_event_with_no_action_is_dropped() {
+        let messages = Sources::new().collect(Some(Event::FocusLost), false);
+        assert!(matches!(messages.as_slice(), [Message::Tick]), "got {messages:?}");
+    }
+
+    #[test]
+    fn while_searching_the_raw_event_goes_to_the_search_box() {
+        let messages = Sources::new().collect(Some(key('q')), true);
+        assert!(
+            matches!(messages.as_slice(), [Message::SearchInput(e), Message::Tick] if *e == key('q')),
+            "got {messages:?}"
+        );
+    }
+
+    #[test]
+    fn every_ready_source_is_drained_in_order() {
+        let sources = Sources::new();
+        sources.refresh_tx.send(RefreshOutcome::Cancelled).unwrap();
+        sources.file_tx.send(Ok(vec![file_event("/repo/a.rs")])).unwrap();
+        sources.fetch_tx.send(FetchResult { has_conflicts: true, new_merge_base: None }).unwrap();
+
+        let messages = sources.collect(Some(key('q')), false);
+        assert!(
+            matches!(
+                messages.as_slice(),
+                [
+                    Message::Input(AppAction::Quit),
+                    Message::RefreshCompleted(outcome),
+                    Message::FileChanged(events),
+                    Message::FetchCompleted(FetchResult { has_conflicts: true, .. }),
+                    Message::Tick,
+                ] if matches!(**outcome, RefreshOutcome::Cancelled)
+                    && events.len() == 1
+                    && events[0].path == Path::new("/repo/a.rs")
+            ),
+            "got {messages:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_failed_file_batch_is_not_a_change() {
+        let sources = Sources::new();
+        sources.file_tx.send(Ok(vec![])).unwrap();
+        assert!(matches!(sources.collect(None, false).as_slice(), [Message::Tick]));
+
+        sources.file_tx.send(Err(notify::Error::generic("watch failed"))).unwrap();
+        assert!(matches!(sources.collect(None, false).as_slice(), [Message::Tick]));
+    }
+
+    #[test]
+    fn each_channel_yields_one_message_per_iteration() {
+        let sources = Sources::new();
+        sources.refresh_tx.send(RefreshOutcome::Cancelled).unwrap();
+        sources.refresh_tx.send(RefreshOutcome::Error("second".to_string())).unwrap();
+
+        let first = sources.collect(None, false);
+        assert!(matches!(first.as_slice(), [Message::RefreshCompleted(o), Message::Tick] if matches!(**o, RefreshOutcome::Cancelled)));
+        let second = sources.collect(None, false);
+        assert!(matches!(second.as_slice(), [Message::RefreshCompleted(o), Message::Tick] if matches!(**o, RefreshOutcome::Error(_))));
     }
 }

@@ -17,17 +17,19 @@ use clap::Parser;
 use branchdiff::file_events::VcsLockState;
 #[cfg(target_os = "linux")]
 use branchdiff::gitignore::GitignoreFilter;
-use branchdiff::input::{handle_event, AppAction};
+use branchdiff::input::AppAction;
 use branchdiff::limits;
 use branchdiff::message::{
-    FetchResult, LoopAction, Message, OpenTarget, Repaint, RefreshOutcome, RefreshTrigger,
+    self, FetchResult, FileEvents, LoopAction, OpenTarget, Repaint, RefreshOutcome, RefreshTrigger,
     FALLBACK_REFRESH_SECS,
 };
+#[cfg(target_os = "linux")]
+use branchdiff::message::Message;
 use branchdiff::update::{
     classify_error, update, watchdog_timeout_from_env, ErrorClass,
     RecoveryAction, RefreshState, Timers, UpdateConfig,
 };
-use branchdiff::vcs::{self, ComparisonContext, RefreshResult, Vcs};
+use branchdiff::vcs::{self, ComparisonContext, RefreshResult, Vcs, VcsWatchPaths};
 use branchdiff::ui;
 
 use std::io;
@@ -44,7 +46,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 use ignore::WalkBuilder;
 use notify::RecursiveMode::{NonRecursive, Recursive};
 use notify::{PollWatcher, RecommendedWatcher};
@@ -468,7 +470,8 @@ fn run_main_app(
             )?)
         };
 
-        let watcher_metrics = setup_watcher(debouncer.watcher(), &*vcs, watch_limit)?;
+        let watcher_metrics =
+            setup_watcher(debouncer.watcher(), &vcs.watch_paths(), vcs.repo_path(), watch_limit)?;
 
         let needs_fallback_refresh =
             limits::check_watch_warning(&watcher_metrics, watch_limit).is_some();
@@ -492,6 +495,7 @@ fn run_main_app(
         let loop_action = run_app(
             &mut *terminal,
             &mut app,
+            poll_input,
             debouncer.watcher(),
             file_rx,
             refresh_tx,
@@ -837,8 +841,9 @@ fn spawn_fetch(vcs: Arc<dyn Vcs>, fetch_tx: mpsc::Sender<FetchResult>) {
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
+    mut next_input: impl FnMut() -> Result<Option<event::Event>>,
     watcher: &mut (impl notify::Watcher + ?Sized),
-    file_events: mpsc::Receiver<Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>>,
+    file_events: FileEvents,
     refresh_tx: mpsc::Sender<RefreshOutcome>,
     refresh_rx: mpsc::Receiver<RefreshOutcome>,
     vcs: Arc<dyn Vcs>,
@@ -877,15 +882,14 @@ where
     })?;
 
     loop {
-        // Collect messages from all sources
-        let messages = collect_messages(
+        let messages = message::collect_messages(
+            next_input()?,
             &file_events,
             &refresh_rx,
             &fetch_rx,
             app.is_search_input_active(),
-        )?;
+        );
 
-        // Process each message
         #[cfg(target_os = "linux")]
         for msg in &messages {
             if let Message::FileChanged(events) = msg {
@@ -916,9 +920,7 @@ where
 
             needs_redraw |= result.needs_redraw;
 
-            if result.loop_action == LoopAction::Quit
-                || result.loop_action == LoopAction::RestartVcs
-            {
+            if result.loop_action.ends_loop() {
                 return Ok(result.loop_action);
             }
 
@@ -967,15 +969,11 @@ where
                 None => {}
             }
 
-            // Full always implies a draw: dropping the buffer without redrawing
-            // would leave the screen blank.
-            if result.repaint == Repaint::Full {
-                force_repaint(terminal)?;
+            if apply_repaint(terminal, result.repaint)? {
                 needs_redraw = true;
             }
         }
 
-        // Only render when state has changed
         if needs_redraw {
             let visible_height = terminal.size()?.height as usize;
             // Compute items once, reuse for both inline spans and FrameContext
@@ -997,49 +995,27 @@ where
     }
 }
 
-/// Collect messages from all event sources.
-fn collect_messages(
-    file_events: &mpsc::Receiver<Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>>,
-    refresh_rx: &mpsc::Receiver<RefreshOutcome>,
-    fetch_rx: &mpsc::Receiver<FetchResult>,
-    search_input_active: bool,
-) -> Result<Vec<Message>> {
-    let mut messages = Vec::new();
-
-    // Check for input with short timeout for responsiveness
+/// At most one terminal event, waiting only briefly so the loop stays responsive.
+fn poll_input() -> Result<Option<event::Event>> {
     if event::poll(Duration::from_millis(10))? {
-        let event = event::read()?;
-        if search_input_active {
-            messages.push(Message::SearchInput(event));
-        } else {
-            let action = handle_event(event);
-            if action != AppAction::None {
-                messages.push(Message::Input(action));
-            }
-        }
+        return Ok(Some(event::read()?));
     }
+    Ok(None)
+}
 
-    // Check for completed refresh (non-blocking)
-    if let Ok(outcome) = refresh_rx.try_recv() {
-        messages.push(Message::RefreshCompleted(Box::new(outcome)));
+/// Apply the repaint an update asked for, returning whether a draw must follow.
+///
+/// A full repaint always implies a draw: dropping the buffer without redrawing
+/// would leave the screen blank.
+fn apply_repaint<B: Backend>(terminal: &mut Terminal<B>, repaint: Repaint) -> Result<bool>
+where
+    B::Error: Send + Sync + 'static,
+{
+    if repaint == Repaint::Full {
+        force_repaint(terminal)?;
+        return Ok(true);
     }
-
-    // Check for file change events
-    if let Ok(Ok(events)) = file_events.try_recv()
-        && !events.is_empty()
-    {
-        messages.push(Message::FileChanged(events));
-    }
-
-    // Check for completed fetch results
-    if let Ok(result) = fetch_rx.try_recv() {
-        messages.push(Message::FetchCompleted(result));
-    }
-
-    // Always send a tick for timer-based operations
-    messages.push(Message::Tick);
-
-    Ok(messages)
+    Ok(false)
 }
 
 /// Setup file watcher with platform-appropriate strategy.
@@ -1050,13 +1026,11 @@ fn collect_messages(
 /// Returns metrics about directories watched (meaningful on Linux only).
 fn setup_watcher(
     watcher: &mut (impl notify::Watcher + ?Sized),
-    vcs: &dyn Vcs,
+    vcs_paths: &VcsWatchPaths,
+    repo_root: &Path,
     watch_limit: Option<usize>,
 ) -> Result<limits::WatcherMetrics> {
-    // Watch VCS-specific paths (e.g., .git/index, .git/HEAD, .git/refs/)
-    setup_vcs_watches(watcher, vcs)?;
-
-    let repo_root = vcs.repo_path();
+    setup_vcs_watches(watcher, vcs_paths)?;
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
@@ -1087,9 +1061,8 @@ fn setup_watcher(
 /// Watch VCS-specific paths for detecting commits, branch switches, etc.
 fn setup_vcs_watches(
     watcher: &mut (impl notify::Watcher + ?Sized),
-    vcs: &dyn Vcs,
+    watch_paths: &VcsWatchPaths,
 ) -> Result<()> {
-    let watch_paths = vcs.watch_paths();
     for file in &watch_paths.files {
         if file.exists() {
             watcher.watch(file, NonRecursive)?;
@@ -1107,7 +1080,8 @@ fn setup_vcs_watches(
 ///
 /// Uses `ignore::WalkBuilder` to respect .gitignore rules, avoiding watches
 /// on large ignored directories like `target/` or `node_modules/`.
-#[cfg(target_os = "linux")]
+/// Compiled under test everywhere, so its logic is tested on every platform.
+#[cfg(any(target_os = "linux", test))]
 fn setup_linux_watches(
     watcher: &mut (impl notify::Watcher + ?Sized),
     repo_root: &Path,
@@ -1265,38 +1239,134 @@ mod tests {
     use tempfile::TempDir;
 
     // =========================================================================
-    // Linux-specific watch limit tests
+    // Watch setup tests
     // =========================================================================
 
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn test_setup_linux_watches_respects_limit() {
-        use std::fs;
+    /// A watcher that records what it was asked to watch, so the setup's
+    /// decisions can be read back without a real filesystem watcher.
+    #[derive(Default)]
+    struct RecordingWatcher {
+        watched: Vec<(PathBuf, notify::RecursiveMode)>,
+        /// A path the watcher refuses, as the kernel does past its watch limit.
+        refuse: Option<PathBuf>,
+    }
 
-        // Given: a temp repo with 10 subdirectories
-        let temp_dir = TempDir::new().unwrap();
-        let repo_root = temp_dir.path();
-        fs::create_dir(repo_root.join(".git")).unwrap();
-        for i in 0..10 {
-            fs::create_dir(repo_root.join(format!("dir{}", i))).unwrap();
+    impl notify::Watcher for RecordingWatcher {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self::default())
         }
 
-        let (tx, _rx) = mpsc::channel();
-        let config = DebouncerConfig::default()
-            .with_timeout(Duration::from_millis(100))
-            .with_notify_config(
-                notify::Config::default().with_poll_interval(Duration::from_millis(500)),
-            );
-        let mut debouncer =
-            AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(config, tx).unwrap());
+        fn watch(&mut self, path: &Path, mode: notify::RecursiveMode) -> notify::Result<()> {
+            if self.refuse.as_deref() == Some(path) {
+                return Err(notify::Error::generic("refused"));
+            }
+            self.watched.push((path.to_path_buf(), mode));
+            Ok(())
+        }
 
-        // When: we setup watches with a limit of 5
-        let metrics = setup_linux_watches(debouncer.watcher(), repo_root, Some(5)).unwrap();
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
 
-        // Then: we should have counted all directories but only watched up to limit
-        // directory_count includes root (1) + 10 subdirs = 11
-        assert!(metrics.directory_count >= 10);
-        assert!(metrics.skipped_count >= 5, "Expected at least 5 skipped, got {}", metrics.skipped_count);
+        fn kind() -> notify::WatcherKind {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    /// A repo root holding `.git`, a file and a directory that exist, and the
+    /// VCS watch paths naming both plus two that do not.
+    fn repo_with_vcs_paths() -> (TempDir, VcsWatchPaths) {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        std::fs::create_dir_all(root.join(".git/refs")).unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let paths = VcsWatchPaths {
+            files: vec![root.join(".git/HEAD"), root.join(".git/index")],
+            recursive_dirs: vec![root.join(".git/refs"), root.join(".git/logs")],
+        };
+        (temp_dir, paths)
+    }
+
+    #[test]
+    fn vcs_watches_cover_the_paths_that_exist_and_skip_the_rest() {
+        let (temp_dir, paths) = repo_with_vcs_paths();
+        let mut watcher = RecordingWatcher::default();
+
+        setup_vcs_watches(&mut watcher, &paths).unwrap();
+
+        let git = temp_dir.path().join(".git");
+        assert_eq!(
+            watcher.watched,
+            vec![(git.join("HEAD"), NonRecursive), (git.join("refs"), Recursive)]
+        );
+    }
+
+    #[test]
+    fn setup_watcher_watches_the_vcs_paths_and_the_working_tree() {
+        let (temp_dir, paths) = repo_with_vcs_paths();
+        let root = temp_dir.path();
+        let mut watcher = RecordingWatcher::default();
+
+        let metrics = setup_watcher(&mut watcher, &paths, root, None).unwrap();
+
+        let git = root.join(".git");
+        assert_eq!(
+            watcher.watched[..2],
+            [(git.join("HEAD"), NonRecursive), (git.join("refs"), Recursive)]
+        );
+        let tree: Vec<_> = watcher.watched[2..].iter().map(|(p, _)| p.as_path()).collect();
+        assert!(tree.contains(&root), "the working tree is not watched: {:?}", watcher.watched);
+        // Recursive platforms report no per-directory metrics; Linux counts the root.
+        assert_eq!(metrics.directory_count, usize::from(cfg!(target_os = "linux")));
+    }
+
+    #[test]
+    fn linux_watches_stop_at_the_limit_and_count_the_rest_as_skipped() {
+        // Given: a repo root (1 directory) with 10 subdirectories and a .git to skip
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+        std::fs::create_dir(repo_root.join(".git")).unwrap();
+        for i in 0..10 {
+            std::fs::create_dir(repo_root.join(format!("dir{}", i))).unwrap();
+        }
+        let mut watcher = RecordingWatcher::default();
+
+        let metrics = setup_linux_watches(&mut watcher, repo_root, Some(5)).unwrap();
+
+        assert_eq!(watcher.watched.len(), 5, "watched {:?}", watcher.watched);
+        assert_eq!(watcher.watched[0], (repo_root.to_path_buf(), NonRecursive));
+        assert_eq!(metrics.directory_count, 11);
+        assert_eq!(metrics.skipped_count, 6);
+    }
+
+    #[test]
+    fn linux_watches_without_a_limit_watch_every_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        for i in 0..3 {
+            std::fs::create_dir(temp_dir.path().join(format!("dir{}", i))).unwrap();
+        }
+        let mut watcher = RecordingWatcher::default();
+
+        let metrics = setup_linux_watches(&mut watcher, temp_dir.path(), None).unwrap();
+
+        assert_eq!(watcher.watched.len(), 4);
+        assert_eq!((metrics.directory_count, metrics.skipped_count), (4, 0));
+    }
+
+    #[test]
+    fn a_refused_linux_watch_is_skipped_without_using_up_the_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        for i in 0..3 {
+            std::fs::create_dir(temp_dir.path().join(format!("dir{}", i))).unwrap();
+        }
+        let refused = temp_dir.path().join("dir1");
+        let mut watcher = RecordingWatcher { refuse: Some(refused.clone()), ..Default::default() };
+
+        let metrics = setup_linux_watches(&mut watcher, temp_dir.path(), Some(3)).unwrap();
+
+        assert_eq!(watcher.watched.len(), 3, "watched {:?}", watcher.watched);
+        assert!(watcher.watched.iter().all(|(p, _)| *p != refused));
+        assert_eq!((metrics.directory_count, metrics.skipped_count), (4, 1));
     }
 
     #[test]
@@ -1434,6 +1504,30 @@ mod tests {
         assert!(first_row(&terminal).starts_with("hello"), "got {:?}", first_row(&terminal));
     }
 
+    #[test]
+    fn a_full_repaint_redraws_a_wiped_screen_and_asks_for_a_draw() {
+        let mut terminal = test_terminal();
+        draw_hello(&mut terminal);
+        terminal.backend_mut().clear().expect("clear");
+
+        assert!(apply_repaint(&mut terminal, Repaint::Full).expect("repaint"));
+        draw_hello(&mut terminal);
+        assert!(first_row(&terminal).starts_with("hello"), "got {:?}", first_row(&terminal));
+    }
+
+    /// A diffed repaint keeps ratatui's copy of the last frame, so an unchanged
+    /// frame writes nothing: a screen wiped behind its back stays blank.
+    #[test]
+    fn a_diff_repaint_keeps_the_previous_frame_and_asks_for_nothing() {
+        let mut terminal = test_terminal();
+        draw_hello(&mut terminal);
+        terminal.backend_mut().clear().expect("clear");
+
+        assert!(!apply_repaint(&mut terminal, Repaint::Diff).expect("repaint"));
+        draw_hello(&mut terminal);
+        assert!(!first_row(&terminal).contains("hello"), "got {:?}", first_row(&terminal));
+    }
+
     fn missing_program() -> ExternalCommand {
         ExternalCommand {
             program: "/nonexistent/branchdiff-test-editor".to_string(),
@@ -1445,6 +1539,140 @@ mod tests {
     #[test]
     fn run_external_reports_a_program_that_cannot_start() {
         assert!(run_external(&mut test_terminal(), &missing_program()).is_err());
+    }
+
+    /// A backend with nothing to report: every query fails, so nothing the
+    /// loop spawns can feed it state the test did not script.
+    struct IdleVcs(PathBuf);
+
+    impl Vcs for IdleVcs {
+        fn repo_path(&self) -> &Path { &self.0 }
+        fn comparison_context(&self) -> Result<ComparisonContext> { anyhow::bail!("idle") }
+        fn refresh(&self, _: &Arc<AtomicBool>) -> Result<RefreshResult> { anyhow::bail!("idle") }
+        fn single_file_diff(&self, _: &str) -> Option<branchdiff::diff::FileDiff> { None }
+        fn base_identifier(&self) -> Result<String> { anyhow::bail!("idle") }
+        fn base_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
+        fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
+        fn fetch(&self) -> Result<()> { anyhow::bail!("idle") }
+        fn has_conflicts(&self) -> Result<bool> { Ok(false) }
+        fn is_locked(&self) -> bool { false }
+        fn watch_paths(&self) -> VcsWatchPaths { VcsWatchPaths { files: vec![], recursive_dirs: vec![] } }
+        fn classify_event(&self, _: &Path) -> vcs::VcsEventType { vcs::VcsEventType::Source }
+        fn backend(&self) -> vcs::VcsBackend { vcs::VcsBackend::Git }
+        fn current_revision_id(&self) -> Result<String> { Ok("idle".to_string()) }
+    }
+
+    /// An app showing `count` numbered lines, `line 1` at the top.
+    fn app_with_lines(count: usize) -> App {
+        let lines = (1..=count)
+            .map(|n| branchdiff::DiffLine::new(branchdiff::LineSource::Base, format!("line {n}"), ' ', Some(n)))
+            .collect();
+        App::new_for_bench(lines)
+    }
+
+    /// Run the event loop over `script`, one terminal event per iteration.
+    /// When the script runs out the input source fails, which ends the loop
+    /// with that error, so a script that never quits still returns.
+    fn run_script(terminal: &mut Terminal<TestBackend>, app: &mut App, script: Vec<event::Event>) -> Result<LoopAction> {
+        let mut script = script.into_iter();
+        let (_file_tx, file_rx) = mpsc::channel();
+        let (refresh_tx, refresh_rx) = mpsc::channel();
+        let config = UpdateConfig { repo_path: PathBuf::from("/bench"), ..Default::default() };
+        run_app(
+            terminal,
+            app,
+            move || script.next().map(Some).ok_or_else(|| anyhow::anyhow!("script finished")),
+            &mut RecordingWatcher::default(),
+            file_rx,
+            refresh_tx,
+            refresh_rx,
+            Arc::new(IdleVcs(PathBuf::from("/bench"))),
+            config,
+            None,
+        )
+    }
+
+    fn key(c: char) -> event::Event {
+        event::Event::Key(event::KeyEvent::new(event::KeyCode::Char(c), event::KeyModifiers::NONE))
+    }
+
+    fn screen(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n")
+            .collect()
+    }
+
+    #[test]
+    fn quitting_ends_the_loop_with_quit() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        let result = run_script(&mut terminal, &mut app_with_lines(3), vec![key('q')]);
+        assert_eq!(result.unwrap(), LoopAction::Quit);
+    }
+
+    #[test]
+    fn the_first_frame_is_drawn_before_any_input() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        run_script(&mut terminal, &mut app_with_lines(3), vec![]).unwrap_err();
+        assert!(screen(&terminal).contains("line 1"), "{}", screen(&terminal));
+    }
+
+    #[test]
+    fn an_input_that_changes_the_view_is_drawn() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        let mut app = app_with_lines(100);
+        run_script(&mut terminal, &mut app, vec![key('?')]).unwrap_err();
+        let shown = screen(&terminal);
+        assert!(shown.contains("Navigation"), "the help is not on screen:\n{shown}");
+    }
+
+    /// Going to the bottom scrolls by the viewport the loop sized from the
+    /// terminal, so the last line lands on the last content row.
+    #[test]
+    fn the_viewport_is_sized_from_the_terminal() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        let mut app = app_with_lines(100);
+        run_script(&mut terminal, &mut app, vec![key('G')]).unwrap_err();
+        let shown = screen(&terminal);
+        let first_content_row = shown.lines().nth(1).unwrap_or_default();
+        assert!(first_content_row.contains("line 93"), "{shown}");
+        assert!(shown.contains("line 100"), "{shown}");
+    }
+
+    /// The loop sizes the viewport before its first draw, and a viewport set
+    /// larger than the one drawn clamps the scroll back further than the screen
+    /// needs: a position near the bottom would jump up on the first frame.
+    #[test]
+    fn the_first_sizing_keeps_a_scroll_position_the_screen_can_show() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        let mut app = app_with_lines(100);
+        app.set_viewport_height(8);
+        app.go_to_bottom();
+        app.scroll_up(1);
+
+        run_script(&mut terminal, &mut app, vec![]).unwrap_err();
+
+        let shown = screen(&terminal);
+        let first_content_row = shown.lines().nth(1).unwrap_or_default();
+        assert!(first_content_row.contains("line 92"), "{shown}");
+    }
+
+    /// Word-level highlights are computed before the first draw for exactly the
+    /// rows the terminal shows, down to the last one.
+    #[test]
+    fn the_first_frame_highlights_edits_down_to_the_last_row() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        let lines = (1..=20)
+            .map(|n| {
+                let line = branchdiff::DiffLine::new(branchdiff::LineSource::Unstaged, format!("line {n} new"), '+', Some(n));
+                if n == 8 { line.with_old_content("line 8 old") } else { line }
+            })
+            .collect();
+        let mut app = App::new_for_bench(lines);
+
+        run_script(&mut terminal, &mut app, vec![]).unwrap_err();
+
+        assert!(!app.lines()[7].inline_spans.is_empty(), "row 8 of 8 was not highlighted");
     }
 
     #[test]
