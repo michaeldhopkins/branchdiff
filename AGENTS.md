@@ -194,11 +194,18 @@ was all `src/main.rs` process-edge code, none of it unit-tested. Resolved:
   tested with a `RecordingWatcher`. `setup_linux_watches` compiles under test on
   every platform, so its limit logic is tested on this Mac too; the old Linux
   test asserted lower bounds that the `>=` → `<` mutant also satisfied.
-- Still owed: four `delete field … from struct UpdateConfig expression in
-  run_main_app` mutants, which a `--re` naming other functions selected anyway
-  (cargo-mutants 27 seems not to filter field deletions by name). The struct
-  ends in `..Default::default()`, so each deletion falls back to a default;
-  testing them means extracting the config from `run_main_app`.
+- Follow-up (run 37151143634): `run_main_app` is excluded by name (the TTY
+  entry point); its `UpdateConfig` literal became `UpdateConfig::for_session`,
+  tested field by field. The Linux-only `watch_new_directories`,
+  `is_directory_watchable` and `add_watches_for_visible_directories` now
+  compile under test and are tested with the `RecordingWatcher`.
+  `App::new_for_bench` keeps only the layout read before a first draw
+  (viewport and content width, both tested); the seeds a draw replaces were
+  removed rather than excluded.
+- **`--re` and `exclude_re` do not match `delete field` mutants** in
+  cargo-mutants 27.1: `--list --exclude-re 'new_for_bench'` dropped the
+  function's own mutant and left all six of its field deletions. Close those
+  with a test or by removing the field; an exclusion line will not take.
 
 Run the per-change check locally with the prefix override, or it silently
 selects nothing:

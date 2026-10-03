@@ -45,4 +45,9 @@ exclude_re = [
     # Reads the real terminal. What becomes of the event it returns is
     # message::collect_messages, tested there.
     '^src/main\.rs:.*poll_input',
+    # The terminal app's entry point: it takes over the real TTY, queries it for
+    # an image protocol, starts a real file watcher and restarts on a new VCS.
+    # Only the PTY integration tests drive it, and they never see a mutation.
+    # Its loop is run_app and its settings UpdateConfig::for_session, tested there.
+    '^src/main\.rs:.*run_main_app',
 ]

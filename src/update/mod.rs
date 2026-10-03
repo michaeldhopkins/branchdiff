@@ -226,6 +226,18 @@ impl Default for UpdateConfig {
     }
 }
 
+impl UpdateConfig {
+    /// The settings one run of the event loop is started with; the rest keep their defaults.
+    pub fn for_session(
+        auto_fetch: bool,
+        needs_fallback_refresh: bool,
+        repo_path: PathBuf,
+        refresh_watchdog_timeout: Duration,
+    ) -> Self {
+        Self { auto_fetch, needs_fallback_refresh, repo_path, refresh_watchdog_timeout, ..Self::default() }
+    }
+}
+
 /// Process a message and update application state.
 pub fn update(
     msg: Message,
@@ -263,6 +275,22 @@ pub fn update(
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    /// Every value given is kept, each one the opposite of its default so a
+    /// dropped field shows; the rest are the defaults.
+    #[test]
+    fn a_session_config_keeps_what_it_was_given() {
+        let defaults = UpdateConfig::default();
+        let timeout = DEFAULT_WATCHDOG_TIMEOUT + Duration::from_secs(7);
+        let config = UpdateConfig::for_session(!defaults.auto_fetch, true, PathBuf::from("/repo"), timeout);
+
+        assert_eq!(config.auto_fetch, !defaults.auto_fetch);
+        assert!(config.needs_fallback_refresh);
+        assert_eq!(config.repo_path, PathBuf::from("/repo"));
+        assert_eq!(config.refresh_watchdog_timeout, timeout);
+        assert_eq!(config.fetch_interval, defaults.fetch_interval);
+        assert_eq!(config.refresh_fallback_interval, defaults.refresh_fallback_interval);
+    }
 
     #[test]
     fn test_parse_watchdog_timeout_uses_default_on_missing() {
