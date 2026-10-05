@@ -1,5 +1,37 @@
 ## [unreleased]
 
+### Documentation
+
+- *(tests)* Tighten the file-length gate's doc comment
+
+### Testing
+
+- *(main)* Close the run_app, collect_messages and watcher-setup mutants
+- *(main)* Close the run_main_app, Linux watcher and bench-app mutants
+
+### Miscellaneous
+
+- *(mutants)* Count a timeout as caught, not a failure
+- Move every action to its newest major, off the Node 20 runtime GitHub is removing, and the release's macOS builds from macos-14 (retired 2026-11-02) to macos-26
+## [0.74.2] - 2026-09-27
+
+### Refactor
+
+- *(main)* Move startup decisions into tested library code
+
+### Documentation
+
+- *(agents)* Record the mutation-testing wiring, N and slice 0 findings
+
+### Testing
+
+- *(mutants)* Run the bin unit tests and exclude process-edge code
+
+### Miscellaneous
+
+- *(mutants)* Run in-diff and a rotating slice on each push to main
+## [0.74.1] - 2026-09-26
+
 ### Bug Fixes
 
 - Auto-fetch refreshes only when the fetch moved the base
@@ -10,13 +42,11 @@
 ### Refactor
 
 - *(git)* Move git stdout parsers into their own module
-- *(main)* Move startup decisions into tested library code
 
 ### Documentation
 
 - *(repo)* Move agent instructions to AGENTS.md, imported by CLAUDE.md
 - *(fuzz)* Record the fuzz targets, their findings and what is not fuzzed
-- *(agents)* Record the mutation-testing wiring, N and slice 0 findings
 
 ### Testing
 
@@ -24,13 +54,11 @@
 - *(jj)* Track a second remote's bookmark before pushing to it
 - The file-length gate fails loudly instead of measuring nothing
 - *(fuzz)* Fuzz git/jj output, the cat-file stream, and --diff patches
-- *(mutants)* Run the bin unit tests and exclude process-edge code
 
 ### Miscellaneous
 
 - *(release)* Trigger the michaeldhopkins.com release index on publish
 - *(fuzz)* Replay the corpus per push and PR, burst each push to main
-- *(mutants)* Run in-diff and a rotating slice on each push to main
 ## [0.74.0] - 2026-08-04
 
 ### Performance

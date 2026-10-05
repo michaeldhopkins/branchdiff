@@ -1,7 +1,6 @@
 //! branchdiff's file-length gate.
 //!
-//! Copied from cmdproof's (`engine/tests/file_length.rs`), whose `production_lines` rule was
-//! corrected more than once before it measured files honestly; see the comment on it.
+//! Its `production_lines` rule is the subtle part; see the comment on it.
 //! Function-level lints (`clippy.toml`) never see a file growing one function at a time, and
 //! `src/vcs/jj.rs` had reached 4,352 lines by the time this went in (2026-09-14).
 //!
