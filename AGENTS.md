@@ -207,6 +207,11 @@ was all `src/main.rs` process-edge code, none of it unit-tested. Resolved:
   function's own mutant and left all six of its field deletions. Close those
   with a test or by removing the field; an exclusion line will not take.
 
+**CI slices of 2026-10-03 and 10-05 (runs 37153021831, 37267651573): 13 missed**
+in `App`'s review toggles and staleness check, `set_image_picker`, the search
+re-clamp after a refresh and `load_images_for_markers`. All closed by unit tests
+in `app::tests`; `StubVcs::with_working_file_bytes` serves image bytes.
+
 Run the per-change check locally with the prefix override, or it silently
 selects nothing:
 

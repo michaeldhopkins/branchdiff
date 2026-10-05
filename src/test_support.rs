@@ -190,11 +190,18 @@ pub fn base_lines(count: usize) -> Vec<DiffLine> {
 /// and `working_file_bytes` are implemented — other methods panic.
 pub struct StubVcs {
     repo_path: PathBuf,
+    working_bytes: Option<Vec<u8>>,
 }
 
 impl StubVcs {
     pub fn new(repo_path: PathBuf) -> Self {
-        Self { repo_path }
+        Self { repo_path, working_bytes: None }
+    }
+
+    /// Serve `bytes` as every file's working-copy content.
+    pub fn with_working_file_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.working_bytes = Some(bytes);
+        self
     }
 }
 
@@ -211,7 +218,7 @@ impl crate::vcs::Vcs for StubVcs {
 
     fn base_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
 
-    fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
+    fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(self.working_bytes.clone()) }
 
 
     fn fetch(&self) -> Result<()> { unimplemented!() }

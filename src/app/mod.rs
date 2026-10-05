@@ -2287,4 +2287,121 @@ mod tests {
         assert_eq!(div.behind_count, 5);
         assert!(div.upstream_files.contains("foo.rs"));
     }
+
+    fn two_files() -> TestAppBuilder {
+        TestAppBuilder::new().with_files(vec![
+            FileDiff::new(vec![DiffLine::file_header("a.rs"), change_line("alpha")]),
+            FileDiff::new(vec![DiffLine::file_header("b.rs"), change_line("beta")]),
+        ])
+    }
+
+    fn hash_of(app: &App, path: &str) -> u64 {
+        app.files
+            .iter()
+            .find(|f| f.lines.first().and_then(|l| l.file_path.as_deref()) == Some(path))
+            .map(|f| f.content_hash)
+            .expect("file present")
+    }
+
+    #[test]
+    fn toggle_reviewed_records_the_files_own_hash_and_toggles_back() {
+        let mut app = two_files().build();
+        assert_ne!(hash_of(&app, "a.rs"), hash_of(&app, "b.rs"));
+
+        assert!(app.toggle_reviewed("b.rs"), "first toggle reviews");
+        assert_eq!(app.view.reviewed_files.get("b.rs"), Some(&hash_of(&app, "b.rs")));
+        assert!(app.is_file_collapsed("b.rs"));
+
+        assert!(!app.toggle_reviewed("b.rs"), "second toggle un-reviews");
+        assert!(!app.view.reviewed_files.contains_key("b.rs"));
+        assert!(!app.is_file_collapsed("b.rs"));
+    }
+
+    #[test]
+    fn an_unchanged_reviewed_file_stays_reviewed() {
+        let mut app = two_files().build();
+        app.toggle_reviewed("b.rs");
+
+        app.check_reviewed_staleness();
+
+        assert!(app.view.reviewed_files.contains_key("b.rs"));
+        assert!(app.is_file_collapsed("b.rs"));
+    }
+
+    #[test]
+    fn a_reviewed_file_whose_content_changed_is_un_reviewed() {
+        let mut app = two_files().build();
+        app.toggle_reviewed("b.rs");
+        app.files[1] = FileDiff::new(vec![DiffLine::file_header("b.rs"), change_line("beta 2")]);
+
+        app.check_reviewed_staleness();
+
+        assert!(!app.view.reviewed_files.contains_key("b.rs"));
+        assert!(!app.is_file_collapsed("b.rs"));
+        assert_eq!(app.view.reviewed_flash.as_ref().map(|(p, _)| p.as_str()), Some("b.rs"));
+    }
+
+    #[test]
+    fn toggle_all_reviewed_reviews_every_file_then_un_reviews_them() {
+        let mut app = two_files().build();
+        app.toggle_reviewed("a.rs");
+
+        app.toggle_all_reviewed();
+        assert_eq!(app.view.reviewed_files.len(), 2, "one unreviewed file means review all");
+        assert!(app.is_file_collapsed("a.rs") && app.is_file_collapsed("b.rs"));
+
+        app.toggle_all_reviewed();
+        assert!(app.view.reviewed_files.is_empty());
+        assert!(!app.is_file_collapsed("a.rs") && !app.is_file_collapsed("b.rs"));
+    }
+
+    #[test]
+    fn set_image_picker_adopts_the_pickers_font_size() {
+        let mut app = TestAppBuilder::new().build();
+        let picker = Picker::halfblocks();
+        let font_size = picker.font_size();
+        assert_ne!(app.font_size, font_size, "the test needs a picker that changes it");
+
+        app.set_image_picker(picker);
+
+        assert_eq!(app.font_size, font_size);
+        assert!(app.image_picker.is_some());
+    }
+
+    #[test]
+    fn a_refresh_that_shrinks_the_matches_moves_the_current_match_to_the_last() {
+        let mut app = TestAppBuilder::new()
+            .with_lines((0..5).map(|_| base_line("hel")).collect())
+            .build();
+        app.open_search();
+        for c in "hel".chars() {
+            app.search_insert_char(c);
+        }
+        app.search.as_mut().unwrap().current = 4;
+
+        let mut result = empty_jj_refresh();
+        result.lines = vec![base_line("hel"), base_line("hel")];
+        app.apply_refresh_result(result);
+
+        let search = app.search.as_ref().unwrap();
+        assert_eq!(search.matches.len(), 2);
+        assert_eq!(search.current, 1);
+    }
+
+    #[test]
+    fn load_images_for_markers_caches_each_marked_image() {
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let vcs = crate::test_support::StubVcs::new(PathBuf::from("/repo"))
+            .with_working_file_bytes(png);
+        let mut app = TestAppBuilder::new()
+            .with_lines(vec![DiffLine::image_marker("a.png")])
+            .build();
+
+        app.load_images_for_markers(&vcs);
+
+        assert!(app.image_cache.contains("a.png"));
+    }
 }
