@@ -212,6 +212,11 @@ in `App`'s review toggles and staleness check, `set_image_picker`, the search
 re-clamp after a refresh and `load_images_for_markers`. All closed by unit tests
 in `app::tests`; `StubVcs::with_working_file_bytes` serves image bytes.
 
+**CI slice of 2026-10-05 (run 37338998799): 2 missed.** `update_single_file`'s
+path match, closed by a two-file test. `ensure_inline_spans_for_visible`'s
+`idx < lines.len()` was equivalent (every index comes from `0..lines.len()`);
+the guard is now `lines.get_mut(idx)`, which has no comparison to mutate.
+
 Run the per-change check locally with the prefix override, or it silently
 selects nothing:
 
