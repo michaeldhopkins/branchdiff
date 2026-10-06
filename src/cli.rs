@@ -105,6 +105,19 @@ mod tests {
         Cli::command().debug_assert();
     }
 
+    #[test]
+    fn each_output_flag_selects_its_mode() {
+        let mode = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("branchdiff").chain(args.iter().copied()))
+                .map(|cli| cli.output.mode())
+                .ok()
+        };
+        assert_eq!(mode(&[]), Some(OutputMode::Tui));
+        assert_eq!(mode(&["--print"]), Some(OutputMode::Print));
+        assert_eq!(mode(&["-d"]), Some(OutputMode::Diff));
+        assert_eq!(mode(&["--html"]), Some(OutputMode::Html));
+    }
+
     /// `Cli` does not derive `Debug`, so `unwrap_err()` (which requires the `Ok`
     /// type be `Debug`) won't compile — assert on the kind directly.
     fn version_kind(arg: &str) -> Option<ErrorKind> {
