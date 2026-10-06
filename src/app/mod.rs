@@ -2140,6 +2140,39 @@ mod tests {
         assert_eq!(app.comparison.from_label, "keep-this");
     }
 
+    /// `n` steps over matches hidden in a collapsed file to the next one shown.
+    #[test]
+    fn search_next_skips_matches_in_collapsed_files() {
+        use crate::diff::FileDiff;
+
+        let file = |path: &str| {
+            FileDiff::new(vec![
+                DiffLine::file_header(path).with_file_path(path),
+                DiffLine::new(LineSource::Base, "match".to_string(), ' ', Some(1))
+                    .with_file_path(path),
+            ])
+        };
+        let mut app = TestAppBuilder::new()
+            .with_files(vec![file("a.rs"), file("b.rs"), file("c.rs")])
+            .build();
+        app.toggle_file_collapsed("b.rs");
+        app.open_search();
+        for c in "match".chars() {
+            app.search_insert_char(c);
+        }
+
+        app.search_next();
+
+        let current_file = |app: &App| {
+            let search = app.search.as_ref().unwrap();
+            app.lines()[search.matches[search.current].line_idx].file_path.clone()
+        };
+        assert_eq!(current_file(&app).as_deref(), Some("c.rs"));
+
+        app.search_prev();
+        assert_eq!(current_file(&app).as_deref(), Some("a.rs"));
+    }
+
     #[test]
     fn test_refresh_recomputes_search_matches() {
         let mut app = TestAppBuilder::new()

@@ -217,6 +217,10 @@ path match, closed by a two-file test. `ensure_inline_spans_for_visible`'s
 `idx < lines.len()` was equivalent (every index comes from `0..lines.len()`);
 the guard is now `lines.get_mut(idx)`, which has no comparison to mutate.
 
+**CI slice of 2026-10-06 (run 37498481965): 1 missed.** `search_next`'s
+wrap-around stop (`== start`); a test with a collapsed middle file now checks
+that `n` and `N` step over hidden matches.
+
 Run the per-change check locally with the prefix override, or it silently
 selects nothing:
 
