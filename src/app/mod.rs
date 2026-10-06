@@ -414,9 +414,9 @@ impl App {
 
         for item in &items[start..end] {
             if let DisplayableItem::Line(idx) = item
-                && *idx < self.lines.len()
+                && let Some(line) = self.lines.get_mut(*idx)
             {
-                self.lines[*idx].ensure_inline_spans();
+                line.ensure_inline_spans();
             }
         }
 
@@ -2017,6 +2017,31 @@ mod tests {
             "the new contents never reached the flattened lines: {:?}",
             app.lines().iter().map(|l| l.content.as_str()).collect::<Vec<_>>()
         );
+    }
+
+    /// The refresh must replace the file it names and leave the others alone.
+    /// Matching the wrong file overwrites an unrelated file's diff with this one.
+    #[test]
+    fn updating_one_file_leaves_the_other_files_in_place() {
+        use crate::diff::{FileDiff, LineSource};
+
+        let file = |path: &str, content: &str| {
+            FileDiff::new(vec![
+                DiffLine::file_header(path).with_file_path(path),
+                DiffLine::new(LineSource::Base, content.to_string(), ' ', Some(1))
+                    .with_file_path(path),
+            ])
+        };
+        let mut app = TestAppBuilder::new()
+            .with_files(vec![file("a.rs", "a before"), file("b.rs", "b before")])
+            .build();
+
+        app.update_single_file("b.rs", Some(file("b.rs", "b after")));
+
+        let contents: Vec<&str> = app.lines().iter().map(|l| l.content.as_str()).collect();
+        assert!(contents.contains(&"a before"), "a.rs was overwritten: {contents:?}");
+        assert!(contents.contains(&"b after"), "b.rs was not updated: {contents:?}");
+        assert!(!contents.contains(&"b before"), "b.rs kept its old lines: {contents:?}");
     }
 
     /// A refresh replaces the lines the highlight cache and +/- counts are
