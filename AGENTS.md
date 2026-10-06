@@ -221,6 +221,11 @@ the guard is now `lines.get_mut(idx)`, which has no comparison to mutate.
 wrap-around stop (`== start`); a test with a collapsed middle file now checks
 that Enter and Shift+Enter step over hidden matches.
 
+**CI slice of 2026-10-06 (run 37501141678): 7 missed** in `scroll_to_current_match`'s
+viewport test and quarter-down target, and `current_file`. Tested by scrolling
+to a match below and above the viewport, and reading `current_file` at two
+offsets; a local run also caught the `< top_abs` mutant the slice had not reached.
+
 Run the per-change check locally with the prefix override, or it silently
 selects nothing:
 

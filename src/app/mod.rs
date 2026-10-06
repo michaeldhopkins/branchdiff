@@ -2140,6 +2140,69 @@ mod tests {
         assert_eq!(app.comparison.from_label, "keep-this");
     }
 
+    /// A match below the viewport is brought into view a quarter of the way
+    /// down, not at the top edge.
+    #[test]
+    fn a_match_below_the_viewport_scrolls_to_a_quarter_down() {
+        let lines = (0..100)
+            .map(|i| base_line(if i == 60 { "needle" } else { "hay" }))
+            .collect();
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_view_mode(ViewMode::Full)
+            .with_viewport_height(20)
+            .with_scroll_offset(30)
+            .build();
+
+        app.open_search();
+        for c in "needle".chars() {
+            app.search_insert_char(c);
+        }
+
+        assert_eq!(app.view.scroll_offset, 55);
+    }
+
+    #[test]
+    fn a_match_above_the_viewport_scrolls_up_to_it() {
+        let lines = (0..100)
+            .map(|i| base_line(if i == 10 { "needle" } else { "hay" }))
+            .collect();
+        let mut app = TestAppBuilder::new()
+            .with_lines(lines)
+            .with_view_mode(ViewMode::Full)
+            .with_viewport_height(20)
+            .with_scroll_offset(50)
+            .build();
+
+        app.open_search();
+        for c in "needle".chars() {
+            app.search_insert_char(c);
+        }
+
+        assert_eq!(app.view.scroll_offset, 5);
+    }
+
+    #[test]
+    fn current_file_is_the_file_of_the_first_line_in_view() {
+        use crate::diff::FileDiff;
+
+        let file = |path: &str| {
+            FileDiff::new(vec![
+                DiffLine::file_header(path).with_file_path(path),
+                DiffLine::new(LineSource::Base, "x".to_string(), ' ', Some(1)).with_file_path(path),
+            ])
+        };
+        let mut app = TestAppBuilder::new()
+            .with_files(vec![file("a.rs"), file("b.rs")])
+            .with_view_mode(ViewMode::Full)
+            .with_viewport_height(2)
+            .build();
+        assert_eq!(app.current_file().as_deref(), Some("a.rs"));
+
+        app.view.scroll_offset = 2;
+        assert_eq!(app.current_file().as_deref(), Some("b.rs"));
+    }
+
     /// Enter (and Shift+Enter) step over matches hidden in a collapsed file.
     #[test]
     fn search_next_skips_matches_in_collapsed_files() {
