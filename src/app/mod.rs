@@ -2140,7 +2140,7 @@ mod tests {
         assert_eq!(app.comparison.from_label, "keep-this");
     }
 
-    /// `n` steps over matches hidden in a collapsed file to the next one shown.
+    /// Enter (and Shift+Enter) step over matches hidden in a collapsed file.
     #[test]
     fn search_next_skips_matches_in_collapsed_files() {
         use crate::diff::FileDiff;
