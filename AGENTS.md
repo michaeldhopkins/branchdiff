@@ -307,6 +307,10 @@ this target checks.
 
 Before committing, bump the version in `Cargo.toml` according to semver rules below. Every commit that changes behavior or fixes bugs requires a version bump. Run `cargo install --path .` after bumping to update `Cargo.lock`.
 
+## Dependencies
+
+Dependencies move through the owner's `branchdiff-deps` upkeep job, never Dependabot. It also adopts each new release of vcs-runner.
+
 ## Releasing (jj + CI)
 
 This repo is colocated under **jj** (Jujutsu); use `jj`, not raw `git`. Releases
