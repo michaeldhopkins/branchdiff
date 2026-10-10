@@ -368,4 +368,46 @@ mod tests {
         #[cfg(target_os = "windows")]
         assert_eq!(cmd.program, "cmd");
     }
+
+    #[test]
+    fn a_configured_git_editor_is_returned_trimmed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let status = std::process::Command::new("git")
+            .arg("init")
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git init failed");
+        let status = std::process::Command::new("git")
+            .args(["config", "core.editor", "  my-editor --wait  "])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git config failed");
+        assert_eq!(
+            vcs_configured_editor(crate::vcs::VcsBackend::Git, dir.path()),
+            Some("my-editor --wait".to_string())
+        );
+    }
+
+    #[test]
+    fn a_blank_git_editor_reads_as_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let status = std::process::Command::new("git")
+            .arg("init")
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git init failed");
+        let status = std::process::Command::new("git")
+            .args(["config", "core.editor", "   "])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git config failed");
+        assert_eq!(
+            vcs_configured_editor(crate::vcs::VcsBackend::Git, dir.path()),
+            None
+        );
+    }
 }
