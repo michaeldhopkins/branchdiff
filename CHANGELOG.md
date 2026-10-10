@@ -2,7 +2,17 @@
 
 ### Features
 
+- *(html)* --html=static omits the script that re-fetches the page; without scripts the page follows the system color scheme
+
+### Testing
+
+- *(external)* Kill missed mutants in vcs_configured_editor
+## [0.75.0] - 2026-10-10
+
+### Features
+
 - Add --files [--json] and --fingerprint, which list and fingerprint the diff without rendering it
+## [0.74.4] - 2026-10-10
 
 ### Bug Fixes
 

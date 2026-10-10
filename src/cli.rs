@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+use crate::html_page::Refresh;
+
 /// Output mode for the application
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OutputMode {
@@ -34,15 +36,15 @@ pub struct OutputFlags {
     #[arg(short = 'd', long = "diff")]
     diff: bool,
 
-    /// Output self-contained styled HTML to stdout
-    #[arg(long = "html")]
-    html: bool,
+    /// Output self-contained styled HTML to stdout; --html=static omits the script that re-fetches the page every 2 seconds
+    #[arg(long = "html", value_name = "MODE", num_args = 0..=1, require_equals = true, default_missing_value = "live")]
+    html: Option<Refresh>,
 
     /// List the files in the diff with status and line counts
     #[arg(long = "files")]
     files: bool,
 
-    /// Print a short hash of the diff's base, head and working copy
+    /// Print a short hash of the diff's base, head and working-copy state
     #[arg(long = "fingerprint")]
     fingerprint: bool,
 }
@@ -61,7 +63,7 @@ impl OutputFlags {
             OutputMode::Print
         } else if self.diff {
             OutputMode::Diff
-        } else if self.html {
+        } else if self.html.is_some() {
             OutputMode::Html
         } else if self.files {
             OutputMode::Files
@@ -118,6 +120,11 @@ impl Cli {
     /// `--no-auto-fetch`.
     pub fn auto_fetch(&self) -> bool {
         !self.no_auto_fetch
+    }
+
+    /// Whether an `--html` page keeps itself current.
+    pub fn refresh(&self) -> Refresh {
+        self.output.html.unwrap_or(Refresh::Live)
     }
 }
 
@@ -185,6 +192,29 @@ mod tests {
         assert!(parse(&["--files", "--json"]).is_ok_and(|c| c.options.json));
         assert!(parse(&["--json"]).is_err());
         assert!(parse(&["--html", "--json"]).is_err());
+    }
+
+    #[test]
+    fn html_is_live_alone_and_static_with_a_value() {
+        assert_eq!(parse(&["--html"]).unwrap().refresh(), Refresh::Live);
+        assert_eq!(parse(&["--html=live"]).unwrap().refresh(), Refresh::Live);
+        assert_eq!(parse(&["--html=static"]).unwrap().refresh(), Refresh::Off);
+        assert_eq!(parse(&["--html=static"]).unwrap().output.mode(), OutputMode::Html);
+        assert_eq!(parse(&["--print"]).unwrap().refresh(), Refresh::Live);
+    }
+
+    /// `--html` followed by a path must still mean "HTML of that repository".
+    #[test]
+    fn a_bare_html_does_not_swallow_the_path() {
+        let cli = parse(&["--html", "/some/repo"]).unwrap();
+        assert_eq!(cli.path, std::path::PathBuf::from("/some/repo"));
+        assert_eq!(cli.refresh(), Refresh::Live);
+        assert!(parse(&["--html", "static"]).is_ok_and(|c| c.path.as_os_str() == "static"));
+    }
+
+    #[test]
+    fn an_unknown_html_value_is_refused() {
+        assert!(parse(&["--html=fast"]).is_err());
     }
 
     #[test]

@@ -286,7 +286,7 @@ fn main() -> Result<()> {
 
                     match mode {
                         OutputMode::Print => print::print_diff(&data)?,
-                        OutputMode::Html => html::render_html(&data, &app.image_cache)?,
+                        OutputMode::Html => html::render_html(&data, &app.image_cache, cli.refresh())?,
                         _ => unreachable!(),
                     }
                 }

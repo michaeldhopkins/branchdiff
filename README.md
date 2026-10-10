@@ -64,7 +64,7 @@ If no repository is found, branchdiff waits and automatically starts when `git i
 |------|-------------|
 | `-p`, `--print` | Print diff to stdout and exit (non-interactive mode) |
 | `-d`, `--diff` | Output unified patch format to stdout (for `git apply` / `patch`) |
-| `--html` | Output self-contained styled HTML to stdout (great for iPad review) |
+| `--html[=live\|static]` | Output self-contained styled HTML to stdout (great for iPad review); `--html=static` omits the script that re-fetches the page every 2 seconds |
 | `--files` | List the files in the diff with status and line counts, and the base and head ids; add `--json` for JSON |
 | `--fingerprint` | Print a hash that changes when the diff does; never writes to jj's operation log, so it is safe to poll |
 | `--base REV` | Compare against `REV` instead of the detected base (jj: any revset, e.g. `main@origin`; git: a branch, `origin/`-qualified name, or commit) |
