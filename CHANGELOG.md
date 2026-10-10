@@ -2,6 +2,19 @@
 
 ### Features
 
+- *(html)* Higher-contrast default palette
+
+### Testing
+
+- *(html)* Check render_html writes a page for --html
+
+### Miscellaneous
+
+- Bump to 0.77.0
+## [0.76.0] - 2026-10-10
+
+### Features
+
 - *(html)* --html=static omits the script that re-fetches the page; without scripts the page follows the system color scheme
 
 ### Testing
