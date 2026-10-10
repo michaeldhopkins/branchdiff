@@ -1,6 +1,7 @@
 pub(crate) mod changed_files;
 pub(crate) mod commands;
 pub(crate) mod parse;
+mod fingerprint;
 mod refresh;
 
 #[cfg(test)]
@@ -212,6 +213,10 @@ impl Vcs for GitVcs {
         } else {
             VcsEventType::Internal
         }
+    }
+
+    fn fingerprint_inputs(&self) -> Result<crate::fingerprint::FingerprintInputs> {
+        fingerprint::inputs(&self.repo_path, &self.base_branch)
     }
 
     fn backend(&self) -> VcsBackend {

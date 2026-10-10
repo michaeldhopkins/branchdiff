@@ -1,6 +1,6 @@
 [package]
 name = "branchdiff"
-version = "0.74.4"
+version = "0.75.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Terminal UI showing unified diff of current branch vs its base"
@@ -43,6 +43,8 @@ libc = "0.2"
 
 [dev-dependencies]
 proptest = "1.5"
+# Oracle for the --files JSON output: it must parse back to what was written.
+serde_json = "1"
 # syn + proc-macro2: tests/file_length.rs parses the crate's own source to leave tests out of
 # each file's count; a text scan is fooled by strings and comments. `span-locations` gives it
 # exact line spans.

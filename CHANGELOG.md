@@ -1,5 +1,9 @@
 ## [unreleased]
 
+### Features
+
+- Add --files [--json] and --fingerprint, which list and fingerprint the diff without rendering it
+
 ### Bug Fixes
 
 - *(jj)* Use local main without a remote; read without recording an operation

@@ -263,6 +263,9 @@ fn main() -> Result<()> {
     if let Some(vcs) = &detected {
         let mode = cli.output.mode();
         if startup::is_one_shot(mode) {
+            if branchdiff::listing::print(vcs.as_ref(), mode, cli.options.json)? {
+                return Ok(());
+            }
             let repo_root = vcs.repo_path().to_path_buf();
             let comparison = vcs.comparison_context()?;
             let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -270,10 +273,7 @@ fn main() -> Result<()> {
             let mut app = app::App::new(repo_root, comparison, initial);
 
             match mode {
-                OutputMode::Diff => {
-                    let patch = branchdiff::patch::generate_patch(app.lines());
-                    print!("{}", patch);
-                }
+                OutputMode::Diff => print!("{}", branchdiff::patch::generate_patch(app.lines())),
                 OutputMode::Print | OutputMode::Html => {
                     app.view.view_mode = startup::view_mode_for(mode);
                     let data = branchdiff::output::prepare(&mut app);
@@ -290,7 +290,7 @@ fn main() -> Result<()> {
                         _ => unreachable!(),
                     }
                 }
-                OutputMode::Tui => unreachable!(),
+                OutputMode::Tui | OutputMode::Files | OutputMode::Fingerprint => unreachable!(),
             }
 
             return Ok(());

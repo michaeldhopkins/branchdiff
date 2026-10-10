@@ -7,8 +7,11 @@ pub mod external;
 pub mod fetch;
 pub mod file_events;
 pub mod file_links;
+pub mod file_list;
+pub mod fingerprint;
 pub mod image_diff;
 pub mod gitignore;
+pub mod listing;
 pub mod vcs;
 
 #[cfg(fuzzing)]

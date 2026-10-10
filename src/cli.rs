@@ -14,6 +14,10 @@ pub enum OutputMode {
     Diff,
     /// Output self-contained HTML to stdout
     Html,
+    /// List the files in the diff, with status and line counts
+    Files,
+    /// Print a short hash that changes when the diff does
+    Fingerprint,
 }
 
 /// Mutually exclusive output format flags.
@@ -33,6 +37,22 @@ pub struct OutputFlags {
     /// Output self-contained styled HTML to stdout
     #[arg(long = "html")]
     html: bool,
+
+    /// List the files in the diff with status and line counts
+    #[arg(long = "files")]
+    files: bool,
+
+    /// Print a short hash of the diff's base, head and working copy
+    #[arg(long = "fingerprint")]
+    fingerprint: bool,
+}
+
+/// Modifiers of one output format each.
+#[derive(clap::Args)]
+pub struct OutputOptions {
+    /// With --files, print JSON
+    #[arg(long, requires = "files", conflicts_with_all = ["print", "diff", "html", "fingerprint"])]
+    pub json: bool,
 }
 
 impl OutputFlags {
@@ -43,6 +63,10 @@ impl OutputFlags {
             OutputMode::Diff
         } else if self.html {
             OutputMode::Html
+        } else if self.files {
+            OutputMode::Files
+        } else if self.fingerprint {
+            OutputMode::Fingerprint
         } else {
             OutputMode::Tui
         }
@@ -80,6 +104,9 @@ pub struct Cli {
 
     #[command(flatten)]
     pub output: OutputFlags,
+
+    #[command(flatten)]
+    pub options: OutputOptions,
 
     /// Run stress test for profiling (renders N frames with simulated input)
     #[arg(long, value_name = "FRAMES")]
@@ -132,6 +159,32 @@ mod tests {
         };
         assert!(parse(&["branchdiff"]).auto_fetch());
         assert!(!parse(&["branchdiff", "--no-auto-fetch"]).auto_fetch());
+    }
+
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("branchdiff").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn files_and_fingerprint_select_their_modes() {
+        let mode = |args: &[&str]| parse(args).ok().map(|cli| cli.output.mode());
+        assert_eq!(mode(&["--files"]), Some(OutputMode::Files));
+        assert_eq!(mode(&["--fingerprint"]), Some(OutputMode::Fingerprint));
+    }
+
+    #[test]
+    fn output_flags_exclude_each_other() {
+        for pair in [["--files", "--html"], ["--fingerprint", "--files"], ["--print", "--fingerprint"]] {
+            assert!(parse(&pair).is_err(), "{pair:?} should conflict");
+        }
+    }
+
+    #[test]
+    fn json_needs_files() {
+        assert!(parse(&["--files", "--json"]).is_ok_and(|c| c.options.json));
+        assert!(parse(&["--json"]).is_err());
+        assert!(parse(&["--html", "--json"]).is_err());
     }
 
     #[test]

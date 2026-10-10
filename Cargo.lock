@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "branchdiff"
-version = "0.74.4"
+version = "0.75.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -385,6 +385,7 @@ dependencies = [
  "ratatui-image",
  "rayon",
  "resvg",
+ "serde_json",
  "similar",
  "syn 2.0.117",
  "syntect",

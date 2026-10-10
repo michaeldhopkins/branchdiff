@@ -52,3 +52,43 @@ pub(super) fn local_trunk_bookmark(repo_path: &Path) -> Option<String> {
         .find(|name| revset_commit_count(repo_path, &format!(r#"bookmarks(exact:"{name}")"#)) == 1)
         .map(|name| (*name).to_string())
 }
+
+/// The remotes jj's `trunk()` is allowed to resolve against, per its own docs
+/// ("the remote named `upstream` or `origin`").
+///
+/// Serves two distinct purposes, both keyed off this list:
+/// - *Membership*: which remotes a trunk candidate may live on. Order is
+///   irrelevant here — [`preferred_trunk_revset`] picks the newest, as jj does.
+/// - *Preference*: which remote to scope stack bookmarks to when several hold a
+///   bookmark at the same commit ([`pick_trunk_remote`]). Order matters there,
+///   and `origin` leads because it is the review remote a deploy remote must
+///   never displace.
+pub(super) const TRUNK_REMOTE_PREFERENCE: [&str; 2] = ["origin", "upstream"];
+
+/// Choose trunk's remote from the newline-separated remote names of the
+/// bookmarks at `trunk()`.
+///
+/// Several remotes commonly hold a bookmark at the same commit — pushing `main`
+/// to both `origin` and a deploy remote is routine — and jj emits them
+/// alphabetically, so "first one wins" would hand `heroku_test` the win over
+/// `origin`. Prefer the remotes jj itself resolves `trunk()` against, and only
+/// fall back to the sole remaining remote for repos using a custom name.
+///
+/// `git` is jj's colocated-git pseudo-remote, not a real one, so it is skipped.
+/// Names containing quotes or backslashes are rejected rather than escaped —
+/// they cannot appear safely in a revset string literal, and no real remote uses
+/// them.
+pub(super) fn pick_trunk_remote(raw: &str) -> Option<String> {
+    let remotes: Vec<&str> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|r| !r.is_empty() && *r != "git" && !r.contains(['"', '\\']))
+        .collect();
+
+    TRUNK_REMOTE_PREFERENCE
+        .iter()
+        .find(|preferred| remotes.contains(*preferred))
+        .map(|preferred| (*preferred).to_string())
+        .or_else(|| remotes.first().map(|r| (*r).to_string()))
+}
+

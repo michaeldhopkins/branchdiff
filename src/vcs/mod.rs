@@ -141,6 +141,11 @@ pub trait Vcs: Send + Sync {
     /// (e.g., `jj new`) that happened during an active refresh.
     fn current_revision_id(&self) -> Result<String>;
 
+    /// What `--fingerprint` hashes, gathered without snapshotting or rendering a diff.
+    fn fingerprint_inputs(&self) -> Result<crate::fingerprint::FingerprintInputs> {
+        anyhow::bail!("backend does not support fingerprints")
+    }
+
     /// Set the diff base mode (fork point vs trunk tip).
     /// Only meaningful for jj — git always uses merge-base (fork point).
     fn set_diff_base(&self, _base: DiffBase) {}
