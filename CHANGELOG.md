@@ -1,5 +1,28 @@
 ## [unreleased]
 
+### Bug Fixes
+
+- *(jj)* Use local main without a remote; read without recording an operation
+
+### Documentation
+
+- *(app)* Name the keys that step through search matches
+
+### Testing
+
+- *(app)* Pin review toggling, staleness, search re-clamping and image loading
+- *(app)* Close the two MISSED mutants from slice run 37338998799
+- *(app)* Pin search_next and search_prev skipping matches in collapsed files
+- *(app)* Pin search scrolling and current_file
+- *(cli)* Pin which mode each output flag selects
+
+### Miscellaneous
+
+- *(cliff)* Leave todo, notes and agents commits, and TODO.md-only commits, out of the release notes
+- *(cliff)* Skip bare reverts, scope lists and any case of the internal scopes
+- *(deps)* Adopt vcs-runner 0.19.0
+## [0.74.3] - 2026-10-05
+
 ### Documentation
 
 - *(tests)* Tighten the file-length gate's doc comment
@@ -18,10 +41,6 @@
 ### Refactor
 
 - *(main)* Move startup decisions into tested library code
-
-### Documentation
-
-- *(agents)* Record the mutation-testing wiring, N and slice 0 findings
 
 ### Testing
 

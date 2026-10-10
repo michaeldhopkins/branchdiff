@@ -11,11 +11,12 @@ use vcs_runner::{
     run_jj_with_retry_cancellable,
 };
 
+use super::jj_revset::{local_trunk_bookmark, revset_commit_count, revset_committer_epoch, revset_resolves};
 use super::shared::{assemble_results, process_files_parallel, FileProcessResult};
 
 /// Prepend `--ignore-working-copy` to skip jj's auto-snapshot.
-/// Only the first command per refresh cycle needs to snapshot; subsequent
-/// commands reuse the snapshot and avoid writing to op_store/working_copy.
+/// Only a diff of committed revisions that must include edits in `@` needs a snapshot;
+/// everything else skips it so a read never writes to op_store/working_copy.
 fn no_snapshot<'a>(args: &[&'a str]) -> Vec<&'a str> {
     let mut full = Vec::with_capacity(args.len() + 1);
     full.push("--ignore-working-copy");
@@ -111,7 +112,7 @@ fn resolve_jj_op_store(repo_path: &Path) -> PathBuf {
 const PARENT_BASE: &str = "@-";
 
 /// Bookmark names jj itself tries when resolving `trunk()`, in order.
-const TRUNK_BOOKMARK_CANDIDATES: [&str; 3] = ["main", "master", "trunk"];
+pub(super) const TRUNK_BOOKMARK_CANDIDATES: [&str; 3] = ["main", "master", "trunk"];
 
 /// Whether `from_rev` is a trunk-like base rather than the `@-` fallback.
 ///
@@ -121,39 +122,6 @@ const TRUNK_BOOKMARK_CANDIDATES: [&str; 3] = ["main", "master", "trunk"];
 /// conflated "is trunk" with the one literal revset that expressed it.
 fn is_trunk_base(from_rev: &str) -> bool {
     from_rev != PARENT_BASE
-}
-
-/// Whether a revset resolves to at least one commit.
-fn revset_resolves(repo_path: &Path, revset: &str) -> bool {
-    run_jj(repo_path, &[
-        "log", "-r", revset, "--no-graph", "--limit", "1", "-T", r#""x""#,
-    ])
-    .map(|o| !o.stdout_lossy().trim().is_empty())
-    .unwrap_or(false)
-}
-
-/// How many commits a revset resolves to, counting no further than 2.
-///
-/// A caller that needs "exactly one" cannot use [`revset_resolves`]: `--limit 1`
-/// answers ">= 1", and `jj diff --from` takes exactly one revision. Limiting to
-/// 2 is enough to tell none / one / many apart without walking a large set.
-fn revset_commit_count(repo_path: &Path, revset: &str) -> usize {
-    run_jj(repo_path, &[
-        "log", "-r", revset, "--no-graph", "--limit", "2", "-T", r#""x\n""#,
-    ])
-    .map(|o| o.stdout_lossy().lines().filter(|l| !l.trim().is_empty()).count())
-    .unwrap_or(0)
-}
-
-/// Committer timestamp (epoch seconds) of the commit a revset resolves to, or
-/// `None` if it resolves to nothing.
-fn revset_committer_epoch(repo_path: &Path, revset: &str) -> Option<i64> {
-    let output = run_jj(repo_path, &[
-        "log", "-r", revset, "--no-graph", "--limit", "1",
-        "-T", r#"committer.timestamp().utc().format("%s")"#,
-    ])
-    .ok()?;
-    output.stdout_lossy().trim().parse::<i64>().ok()
 }
 
 /// Find the trunk bookmark jj itself would land on, e.g. `main@origin`.
@@ -201,7 +169,7 @@ fn preferred_trunk_revset(repo_path: &Path) -> Option<String> {
 /// entire repo history — so only use it when it resolves to an actual branch.
 fn resolve_base_rev(repo_path: &Path) -> String {
     if !revset_resolves(repo_path, "trunk() ~ root()") {
-        return PARENT_BASE.to_string();
+        return local_trunk_bookmark(repo_path).unwrap_or_else(|| PARENT_BASE.to_string());
     }
 
     // Asks which remotes hold a bookmark at trunk's *commit*, not which remote
@@ -1204,10 +1172,10 @@ impl crate::vcs::Vcs for JjVcs {
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
         let template = r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
-        // First call triggers auto-snapshot to capture current working copy
+        // No snapshot: the working side is read from disk (see `get_changed_files_with_from` for the exception).
         let from_label = match run_jj_with_retry(
             &self.repo_path,
-            &["log", "-r", &self.from_rev, "-T", template, "--no-graph", "--limit", "1"],
+            &no_snapshot(&["log", "-r", &self.from_rev, "-T", template, "--no-graph", "--limit", "1"]),
             is_transient_error,
         ) {
             Ok(output) => parse_rev_metadata(&output.stdout_lossy()).1,
@@ -2656,6 +2624,139 @@ mod tests {
 
         let rev = resolve_base_rev(repo);
         assert_eq!(rev, "@-", "should fall back to @- when no remote tracking bookmarks");
+    }
+
+    /// A repo with a local `main` and a `feature` stacked on it, no remote.
+    fn setup_local_only_feature_repo() -> tempfile::TempDir {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        jj(&["git", "init"]);
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        jj(&["bookmark", "create", "main", "-r", "@-"]);
+        std::fs::write(repo.join("g.txt"), "b\n").unwrap();
+        jj(&["commit", "-m", "feature"]);
+        jj(&["bookmark", "create", "feature", "-r", "@-"]);
+        temp
+    }
+
+    /// Without a remote `trunk()` is `root()`, and the old fallback `@-` is the
+    /// branch's own bookmark: the feature commit vanished from the diff.
+    #[test]
+    fn test_resolve_base_rev_without_remote_uses_local_main() {
+        if !jj_available() { return; }
+        let temp = setup_local_only_feature_repo();
+        assert_eq!(resolve_base_rev(temp.path()), "main");
+    }
+
+    #[test]
+    fn test_resolve_base_rev_without_remote_uses_local_master_when_no_main() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        jj(&["git", "init"]);
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        jj(&["bookmark", "create", "master", "-r", "@-"]);
+        assert_eq!(resolve_base_rev(repo), "master");
+    }
+
+    #[test]
+    fn test_resolve_base_rev_without_remote_or_trunk_bookmark_keeps_parent() {
+        if !jj_available() { return; }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        };
+        jj(&["git", "init"]);
+        std::fs::write(repo.join("f.txt"), "a\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        jj(&["bookmark", "create", "feature", "-r", "@-"]);
+        assert_eq!(resolve_base_rev(repo), "@-");
+    }
+
+    /// The report: a second workspace parked at the feature bookmark showed
+    /// `0 files` because its base was the feature bookmark itself.
+    #[test]
+    fn test_workspace_at_feature_bookmark_diffs_against_main() {
+        if !jj_available() { return; }
+        let temp = setup_local_only_feature_repo();
+        let repo = temp.path();
+        let ws_parent = tempfile::TempDir::new().unwrap();
+        let ws = ws_parent.path().join("ws");
+        let out = Command::new("jj")
+            .args(["workspace", "add", ws.to_str().unwrap(), "-r", "feature"])
+            .current_dir(repo).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+        let vcs = JjVcs::new(ws.clone()).unwrap();
+        assert_eq!(vcs.from_rev, "main");
+        let out = run_jj(&ws, &["diff", "--from", &vcs.from_rev, "--to", "@", "--summary"]).unwrap();
+        let files = out.stdout_lossy();
+        assert!(files.contains("g.txt"), "the feature commit must be in the diff: {files}");
+    }
+
+    fn operation_count(repo: &Path) -> usize {
+        jj_out(repo, &["--ignore-working-copy", "op", "log", "--no-graph", "-T", r#"id.short() ++ "\n""#])
+            .lines().count()
+    }
+
+    /// A read-only viewer must not add to the repo's operation log: with
+    /// uncommitted edits, `--html`/`--print`/`--diff` used to record a
+    /// "snapshot working copy" operation on every run.
+    #[test]
+    fn test_one_shot_read_records_no_jj_operation_and_still_shows_uncommitted_edits() {
+        if !jj_available() { return; }
+        let temp = setup_local_only_feature_repo();
+        let repo = temp.path();
+        std::fs::write(repo.join("h.txt"), "dirty\n").unwrap();
+        let before = operation_count(repo);
+
+        let root = get_repo_root(repo).unwrap();
+        let vcs = JjVcs::new(root).unwrap();
+        vcs.comparison_context().unwrap();
+        let result = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+
+        assert_eq!(operation_count(repo), before, "reading the diff recorded a jj operation");
+        let paths: Vec<_> = result.files.iter()
+            .filter_map(|f| f.lines.first()?.file_path.clone()).collect();
+        assert!(paths.contains(&"h.txt".to_string()), "uncommitted edit missing: {paths:?}");
+        assert!(paths.contains(&"g.txt".to_string()), "committed feature work missing: {paths:?}");
+    }
+
+    /// A secondary workspace has no git index, so it discovers edits by walking
+    /// the disk; that path must stay snapshot-free and live too.
+    #[test]
+    fn test_secondary_workspace_read_records_no_jj_operation() {
+        if !jj_available() { return; }
+        let temp = setup_local_only_feature_repo();
+        // Park the first workspace on `feature` itself so the new one has no sibling
+        // (a sibling makes the orphaned-tip check snapshot, on purpose).
+        Command::new("jj").args(["edit", "feature"]).current_dir(temp.path()).output().unwrap();
+        let ws_parent = tempfile::TempDir::new().unwrap();
+        let ws = ws_parent.path().join("ws");
+        let out = Command::new("jj")
+            .args(["workspace", "add", ws.to_str().unwrap(), "-r", "feature"])
+            .current_dir(temp.path()).output().unwrap();
+        assert!(out.status.success());
+        std::fs::write(ws.join("h.txt"), "dirty\n").unwrap();
+        let before = operation_count(&ws);
+
+        let vcs = JjVcs::new(ws.clone()).unwrap();
+        vcs.comparison_context().unwrap();
+        let result = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
+
+        assert_eq!(operation_count(&ws), before);
+        let paths: Vec<_> = result.files.iter()
+            .filter_map(|f| f.lines.first()?.file_path.clone()).collect();
+        assert!(paths.contains(&"h.txt".to_string()) && paths.contains(&"g.txt".to_string()), "{paths:?}");
     }
 
     #[test]

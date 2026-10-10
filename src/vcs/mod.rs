@@ -1,6 +1,7 @@
 pub mod git;
 pub mod jj;
 mod jj_events;
+mod jj_revset;
 pub(crate) mod shared;
 pub mod types;
 
