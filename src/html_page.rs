@@ -1,5 +1,7 @@
 //! The scripts and script-less fallbacks of the `--html` page.
 
+use crate::html_style::LIGHT_PALETTE;
+
 /// Whether the page re-fetches itself while served over HTTP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Refresh {
@@ -9,19 +11,6 @@ pub enum Refresh {
     #[value(name = "static")]
     Off,
 }
-
-/// The light palette, shared by the `data-theme="light"` rule and the
-/// script-less fallback so the two cannot drift.
-pub const LIGHT_PALETTE: &str = "\
-  --bg:      #fdf6e3;
-  --bg-hl:   #eee8d5;
-  --fg:      #4F5F5F;
-  --fg-em:   #445050;
-  --fg-sec:  #617575;
-  --border:  #eee8d5;
-  --red:     #DA2825;
-  --green:   #697807;
-  --cyan:    #207E77;";
 
 const THEME_JS: &str = "\
 function applyTheme(){
@@ -74,7 +63,6 @@ pub fn noscript_style() -> String {
          .theme-toggle {{ display: none; }}\n\
          @media (prefers-color-scheme: light) {{\n\
          :root {{\n{LIGHT_PALETTE}\n}}\n\
-         .content span[style] {{ filter: brightness(0.5) saturate(1.3); }}\n\
          }}\n\
          </style></noscript>"
     )
@@ -116,12 +104,5 @@ mod tests {
         assert!(css.contains(".theme-toggle { display: none; }"));
         assert!(css.contains("@media (prefers-color-scheme: light)"));
         assert!(css.contains(LIGHT_PALETTE));
-    }
-
-    #[test]
-    fn the_fallback_light_palette_defines_every_variable_the_dark_one_does() {
-        for var in ["--bg:", "--bg-hl:", "--fg:", "--fg-em:", "--fg-sec:", "--border:", "--red:", "--green:", "--cyan:"] {
-            assert!(LIGHT_PALETTE.contains(var), "missing {var}");
-        }
     }
 }

@@ -10,7 +10,8 @@ use branchdiff::output::{OutputData, OutputFile};
 use branchdiff::syntax;
 use branchdiff::ui::spans::coalesce_spans;
 
-use branchdiff::html_page::{noscript_style, script, Refresh, LIGHT_PALETTE};
+use branchdiff::html_page::{noscript_style, script, Refresh};
+use branchdiff::html_style::{stylesheet, token_class};
 
 fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -108,165 +109,7 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{branch_info} — branchdiff</title>
 <style>
-:root {{
-  --bg:      #002b36;
-  --bg-hl:   #073642;
-  --fg:      #919EA1;
-  --fg-em:   #A1ACAF;
-  --fg-sec:  #79929A;
-  --border:  #073642;
-  --red:     #ff4a47;
-  --green:   #829603;
-  --cyan:    #2a9d94;
-}}
-[data-theme="light"] {{
-{light}
-}}
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{
-  background: var(--bg);
-  color: var(--fg);
-  font-family: 'SF Mono','Menlo','Consolas','Liberation Mono',monospace;
-  font-size: 14px;
-  line-height: 1.5;
-  -webkit-text-size-adjust: 100%;
-  padding: 16px;
-}}
-.header {{
-  position: relative;
-  color: var(--cyan);
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
-}}
-.header h1 {{ font-size: 16px; font-weight: 600; }}
-.header .stats {{ font-size: 13px; color: var(--fg-sec); margin-top: 4px; }}
-.theme-toggle {{
-  position: absolute; right: 0; top: 4px;
-  background: none; border: 1px solid var(--border);
-  border-radius: 6px; padding: 8px 14px;
-  color: var(--fg-sec); cursor: pointer; font-size: 24px;
-  line-height: 1; min-width: 44px; min-height: 44px;
-}}
-.theme-toggle:hover {{ color: var(--fg-em); }}
-.toc {{
-  margin-bottom: 20px;
-  padding: 12px;
-  background: var(--bg-hl);
-  border-radius: 6px;
-}}
-.toc-title {{ font-size: 13px; color: var(--fg-sec); margin-bottom: 8px; }}
-.toc a {{
-  display: block;
-  color: var(--cyan);
-  text-decoration: none;
-  padding: 2px 0;
-  font-size: 13px;
-}}
-.toc a:hover {{ text-decoration: underline; }}
-.adds {{ color: var(--green); }}
-.dels {{ color: var(--red); }}
-details {{
-  margin-bottom: 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-}}
-summary {{
-  padding: 8px 12px;
-  background: var(--bg-hl);
-  cursor: pointer;
-  font-weight: 600;
-  color: var(--fg-em);
-  font-size: 13px;
-  user-select: none;
-}}
-summary:hover {{ background: var(--border); }}
-summary .adds {{ font-weight: 400; }}
-summary .dels {{ font-weight: 400; }}
-table {{
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-}}
-td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
-.ln {{
-  color: var(--fg-sec);
-  user-select: none;
-  text-align: right;
-  padding: 0 8px 0 4px;
-  width: 4em;
-  min-width: 4em;
-  white-space: nowrap;
-}}
-.gutter {{
-  width: 1.5em;
-  text-align: center;
-  color: var(--fg-sec);
-  user-select: none;
-  padding: 0;
-}}
-.content {{
-  padding: 0 8px;
-  overflow-x: auto;
-}}
-.line-base {{ }}
-.line-committed {{ background: rgba(42,161,152,0.08); }}
-.line-staged {{ background: rgba(133,153,0,0.08); }}
-.line-unstaged {{ background: rgba(181,137,0,0.08); }}
-.line-del-base {{ background: rgba(220,50,47,0.08); }}
-.line-del-committed {{ background: rgba(220,50,47,0.08); }}
-.line-del-staged {{ background: rgba(220,50,47,0.08); }}
-.line-canceled {{ background: rgba(211,54,130,0.08); }}
-.line-moved {{ background: rgba(211,54,130,0.08); }}
-.line-header td {{ padding: 8px 12px; color: var(--fg-em); font-weight: bold; }}
-.line-elided td {{ color: var(--fg-sec); opacity: 0.7; padding: 2px 12px; font-style: italic; }}
-.hl-committed {{ background: rgba(42,161,152,0.2); border-radius: 2px; }}
-.hl-staged {{ background: rgba(133,153,0,0.2); border-radius: 2px; }}
-.hl-unstaged {{ background: rgba(181,137,0,0.2); border-radius: 2px; }}
-.hl-del-base {{ background: rgba(220,50,47,0.2); border-radius: 2px; }}
-.hl-del-committed {{ background: rgba(220,50,47,0.2); border-radius: 2px; }}
-.hl-del-staged {{ background: rgba(220,50,47,0.2); border-radius: 2px; }}
-.hl-canceled {{ background: rgba(211,54,130,0.2); border-radius: 2px; }}
-.del {{ text-decoration: line-through; opacity: 0.7; }}
-.image-container {{
-  display: flex;
-  gap: 16px;
-  padding: 12px;
-  flex-wrap: wrap;
-  justify-content: center;
-}}
-.image-panel {{ text-align: center; }}
-.image-panel img {{
-  max-width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}}
-.image-panel .meta {{
-  font-size: 12px;
-  color: var(--fg-sec);
-  margin-top: 4px;
-}}
-.image-label {{
-  font-size: 12px;
-  color: var(--fg-sec);
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}}
-.footer {{
-  margin-top: 24px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--fg-sec);
-}}
-.footer a {{ color: var(--cyan); }}
-[data-theme="light"] .content span[style] {{ filter: brightness(0.5) saturate(1.3); }}
-@media (max-width: 768px) {{
-  body {{ padding: 8px; font-size: 13px; }}
-  .ln {{ width: 3em; min-width: 3em; font-size: 12px; }}
-}}
+{style}
 </style>
 {noscript}
 </head>
@@ -282,7 +125,7 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
         file_s = if file_count == 1 { "" } else { "s" },
         adds = data.total_additions,
         dels = data.total_deletions,
-        light = LIGHT_PALETTE,
+        style = stylesheet(),
         noscript = noscript_style(),
     )?;
 
@@ -329,14 +172,24 @@ fn write_syntax_highlighted(out: &mut impl Write, content: &str, file_path: Opti
         return Ok(());
     }
     for seg in &segments {
-        let escaped = html_escape(&seg.text);
-        if let Some(css_color) = color_to_css(seg.fg_color) {
-            write!(out, "<span style=\"color:{css_color}\">{escaped}</span>")?;
-        } else {
-            write!(out, "{escaped}")?;
-        }
+        write!(out, "{}", token_span(&seg.text, seg.fg_color))?;
     }
     Ok(())
+}
+
+/// A theme token becomes a class; the theme's default foreground stays bare and
+/// any other colour keeps its inline style.
+fn token_span(text: &str, color: Color) -> String {
+    let escaped = html_escape(text);
+    if let Some(class) = token_class(color) {
+        format!("<span class=\"{class}\">{escaped}</span>")
+    } else if color == Color::Rgb(200, 200, 200) {
+        escaped
+    } else if let Some(css_color) = color_to_css(color) {
+        format!("<span style=\"color:{css_color}\">{escaped}</span>")
+    } else {
+        escaped
+    }
 }
 
 fn write_image(out: &mut impl Write, line: &DiffLine, images: &ImageCache) -> Result<()> {
@@ -507,6 +360,24 @@ mod tests {
     }
 
     #[test]
+    fn a_token_span_takes_its_class_and_an_unknown_colour_keeps_its_inline_style() {
+        assert_eq!(token_span("fn", Color::Rgb(180, 140, 200)), "<span class=\"tk-keyword\">fn</span>");
+        assert_eq!(token_span("x", Color::Rgb(255, 0, 128)), "<span style=\"color:rgb(255,0,128)\">x</span>");
+        assert_eq!(token_span("plain", Color::Rgb(200, 200, 200)), "plain");
+        assert_eq!(token_span("reset", Color::Reset), "reset");
+    }
+
+    #[test]
+    fn a_rendered_rust_keyword_carries_a_token_class_not_an_inline_colour() {
+        syntax::reset_highlight_state();
+        let mut buf = Vec::new();
+        write_syntax_highlighted(&mut buf, "fn main() {}", Some("test.rs")).unwrap();
+        let html = String::from_utf8(buf).unwrap();
+        assert!(html.contains("class=\"tk-keyword\""), "{html}");
+        assert!(!html.contains("color:rgb(180,140,200)"), "{html}");
+    }
+
+    #[test]
     fn test_write_inline_spans_output() {
         let mut line = DiffLine::new(LineSource::Committed, "hello world".into(), '+', Some(1));
         line.inline_spans = vec![
@@ -573,7 +444,8 @@ mod tests {
             assert!(html.contains("<noscript><style>"));
             assert!(html.contains("@media (prefers-color-scheme: light)"));
             assert_eq!(html.matches("[data-theme=\"light\"] {").count(), 1);
-            assert_eq!(html.matches("#fdf6e3").count(), 2, "the rule and the fallback share one palette");
+            assert_eq!(html.matches("#1a7f37").count(), 2, "the rule and the fallback share one palette");
+            assert!(!html.contains("brightness(") && !html.contains("saturate("), "a theme is a palette, not a filter");
         }
     }
     #[test]

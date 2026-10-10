@@ -1,5 +1,5 @@
 mod cache;
-mod theme;
+pub(crate) mod theme;
 
 pub(crate) use cache::HighlightCache;
 

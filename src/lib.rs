@@ -12,6 +12,7 @@ pub mod fingerprint;
 pub mod image_diff;
 pub mod gitignore;
 pub mod html_page;
+pub mod html_style;
 pub mod listing;
 pub mod vcs;
 
