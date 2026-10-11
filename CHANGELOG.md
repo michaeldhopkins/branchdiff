@@ -3,6 +3,7 @@
 ### Testing
 
 - *(file_list)* Pin status_of's boundaries against the slice's missed mutants
+- *(file_list)* A line added beside context is modified; skip the mutation slice on dependency-only pushes
 ## [0.77.0] - 2026-10-10
 
 ### Features

@@ -235,9 +235,33 @@ jobs:
   # number. Every N pushes the tree has been looked at once and no job runs long.
   # The tree changes between slices, so coverage is approximate, which is fine.
   # N and how it was chosen are in AGENTS.md.
+  # A push made only of dependency commits (`chore(deps)` / `build(deps)`, the
+  # upkeep job's, which ships only updates found not to change behaviour) runs no
+  # slice: the owner's rule, 2026-10-11. GitHub lists at most 20 commits in the
+  # event, so a longer push is never taken for dependencies only.
+  kind:
+    name: Push kind
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      deps_only: ${{ steps.kind.outputs.deps_only }}
+    steps:
+      - name: Dependencies only?
+        id: kind
+        run: |
+          set -euo pipefail
+          deps_only=$(jq -r '
+            [.commits[]?.message | split("\n")[0]] as $subjects
+            | ($subjects | length) > 0 and ($subjects | length) < 20
+              and all($subjects[]; test("^(chore|build)\\(deps\\)"))' "$GITHUB_EVENT_PATH")
+          echo "deps_only=$deps_only" >> "$GITHUB_OUTPUT"
+          echo "dependencies only: $deps_only"
+
   slice:
     name: Mutants, rotating slice
-    if: github.event_name == 'push'
+    needs: kind
+    if: github.event_name == 'push' && needs.kind.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

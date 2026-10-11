@@ -180,6 +180,13 @@ mod tests {
     }
 
     #[test]
+    fn a_line_added_beside_context_is_a_modification_not_a_new_file() {
+        let e = entries(&[diff("c.txt", Some("a\n"), Some("a\n"), Some("a\nb\n"), None)]);
+        assert_eq!(e.len(), 1);
+        assert_eq!((e[0].status, e[0].additions, e[0].deletions), (FileStatus::Modified, 1, 0));
+    }
+
+    #[test]
     fn a_new_file_is_added_with_its_line_count() {
         let e = entries(&[diff("n.txt", None, None, Some("a\nb\n"), None)]);
         assert_eq!(e.len(), 1);
