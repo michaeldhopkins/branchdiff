@@ -1,5 +1,10 @@
 ## [unreleased]
 
+### Testing
+
+- *(file_list)* Pin status_of's boundaries against the slice's missed mutants
+## [0.77.0] - 2026-10-10
+
 ### Features
 
 - *(html)* Higher-contrast default palette

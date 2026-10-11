@@ -171,6 +171,15 @@ mod tests {
     }
 
     #[test]
+    fn status_needs_rows_of_one_kind_only_to_be_added_or_deleted() {
+        assert_eq!(status_of(false, 0, 0, 0), FileStatus::Modified);
+        assert_eq!(status_of(false, 1, 1, 0), FileStatus::Modified);
+        assert_eq!(status_of(false, 2, 0, 0), FileStatus::Added);
+        assert_eq!(status_of(false, 0, 2, 0), FileStatus::Deleted);
+        assert_eq!(status_of(false, 0, 2, 1), FileStatus::Modified);
+    }
+
+    #[test]
     fn a_new_file_is_added_with_its_line_count() {
         let e = entries(&[diff("n.txt", None, None, Some("a\nb\n"), None)]);
         assert_eq!(e.len(), 1);
