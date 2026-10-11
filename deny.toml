@@ -9,15 +9,7 @@ version = 2
 unmaintained = "workspace"
 # A transitive crate being yanked (e.g. core2) is likewise not actionable here.
 yanked = "warn"
-ignore = [
-    # quick-xml DoS advisories, pulled transitively by `syntect -> plist`, which
-    # only parses `.tmTheme` XML. branchdiff uses precompiled `two-face` syntaxes
-    # and builds themes programmatically (src/syntax/theme.rs) — it never parses
-    # attacker-controlled XML, so these code paths are unreachable. Revisit when
-    # syntect/plist bump quick-xml to >= 0.41.0.
-    { id = "RUSTSEC-2026-0194", reason = "unreachable: no .tmTheme/XML parsing (bundled syntaxes, programmatic themes)" },
-    { id = "RUSTSEC-2026-0195", reason = "unreachable: no .tmTheme/XML parsing (bundled syntaxes, programmatic themes)" },
-]
+ignore = []
 
 [licenses]
 version = 2
