@@ -4,6 +4,7 @@
 
 - *(file_list)* Pin status_of's boundaries against the slice's missed mutants
 - *(file_list)* A line added beside context is modified; skip the mutation slice on dependency-only pushes
+- *(diff_view)* Time the fastest frame in the long-line perf test, so a busy machine cannot fail it
 ## [0.77.0] - 2026-10-10
 
 ### Features

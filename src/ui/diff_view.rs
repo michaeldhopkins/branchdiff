@@ -1288,7 +1288,7 @@ mod tests {
     use crate::test_support::{base_line, change_line, TestAppBuilder};
 
     #[cfg(test)]
-    fn avg_render_frame(content: String, width: u16, height: u16) -> std::time::Duration {
+    fn fastest_render_frame(content: String, width: u16, height: u16) -> std::time::Duration {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         use std::time::Instant;
@@ -1314,12 +1314,16 @@ mod tests {
 
         draw(&mut app); // warm up lazy syntax-set init
 
-        let frames = 10;
-        let start = Instant::now();
-        for _ in 0..frames {
-            draw(&mut app);
-        }
-        start.elapsed() / frames
+        // The fastest frame, not the mean: a busy machine preempts some frames, which
+        // inflated the mean enough to fail the ratio check (branchdiff-deps, 2026-10-10).
+        (0..10)
+            .map(|_| {
+                let start = Instant::now();
+                draw(&mut app);
+                start.elapsed()
+            })
+            .min()
+            .unwrap_or_default()
     }
 
     /// Render one frame at `scroll_offset` and report how many lines the
@@ -1401,8 +1405,8 @@ mod tests {
         let width: u16 = 120;
         let height: u16 = 40;
 
-        let small = avg_render_frame("a".repeat(9_000), width, height);
-        let huge = avg_render_frame("a".repeat(256 * 1024), width, height);
+        let small = fastest_render_frame("a".repeat(9_000), width, height);
+        let huge = fastest_render_frame("a".repeat(256 * 1024), width, height);
 
         assert!(
             huge < small * 8,
