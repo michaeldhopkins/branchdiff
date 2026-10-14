@@ -306,8 +306,9 @@ pub fn fit_dimensions(
     max_h: u16,
     font_size: (u16, u16),
 ) -> (u16, u16) {
-    // Handle zero inputs gracefully
-    if img_width == 0 || img_height == 0 || max_w == 0 || max_h == 0 {
+    // An empty image is guarded here. A zero-size box needs no guard: it scales the image to
+    // nothing, which rounds up to the 1x1 minimum below.
+    if img_width == 0 || img_height == 0 {
         return (1, 1);
     }
 
@@ -486,6 +487,14 @@ mod tests {
         let (w, h) = fit_dimensions(100, 100, 0, 0, TEST_FONT_SIZE);
         assert!(w >= 1);
         assert!(h >= 1);
+    }
+
+    #[test]
+    fn test_fit_dimensions_one_empty_side_or_box_side_is_the_minimum() {
+        assert_eq!(fit_dimensions(0, 100, 80, 24, TEST_FONT_SIZE), (1, 1));
+        assert_eq!(fit_dimensions(100, 0, 80, 24, TEST_FONT_SIZE), (1, 1));
+        assert_eq!(fit_dimensions(100, 100, 0, 24, TEST_FONT_SIZE), (1, 1));
+        assert_eq!(fit_dimensions(100, 100, 80, 0, TEST_FONT_SIZE), (1, 1));
     }
 
     #[test]
