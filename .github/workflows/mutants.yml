@@ -140,18 +140,15 @@ jobs:
             echo "::warning::Mutants skipped: $selected selected, over the limit of $MAX_SELECTED. A diff this broad is a sweep rather than a changed-code check. Nothing was mutation-tested for this push."
             exit 0
           fi
+          # scripts/mutants-run.sh decides the verdict from mutants.out/missed.txt, so exit 3 passes only when nothing was missed, and stops cargo-mutants at a time budget.
           # Exit codes: 2 a mutant was MISSED (the finding); 3 a mutant TIMED
           # OUT (see AGENTS.md: three length-guard mutants are caught this way),
           # counted as caught and passed, though mutants-exit.txt keeps the 3;
           # 4 the baseline failed; 5/6 the diff is wrong — harness bugs in the
           # step above, not findings about branchdiff.
           code=0
-          cargo mutants --no-shuffle -vV --in-diff mutants.diff || code=$?
+          scripts/mutants-run.sh --no-shuffle -vV --in-diff mutants.diff || code=$?
           echo "$code" > mutants-exit.txt
-          if [ "$code" -eq 3 ]; then
-            echo "::notice::timeouts counted as caught; see mutants.out/timeout.txt"
-            code=0
-          fi
           exit "$code"
 
       - name: Summarise
@@ -296,12 +293,8 @@ jobs:
           echo "$k" > mutants-slice.txt
           echo "Slice $k of $SLICES"
           code=0
-          cargo mutants --no-shuffle -vV --shard "$k/$SLICES" || code=$?
+          MUTANTS_BUDGET_PASSES=1 scripts/mutants-run.sh --no-shuffle -vV --shard "$k/$SLICES" || code=$?
           echo "$code" > mutants-exit.txt
-          if [ "$code" -eq 3 ]; then
-            echo "::notice::timeouts counted as caught; see mutants.out/timeout.txt"
-            code=0
-          fi
           exit "$code"
 
       - name: Summarise
