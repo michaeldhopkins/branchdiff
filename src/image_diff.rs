@@ -716,4 +716,64 @@ mod tests {
             );
         }
     }
+
+    fn empty_state() -> ImageDiffState {
+        ImageDiffState {
+            before: None,
+            after: None,
+        }
+    }
+
+    #[test]
+    fn test_image_cache_get_mut_updates_access_order() {
+        let mut cache = ImageCache::new();
+        cache.insert("first.png".to_string(), empty_state());
+        cache.insert("second.png".to_string(), empty_state());
+        assert!(cache.get_mut("first.png").is_some());
+        assert!(cache.get_mut("missing.png").is_none());
+
+        for i in 0..(MAX_CACHED_IMAGES - 1) {
+            cache.insert(format!("filler{i}.png"), empty_state());
+        }
+
+        assert!(cache.contains("first.png"));
+        assert!(!cache.contains("second.png"));
+    }
+
+    #[test]
+    fn test_image_cache_clear_and_is_empty() {
+        let mut cache = ImageCache::new();
+        assert!(cache.is_empty());
+        cache.insert("a.png".to_string(), empty_state());
+        assert!(!cache.is_empty());
+
+        cache.clear();
+
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+        assert!(!cache.contains("a.png"));
+        assert!(cache.access_order.is_empty());
+    }
+
+    #[test]
+    fn test_load_and_cache_downscales_when_only_one_side_is_too_long() {
+        let encode = |w: u32, h: u32| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(w, h)
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            bytes.into_inner()
+        };
+        let side = MAX_CACHE_DIMENSION + 976;
+
+        let wide = load_and_cache(&encode(side, 10), "PNG").unwrap();
+        assert!(wide.display_image.width() <= MAX_CACHE_DIMENSION);
+        assert_eq!(wide.original_width, side);
+
+        let tall = load_and_cache(&encode(10, side), "PNG").unwrap();
+        assert!(tall.display_image.height() <= MAX_CACHE_DIMENSION);
+
+        let small = load_and_cache(&encode(10, 10), "PNG").unwrap();
+        assert_eq!(small.display_image.width(), 10);
+    }
 }
