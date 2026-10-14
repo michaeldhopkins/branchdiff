@@ -776,4 +776,40 @@ mod tests {
         let small = load_and_cache(&encode(10, 10), "PNG").unwrap();
         assert_eq!(small.display_image.width(), 10);
     }
+
+    #[test]
+    fn test_load_and_cache_scales_both_sides_by_the_same_factor() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2 * MAX_CACHE_DIMENSION, MAX_CACHE_DIMENSION)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+
+        let cached = load_and_cache(&bytes.into_inner(), "PNG").unwrap();
+
+        assert_eq!(cached.display_image.width(), MAX_CACHE_DIMENSION);
+        assert_eq!(cached.display_image.height(), MAX_CACHE_DIMENSION / 2);
+        assert_eq!(cached.original_width, 2 * MAX_CACHE_DIMENSION);
+        assert_eq!(cached.original_height, MAX_CACHE_DIMENSION);
+    }
+
+    const SVG_200_BY_100: &[u8] =
+        br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100"/></svg>"#;
+
+    #[test]
+    fn test_rasterize_svg_shrinks_to_the_max_dimension_keeping_aspect_ratio() {
+        let cached = rasterize_svg(SVG_200_BY_100, 100).unwrap();
+
+        assert_eq!(cached.display_image.width(), 100);
+        assert_eq!(cached.display_image.height(), 50);
+        assert_eq!((cached.original_width, cached.original_height), (200, 100));
+        assert_eq!(cached.format_name, "SVG");
+    }
+
+    #[test]
+    fn test_rasterize_svg_never_upscales() {
+        let cached = rasterize_svg(SVG_200_BY_100, 1000).unwrap();
+
+        assert_eq!(cached.display_image.width(), 200);
+        assert_eq!(cached.display_image.height(), 100);
+    }
 }
