@@ -1,3 +1,7 @@
+# Default width, set to the code's existing compact style so the one-time
+# reformat is small. Measured 2026-10-15 against the file-length pins: the
+# all-defaults style added ~5,800 lines and grew ten pinned files; this one
+# adds ~50 and grows only src/app/mod.rs (+7) and src/vcs/jj.rs (+9).
 edition = "2024"
 use_small_heuristics = "Max"
 short_array_element_width_threshold = 24
