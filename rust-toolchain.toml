@@ -1,0 +1,6 @@
+# Pinned so a new stable's lints and formatting changes can't turn CI red on code
+# nobody touched. Move to each new stable within 30 days, fixing what its lints find.
+# The fuzz workspace runs on nightly through `cargo +nightly`, which overrides this.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
