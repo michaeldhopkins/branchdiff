@@ -306,8 +306,7 @@ pub fn fit_dimensions(
     max_h: u16,
     font_size: (u16, u16),
 ) -> (u16, u16) {
-    // An empty image is guarded here. A zero-size box needs no guard: it scales the image to
-    // nothing, which rounds up to the 1x1 minimum below.
+    // A zero-size box needs no guard: it scales to 0 and rounds up to the 1x1 minimum below.
     if img_width == 0 || img_height == 0 {
         return (1, 1);
     }
@@ -517,11 +516,67 @@ mod tests {
 
     #[test]
     fn test_format_file_size() {
+        assert_eq!(format_file_size(0), "0 B");
         assert_eq!(format_file_size(512), "512 B");
+        assert_eq!(format_file_size(1023), "1023 B");
         assert_eq!(format_file_size(1024), "1.0 KB");
         assert_eq!(format_file_size(1536), "1.5 KB");
-        assert_eq!(format_file_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_file_size(2048), "2.0 KB");
+        assert_eq!(format_file_size(1_048_575), "1024.0 KB");
+        assert_eq!(format_file_size(1_048_576), "1.0 MB");
         assert_eq!(format_file_size(2 * 1024 * 1024 + 512 * 1024), "2.5 MB");
+    }
+
+    fn size_strategy() -> impl proptest::strategy::Strategy<Value = u64> {
+        proptest::prop_oneof![
+            0u64..1024,
+            1024u64..1_048_576,
+            1_048_576u64..=10 * 1_048_576,
+        ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn format_file_size_uses_the_unit_for_each_range_and_grows_monotonically(
+            a in size_strategy(),
+            b in size_strategy(),
+        ) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            let mut parsed = [(0.0, ""); 2];
+            for (slot, bytes) in parsed.iter_mut().zip([lo, hi]) {
+                let formatted = format_file_size(bytes);
+                let (num, unit) = formatted.split_once(' ').unwrap();
+                let val: f64 = num.parse().unwrap();
+                let (expected_unit, scale) = if bytes < 1024 {
+                    ("B", 1.0)
+                } else if bytes < 1_048_576 {
+                    ("KB", 1024.0)
+                } else {
+                    ("MB", 1_048_576.0)
+                };
+                proptest::prop_assert_eq!(unit, expected_unit, "wrong unit for {}: {}", bytes, formatted);
+                proptest::prop_assert!(
+                    (val - bytes as f64 / scale).abs() <= 0.050_001,
+                    "wrong value for {}: {} vs {}",
+                    bytes,
+                    formatted,
+                    bytes as f64 / scale
+                );
+                *slot = (val, expected_unit);
+            }
+            if parsed[0].1 == parsed[1].1 {
+                proptest::prop_assert!(
+                    parsed[0].0 <= parsed[1].0,
+                    "{} ({} {}) > {} ({} {})",
+                    lo,
+                    parsed[0].0,
+                    parsed[0].1,
+                    hi,
+                    parsed[1].0,
+                    parsed[1].1
+                );
+            }
+        }
     }
 
     #[test]
