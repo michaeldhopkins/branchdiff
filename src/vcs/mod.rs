@@ -222,4 +222,12 @@ mod tests {
         let result = detect_repo_dir(&child);
         assert_eq!(result, Some(("jj", tmp.path().to_path_buf())));
     }
+
+    #[test]
+    fn default_trait_methods_bail_when_backend_omits_them() {
+        let vcs = crate::test_support::StubVcs::new(PathBuf::new());
+        assert!(vcs.fingerprint_inputs().is_err());
+        let cancel = Arc::new(AtomicBool::new(false));
+        assert!(vcs.try_recover(crate::update::RecoveryAction::JjUpdateStale, &cancel).is_err());
+    }
 }

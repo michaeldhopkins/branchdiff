@@ -94,6 +94,10 @@ mod tests {
         let vcs = crate::vcs::detect(t.path()).unwrap();
         for mode in [OutputMode::Tui, OutputMode::Print, OutputMode::Diff, OutputMode::Html] {
             assert!(render(vcs.as_ref(), mode, false).unwrap().is_none(), "{mode:?}");
+            assert!(!print(vcs.as_ref(), mode, false).unwrap(), "{mode:?}");
+        }
+        for mode in [OutputMode::Files, OutputMode::Fingerprint] {
+            assert!(print(vcs.as_ref(), mode, false).unwrap(), "{mode:?}");
         }
     }
 
