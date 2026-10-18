@@ -10,6 +10,16 @@
 # in them as MISSED.
 additional_cargo_test_args = ["--lib", "--bins"]
 
+# Copy only what a fresh clone has: no fuzz/target in every build directory.
+gitignore = true
+
+exclude_globs = [
+    # Compiled only under `--cfg fuzzing` (cargo fuzz), so `cargo test` never
+    # builds it and every mutant here would read as MISSED. Thin forwarders to
+    # parsers tested directly.
+    "src/fuzz_api.rs",
+]
+
 # The baseline suite takes ~20s. Three mutants in `advance_over`'s length guard
 # (`|| -> &&`, `> -> ==`, `> -> <`) are detected by *timeout* rather than by a
 # failing assertion: each one lets over-long lines reach the parser, which is

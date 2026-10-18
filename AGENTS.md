@@ -226,6 +226,12 @@ viewport test and quarter-down target, and `current_file`. Tested by scrolling
 to a match below and above the viewport, and reading `current_file` at two
 offsets; a local run also caught the `< top_abs` mutant the slice had not reached.
 
+**CI slice 36 of 2026-10-18 (run 39110790297): 6 missed** in `src/fuzz_api.rs`,
+which is compiled only under `--cfg fuzzing` (`cargo fuzz`) and never built by
+`cargo test`. Excluded via `exclude_globs` in `.cargo/mutants.toml`, and added
+unit test assertions for the bare-uppercase `G`, `Y`, and `D` key arms in
+`src/input.rs` exposed in the shifted slices.
+
 Run the per-change check locally with the prefix override, or it silently
 selects nothing:
 

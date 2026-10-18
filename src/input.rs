@@ -310,6 +310,8 @@ mod tests {
     fn test_go_to_bottom_with_shift_g() {
         let event = key_event(KeyCode::Char('G'), KeyModifiers::SHIFT);
         assert_eq!(handle_event(event), AppAction::GoToBottom);
+        let bare = key_event(KeyCode::Char('G'), KeyModifiers::NONE);
+        assert_eq!(handle_event(bare), AppAction::GoToBottom);
     }
 
     #[test]
@@ -432,12 +434,16 @@ mod tests {
     fn test_copy_diff_with_shift_y() {
         let event = key_event(KeyCode::Char('Y'), KeyModifiers::SHIFT);
         assert_eq!(handle_event(event), AppAction::CopyDiff);
+        let bare = key_event(KeyCode::Char('Y'), KeyModifiers::NONE);
+        assert_eq!(handle_event(bare), AppAction::CopyDiff);
     }
 
     #[test]
     fn test_copy_patch_with_shift_d() {
         let event = key_event(KeyCode::Char('D'), KeyModifiers::SHIFT);
         assert_eq!(handle_event(event), AppAction::CopyPatch);
+        let bare = key_event(KeyCode::Char('D'), KeyModifiers::NONE);
+        assert_eq!(handle_event(bare), AppAction::CopyPatch);
     }
 
     #[test]
