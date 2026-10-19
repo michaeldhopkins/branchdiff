@@ -284,6 +284,27 @@ mod tests {
         assert!(warning.is_some());
     }
 
+    #[test]
+    fn a_directory_count_equal_to_the_limit_is_not_large() {
+        let metrics = WatcherMetrics { directory_count: 100, skipped_count: 0 };
+        assert!(check_watch_warning(&metrics, Some(100)).is_none());
+        let metrics = WatcherMetrics { directory_count: 101, skipped_count: 0 };
+        assert!(check_watch_warning(&metrics, Some(100)).is_some());
+    }
+
+    #[test]
+    fn diff_thresholds_are_exclusive_at_the_limit() {
+        let thresholds = DiffThresholds { warn_line_count: 1_000, warn_file_count: 10 };
+        let at_lines = DiffMetrics { total_lines: 1_000, file_count: 0 };
+        assert!(thresholds.check_diff_warning(&at_lines).is_none());
+        let over_lines = DiffMetrics { total_lines: 1_001, file_count: 0 };
+        assert!(thresholds.check_diff_warning(&over_lines).is_some());
+        let at_files = DiffMetrics { total_lines: 0, file_count: 10 };
+        assert!(thresholds.check_diff_warning(&at_files).is_none());
+        let over_files = DiffMetrics { total_lines: 0, file_count: 11 };
+        assert!(thresholds.check_diff_warning(&over_files).is_some());
+    }
+
     // =========================================================================
     // Diff threshold tests
     // =========================================================================
