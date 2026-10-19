@@ -53,6 +53,9 @@ syn = { version = "2", features = ["full", "visit"] }
 assert_cmd = "2"
 predicates = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
+# Heap allocation counts for benches/alloc.rs. Testing mode, so the run prints
+# totals and does not write a dhat-heap.json beside the tree.
+dhat = "0.3"
 
 # TUI integration testing
 portable-pty = "0.8"
@@ -65,6 +68,11 @@ clap_complete = "4"
 
 [[bench]]
 name = "performance"
+harness = false
+
+# Deterministic allocation pins. CI runs this as a hard gate.
+[[bench]]
+name = "alloc"
 harness = false
 
 [lints.rust]

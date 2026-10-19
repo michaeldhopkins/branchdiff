@@ -1,0 +1,116 @@
+# Hot-path pins for branchdiff.
+# Allocation counts are one call at opt-level 3, measured 2026-10-18.
+# `cargo bench --bench alloc` fails when a count exceeds max_blocks or max_bytes.
+# ref_median_ns is the median point estimate in nanoseconds, rounded, measured
+# 2026-10-18 on the reference machine. The printed Criterion "time:" line is the
+# slope when outliers pull it away from the median; the pin is the median.
+# The same-machine comparison does not read these medians. A local fallback does.
+# The refresh group has no allocation pin: it shells out to jj.
+
+[[bench]]
+id = "frame_context/full/1k_lines"
+max_blocks = 1
+max_bytes = 24480
+ref_median_ns = 254
+
+[[bench]]
+id = "frame_context/context/1k_lines"
+max_blocks = 11
+max_bytes = 51096
+ref_median_ns = 4651
+
+[[bench]]
+id = "frame_context/commit_only/1k_lines"
+max_blocks = 11
+max_bytes = 51096
+ref_median_ns = 4484
+
+[[bench]]
+id = "frame_context/full/10k_lines"
+max_blocks = 1
+max_bytes = 217440
+ref_median_ns = 3251
+
+[[bench]]
+id = "frame_context/context/10k_lines"
+max_blocks = 15
+max_bytes = 804456
+ref_median_ns = 38338
+
+[[bench]]
+id = "frame_context/commit_only/10k_lines"
+max_blocks = 15
+max_bytes = 804456
+ref_median_ns = 36959
+
+[[bench]]
+id = "inline_spans/ensure_visible_1200_candidates"
+max_blocks = 466
+max_bytes = 223728
+ref_median_ns = 79887
+
+[[bench]]
+id = "navigation/scroll_down_10"
+max_blocks = 6
+max_bytes = 724816
+ref_median_ns = 97505
+
+[[bench]]
+id = "navigation/page_down"
+max_blocks = 6
+max_bytes = 724816
+ref_median_ns = 96007
+
+[[bench]]
+id = "navigation/go_to_bottom"
+max_blocks = 3
+max_bytes = 362408
+ref_median_ns = 48649
+
+[[bench]]
+id = "navigation/next_file"
+max_blocks = 1
+max_bytes = 217440
+ref_median_ns = 3513
+
+[[bench]]
+id = "view_mode/cycle_view_mode"
+max_blocks = 9108
+max_bytes = 7666880
+ref_median_ns = 390056
+
+[[bench]]
+id = "context_mode/build_context_lines/1k_lines"
+max_blocks = 1041
+max_bytes = 436656
+ref_median_ns = 31157
+
+[[bench]]
+id = "context_mode/build_context_lines/10k_lines"
+max_blocks = 9089
+max_bytes = 6699336
+ref_median_ns = 310014
+
+[[bench]]
+id = "update/handle_scroll_input"
+max_blocks = 6
+max_bytes = 323216
+ref_median_ns = 42467
+
+[[bench]]
+id = "update/handle_tick"
+max_blocks = 0
+max_bytes = 0
+ref_median_ns = 43
+
+[[bench]]
+id = "refresh/colocated/50f_10c"
+ref_median_ns = 89338647
+
+[[bench]]
+id = "refresh/colocated/500f_25c"
+ref_median_ns = 131541021
+
+[[bench]]
+id = "refresh/non_colocated/50f_10c"
+ref_median_ns = 73175330

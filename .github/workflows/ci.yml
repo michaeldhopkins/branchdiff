@@ -17,9 +17,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
 
       - name: cargo check
         run: cargo check --locked
@@ -28,7 +31,14 @@ jobs:
         run: cargo test --locked --lib --bins
 
       - name: cargo clippy
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: cargo bench (allocation pins)
+        run: cargo bench --locked --bench alloc
+
+      - name: cargo bench (wall clock, advisory)
+        run: cargo bench --locked --bench performance -- --noplot
+        continue-on-error: true
 
       - uses: taiki-e/install-action@cargo-deny
 
