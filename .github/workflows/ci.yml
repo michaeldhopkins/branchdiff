@@ -5,6 +5,16 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
+# A new push replaces a run that has not finished. The allocation bench is
+# required, and a superseded commit should not hold a runner until the
+# six-hour default.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -12,11 +22,18 @@ jobs:
   ci:
     name: Check, Test, Lint
     runs-on: ubuntu-latest
+    # The allocation bench is a required step. 45 minutes covers a cold
+    # compile, the tests, clippy, and both benches. The default is six hours.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Alloc pins were measured on the channel in rust-toolchain.toml.
+      # @master is this action's branch. The toolchain input is the compiler.
+      # @stable would float, and a later stable can move std's allocations.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.99.0
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2

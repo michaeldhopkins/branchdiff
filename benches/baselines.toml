@@ -1,5 +1,7 @@
 # Hot-path pins for branchdiff.
-# Allocation counts are one call at opt-level 3, measured 2026-10-18.
+# Allocation counts are one call at opt-level 3, measured 2026-10-18 on the
+# channel in rust-toolchain.toml. CI installs that channel. A floating stable
+# toolchain can move std's allocations, so these pins are for that compiler.
 # `cargo bench --bench alloc` fails when a count exceeds max_blocks or max_bytes.
 # ref_median_ns is the median point estimate in nanoseconds, rounded, measured
 # 2026-10-18 on the reference machine. The printed Criterion "time:" line is the
