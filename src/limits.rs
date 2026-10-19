@@ -24,36 +24,34 @@ pub fn is_wsl() -> bool {
 
 /// Parse an inotify sysctl value from its string representation.
 /// Returns None if the string is empty or not a valid number.
-#[cfg(target_os = "linux")]
 pub fn parse_inotify_value(s: &str) -> Option<usize> {
     s.trim().parse().ok()
 }
 
 /// Read the inotify max_user_watches limit from /proc/sys.
 /// Returns None if the file can't be read or parsed.
-#[cfg(target_os = "linux")]
 fn read_inotify_max_watches() -> Option<usize> {
     let content = std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches").ok()?;
     parse_inotify_value(&content)
 }
 
-/// Get the recommended watch limit for Linux.
-/// Uses 50% of the inotify limit since it's shared across all user applications.
-/// Returns None on WSL (which uses PollWatcher with no limit).
-#[cfg(target_os = "linux")]
-pub fn get_watch_limit() -> Option<usize> {
-    if is_wsl() {
-        return None; // PollWatcher has no limit
+/// The watch limit for a Linux host: None on WSL (PollWatcher has no limit), otherwise 50% of the
+/// inotify limit, since it's shared with VS Code, IDEs and the like. An unreadable limit is 8192.
+fn linux_watch_limit(wsl: bool, inotify_max_watches: Option<usize>) -> Option<usize> {
+    if wsl {
+        return None;
     }
-    // Read the real inotify limit, use 50% (shared with VS Code, IDE, etc.)
-    let max = read_inotify_max_watches().unwrap_or(8192);
-    Some(max / 2)
+    Some(inotify_max_watches.unwrap_or(8192) / 2)
 }
 
+/// Get the recommended watch limit.
 /// macOS and Windows use native recursive watching with no practical per-app limit.
-#[cfg(not(target_os = "linux"))]
 pub fn get_watch_limit() -> Option<usize> {
-    None
+    if cfg!(target_os = "linux") {
+        linux_watch_limit(is_wsl(), read_inotify_max_watches())
+    } else {
+        None
+    }
 }
 
 // =============================================================================
@@ -147,6 +145,33 @@ mod tests {
         assert_eq!(parse_inotify_value("invalid"), None);
         assert_eq!(parse_inotify_value(""), None);
         assert_eq!(parse_inotify_value("12abc"), None);
+    }
+
+    #[test]
+    fn linux_watch_limit_is_half_the_inotify_limit() {
+        assert_eq!(linux_watch_limit(false, Some(65_536)), Some(32_768));
+        assert_eq!(linux_watch_limit(false, Some(5)), Some(2));
+    }
+
+    #[test]
+    fn linux_watch_limit_defaults_when_the_sysctl_is_unreadable() {
+        assert_eq!(linux_watch_limit(false, None), Some(4_096));
+    }
+
+    #[test]
+    fn wsl_has_no_watch_limit() {
+        assert_eq!(linux_watch_limit(true, Some(65_536)), None);
+        assert_eq!(linux_watch_limit(true, None), None);
+    }
+
+    #[test]
+    fn the_watch_limit_follows_the_platform() {
+        let expected = if cfg!(target_os = "linux") {
+            linux_watch_limit(is_wsl(), read_inotify_max_watches())
+        } else {
+            None
+        };
+        assert_eq!(get_watch_limit(), expected);
     }
 
     #[test]
