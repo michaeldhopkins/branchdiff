@@ -3,12 +3,12 @@
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     use crate::diff::LineSource;
-    use crate::vcs::git::GitVcs;
     use crate::vcs::Vcs;
+    use crate::vcs::git::GitVcs;
 
     use std::process::Command;
     use tempfile::TempDir;
@@ -196,16 +196,29 @@ mod tests {
         let repo_path = temp_dir.path();
 
         Command::new("git").args(["init"]).current_dir(repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.name", "Test"]).current_dir(repo_path).output().unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
 
-        std::fs::write(repo_path.join("original.txt"), "line 1\nline 2\nline 3\nline 4\nline 5\n").unwrap();
+        std::fs::write(repo_path.join("original.txt"), "line 1\nline 2\nline 3\nline 4\nline 5\n")
+            .unwrap();
         git_cmd(repo_path, &["add", "."]);
         git_cmd(repo_path, &["commit", "-m", "initial"]);
         git_cmd(repo_path, &["branch", "-M", "main"]);
 
         std::fs::remove_file(repo_path.join("original.txt")).unwrap();
-        std::fs::write(repo_path.join("renamed.txt"), "line 1\nline 2 modified\nline 3\nline 4\nline 5\n").unwrap();
+        std::fs::write(
+            repo_path.join("renamed.txt"),
+            "line 1\nline 2 modified\nline 3\nline 4\nline 5\n",
+        )
+        .unwrap();
 
         let vcs = GitVcs::new(repo_path.to_path_buf()).unwrap();
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -213,13 +226,16 @@ mod tests {
 
         assert_eq!(refresh.files.len(), 1, "Expected 1 file, got {}", refresh.files.len());
 
-        let modified_lines: Vec<_> = refresh.lines.iter()
+        let modified_lines: Vec<_> = refresh
+            .lines
+            .iter()
             .filter(|l| l.old_content.is_some() || l.change_source.is_some())
             .collect();
 
         assert!(!modified_lines.is_empty(), "Expected at least one modified line");
 
-        let mod_line = modified_lines.iter()
+        let mod_line = modified_lines
+            .iter()
             .find(|l| l.content.contains("line 2 modified"))
             .expect("Should have modification for line 2");
 
@@ -244,9 +260,8 @@ mod tests {
         assert!(refresh.lines.iter().any(|l| l.content.contains("text content")));
         assert!(refresh.lines.iter().any(|l| l.content == "[binary file]"));
 
-        let file_headers: Vec<_> = refresh.lines.iter()
-            .filter(|l| l.source == LineSource::FileHeader)
-            .collect();
+        let file_headers: Vec<_> =
+            refresh.lines.iter().filter(|l| l.source == LineSource::FileHeader).collect();
         assert_eq!(file_headers.len(), 2);
         assert_eq!(refresh.metrics.file_count, 2);
     }
@@ -257,8 +272,16 @@ mod tests {
         let repo_path = temp_dir.path();
 
         Command::new("git").args(["init"]).current_dir(repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.name", "Test"]).current_dir(repo_path).output().unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
 
         std::fs::write(repo_path.join("handler.go"), "package main\n").unwrap();
         std::fs::write(repo_path.join("handler_test.go"), "package main\n").unwrap();
@@ -267,7 +290,8 @@ mod tests {
         git_cmd(repo_path, &["branch", "-M", "main"]);
 
         std::fs::write(repo_path.join("handler.go"), "package main\nfunc Handler() {}\n").unwrap();
-        std::fs::write(repo_path.join("handler_test.go"), "package main\nfunc TestHandler() {}\n").unwrap();
+        std::fs::write(repo_path.join("handler_test.go"), "package main\nfunc TestHandler() {}\n")
+            .unwrap();
 
         let vcs = GitVcs::new(repo_path.to_path_buf()).unwrap();
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -284,19 +308,23 @@ mod tests {
         let repo_path = temp_dir.path();
 
         Command::new("git").args(["init"]).current_dir(repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.name", "Test"]).current_dir(repo_path).output().unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
 
         let png_bytes: Vec<u8> = vec![
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
-            0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54,
-            0x08, 0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, 0x00,
-            0x05, 0xFE, 0x02, 0xFE, 0xA3, 0x56, 0x5A, 0x09,
-            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
-            0xAE, 0x42, 0x60, 0x82,
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, 0x00, 0x05, 0xFE, 0x02, 0xFE, 0xA3, 0x56, 0x5A,
+            0x09, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ];
 
         std::fs::write(repo_path.join("image.png"), &png_bytes).unwrap();
@@ -306,15 +334,11 @@ mod tests {
         git_cmd(repo_path, &["branch", "-M", "main"]);
 
         let modified_png: Vec<u8> = vec![
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
-            0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54,
-            0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00,
-            0x02, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D, 0xB4,
-            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
-            0xAE, 0x42, 0x60, 0x82,
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x02, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D,
+            0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ];
         std::fs::write(repo_path.join("image.png"), &modified_png).unwrap();
 
@@ -335,8 +359,16 @@ mod tests {
         let repo_path = temp_dir.path();
 
         Command::new("git").args(["init"]).current_dir(repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.name", "Test"]).current_dir(repo_path).output().unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
 
         std::fs::write(repo_path.join("text.txt"), "initial\n").unwrap();
         git_cmd(repo_path, &["add", "."]);
@@ -345,15 +377,11 @@ mod tests {
 
         std::fs::write(repo_path.join("text.txt"), "modified\n").unwrap();
         let png_bytes: Vec<u8> = vec![
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE,
-            0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54,
-            0x08, 0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, 0x00,
-            0x05, 0xFE, 0x02, 0xFE, 0xA3, 0x56, 0x5A, 0x09,
-            0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
-            0xAE, 0x42, 0x60, 0x82,
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, 0x00, 0x05, 0xFE, 0x02, 0xFE, 0xA3, 0x56, 0x5A,
+            0x09, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
         ];
         std::fs::write(repo_path.join("image.png"), &png_bytes).unwrap();
 

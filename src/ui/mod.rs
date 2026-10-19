@@ -1,6 +1,6 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
     Frame,
+    layout::{Constraint, Direction, Layout},
 };
 
 use crate::app::{App, FrameContext};
@@ -63,10 +63,7 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
                 Constraint::Length(status_height),
             ]
         } else {
-            vec![
-                Constraint::Min(1),
-                Constraint::Length(status_height),
-            ]
+            vec![Constraint::Min(1), Constraint::Length(status_height)]
         })
         .split(size);
 

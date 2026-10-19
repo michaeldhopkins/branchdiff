@@ -15,8 +15,8 @@ mod output;
 mod provenance;
 
 pub use algorithm::{
-    compute_four_way_diff, compute_four_way_diff_cancellable,
-    compute_four_way_diff_with_predicate, DiffInput,
+    DiffInput, compute_four_way_diff, compute_four_way_diff_cancellable,
+    compute_four_way_diff_with_predicate,
 };
 pub use block::{BlockKind, BlockMatch, ChangeBlock};
 pub use inline::InlineSpan;
@@ -41,15 +41,7 @@ pub fn content_display_width(s: &str) -> usize {
         return s.len() + tabs * 3;
     }
     use unicode_width::UnicodeWidthChar;
-    s.chars()
-        .map(|ch| {
-            if ch == '\t' {
-                4
-            } else {
-                UnicodeWidthChar::width(ch).unwrap_or(1)
-            }
-        })
-        .sum()
+    s.chars().map(|ch| if ch == '\t' { 4 } else { UnicodeWidthChar::width(ch).unwrap_or(1) }).sum()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,10 +82,7 @@ impl LineSource {
 
     /// True for deletions
     pub fn is_deletion(self) -> bool {
-        matches!(
-            self,
-            Self::DeletedBase | Self::DeletedCommitted | Self::DeletedStaged
-        )
+        matches!(self, Self::DeletedBase | Self::DeletedCommitted | Self::DeletedStaged)
     }
 
     /// True for unstaged changes (working tree modifications)
@@ -110,10 +99,7 @@ impl LineSource {
     /// In jj, Staged = current commit additions, DeletedCommitted = current commit deletions,
     /// CanceledStaged = added in current commit then removed in child.
     pub fn is_current_commit(self) -> bool {
-        matches!(
-            self,
-            Self::Staged | Self::DeletedCommitted | Self::CanceledStaged
-        )
+        matches!(self, Self::Staged | Self::DeletedCommitted | Self::CanceledStaged)
     }
 }
 
@@ -143,7 +129,12 @@ pub struct DiffLine {
 }
 
 impl DiffLine {
-    pub fn new(source: LineSource, content: String, prefix: char, line_number: Option<usize>) -> Self {
+    pub fn new(
+        source: LineSource,
+        content: String,
+        prefix: char,
+        line_number: Option<usize>,
+    ) -> Self {
         let display_width = OnceCell::new();
         // OK to ignore — OnceCell::set only fails when already set, which can't
         // happen on a freshly constructed cell.
@@ -378,15 +369,18 @@ mod tests {
 
     #[test]
     fn test_diff_line_is_current_commit_via_change_source() {
-        let mut base_with_staged_mod = DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
+        let mut base_with_staged_mod =
+            DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
         base_with_staged_mod.change_source = Some(LineSource::Staged);
         assert!(base_with_staged_mod.is_current_commit());
 
-        let mut base_with_committed_mod = DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
+        let mut base_with_committed_mod =
+            DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
         base_with_committed_mod.change_source = Some(LineSource::Committed);
         assert!(!base_with_committed_mod.is_current_commit());
 
-        let mut base_with_unstaged_mod = DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
+        let mut base_with_unstaged_mod =
+            DiffLine::new(LineSource::Base, "modified".to_string(), ' ', Some(1));
         base_with_unstaged_mod.change_source = Some(LineSource::Unstaged);
         assert!(!base_with_unstaged_mod.is_current_commit());
     }
@@ -410,12 +404,7 @@ mod tests {
             // Force unicode path by temporarily prefixing with non-ASCII then subtracting.
             let with_unicode = format!("é{}", input);
             let unicode = content_display_width(&with_unicode);
-            assert_eq!(
-                ascii + 1,
-                unicode,
-                "ascii/unicode width paths disagree for {:?}",
-                input
-            );
+            assert_eq!(ascii + 1, unicode, "ascii/unicode width paths disagree for {:?}", input);
         }
     }
 
@@ -482,14 +471,8 @@ mod tests {
         index: Option<&str>,
         working: Option<&str>,
     ) -> FileDiff {
-        let mut diff = compute_four_way_diff(DiffInput {
-            path,
-            base,
-            head,
-            index,
-            working,
-            old_path: None,
-        });
+        let mut diff =
+            compute_four_way_diff(DiffInput { path, base, head, index, working, old_path: None });
         for line in &mut diff.lines {
             line.ensure_inline_spans();
         }
@@ -538,10 +521,7 @@ mod tests {
             .filter(|l| l.old_content.is_some() || l.change_source.is_some())
             .collect();
 
-        assert!(
-            !modified_lines.is_empty(),
-            "Expected at least one modified line"
-        );
+        assert!(!modified_lines.is_empty(), "Expected at least one modified line");
 
         // Verify the modification is tracked correctly
         let mod_line = modified_lines
@@ -584,10 +564,7 @@ mod tests {
             .filter(|l| l.old_content.is_some() || l.change_source.is_some())
             .collect();
 
-        assert!(
-            !modified_lines.is_empty(),
-            "Expected modification to be tracked"
-        );
+        assert!(!modified_lines.is_empty(), "Expected modification to be tracked");
 
         let mod_line = modified_lines
             .iter()
@@ -624,10 +601,7 @@ mod tests {
             .filter(|l| l.old_content.is_some() || l.change_source.is_some())
             .collect();
 
-        assert!(
-            !modified_lines.is_empty(),
-            "Expected modification to be tracked"
-        );
+        assert!(!modified_lines.is_empty(), "Expected modification to be tracked");
 
         let mod_line = modified_lines
             .iter()
@@ -698,11 +672,11 @@ mod tests {
         let head = "line1\nline2\ncommitted_line";
         let working = "line1\nline2";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
 
-        let canceled_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::CanceledCommitted)
-            .collect();
+        let canceled_lines: Vec<_> =
+            diff.lines.iter().filter(|l| l.source == LineSource::CanceledCommitted).collect();
 
         assert_eq!(canceled_lines.len(), 1);
         assert_eq!(canceled_lines[0].content, "committed_line");
@@ -715,11 +689,16 @@ mod tests {
         let index = "line1\nline2\nstaged_line";
         let working = "line1\nline2";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(base),
+            Some(index),
+            Some(working),
+        );
 
-        let canceled_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::CanceledStaged)
-            .collect();
+        let canceled_lines: Vec<_> =
+            diff.lines.iter().filter(|l| l.source == LineSource::CanceledStaged).collect();
 
         assert_eq!(canceled_lines.len(), 1);
         assert_eq!(canceled_lines[0].content, "staged_line");
@@ -732,11 +711,11 @@ mod tests {
         let head = "line1\nline2\nversion1";
         let working = "line1\nline2\nversion2";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
 
-        let canceled_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::CanceledCommitted)
-            .collect();
+        let canceled_lines: Vec<_> =
+            diff.lines.iter().filter(|l| l.source == LineSource::CanceledCommitted).collect();
 
         assert_eq!(canceled_lines.len(), 0, "modified line should not be canceled");
     }
@@ -747,11 +726,16 @@ mod tests {
         let index = "line1\nline2\nversion1";
         let working = "line1\nline2\nversion2";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(base),
+            Some(index),
+            Some(working),
+        );
 
-        let canceled_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::CanceledStaged)
-            .collect();
+        let canceled_lines: Vec<_> =
+            diff.lines.iter().filter(|l| l.source == LineSource::CanceledStaged).collect();
 
         assert_eq!(canceled_lines.len(), 0, "modified line should not be canceled");
     }
@@ -761,7 +745,8 @@ mod tests {
         let base = "line1\nold content\nline3";
         let working = "line1\nnew content\nline3";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -776,7 +761,8 @@ mod tests {
         let base = "before\nprocess_data(input)\nafter";
         let working = "before\nprocess_data(input, options)\nafter";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let contents: Vec<_> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -789,9 +775,11 @@ mod tests {
     #[test]
     fn test_multiple_modifications_show_merged() {
         let base = "line1\nprocess_item(data1)\nline3\nprocess_item(data2)\nline5";
-        let working = "line1\nprocess_item(data1, options)\nline3\nprocess_item(data2, options)\nline5";
+        let working =
+            "line1\nprocess_item(data1, options)\nline3\nprocess_item(data2, options)\nline5";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -806,14 +794,17 @@ mod tests {
         let base = "line1\nfunction getData()\nline3";
         let head = "line1\nfunction getData(params)\nline3";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
         assert_eq!(with_spans.len(), 1);
         assert_eq!(with_spans[0].content, "function getData(params)");
 
-        let changed: Vec<_> = with_spans[0].inline_spans.iter()
+        let changed: Vec<_> = with_spans[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Committed))
             .collect();
         assert!(!changed.is_empty());
@@ -869,49 +860,59 @@ layout {
     }
 }"#;
 
-        let diff = compute_diff_with_inline("workon.kdl", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("workon.kdl", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         // The "keybinds" lines should be Committed additions
-        let additions: Vec<_> = lines.iter()
-            .filter(|l| l.source == LineSource::Committed && l.prefix == '+')
-            .collect();
-        assert!(additions.iter().any(|l| l.content.contains("keybinds")),
+        let additions: Vec<_> =
+            lines.iter().filter(|l| l.source == LineSource::Committed && l.prefix == '+').collect();
+        assert!(
+            additions.iter().any(|l| l.content.contains("keybinds")),
             "Should have committed addition for 'keybinds', got additions: {:?}",
-            additions.iter().map(|l| &l.content).collect::<Vec<_>>());
+            additions.iter().map(|l| &l.content).collect::<Vec<_>>()
+        );
 
         // The modified line (70% -> 80%) should show as modified with inline spans
         // It should NOT be shown as Base
-        let modified_line = lines.iter()
-            .find(|l| l.content.contains("80%"));
+        let modified_line = lines.iter().find(|l| l.content.contains("80%"));
         assert!(modified_line.is_some(), "Should have a line containing '80%'");
 
         let modified = modified_line.unwrap();
         // Modified lines show as Base (gray context) with inline highlighting
-        assert_eq!(modified.source, LineSource::Base,
+        assert_eq!(
+            modified.source,
+            LineSource::Base,
             "Modified line '{}' should be Base (with inline highlighting), not {:?}",
-            modified.content, modified.source);
+            modified.content,
+            modified.source
+        );
         // Must have old_content set for inline diff computation
-        assert!(modified.old_content.is_some(),
-            "Modified line should have old_content set");
-        assert!(!modified.inline_spans.is_empty(),
+        assert!(modified.old_content.is_some(), "Modified line should have old_content set");
+        assert!(
+            !modified.inline_spans.is_empty(),
             "Modified line '{}' should have inline spans showing the change from 70% to 80%",
-            modified.content);
+            modified.content
+        );
 
         // Also check the 30% -> 20% modification
-        let modified_line_2 = lines.iter()
-            .find(|l| l.content.contains("20%"));
+        let modified_line_2 = lines.iter().find(|l| l.content.contains("20%"));
         assert!(modified_line_2.is_some(), "Should have a line containing '20%'");
 
         let modified2 = modified_line_2.unwrap();
-        assert_eq!(modified2.source, LineSource::Base,
+        assert_eq!(
+            modified2.source,
+            LineSource::Base,
             "Modified line '{}' should be Base (with inline highlighting), not {:?}",
-            modified2.content, modified2.source);
-        assert!(modified2.old_content.is_some(),
-            "Modified line should have old_content set");
-        assert!(!modified2.inline_spans.is_empty(),
+            modified2.content,
+            modified2.source
+        );
+        assert!(modified2.old_content.is_some(), "Modified line should have old_content set");
+        assert!(
+            !modified2.inline_spans.is_empty(),
             "Modified line '{}' should have inline spans showing the change from 30% to 20%",
-            modified2.content);
+            modified2.content
+        );
     }
 
     #[test]
@@ -919,14 +920,17 @@ layout {
         let base = "line1\nfunction getData()\nline3";
         let index = "line1\nfunction getData(params)\nline3";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(index), Some(index));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(index), Some(index));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
         assert_eq!(with_spans.len(), 1);
         assert_eq!(with_spans[0].content, "function getData(params)");
 
-        let changed: Vec<_> = with_spans[0].inline_spans.iter()
+        let changed: Vec<_> = with_spans[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Staged))
             .collect();
         assert!(!changed.is_empty());
@@ -937,10 +941,12 @@ layout {
         let base = "line1\nline2\nline3\nline4\nline5";
         let working = "line1\nline2\nmodified\nline4\nline5";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
-        let pure_context: Vec<_> = lines.iter()
+        let pure_context: Vec<_> = lines
+            .iter()
             .filter(|l| l.source == LineSource::Base && l.inline_spans.is_empty())
             .collect();
 
@@ -953,15 +959,14 @@ layout {
         let base = "line1\nto_delete\nline3";
         let working = "line1\nline3";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
         assert!(deleted.iter().all(|l| l.line_number.is_none()));
 
-        let with_numbers: Vec<_> = lines.iter()
-            .filter(|l| l.line_number.is_some())
-            .collect();
+        let with_numbers: Vec<_> = lines.iter().filter(|l| l.line_number.is_some()).collect();
 
         assert_eq!(with_numbers.len(), 2);
         assert_eq!(with_numbers[0].line_number, Some(1));
@@ -973,19 +978,17 @@ layout {
         let base = "line1\nline2";
         let working = "line1\nnew_line\nline2";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
-        let with_numbers: Vec<_> = lines.iter()
+        let with_numbers: Vec<_> = lines
+            .iter()
             .filter(|l| l.line_number.is_some())
             .map(|l| (l.content.as_str(), l.line_number.unwrap()))
             .collect();
 
-        assert_eq!(with_numbers, vec![
-            ("line1", 1),
-            ("new_line", 2),
-            ("line2", 3),
-        ]);
+        assert_eq!(with_numbers, vec![("line1", 1), ("new_line", 2), ("line2", 3),]);
     }
 
     #[test]
@@ -994,17 +997,22 @@ layout {
         let head = "line1\ncommitted line\n";
         let working = "line1\ncommitted line # with comment\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(working));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].content, "committed line # with comment");
 
-        let unchanged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unchanged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source.is_none() && !s.is_deletion)
             .collect();
-        let unstaged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unstaged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Unstaged))
             .collect();
 
@@ -1019,17 +1027,27 @@ layout {
         let index = "line1\nstaged line\n";
         let working = "line1\nstaged line modified\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].content, "staged line modified");
 
-        let unchanged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unchanged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source.is_none() && !s.is_deletion)
             .collect();
-        let unstaged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unstaged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Unstaged))
             .collect();
 
@@ -1042,14 +1060,17 @@ layout {
         let base = "do_thing(data)\n";
         let head = "do_thing(data, params)\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
         assert_eq!(with_spans.len(), 1);
         assert_eq!(with_spans[0].content, "do_thing(data, params)");
 
-        let changed: Vec<_> = with_spans[0].inline_spans.iter()
+        let changed: Vec<_> = with_spans[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Committed))
             .collect();
         assert!(!changed.is_empty());
@@ -1062,14 +1083,22 @@ layout {
         let index = "staged version\n";
         let working = "working version\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
         let with_spans: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
         assert_eq!(with_spans.len(), 1);
         assert_eq!(with_spans[0].content, "working version");
 
-        let changed: Vec<_> = with_spans[0].inline_spans.iter()
+        let changed: Vec<_> = with_spans[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Unstaged))
             .collect();
         assert!(!changed.is_empty());
@@ -1080,7 +1109,8 @@ layout {
         let base = "line1\n";
         let head = "line1\ncommitted line\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let added: Vec<_> = lines.iter().filter(|l| l.prefix == '+').collect();
@@ -1096,7 +1126,8 @@ layout {
         let head = "line1\n";
         let index = "line1\nstaged line\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(index));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(index));
         let lines = content_lines(&diff);
 
         let added: Vec<_> = lines.iter().filter(|l| l.prefix == '+').collect();
@@ -1111,7 +1142,8 @@ layout {
         let base = "abcdefgh\n";
         let working = "xyz12345\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1128,7 +1160,8 @@ layout {
         let base = "context\nalpha: aaa,\nbeta: bbb,\ngamma: ccc,\nend";
         let working = "context\nxray: xxx,\nyankee: yyy,\nzulu: zzz,\nend";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1147,9 +1180,11 @@ layout {
     #[test]
     fn test_single_line_modification_with_context_shows_inline() {
         let base = "before\ndescribed_class.new(bond).execute\nafter";
-        let working = "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
+        let working =
+            "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1160,12 +1195,10 @@ layout {
 
         assert!(merged[0].content.contains("# and add some color commentary"));
 
-        let unchanged: Vec<_> = merged[0].inline_spans.iter()
-            .filter(|s| s.source.is_none())
-            .collect();
-        let changed: Vec<_> = merged[0].inline_spans.iter()
-            .filter(|s| s.source.is_some())
-            .collect();
+        let unchanged: Vec<_> =
+            merged[0].inline_spans.iter().filter(|s| s.source.is_none()).collect();
+        let changed: Vec<_> =
+            merged[0].inline_spans.iter().filter(|s| s.source.is_some()).collect();
 
         assert!(!unchanged.is_empty());
         assert!(!changed.is_empty());
@@ -1177,9 +1210,11 @@ layout {
     #[test]
     fn test_single_line_committed_modification_shows_inline() {
         let base = "before\ndescribed_class.new(bond).execute\nafter";
-        let head = "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
+        let head =
+            "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1190,17 +1225,17 @@ layout {
 
         assert!(merged[0].content.contains("# and add some color commentary"));
 
-        let unchanged: Vec<_> = merged[0].inline_spans.iter()
-            .filter(|s| s.source.is_none())
-            .collect();
-        let changed: Vec<_> = merged[0].inline_spans.iter()
-            .filter(|s| s.source.is_some())
-            .collect();
+        let unchanged: Vec<_> =
+            merged[0].inline_spans.iter().filter(|s| s.source.is_none()).collect();
+        let changed: Vec<_> =
+            merged[0].inline_spans.iter().filter(|s| s.source.is_some()).collect();
 
         assert!(!unchanged.is_empty());
         assert!(!changed.is_empty());
 
-        let committed_spans: Vec<_> = merged[0].inline_spans.iter()
+        let committed_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Committed))
             .collect();
         assert!(!committed_spans.is_empty());
@@ -1214,7 +1249,8 @@ layout {
         let base = "before\ndescribed_class.new(bond).execute\nafter";
         let head = "before\n\ndescribed_class.new(bond).execute # comment\n\nafter";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1222,12 +1258,10 @@ layout {
 
         assert!(merged[0].content.contains("# comment"));
 
-        let unchanged: Vec<_> = merged[0].inline_spans.iter()
-            .filter(|s| s.source.is_none())
-            .collect();
-        let changed: Vec<_> = merged[0].inline_spans.iter()
-            .filter(|s| s.source.is_some())
-            .collect();
+        let unchanged: Vec<_> =
+            merged[0].inline_spans.iter().filter(|s| s.source.is_none()).collect();
+        let changed: Vec<_> =
+            merged[0].inline_spans.iter().filter(|s| s.source.is_some()).collect();
 
         assert!(!unchanged.is_empty());
         assert!(!changed.is_empty());
@@ -1238,20 +1272,34 @@ layout {
         let base = "before\nafter";
         let head = "before\ndescribed_class.new(bond).execute\nafter";
         let index = "before\ndescribed_class.new(bond).execute\nafter";
-        let working = "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
+        let working =
+            "before\ndescribed_class.new(bond).execute # and add some color commentary\nafter";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
         assert_eq!(merged.len(), 1);
 
-        assert_eq!(merged[0].content, "described_class.new(bond).execute # and add some color commentary");
+        assert_eq!(
+            merged[0].content,
+            "described_class.new(bond).execute # and add some color commentary"
+        );
 
-        let unchanged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unchanged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source.is_none() && !s.is_deletion)
             .collect();
-        let unstaged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unstaged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Unstaged))
             .collect();
 
@@ -1271,20 +1319,32 @@ layout {
         let index = "before\noriginal_code()\nafter";
         let working = "before\noriginal_code() # added comment\nafter";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
         assert_eq!(merged.len(), 1);
 
-        let base_spans: Vec<_> = merged[0].inline_spans.iter()
+        let base_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source.is_none() || s.source == Some(LineSource::Base))
             .collect();
-        let unstaged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unstaged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Unstaged))
             .collect();
 
-        let committed_spans: Vec<_> = merged[0].inline_spans.iter()
+        let committed_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Committed))
             .collect();
         assert!(committed_spans.is_empty(), "line from master shouldn't be Committed");
@@ -1303,16 +1363,26 @@ layout {
         let index = head;
         let working = "context 'first' do\n  it 'test' do\n  end\n  it 'new test' do\n  end # added comment\nend\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
         assert_eq!(merged.len(), 1);
 
-        let unchanged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unchanged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source.is_none() && !s.is_deletion)
             .collect();
-        let unstaged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unstaged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Unstaged))
             .collect();
 
@@ -1355,7 +1425,13 @@ context 'new' do
 end
 ";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
         let merged: Vec<_> = lines.iter().filter(|l| !l.inline_spans.is_empty()).collect();
@@ -1363,10 +1439,14 @@ end
 
         assert!(merged[0].content.contains("described_class.new(bond).execute # added comment"));
 
-        let unchanged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unchanged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source.is_none() && !s.is_deletion)
             .collect();
-        let unstaged_spans: Vec<_> = merged[0].inline_spans.iter()
+        let unstaged_spans: Vec<_> = merged[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Unstaged))
             .collect();
 
@@ -1412,12 +1492,17 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
-        let execute_lines: Vec<_> = lines.iter()
-            .filter(|l| l.content == "    described_class.new(bond).execute")
-            .collect();
+        let execute_lines: Vec<_> =
+            lines.iter().filter(|l| l.content == "    described_class.new(bond).execute").collect();
 
         assert_eq!(execute_lines.len(), 4);
 
@@ -1456,16 +1541,23 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
-        let new_test_lines: Vec<_> = lines.iter()
+        let new_test_lines: Vec<_> = lines
+            .iter()
             .enumerate()
             .filter(|(_, l)| {
-                l.content.contains("uses bond data") ||
-                l.content.contains("expected_address") ||
-                l.content.contains("notice = Commercial") ||
-                l.content.contains("expect(notice")
+                l.content.contains("uses bond data")
+                    || l.content.contains("expected_address")
+                    || l.content.contains("notice = Commercial")
+                    || l.content.contains("expect(notice")
             })
             .collect();
 
@@ -1473,7 +1565,8 @@ end
             assert_eq!(line.source, LineSource::Committed);
         }
 
-        let execute_lines: Vec<_> = lines.iter()
+        let execute_lines: Vec<_> = lines
+            .iter()
             .enumerate()
             .filter(|(_, l)| l.content.trim() == "described_class.new(bond).execute")
             .collect();
@@ -1514,7 +1607,13 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
         let new_context_idx = lines.iter().position(|l| l.content.contains("context 'new'"));
@@ -1524,8 +1623,12 @@ end
 
         for (i, line) in lines.iter().enumerate().skip(new_context_idx) {
             if line.content.trim().is_empty() {
-                assert_eq!(line.source, LineSource::Committed,
-                    "Blank line at {} should be Committed", i);
+                assert_eq!(
+                    line.source,
+                    LineSource::Committed,
+                    "Blank line at {} should be Committed",
+                    i
+                );
             }
         }
     }
@@ -1577,23 +1680,33 @@ end
         let index = head;
         let working = head;
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "test.txt",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
-        let third_context_idx = lines.iter().position(|l| l.content.contains("context 'third new'"));
+        let third_context_idx =
+            lines.iter().position(|l| l.content.contains("context 'third new'"));
         assert!(third_context_idx.is_some());
         let third_context_idx = third_context_idx.unwrap();
 
         for (_, line) in lines.iter().enumerate().skip(third_context_idx) {
-            if line.content.contains("third test") ||
-               line.content.contains("third_attribute") ||
-               line.content.contains("described_class") ||
-               line.content.contains("expect(result)") {
+            if line.content.contains("third test")
+                || line.content.contains("third_attribute")
+                || line.content.contains("described_class")
+                || line.content.contains("expect(result)")
+            {
                 assert_eq!(line.source, LineSource::Committed);
             }
         }
 
-        let execute_lines: Vec<_> = lines.iter().enumerate()
+        let execute_lines: Vec<_> = lines
+            .iter()
+            .enumerate()
             .filter(|(_, l)| l.content.trim() == "described_class.new(bond).execute")
             .collect();
 
@@ -1609,7 +1722,8 @@ end
         let base = "do_thing(data)\n";
         let working = "do_thing(data, parameters)\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1619,7 +1733,9 @@ end
         assert_eq!(modified.len(), 1);
         assert_eq!(modified[0].content, "do_thing(data, parameters)");
 
-        let changed: Vec<_> = modified[0].inline_spans.iter()
+        let changed: Vec<_> = modified[0]
+            .inline_spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Unstaged))
             .collect();
         assert!(!changed.is_empty());
@@ -1633,7 +1749,8 @@ end
         let base = "line1\n";
         let working = "line1\nnew line\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let added: Vec<_> = lines.iter().filter(|l| l.prefix == '+').collect();
@@ -1646,7 +1763,8 @@ end
         let base = "line1\nto_delete\nline3\n";
         let working = "line1\nline3\n";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let deleted: Vec<_> = lines.iter().filter(|l| l.prefix == '-').collect();
@@ -1665,15 +1783,14 @@ end
             expiration_date: "2025-08-30",
 "#;
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
-        let effective_lines: Vec<_> = lines.iter()
-            .filter(|l| l.content.contains("effective_date"))
-            .collect();
-        let expiration_lines: Vec<_> = lines.iter()
-            .filter(|l| l.content.contains("expiration_date"))
-            .collect();
+        let effective_lines: Vec<_> =
+            lines.iter().filter(|l| l.content.contains("effective_date")).collect();
+        let expiration_lines: Vec<_> =
+            lines.iter().filter(|l| l.content.contains("expiration_date")).collect();
 
         assert_eq!(effective_lines.len(), 1);
         assert!(effective_lines[0].content.contains("2023"));
@@ -1683,9 +1800,11 @@ end
         assert!(expiration_lines[0].content.contains("2025"));
         assert!(!expiration_lines[0].inline_spans.is_empty());
 
-        let effective_has_committed = effective_lines[0].inline_spans.iter()
-            .any(|s| s.source == Some(LineSource::Committed));
-        let expiration_has_committed = expiration_lines[0].inline_spans.iter()
+        let effective_has_committed =
+            effective_lines[0].inline_spans.iter().any(|s| s.source == Some(LineSource::Committed));
+        let expiration_has_committed = expiration_lines[0]
+            .inline_spans
+            .iter()
             .any(|s| s.source == Some(LineSource::Committed));
 
         assert!(effective_has_committed);
@@ -1697,7 +1816,8 @@ end
         let base = "line1\nline2\nline3\nto_delete\nline5";
         let working = "line1\nline2\nNEW_LINE\nline3\nline5";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -1715,16 +1835,19 @@ end
 
     #[test]
     fn test_deletion_before_insertion_at_same_position() {
-        let base = "def principal_mailing_address\n  commercial_renewal.principal_mailing_address\nend";
+        let base =
+            "def principal_mailing_address\n  commercial_renewal.principal_mailing_address\nend";
         let working = "def principal_mailing_address\n  \"new content\"\nend";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
         let prefixes: Vec<char> = lines.iter().map(|l| l.prefix).collect();
 
-        let deleted_pos = line_contents.iter().position(|&c| c.contains("commercial_renewal")).unwrap();
+        let deleted_pos =
+            line_contents.iter().position(|&c| c.contains("commercial_renewal")).unwrap();
         let inserted_pos = line_contents.iter().position(|&c| c.contains("new content")).unwrap();
 
         assert!(deleted_pos < inserted_pos);
@@ -1737,7 +1860,8 @@ end
         let base = "def foo\n  body_line\nend";
         let working = "def foo\n  \"new body\"\nend";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
@@ -1759,19 +1883,25 @@ end
 
     #[test]
     fn test_deletion_after_modified_line() {
-        let base = "def principal_mailing_address\n  commercial_renewal.principal_mailing_address\nend";
+        let base =
+            "def principal_mailing_address\n  commercial_renewal.principal_mailing_address\nend";
         let working = "def pribond_descripal_mailtiong_address\n  \"new content\"\nend";
 
-        let diff = compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.txt", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         let line_contents: Vec<&str> = lines.iter().map(|l| l.content.as_str()).collect();
         let prefixes: Vec<char> = lines.iter().map(|l| l.prefix).collect();
 
-        let deleted_principal_pos = line_contents.iter().position(|&c| c.contains("principal_mailing_address")).unwrap();
-        let inserted_pribond_pos = line_contents.iter().position(|&c| c.contains("pribond")).unwrap();
-        let deleted_commercial_pos = line_contents.iter().position(|&c| c.contains("commercial_renewal")).unwrap();
-        let inserted_new_content_pos = line_contents.iter().position(|&c| c.contains("new content")).unwrap();
+        let deleted_principal_pos =
+            line_contents.iter().position(|&c| c.contains("principal_mailing_address")).unwrap();
+        let inserted_pribond_pos =
+            line_contents.iter().position(|&c| c.contains("pribond")).unwrap();
+        let deleted_commercial_pos =
+            line_contents.iter().position(|&c| c.contains("commercial_renewal")).unwrap();
+        let inserted_new_content_pos =
+            line_contents.iter().position(|&c| c.contains("new content")).unwrap();
         let end_pos = line_contents.iter().position(|&c| c == "end").unwrap();
 
         assert_eq!(prefixes[deleted_principal_pos], '-', "principal should be deleted");
@@ -1780,9 +1910,18 @@ end
         assert_eq!(prefixes[inserted_new_content_pos], '+', "new content should be inserted");
         assert_eq!(prefixes[end_pos], ' ', "end should be unchanged context");
 
-        assert!(deleted_principal_pos < deleted_commercial_pos, "both deletions should come together");
-        assert!(deleted_commercial_pos < inserted_pribond_pos, "deletions should come before insertions");
-        assert!(inserted_pribond_pos < inserted_new_content_pos, "both insertions should come together");
+        assert!(
+            deleted_principal_pos < deleted_commercial_pos,
+            "both deletions should come together"
+        );
+        assert!(
+            deleted_commercial_pos < inserted_pribond_pos,
+            "deletions should come before insertions"
+        );
+        assert!(
+            inserted_pribond_pos < inserted_new_content_pos,
+            "both insertions should come together"
+        );
     }
 
     #[test]
@@ -1821,24 +1960,42 @@ def from_domino?
 end
 ";
 
-        let diff = compute_diff_with_inline("principal.rb", Some(base), Some(head), Some(index), Some(working));
+        let diff = compute_diff_with_inline(
+            "principal.rb",
+            Some(base),
+            Some(head),
+            Some(index),
+            Some(working),
+        );
         let lines = content_lines(&diff);
 
-        let abeyance_pos = lines.iter().position(|l| l.content.contains("abeyance_required")).unwrap();
-        let can_request_pos = lines.iter().position(|l| l.content.contains("can_request_letter_of_bondability")).unwrap();
+        let abeyance_pos =
+            lines.iter().position(|l| l.content.contains("abeyance_required")).unwrap();
+        let can_request_pos = lines
+            .iter()
+            .position(|l| l.content.contains("can_request_letter_of_bondability"))
+            .unwrap();
         let from_domino_pos = lines.iter().position(|l| l.content.contains("from_domino")).unwrap();
 
         let commercial_line_pos = lines.iter().position(|l| l.content.contains("!commercial?"));
         let inactive_line_pos = lines.iter().position(|l| l.content.contains("!inactive?"));
 
-        assert!(can_request_pos > abeyance_pos, "can_request method should come after abeyance_required");
-        assert!(can_request_pos < from_domino_pos, "can_request method should come before from_domino");
+        assert!(
+            can_request_pos > abeyance_pos,
+            "can_request method should come after abeyance_required"
+        );
+        assert!(
+            can_request_pos < from_domino_pos,
+            "can_request method should come before from_domino"
+        );
 
         if let Some(commercial_pos) = commercial_line_pos {
             assert!(
                 commercial_pos > abeyance_pos && commercial_pos < from_domino_pos,
                 "!commercial? line should appear between abeyance_required and from_domino, not at pos {} (abeyance={}, from_domino={})",
-                commercial_pos, abeyance_pos, from_domino_pos
+                commercial_pos,
+                abeyance_pos,
+                from_domino_pos
             );
         }
 
@@ -1846,7 +2003,9 @@ end
             assert!(
                 inactive_pos > abeyance_pos && inactive_pos < from_domino_pos,
                 "!inactive? line should appear between abeyance_required and from_domino, not at pos {} (abeyance={}, from_domino={})",
-                inactive_pos, abeyance_pos, from_domino_pos
+                inactive_pos,
+                abeyance_pos,
+                from_domino_pos
             );
         }
     }
@@ -1856,7 +2015,8 @@ end
         let base = "def foo\nend\nend";
         let working = "def foo\nnew_line\nend\nend";
 
-        let diff = compute_diff_with_inline("test.rb", Some(base), Some(base), Some(base), Some(working));
+        let diff =
+            compute_diff_with_inline("test.rb", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 4);
@@ -1879,7 +2039,8 @@ end
         let base = "def foo\nend\nend";
         let head = "def foo\nnew_line\nend\nend";
 
-        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
         assert_eq!(lines.len(), 4);
 
@@ -1902,7 +2063,8 @@ end
         let base = "class Foo\n  def bar\n  end\nend";
         let head = "class Foo\n  def bar\n    new_line\n  end\nend";
 
-        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 5);
@@ -1922,7 +2084,8 @@ end
         let base = "do\n  body\nend\nend";
         let head = "do\n  body\n  new_end\nend\nend";
 
-        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 5);
@@ -1949,7 +2112,8 @@ end
         let base = "do\n  body\nend";
         let head = "do\n  body\nend\n  extra";
 
-        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 4);
@@ -1973,7 +2137,8 @@ end
         let base = "line1\nline2\nend\nend\nend";
         let head = "line1\nline2\nnew_line\nend\nend\nend";
 
-        let diff = compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("test.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         assert_eq!(lines.len(), 6);
@@ -2024,7 +2189,8 @@ end"##;
   end
 end"##;
 
-        let diff = compute_diff_with_inline("spec.rb", Some(base), Some(head), Some(head), Some(head));
+        let diff =
+            compute_diff_with_inline("spec.rb", Some(base), Some(head), Some(head), Some(head));
         let lines = content_lines(&diff);
 
         // Expected:
@@ -2050,7 +2216,8 @@ end"##;
         assert_eq!(last_two[1].source, LineSource::Base, "Second to last should be Base");
 
         // Check that the added "end" (end of new test) is Committed
-        let added_end = lines.iter().find(|l| l.content == "    end" && l.source == LineSource::Committed);
+        let added_end =
+            lines.iter().find(|l| l.content == "    end" && l.source == LineSource::Committed);
         assert!(added_end.is_some(), "Should have a committed '    end' line");
 
         // CRITICAL: All 10 lines should be present
@@ -2067,12 +2234,14 @@ end"##;
             path: "test.txt",
             base: Some(base),
             head: Some(base),
-            index: Some(base),      // index same as base
+            index: Some(base),       // index same as base
             working: Some(modified), // working has the change
             old_path: None,
         });
 
-        let unstaged_lines: Vec<_> = diff_before.lines.iter()
+        let unstaged_lines: Vec<_> = diff_before
+            .lines
+            .iter()
             .filter(|l| l.source == LineSource::Unstaged && l.content == "line3")
             .collect();
         assert_eq!(unstaged_lines.len(), 1, "line3 should be Unstaged before staging");
@@ -2087,13 +2256,17 @@ end"##;
             old_path: None,
         });
 
-        let staged_lines: Vec<_> = diff_after.lines.iter()
+        let staged_lines: Vec<_> = diff_after
+            .lines
+            .iter()
             .filter(|l| l.source == LineSource::Staged && l.content == "line3")
             .collect();
         assert_eq!(staged_lines.len(), 1, "line3 should be Staged after staging");
 
         // Verify line3 is NOT unstaged after staging
-        let still_unstaged: Vec<_> = diff_after.lines.iter()
+        let still_unstaged: Vec<_> = diff_after
+            .lines
+            .iter()
             .filter(|l| l.source == LineSource::Unstaged && l.content == "line3")
             .collect();
         assert_eq!(still_unstaged.len(), 0, "line3 should NOT be Unstaged after staging");
@@ -2119,36 +2292,39 @@ end"##;
     Frame,
 };"#;
 
-        let diff = compute_diff_with_inline(
-            "test.rs",
-            Some(base),
-            Some(base),
-            Some(base),
-            Some(working),
-        );
+        let diff =
+            compute_diff_with_inline("test.rs", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         // Find the modified line
-        let modified_line = lines.iter()
-            .find(|l| l.content.contains("Clear"));
+        let modified_line = lines.iter().find(|l| l.content.contains("Clear"));
         assert!(modified_line.is_some(), "Should have a line containing 'Clear'");
 
         let modified = modified_line.unwrap();
 
         // Key assertions: the line should have old_content and inline_spans
-        assert!(modified.old_content.is_some(),
+        assert!(
+            modified.old_content.is_some(),
             "Modified import line should have old_content set, but it was None. \
             Source is {:?}, change_source is {:?}",
-            modified.source, modified.change_source);
+            modified.source,
+            modified.change_source
+        );
 
-        assert!(!modified.inline_spans.is_empty(),
+        assert!(
+            !modified.inline_spans.is_empty(),
             "Modified import line should have inline spans showing 'Clear, ' insertion. \
             Source is {:?}, change_source is {:?}",
-            modified.source, modified.change_source);
+            modified.source,
+            modified.change_source
+        );
 
         // The change should be marked as Unstaged
-        assert_eq!(modified.change_source, Some(LineSource::Unstaged),
-            "Modification should be marked as Unstaged");
+        assert_eq!(
+            modified.change_source,
+            Some(LineSource::Unstaged),
+            "Modification should be marked as Unstaged"
+        );
     }
 
     #[test]
@@ -2177,35 +2353,33 @@ line 8
 render_widget(Clear);
 render_widget(paragraph)"#;
 
-        let diff = compute_diff_with_inline(
-            "test.rs",
-            Some(base),
-            Some(base),
-            Some(base),
-            Some(working),
-        );
+        let diff =
+            compute_diff_with_inline("test.rs", Some(base), Some(base), Some(base), Some(working));
         let lines = content_lines(&diff);
 
         // Check the modification (line 3)
-        let modified_line = lines.iter()
-            .find(|l| l.content.contains("Clear, Paragraph"));
+        let modified_line = lines.iter().find(|l| l.content.contains("Clear, Paragraph"));
         assert!(modified_line.is_some(), "Should have modified line with 'Clear, Paragraph'");
 
         let modified = modified_line.unwrap();
-        assert!(modified.old_content.is_some(),
+        assert!(
+            modified.old_content.is_some(),
             "Modified line should have old_content set. Source: {:?}, change_source: {:?}",
-            modified.source, modified.change_source);
-        assert_eq!(modified.change_source, Some(LineSource::Unstaged),
-            "Modification should be marked as Unstaged");
+            modified.source,
+            modified.change_source
+        );
+        assert_eq!(
+            modified.change_source,
+            Some(LineSource::Unstaged),
+            "Modification should be marked as Unstaged"
+        );
 
         // Check the addition (new line)
-        let added_line = lines.iter()
-            .find(|l| l.content == "render_widget(Clear);");
+        let added_line = lines.iter().find(|l| l.content == "render_widget(Clear);");
         assert!(added_line.is_some(), "Should have added line 'render_widget(Clear);'");
 
         let added = added_line.unwrap();
-        assert_eq!(added.source, LineSource::Unstaged,
-            "Pure addition should have source Unstaged");
+        assert_eq!(added.source, LineSource::Unstaged, "Pure addition should have source Unstaged");
         assert_eq!(added.prefix, '+', "Addition should have + prefix");
     }
 
@@ -2281,24 +2455,32 @@ use crate::app::{App, DisplayableItem, FrameContext, Selection};
         // Debug: print all lines with their sources
         for (i, line) in lines.iter().enumerate() {
             if line.content.contains("Clear") || line.content.contains("widgets") {
-                eprintln!("Line {}: source={:?}, change_source={:?}, old_content={}, content='{}'",
-                    i, line.source, line.change_source, line.old_content.is_some(), line.content);
+                eprintln!(
+                    "Line {}: source={:?}, change_source={:?}, old_content={}, content='{}'",
+                    i,
+                    line.source,
+                    line.change_source,
+                    line.old_content.is_some(),
+                    line.content
+                );
             }
         }
 
         // Check the import modification (line 12 in real file)
-        let modified_import = lines.iter()
-            .find(|l| l.content.contains("Clear, Paragraph"));
+        let modified_import = lines.iter().find(|l| l.content.contains("Clear, Paragraph"));
         assert!(modified_import.is_some(), "Should have modified import line");
 
         let modified = modified_import.unwrap();
-        assert!(modified.old_content.is_some(),
+        assert!(
+            modified.old_content.is_some(),
             "Modified import should have old_content. Source: {:?}, change_source: {:?}, prefix: '{}'",
-            modified.source, modified.change_source, modified.prefix);
+            modified.source,
+            modified.change_source,
+            modified.prefix
+        );
 
         // Check the addition (line 158 in real file)
-        let added_line = lines.iter()
-            .find(|l| l.content.contains("render_widget(Clear"));
+        let added_line = lines.iter().find(|l| l.content.contains("render_widget(Clear"));
         assert!(added_line.is_some(), "Should have added render_widget line");
 
         let added = added_line.unwrap();

@@ -1,9 +1,9 @@
-use imara_diff::{diff, intern::InternedInput, Algorithm};
+use imara_diff::{Algorithm, diff, intern::InternedInput};
 use std::collections::HashMap;
 use std::ops::Range;
 
-use super::inline::compute_inline_diff_merged;
 use super::LineSource;
+use super::inline::compute_inline_diff_merged;
 
 /// Score a hunk boundary position. Higher is better.
 /// Prefers boundaries that land after a blank line (between logical blocks).
@@ -23,11 +23,7 @@ fn boundary_score(line: &str) -> u32 {
 /// entering the bottom), try all equivalent positions and pick the one
 /// where the context line just before the hunk is a blank line.
 /// This produces cleaner diffs for function-oriented code.
-fn slide_hunks(
-    hunks: &mut [(Range<u32>, Range<u32>)],
-    old_lines: &[&str],
-    new_lines: &[&str],
-) {
+fn slide_hunks(hunks: &mut [(Range<u32>, Range<u32>)], old_lines: &[&str], new_lines: &[&str]) {
     let old_len = old_lines.len() as u32;
     let new_len = new_lines.len() as u32;
 
@@ -142,13 +138,9 @@ pub(super) fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Ve
 
     // Collect hunks first
     let mut hunks: Vec<(Range<u32>, Range<u32>)> = Vec::new();
-    diff(
-        Algorithm::Histogram,
-        &input,
-        |before: Range<u32>, after: Range<u32>| {
-            hunks.push((before, after));
-        },
-    );
+    diff(Algorithm::Histogram, &input, |before: Range<u32>, after: Range<u32>| {
+        hunks.push((before, after));
+    });
 
     slide_hunks(&mut hunks, old_lines, new_lines);
 
@@ -206,13 +198,9 @@ pub(super) fn build_modification_map<'a>(
 
     // Collect hunks first
     let mut hunks: Vec<(Range<u32>, Range<u32>)> = Vec::new();
-    diff(
-        Algorithm::Histogram,
-        &input,
-        |before: Range<u32>, after: Range<u32>| {
-            hunks.push((before, after));
-        },
-    );
+    diff(Algorithm::Histogram, &input, |before: Range<u32>, after: Range<u32>| {
+        hunks.push((before, after));
+    });
 
     slide_hunks(&mut hunks, old_lines, new_lines);
 
@@ -223,9 +211,8 @@ pub(super) fn build_modification_map<'a>(
         let new_end = after.end as usize;
 
         // Collect deletions (lines from old that are being removed)
-        let deletions: Vec<(&str, usize)> = (old_start..old_end)
-            .map(|i| (old_lines[i].trim_end(), i))
-            .collect();
+        let deletions: Vec<(&str, usize)> =
+            (old_start..old_end).map(|i| (old_lines[i].trim_end(), i)).collect();
 
         // Collect insertions (lines in new that are being added), skip empty lines
         let insertions: Vec<(&str, usize)> = (new_start..new_end)
@@ -269,13 +256,7 @@ pub(super) fn find_sources(
     provenance
         .iter()
         .enumerate()
-        .filter_map(move |(idx, &prov)| {
-            if prov == Some(target_idx) {
-                Some(idx)
-            } else {
-                None
-            }
-        })
+        .filter_map(move |(idx, &prov)| if prov == Some(target_idx) { Some(idx) } else { None })
 }
 
 /// Check if `source_idx` survives through an intermediate stage to the final stage (chained lookup)
@@ -419,19 +400,26 @@ mod tests {
 fn two() {\n    println!(\"two\");\n}\n\n\
 fn three() {\n    println!(\"three\");\n}\n\n\
 fn four() {\n    println!(\"four\");\n    println!(\"more\");\n}\n\n\
-fn five() {\n    println!(\"five\");\n}".lines().collect();
+fn five() {\n    println!(\"five\");\n}"
+            .lines()
+            .collect();
 
         let new: Vec<&str> = "fn one() {\n    println!(\"one\");\n}\n\n\
 fn three() {\n    println!(\"three\");\n}\n\n\
-fn five() {\n    println!(\"five\");\n}".lines().collect();
+fn five() {\n    println!(\"five\");\n}"
+            .lines()
+            .collect();
 
         let prov = build_provenance_map(&old, &new);
 
         // new[6] is fn three's "}" — should map to old[10] (fn three's "}"),
         // NOT old[15] (fn four's "}")
-        assert_eq!(prov[6], Some(10),
+        assert_eq!(
+            prov[6],
+            Some(10),
             "fn three's '}}' (new[6]) should map to old[10], not old[{}]",
-            prov[6].unwrap_or(999));
+            prov[6].unwrap_or(999)
+        );
     }
 
     #[test]
@@ -440,25 +428,25 @@ fn five() {\n    println!(\"five\");\n}".lines().collect();
         // deletion boundaries correctly at the line-matching level.
         let old: &[&str] = &[
             "fn three() {",             // 0
-            "    println!(\"three\");",  // 1
-            "}",                         // 2
-            "",                          // 3
-            "fn four() {",               // 4
-            "    println!(\"four\");",   // 5
-            "}",                         // 6
-            "",                          // 7
-            "fn five() {",               // 8
-            "    println!(\"five\");",   // 9
-            "}",                         // 10
+            "    println!(\"three\");", // 1
+            "}",                        // 2
+            "",                         // 3
+            "fn four() {",              // 4
+            "    println!(\"four\");",  // 5
+            "}",                        // 6
+            "",                         // 7
+            "fn five() {",              // 8
+            "    println!(\"five\");",  // 9
+            "}",                        // 10
         ];
         let new: &[&str] = &[
             "fn three() {",             // 0
-            "    println!(\"three\");",  // 1
-            "}",                         // 2
-            "",                          // 3
-            "fn five() {",               // 4
-            "    println!(\"five\");",   // 5
-            "}",                         // 6
+            "    println!(\"three\");", // 1
+            "}",                        // 2
+            "",                         // 3
+            "fn five() {",              // 4
+            "    println!(\"five\");",  // 5
+            "}",                        // 6
         ];
 
         let prov = build_provenance_map(old, new);

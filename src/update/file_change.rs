@@ -38,16 +38,11 @@ pub(super) fn handle_file_change(
     let mut result = UpdateResult::default();
 
     // Deduplicate paths before processing (rapid saves can generate multiple events per file)
-    let unique_paths: HashSet<_> = events
-        .iter()
-        .filter(|e| e.kind == DebouncedEventKind::Any)
-        .map(|e| &e.path)
-        .collect();
+    let unique_paths: HashSet<_> =
+        events.iter().filter(|e| e.kind == DebouncedEventKind::Any).map(|e| &e.path).collect();
 
     // Check for VCS lock events BEFORE filtering
-    let has_lock_event = unique_paths
-        .iter()
-        .any(|p| vcs.classify_event(p) == VcsEventType::Lock);
+    let has_lock_event = unique_paths.iter().any(|p| vcs.classify_event(p) == VcsEventType::Lock);
 
     if has_lock_event {
         let currently_locked = vcs.is_locked();
@@ -65,9 +60,7 @@ pub(super) fn handle_file_change(
     }
 
     // Rebuild gitignore matcher if any .gitignore file changed
-    let gitignore_changed = unique_paths
-        .iter()
-        .any(|p| GitignoreFilter::is_gitignore_file(p));
+    let gitignore_changed = unique_paths.iter().any(|p| GitignoreFilter::is_gitignore_file(p));
     if gitignore_changed {
         app.gitignore_filter.rebuild();
     }
@@ -157,8 +150,10 @@ pub(super) fn handle_file_change(
         if !refresh_state.is_idle() {
             refresh_state.mark_pending();
         } else {
-            let can_use_single_file =
-                !has_vcs_change && !had_pending_vcs && source_files.len() == 1 && !app.files.is_empty();
+            let can_use_single_file = !has_vcs_change
+                && !had_pending_vcs
+                && source_files.len() == 1
+                && !app.files.is_empty();
 
             if can_use_single_file {
                 let file_path = source_files[0]
@@ -180,8 +175,8 @@ pub(super) fn handle_file_change(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use crate::test_support::{StubVcs, TestAppBuilder};
@@ -197,18 +192,17 @@ mod tests {
     #[test]
     fn test_duplicate_file_events_are_deduplicated() {
         // Given: 5 events for only 2 unique paths
-        let events = [DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
+        let events = [
+            DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
             DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
             DebouncedEvent::new(PathBuf::from("/repo/src/lib.rs"), DebouncedEventKind::Any),
             DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any),
-            DebouncedEvent::new(PathBuf::from("/repo/src/lib.rs"), DebouncedEventKind::Any)];
+            DebouncedEvent::new(PathBuf::from("/repo/src/lib.rs"), DebouncedEventKind::Any),
+        ];
 
         // When: we collect unique paths (same logic as handle_file_change)
-        let unique_paths: HashSet<_> = events
-            .iter()
-            .filter(|e| e.kind == DebouncedEventKind::Any)
-            .map(|e| &e.path)
-            .collect();
+        let unique_paths: HashSet<_> =
+            events.iter().filter(|e| e.kind == DebouncedEventKind::Any).map(|e| &e.path).collect();
 
         // Then: 5 events become 2 unique paths
         assert_eq!(unique_paths.len(), 2);
@@ -224,12 +218,12 @@ mod tests {
         let mut timers = Timers::default();
         let vcs = StubVcs::new(PathBuf::from("/repo"));
 
-        let events = vec![DebouncedEvent::new(
-            PathBuf::from("/repo/src/main.rs"),
-            DebouncedEventKind::Any,
-        )];
+        let events =
+            vec![DebouncedEvent::new(PathBuf::from("/repo/src/main.rs"), DebouncedEventKind::Any)];
 
-        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
         // File changes trigger background refresh, not immediate redraw
         assert!(!result.needs_redraw);
     }
@@ -240,7 +234,10 @@ mod tests {
     fn a_jj_command_that_changes_nothing_does_not_refresh() {
         let vcs = crate::vcs::jj::JjVcs::new(PathBuf::from("/repo")).unwrap();
         let batch = |paths: &[&str]| -> Vec<DebouncedEvent> {
-            paths.iter().map(|p| DebouncedEvent::new(PathBuf::from(p), DebouncedEventKind::Any)).collect()
+            paths
+                .iter()
+                .map(|p| DebouncedEvent::new(PathBuf::from(p), DebouncedEventKind::Any))
+                .collect()
         };
         let transient = [
             "/repo/.jj/working_copy/working_copy.lock",
@@ -249,15 +246,34 @@ mod tests {
         ];
 
         let mut app = TestAppBuilder::new().build();
-        let (mut refresh_state, mut vcs_lock, mut timers) = (RefreshState::Idle, VcsLockState::default(), Timers::default());
-        let result = handle_file_change(batch(&transient), &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let (mut refresh_state, mut vcs_lock, mut timers) =
+            (RefreshState::Idle, VcsLockState::default(), Timers::default());
+        let result = handle_file_change(
+            batch(&transient),
+            &mut app,
+            &mut refresh_state,
+            &mut vcs_lock,
+            &mut timers,
+            &vcs,
+        );
         assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(timers.pending_vcs_event.is_none(), "nor queue a delayed one");
 
         let mut real_change = transient.to_vec();
         real_change.push("/repo/.jj/working_copy/checkout");
-        let result = handle_file_change(batch(&real_change), &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
-        assert_eq!(result.refresh, RefreshTrigger::Full, "a command that moves the working copy still refreshes");
+        let result = handle_file_change(
+            batch(&real_change),
+            &mut app,
+            &mut refresh_state,
+            &mut vcs_lock,
+            &mut timers,
+            &vcs,
+        );
+        assert_eq!(
+            result.refresh,
+            RefreshTrigger::Full,
+            "a command that moves the working copy still refreshes"
+        );
     }
 
     #[test]
@@ -276,20 +292,20 @@ mod tests {
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         // First, trigger lock detection by sending a lock file event
-        let lock_events = vec![DebouncedEvent::new(
-            git_dir.join("index.lock"),
-            DebouncedEventKind::Any,
-        )];
-        let _ = handle_file_change(lock_events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let lock_events =
+            vec![DebouncedEvent::new(git_dir.join("index.lock"), DebouncedEventKind::Any)];
+        let _ = handle_file_change(
+            lock_events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         assert!(vcs_lock.is_locked());
 
         // Now send a source file change event
-        let events = vec![DebouncedEvent::new(
-            temp.path().join("src/main.rs"),
-            DebouncedEventKind::Any,
-        )];
-        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let events =
+            vec![DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any)];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         // Should NOT trigger refresh because we're locked
         assert_eq!(result.refresh, RefreshTrigger::None);
@@ -312,29 +328,27 @@ mod tests {
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         // First, detect the lock
-        let lock_events = vec![DebouncedEvent::new(
-            lock_path.clone(),
-            DebouncedEventKind::Any,
-        )];
-        let _ = handle_file_change(lock_events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let lock_events = vec![DebouncedEvent::new(lock_path.clone(), DebouncedEventKind::Any)];
+        let _ = handle_file_change(
+            lock_events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
         assert!(vcs_lock.is_locked());
 
         // Send a source file change while locked - should mark pending
-        let source_events = vec![DebouncedEvent::new(
-            temp.path().join("src/main.rs"),
-            DebouncedEventKind::Any,
-        )];
-        let _ = handle_file_change(source_events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let source_events =
+            vec![DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any)];
+        let _ = handle_file_change(
+            source_events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         // Remove lock file to simulate VCS operation completing
         std::fs::remove_file(&lock_path).unwrap();
 
         // Send lock file event again (deletion is also an event)
-        let unlock_events = vec![DebouncedEvent::new(
-            lock_path,
-            DebouncedEventKind::Any,
-        )];
-        let result = handle_file_change(unlock_events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let unlock_events = vec![DebouncedEvent::new(lock_path, DebouncedEventKind::Any)];
+        let result = handle_file_change(
+            unlock_events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         assert!(!vcs_lock.is_locked());
         assert_eq!(result.refresh, RefreshTrigger::Full);
@@ -355,11 +369,10 @@ mod tests {
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         // Send a .git/index event (VCS internal change, no source files)
-        let events = vec![DebouncedEvent::new(
-            git_dir.join("index"),
-            DebouncedEventKind::Any,
-        )];
-        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let events = vec![DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any)];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         // Should NOT trigger immediate refresh - should be deferred
         assert_eq!(result.refresh, RefreshTrigger::None);
@@ -379,11 +392,11 @@ mod tests {
         let mut timers = Timers::default();
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            temp.path().join("src/main.rs"),
-            DebouncedEventKind::Any,
-        )];
-        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let events =
+            vec![DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any)];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         assert_eq!(result.refresh, RefreshTrigger::Full);
     }
@@ -406,7 +419,9 @@ mod tests {
             DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any),
             DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any),
         ];
-        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         // Source files take priority — immediate refresh
         assert_eq!(result.refresh, RefreshTrigger::Full);
@@ -432,10 +447,11 @@ mod tests {
         };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![
-            DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any),
-        ];
-        let _result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let events =
+            vec![DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any)];
+        let _result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         assert!(
             timers.pending_vcs_event.is_none(),
@@ -465,7 +481,9 @@ mod tests {
             DebouncedEvent::new(git_dir.join("HEAD"), DebouncedEventKind::Any),
             DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any),
         ];
-        let _result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let _result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         assert!(matches!(refresh_state, RefreshState::InProgressPending { .. }));
         assert!(
@@ -491,10 +509,10 @@ mod tests {
         };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![
-            DebouncedEvent::new(git_dir.join("HEAD"), DebouncedEventKind::Any),
-        ];
-        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let events = vec![DebouncedEvent::new(git_dir.join("HEAD"), DebouncedEventKind::Any)];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         assert_eq!(result.refresh, RefreshTrigger::Full);
         assert!(timers.pending_vcs_event.is_none());
@@ -518,10 +536,10 @@ mod tests {
         let mut timers = Timers::default();
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![
-            DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any),
-        ];
-        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let events = vec![DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any)];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         assert_eq!(result.refresh, RefreshTrigger::None);
         // VCS-only events during active refresh are suppressed entirely
@@ -552,11 +570,10 @@ mod tests {
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
         // Send VCS-only event while refresh is in progress
-        let events = vec![DebouncedEvent::new(
-            git_dir.join("index"),
-            DebouncedEventKind::Any,
-        )];
-        let result = handle_file_change(events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs);
+        let events = vec![DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any)];
+        let result = handle_file_change(
+            events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
+        );
 
         assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(
@@ -583,10 +600,7 @@ mod tests {
 
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            git_dir.join("index"),
-            DebouncedEventKind::Any,
-        )];
+        let events = vec![DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );
@@ -616,10 +630,7 @@ mod tests {
 
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            git_dir.join("index"),
-            DebouncedEventKind::Any,
-        )];
+        let events = vec![DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );
@@ -648,10 +659,7 @@ mod tests {
         };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            git_dir.join("HEAD"),
-            DebouncedEventKind::Any,
-        )];
+        let events = vec![DebouncedEvent::new(git_dir.join("HEAD"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );
@@ -678,10 +686,7 @@ mod tests {
         let mut timers = Timers::default();
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            git_dir.join("HEAD"),
-            DebouncedEventKind::Any,
-        )];
+        let events = vec![DebouncedEvent::new(git_dir.join("HEAD"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );
@@ -691,10 +696,7 @@ mod tests {
             matches!(refresh_state, RefreshState::InProgress { .. }),
             "should remain InProgress — VCS events during refresh are suppressed"
         );
-        assert!(
-            !cancel_flag.load(Ordering::Relaxed),
-            "cancel flag should not be set"
-        );
+        assert!(!cancel_flag.load(Ordering::Relaxed), "cancel flag should not be set");
     }
 
     #[test]
@@ -714,10 +716,7 @@ mod tests {
         };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            git_dir.join("HEAD"),
-            DebouncedEventKind::Any,
-        )];
+        let events = vec![DebouncedEvent::new(git_dir.join("HEAD"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );
@@ -733,20 +732,16 @@ mod tests {
         let git_dir = temp.path().join(".git");
         std::fs::create_dir_all(&git_dir).unwrap();
 
-        let dummy = crate::diff::FileDiff::new(vec![crate::diff::DiffLine::file_header("src/lib.rs")]);
+        let dummy =
+            crate::diff::FileDiff::new(vec![crate::diff::DiffLine::file_header("src/lib.rs")]);
         let mut app = TestAppBuilder::new().with_files(vec![dummy]).build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
-        let mut timers = Timers {
-            pending_vcs_event: Some(Instant::now()),
-            ..Default::default()
-        };
+        let mut timers = Timers { pending_vcs_event: Some(Instant::now()), ..Default::default() };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            temp.path().join("src/main.rs"),
-            DebouncedEventKind::Any,
-        )];
+        let events =
+            vec![DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );
@@ -763,17 +758,16 @@ mod tests {
         let git_dir = temp.path().join(".git");
         std::fs::create_dir_all(&git_dir).unwrap();
 
-        let dummy = crate::diff::FileDiff::new(vec![crate::diff::DiffLine::file_header("src/lib.rs")]);
+        let dummy =
+            crate::diff::FileDiff::new(vec![crate::diff::DiffLine::file_header("src/lib.rs")]);
         let mut app = TestAppBuilder::new().with_files(vec![dummy]).build();
         let mut refresh_state = RefreshState::Idle;
         let mut vcs_lock = VcsLockState::default();
         let mut timers = Timers::default();
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            temp.path().join("src/main.rs"),
-            DebouncedEventKind::Any,
-        )];
+        let events =
+            vec![DebouncedEvent::new(temp.path().join("src/main.rs"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );
@@ -802,10 +796,7 @@ mod tests {
         };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            git_dir.join("index"),
-            DebouncedEventKind::Any,
-        )];
+        let events = vec![DebouncedEvent::new(git_dir.join("index"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );
@@ -838,10 +829,8 @@ mod tests {
         };
         let vcs = StubVcs::new(temp.path().to_path_buf());
 
-        let events = vec![DebouncedEvent::new(
-            temp.path().join(".git/HEAD"),
-            DebouncedEventKind::Any,
-        )];
+        let events =
+            vec![DebouncedEvent::new(temp.path().join(".git/HEAD"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );
@@ -858,8 +847,8 @@ mod tests {
         use tempfile::TempDir;
 
         use crate::message::RefreshOutcome;
-        use crate::update::refresh::handle_refresh;
         use crate::update::UpdateConfig;
+        use crate::update::refresh::handle_refresh;
 
         let temp = TempDir::new().unwrap();
         let git_dir = temp.path().join(".git");
@@ -881,18 +870,14 @@ mod tests {
             diff: None,
             revision_id: None,
         };
-        let refresh_result = handle_refresh(
-            outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs,
-        );
+        let refresh_result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
         assert_eq!(refresh_result.refresh, RefreshTrigger::None);
         assert!(timers.last_refresh_completed.is_some());
 
         // Step 2: Self-triggered VCS event arrives within cooldown window
         // (simulates jj auto-snapshot event arriving after SingleFile completes)
-        let events = vec![DebouncedEvent::new(
-            git_dir.join("HEAD"),
-            DebouncedEventKind::Any,
-        )];
+        let events = vec![DebouncedEvent::new(git_dir.join("HEAD"), DebouncedEventKind::Any)];
         let result = handle_file_change(
             events, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs,
         );

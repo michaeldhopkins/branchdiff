@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use vcs_runner::{Cmd, run_git, run_git_with_retry, is_transient_error};
+use vcs_runner::{Cmd, is_transient_error, run_git, run_git_with_retry};
 
 use super::parse::parse_status_porcelain;
 
@@ -46,9 +46,7 @@ fn detect_unstaged_renames(
     // Copy existing index to temp file
     if index_path.exists() {
         let index_content = std::fs::read(&index_path).context("Failed to read index")?;
-        temp_index
-            .write_all(&index_content)
-            .context("Failed to write temp index")?;
+        temp_index.write_all(&index_content).context("Failed to write temp index")?;
         temp_index.flush()?;
     }
 
@@ -137,11 +135,8 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
     // 2. Get staged changes (HEAD to index) and unstaged changes (index to working tree)
     // Use -uall to show individual files in untracked directories
     // Use retry logic to handle transient index.lock contention
-    let status_output = run_git_with_retry(
-        repo_path,
-        &["status", "--porcelain=v1", "-uall"],
-        is_transient_error,
-    )?;
+    let status_output =
+        run_git_with_retry(repo_path, &["status", "--porcelain=v1", "-uall"], is_transient_error)?;
 
     for entry in parse_status_porcelain(&status_output.stdout_lossy()) {
         // Worktree-deleted and untracked files feed unstaged rename detection.
@@ -169,10 +164,8 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
         }
     }
 
-    let mut result: Vec<ChangedFile> = files
-        .into_iter()
-        .map(|(path, old_path)| ChangedFile { path, old_path })
-        .collect();
+    let mut result: Vec<ChangedFile> =
+        files.into_iter().map(|(path, old_path)| ChangedFile { path, old_path }).collect();
     result.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(result)
 }
@@ -201,18 +194,15 @@ impl FileTransition {
 pub(crate) fn parse_diff_line(line: &str) -> Option<FileTransition> {
     let parts: Vec<&str> = line.split('\t').collect();
     match parts.as_slice() {
-        [status, path] if status.starts_with('A') => Some(FileTransition {
-            from: None,
-            to: Some(path.to_string()),
-        }),
-        [status, path] if status.starts_with('D') => Some(FileTransition {
-            from: Some(path.to_string()),
-            to: None,
-        }),
-        [status, path] if status.starts_with('M') => Some(FileTransition {
-            from: Some(path.to_string()),
-            to: Some(path.to_string()),
-        }),
+        [status, path] if status.starts_with('A') => {
+            Some(FileTransition { from: None, to: Some(path.to_string()) })
+        }
+        [status, path] if status.starts_with('D') => {
+            Some(FileTransition { from: Some(path.to_string()), to: None })
+        }
+        [status, path] if status.starts_with('M') => {
+            Some(FileTransition { from: Some(path.to_string()), to: Some(path.to_string()) })
+        }
         [status, old_path, new_path] if status.starts_with('R') => Some(FileTransition {
             from: Some(old_path.to_string()),
             to: Some(new_path.to_string()),
@@ -222,7 +212,11 @@ pub(crate) fn parse_diff_line(line: &str) -> Option<FileTransition> {
 }
 
 /// Get file transitions between two refs with rename detection enabled
-pub(super) fn get_diff_transitions(repo_path: &Path, from: &str, to: &str) -> Result<Vec<FileTransition>> {
+pub(super) fn get_diff_transitions(
+    repo_path: &Path,
+    from: &str,
+    to: &str,
+) -> Result<Vec<FileTransition>> {
     let output = run_git_with_retry(
         repo_path,
         &["diff", "--name-status", "-M", from, to],
@@ -230,16 +224,17 @@ pub(super) fn get_diff_transitions(repo_path: &Path, from: &str, to: &str) -> Re
     )?;
 
     let output_str = output.stdout_lossy();
-    let transitions: Vec<FileTransition> = output_str
-        .lines()
-        .filter_map(parse_diff_line)
-        .collect();
+    let transitions: Vec<FileTransition> = output_str.lines().filter_map(parse_diff_line).collect();
 
     Ok(transitions)
 }
 
 /// Check if file_path was renamed from another path in committed changes.
-pub(super) fn find_rename_source(repo_path: &Path, file_path: &str, merge_base: &str) -> Option<String> {
+pub(super) fn find_rename_source(
+    repo_path: &Path,
+    file_path: &str,
+    merge_base: &str,
+) -> Option<String> {
     if merge_base.is_empty() {
         return None;
     }

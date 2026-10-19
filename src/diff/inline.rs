@@ -68,10 +68,10 @@ pub fn compute_inline_diff_merged(
 
     // Helper to flush pending unchanged content, updating metrics
     let flush_unchanged = |pending: &mut String,
-                               spans: &mut Vec<InlineSpan>,
-                               seen_non_whitespace: &mut bool,
-                               max_unchanged_segment: &mut usize,
-                               num_unchanged_segments: &mut usize| {
+                           spans: &mut Vec<InlineSpan>,
+                           seen_non_whitespace: &mut bool,
+                           max_unchanged_segment: &mut usize,
+                           num_unchanged_segments: &mut usize| {
         if pending.is_empty() {
             return;
         }
@@ -84,11 +84,7 @@ pub fn compute_inline_diff_merged(
         if has_non_ws {
             *seen_non_whitespace = true;
         }
-        spans.push(InlineSpan {
-            text: std::mem::take(pending),
-            source: None,
-            is_deletion: false,
-        });
+        spans.push(InlineSpan { text: std::mem::take(pending), source: None, is_deletion: false });
     };
 
     // Helper to flush pending changed content (deleted or inserted)
@@ -103,11 +99,7 @@ pub fn compute_inline_diff_merged(
         if pending.chars().any(|c| !c.is_whitespace()) {
             *seen_non_whitespace = true;
         }
-        spans.push(InlineSpan {
-            text: std::mem::take(pending),
-            source: Some(source),
-            is_deletion,
-        });
+        spans.push(InlineSpan { text: std::mem::take(pending), source: Some(source), is_deletion });
     };
 
     for change in diff.iter_all_changes() {
@@ -123,17 +115,11 @@ pub fn compute_inline_diff_merged(
                         &mut num_unchanged_segments,
                     );
                     flush_changed(
-                        &mut pending_deleted,
-                        &mut spans,
-                        &mut seen_non_whitespace,
-                        deletion_source,
-                        true,
+                        &mut pending_deleted, &mut spans, &mut seen_non_whitespace,
+                        deletion_source, true,
                     );
                     flush_changed(
-                        &mut pending_inserted,
-                        &mut spans,
-                        &mut seen_non_whitespace,
-                        change_source,
+                        &mut pending_inserted, &mut spans, &mut seen_non_whitespace, change_source,
                         false,
                     );
                 }
@@ -157,18 +143,10 @@ pub fn compute_inline_diff_merged(
         &mut num_unchanged_segments,
     );
     flush_changed(
-        &mut pending_deleted,
-        &mut spans,
-        &mut seen_non_whitespace,
-        deletion_source,
-        true,
+        &mut pending_deleted, &mut spans, &mut seen_non_whitespace, deletion_source, true,
     );
     flush_changed(
-        &mut pending_inserted,
-        &mut spans,
-        &mut seen_non_whitespace,
-        change_source,
-        false,
+        &mut pending_inserted, &mut spans, &mut seen_non_whitespace, change_source, false,
     );
 
     // Determine if inline diff is meaningful:
@@ -204,11 +182,7 @@ mod tests {
 
     #[test]
     fn test_inline_span_unchanged() {
-        let span = InlineSpan {
-            text: "unchanged".to_string(),
-            source: None,
-            is_deletion: false,
-        };
+        let span = InlineSpan { text: "unchanged".to_string(), source: None, is_deletion: false };
         assert_eq!(span.text, "unchanged");
         assert!(span.source.is_none());
         assert!(!span.is_deletion);
@@ -242,12 +216,11 @@ mod tests {
 
     #[test]
     fn test_deletion_source_for_committed_change() {
-        let result = compute_inline_diff_merged("old content", "new content", LineSource::Committed);
+        let result =
+            compute_inline_diff_merged("old content", "new content", LineSource::Committed);
 
         // Deleted spans should have DeletedBase source
-        let deletion_spans: Vec<_> = result.spans.iter()
-            .filter(|s| s.is_deletion)
-            .collect();
+        let deletion_spans: Vec<_> = result.spans.iter().filter(|s| s.is_deletion).collect();
         for span in deletion_spans {
             assert_eq!(span.source, Some(LineSource::DeletedBase));
         }
@@ -257,9 +230,7 @@ mod tests {
     fn test_deletion_source_for_staged_change() {
         let result = compute_inline_diff_merged("old content", "new content", LineSource::Staged);
 
-        let deletion_spans: Vec<_> = result.spans.iter()
-            .filter(|s| s.is_deletion)
-            .collect();
+        let deletion_spans: Vec<_> = result.spans.iter().filter(|s| s.is_deletion).collect();
         for span in deletion_spans {
             assert_eq!(span.source, Some(LineSource::DeletedCommitted));
         }
@@ -269,9 +240,7 @@ mod tests {
     fn test_deletion_source_for_unstaged_change() {
         let result = compute_inline_diff_merged("old content", "new content", LineSource::Unstaged);
 
-        let deletion_spans: Vec<_> = result.spans.iter()
-            .filter(|s| s.is_deletion)
-            .collect();
+        let deletion_spans: Vec<_> = result.spans.iter().filter(|s| s.is_deletion).collect();
         for span in deletion_spans {
             assert_eq!(span.source, Some(LineSource::DeletedStaged));
         }
@@ -282,7 +251,8 @@ mod tests {
     #[test]
     fn test_meaningful_when_long_unchanged_segment() {
         // "hello world" -> "hello earth" shares "hello " (6 chars) which is >= 5
-        let result = compute_inline_diff_merged("hello world", "hello earth", LineSource::Committed);
+        let result =
+            compute_inline_diff_merged("hello world", "hello earth", LineSource::Committed);
         assert!(result.is_meaningful, "Should be meaningful with 6-char unchanged prefix");
     }
 
@@ -375,17 +345,13 @@ mod tests {
         assert!(has_unchanged, "Should have unchanged spans");
 
         // The unchanged portion should contain ".name"
-        let unchanged: String = result.spans.iter()
-            .filter(|s| s.source.is_none())
-            .map(|s| s.text.as_str())
-            .collect();
+        let unchanged: String =
+            result.spans.iter().filter(|s| s.source.is_none()).map(|s| s.text.as_str()).collect();
         assert!(unchanged.contains(".name"), "Should preserve '.name' as unchanged");
 
         // Deleted content should include material from "commercial_renewal"
-        let deleted: String = result.spans.iter()
-            .filter(|s| s.is_deletion)
-            .map(|s| s.text.as_str())
-            .collect();
+        let deleted: String =
+            result.spans.iter().filter(|s| s.is_deletion).map(|s| s.text.as_str()).collect();
         assert!(!deleted.is_empty(), "Should have deleted content");
     }
 
@@ -401,10 +367,8 @@ mod tests {
         // "old" -> "new" deletion/insertion, then "_function_name()" unchanged
         assert!(result.is_meaningful, "Should be meaningful - long unchanged suffix");
 
-        let unchanged: String = result.spans.iter()
-            .filter(|s| s.source.is_none())
-            .map(|s| s.text.as_str())
-            .collect();
+        let unchanged: String =
+            result.spans.iter().filter(|s| s.source.is_none()).map(|s| s.text.as_str()).collect();
         assert!(unchanged.contains("_function_name()"));
     }
 
@@ -419,29 +383,24 @@ mod tests {
 
         assert!(result.is_meaningful, "Should be meaningful - long unchanged prefix");
 
-        let unchanged: String = result.spans.iter()
-            .filter(|s| s.source.is_none())
-            .map(|s| s.text.as_str())
-            .collect();
+        let unchanged: String =
+            result.spans.iter().filter(|s| s.source.is_none()).map(|s| s.text.as_str()).collect();
         assert!(unchanged.contains("function_name_"));
     }
 
     #[test]
     fn test_middle_insertion() {
         // Insert in the middle
-        let result = compute_inline_diff_merged(
-            "hello world",
-            "hello beautiful world",
-            LineSource::Staged,
-        );
+        let result =
+            compute_inline_diff_merged("hello world", "hello beautiful world", LineSource::Staged);
 
         // Should have "hello ", insertion "beautiful ", "world"
-        let unchanged_texts: Vec<_> = result.spans.iter()
-            .filter(|s| s.source.is_none())
-            .map(|s| s.text.as_str())
-            .collect();
+        let unchanged_texts: Vec<_> =
+            result.spans.iter().filter(|s| s.source.is_none()).map(|s| s.text.as_str()).collect();
 
-        let inserted_texts: Vec<_> = result.spans.iter()
+        let inserted_texts: Vec<_> = result
+            .spans
+            .iter()
             .filter(|s| s.source == Some(LineSource::Staged))
             .map(|s| s.text.as_str())
             .collect();
@@ -475,11 +434,8 @@ mod tests {
 
     #[test]
     fn test_whitespace_only_change() {
-        let result = compute_inline_diff_merged(
-            "let x = 1;",
-            "let  x  =  1;",
-            LineSource::Unstaged,
-        );
+        let result =
+            compute_inline_diff_merged("let x = 1;", "let  x  =  1;", LineSource::Unstaged);
 
         // Should show whitespace changes
         let has_insertion = result.spans.iter().any(|s| s.source.is_some() && !s.is_deletion);
@@ -495,10 +451,8 @@ mod tests {
         );
 
         // Should handle unicode properly
-        let unchanged: String = result.spans.iter()
-            .filter(|s| s.source.is_none())
-            .map(|s| s.text.as_str())
-            .collect();
+        let unchanged: String =
+            result.spans.iter().filter(|s| s.source.is_none()).map(|s| s.text.as_str()).collect();
         assert!(unchanged.contains("hello "));
         assert!(unchanged.contains(" world"));
     }
@@ -527,9 +481,7 @@ mod tests {
 
         // Multiple changes: x->y, foo->bar, a,b->c,d
         // But shared: "let ", " = ", "(", ", ", ");"
-        let unchanged_count = result.spans.iter()
-            .filter(|s| s.source.is_none())
-            .count();
+        let unchanged_count = result.spans.iter().filter(|s| s.source.is_none()).count();
         assert!(unchanged_count >= 2, "Should have multiple unchanged segments");
     }
 }

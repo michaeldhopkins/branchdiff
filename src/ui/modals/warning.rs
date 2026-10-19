@@ -50,9 +50,7 @@ pub fn draw_warning_banner_with_hint(
             )),
             Line::from(Span::styled(
                 format!("   press '{}' to run `{}` ", h.key_hint, h.command_label),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             )),
         ],
         None => vec![Line::from(Span::styled(
@@ -67,8 +65,8 @@ pub fn draw_warning_banner_with_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn test_warning_message_format() {
@@ -136,10 +134,8 @@ mod tests {
         // Concatenate all rows then normalize whitespace — the wrap algorithm
         // can elide spaces at row boundaries, so we just verify the words all
         // landed in order across rows.
-        let full: String = (0..buffer.area.height)
-            .map(|y| row_text(&buffer, y))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let full: String =
+            (0..buffer.area.height).map(|y| row_text(&buffer, y)).collect::<Vec<_>>().join(" ");
         let normalized: String = full.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
             normalized.contains("deliberately long error message that exceeds forty cols"),

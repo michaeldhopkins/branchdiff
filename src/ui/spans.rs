@@ -1,9 +1,9 @@
 use ratatui::style::Style;
 use ratatui::text::Span;
 
+use super::colors::{DEFAULT_FG, ensure_contrast, line_style, line_style_with_highlight};
 use crate::diff::{InlineSpan, LineSource};
 use crate::syntax::SyntaxSegment;
-use super::colors::{line_style, line_style_with_highlight, ensure_contrast, DEFAULT_FG};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InlineChangeType {
@@ -142,11 +142,7 @@ pub fn coalesce_spans(spans: &[InlineSpan]) -> Vec<InlineSpan> {
     }
 
     if !old_text.is_empty() && old_text != new_text {
-        result.push(InlineSpan {
-            text: old_text,
-            source: deletion_source,
-            is_deletion: true,
-        });
+        result.push(InlineSpan { text: old_text, source: deletion_source, is_deletion: true });
     }
 
     if !new_text.is_empty() {
@@ -180,14 +176,16 @@ pub fn inline_display_width(spans: &[InlineSpan]) -> usize {
 }
 
 pub fn get_deletion_source(spans: &[InlineSpan]) -> LineSource {
-    spans.iter()
+    spans
+        .iter()
         .find(|s| s.is_deletion && s.source.is_some())
         .and_then(|s| s.source)
         .unwrap_or(LineSource::DeletedBase)
 }
 
 pub fn get_insertion_source(spans: &[InlineSpan]) -> LineSource {
-    spans.iter()
+    spans
+        .iter()
         .find(|s| !s.is_deletion && s.source.is_some())
         .and_then(|s| s.source)
         .unwrap_or(LineSource::Committed)
@@ -218,11 +216,7 @@ pub fn build_deletion_spans_with_highlight(
         }
 
         let is_highlighted = span.is_deletion;
-        let bg_style = if is_highlighted {
-            highlight_style
-        } else {
-            base_style
-        };
+        let bg_style = if is_highlighted { highlight_style } else { base_style };
 
         // Apply syntax colors character by character, ensuring contrast for highlights
         let mut current_text = String::new();
@@ -231,11 +225,8 @@ pub fn build_deletion_spans_with_highlight(
         for ch in span.text.chars() {
             let syntax_fg = syntax_colors.get(char_idx).copied().unwrap_or(DEFAULT_FG);
             // For highlighted spans, ensure the syntax color has sufficient contrast
-            let fg_color = if is_highlighted {
-                ensure_contrast(syntax_fg, highlight_bg)
-            } else {
-                syntax_fg
-            };
+            let fg_color =
+                if is_highlighted { ensure_contrast(syntax_fg, highlight_bg) } else { syntax_fg };
             char_idx += 1;
 
             if Some(fg_color) == current_color {
@@ -282,11 +273,7 @@ pub fn build_insertion_spans_with_highlight(
         }
 
         let is_highlighted = span.source.is_some();
-        let bg_style = if is_highlighted {
-            highlight_style
-        } else {
-            base_style
-        };
+        let bg_style = if is_highlighted { highlight_style } else { base_style };
 
         // Apply syntax colors character by character, ensuring contrast for highlights
         let mut current_text = String::new();
@@ -295,11 +282,8 @@ pub fn build_insertion_spans_with_highlight(
         for ch in span.text.chars() {
             let syntax_fg = syntax_colors.get(char_idx).copied().unwrap_or(DEFAULT_FG);
             // For highlighted spans, ensure the syntax color has sufficient contrast
-            let fg_color = if is_highlighted {
-                ensure_contrast(syntax_fg, highlight_bg)
-            } else {
-                syntax_fg
-            };
+            let fg_color =
+                if is_highlighted { ensure_contrast(syntax_fg, highlight_bg) } else { syntax_fg };
             char_idx += 1;
 
             if Some(fg_color) == current_color {
@@ -376,24 +360,18 @@ pub fn syntax_highlight_inline_spans(
         }
 
         let is_highlighted = span.source.is_some();
-        let bg_style = if is_highlighted {
-            highlight_style
-        } else {
-            base_style
-        };
+        let bg_style = if is_highlighted { highlight_style } else { base_style };
 
         // Apply syntax colors character by character, ensuring contrast for highlights
         let mut current_text = String::new();
         let mut current_color = None;
 
         for ch in span.text.chars() {
-            let syntax_fg = syntax_colors.get(char_idx).copied().unwrap_or(base_style.fg.unwrap_or(DEFAULT_FG));
+            let syntax_fg =
+                syntax_colors.get(char_idx).copied().unwrap_or(base_style.fg.unwrap_or(DEFAULT_FG));
             // For highlighted spans, ensure the syntax color has sufficient contrast
-            let fg_color = if is_highlighted {
-                ensure_contrast(syntax_fg, highlight_bg)
-            } else {
-                syntax_fg
-            };
+            let fg_color =
+                if is_highlighted { ensure_contrast(syntax_fg, highlight_bg) } else { syntax_fg };
             char_idx += 1;
 
             if Some(fg_color) == current_color {
@@ -420,9 +398,9 @@ pub fn syntax_highlight_inline_spans(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::colors::{line_style, line_style_with_highlight};
     use crate::diff::{DiffLine, InlineSpan, LineSource, compute_inline_diff_merged};
     use crate::syntax::HighlightCache;
+    use crate::ui::colors::{line_style, line_style_with_highlight};
     use ratatui::style::Color;
 
     /// Highlight one standalone line, the way the renderer would via the cache.
@@ -451,7 +429,8 @@ mod tests {
     #[test]
     fn test_syntax_highlight_content_rust() {
         let base_style = Style::default().bg(ratatui::style::Color::Rgb(25, 50, 50));
-        let spans = syntax_highlight_content(&segments_for("fn main() {}", Some("test.rs")), base_style);
+        let spans =
+            syntax_highlight_content(&segments_for("fn main() {}", Some("test.rs")), base_style);
 
         assert!(!spans.is_empty());
         // Should preserve background from base_style
@@ -479,13 +458,8 @@ mod tests {
 
     #[test]
     fn test_syntax_highlight_inline_spans_unchanged() {
-        let inline_spans = vec![
-            InlineSpan {
-                text: "fn test()".to_string(),
-                source: None,
-                is_deletion: false,
-            },
-        ];
+        let inline_spans =
+            vec![InlineSpan { text: "fn test()".to_string(), source: None, is_deletion: false }];
 
         let base_style = Style::default().bg(ratatui::style::Color::Rgb(25, 50, 50));
         let highlight_style = Style::default().bg(ratatui::style::Color::Rgb(50, 100, 100));
@@ -507,21 +481,13 @@ mod tests {
     #[test]
     fn test_syntax_highlight_inline_spans_with_changes() {
         let inline_spans = vec![
-            InlineSpan {
-                text: "let ".to_string(),
-                source: None,
-                is_deletion: false,
-            },
+            InlineSpan { text: "let ".to_string(), source: None, is_deletion: false },
             InlineSpan {
                 text: "x".to_string(),
                 source: Some(LineSource::Committed),
                 is_deletion: false,
             },
-            InlineSpan {
-                text: " = 1;".to_string(),
-                source: None,
-                is_deletion: false,
-            },
+            InlineSpan { text: " = 1;".to_string(), source: None, is_deletion: false },
         ];
 
         let base_style = Style::default().bg(ratatui::style::Color::Rgb(25, 50, 50));
@@ -536,8 +502,10 @@ mod tests {
 
         assert!(!spans.is_empty());
         // Should have mix of base and highlight backgrounds
-        let has_base_bg = spans.iter().any(|s| s.style.bg == Some(ratatui::style::Color::Rgb(25, 50, 50)));
-        let has_highlight_bg = spans.iter().any(|s| s.style.bg == Some(ratatui::style::Color::Rgb(50, 100, 100)));
+        let has_base_bg =
+            spans.iter().any(|s| s.style.bg == Some(ratatui::style::Color::Rgb(25, 50, 50)));
+        let has_highlight_bg =
+            spans.iter().any(|s| s.style.bg == Some(ratatui::style::Color::Rgb(50, 100, 100)));
         assert!(has_base_bg, "Should have spans with base background");
         assert!(has_highlight_bg, "Should have spans with highlight background");
     }
@@ -579,11 +547,8 @@ mod tests {
     #[test]
     fn test_inline_deletion_with_unchanged_context() {
         // Simulates: "pub mod gh;" → "pub mod forges;"
-        let inline_result = compute_inline_diff_merged(
-            "pub mod gh;",
-            "pub mod forges;",
-            LineSource::Committed,
-        );
+        let inline_result =
+            compute_inline_diff_merged("pub mod gh;", "pub mod forges;", LineSource::Committed);
         assert!(inline_result.is_meaningful);
 
         let base_style = line_style(LineSource::Base);
@@ -598,7 +563,10 @@ mod tests {
 
         let all_text: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert!(all_text.contains("gh"), "Should contain deleted text 'gh', got: {all_text}");
-        assert!(all_text.contains("forges"), "Should contain inserted text 'forges', got: {all_text}");
+        assert!(
+            all_text.contains("forges"),
+            "Should contain inserted text 'forges', got: {all_text}"
+        );
     }
 
     #[test]
@@ -619,11 +587,7 @@ mod tests {
     }
 
     fn make_span(text: &str, source: Option<LineSource>, is_deletion: bool) -> InlineSpan {
-        InlineSpan {
-            text: text.to_string(),
-            source,
-            is_deletion,
-        }
+        InlineSpan { text: text.to_string(), source, is_deletion }
     }
 
     #[test]
@@ -653,10 +617,10 @@ mod tests {
         // Two separate change regions - fragmented
         // Pattern: unchanged, change, unchanged, change (two change regions)
         let spans = vec![
-            make_span("c", None, false),                                    // unchanged
-            make_span("b", Some(LineSource::Committed), false),             // change region 1
-            make_span("ommercial_renewal", None, false),                    // unchanged
-            make_span("d", Some(LineSource::Committed), false),             // change region 2
+            make_span("c", None, false),                        // unchanged
+            make_span("b", Some(LineSource::Committed), false), // change region 1
+            make_span("ommercial_renewal", None, false),        // unchanged
+            make_span("d", Some(LineSource::Committed), false), // change region 2
         ];
         assert!(is_fragmented(&spans));
     }
@@ -666,11 +630,11 @@ mod tests {
         // Real case: commercial_renewal -> bond with scattered char matches
         // Pattern: unchanged(c), deleted+inserted, unchanged(on), inserted(d)
         let spans = vec![
-            make_span("c", None, false),                                    // unchanged
+            make_span("c", None, false), // unchanged
             make_span("ommercial_renewal", Some(LineSource::DeletedBase), true), // change region 1
-            make_span("b", Some(LineSource::Committed), false),             // still in change region 1
-            make_span("on", None, false),                                   // unchanged - exits region 1
-            make_span("d", Some(LineSource::Committed), false),             // change region 2
+            make_span("b", Some(LineSource::Committed), false), // still in change region 1
+            make_span("on", None, false), // unchanged - exits region 1
+            make_span("d", Some(LineSource::Committed), false), // change region 2
         ];
         assert!(is_fragmented(&spans));
     }
@@ -696,13 +660,13 @@ mod tests {
         // Non-structural chars like letters get included in coalesced region
 
         let spans = vec![
-            make_span("  ", None, false),       // structural prefix (spaces) - KEEP
-            make_span("bc", Some(LineSource::DeletedBase), true),  // deleted - first change
-            make_span("x", Some(LineSource::Committed), false),    // inserted
-            make_span("d", None, false),        // unchanged (in fragmented region)
-            make_span("e", Some(LineSource::DeletedBase), true),   // deleted
-            make_span("yz", Some(LineSource::Committed), false),   // inserted - last change
-            make_span(");", None, false),       // structural suffix (punctuation) - KEEP
+            make_span("  ", None, false), // structural prefix (spaces) - KEEP
+            make_span("bc", Some(LineSource::DeletedBase), true), // deleted - first change
+            make_span("x", Some(LineSource::Committed), false), // inserted
+            make_span("d", None, false),  // unchanged (in fragmented region)
+            make_span("e", Some(LineSource::DeletedBase), true), // deleted
+            make_span("yz", Some(LineSource::Committed), false), // inserted - last change
+            make_span(");", None, false), // structural suffix (punctuation) - KEEP
         ];
 
         let result = coalesce_spans(&spans);
@@ -726,9 +690,9 @@ mod tests {
         // Need 4+ spans and 2+ change regions to trigger fragmentation detection
 
         let spans = vec![
-            make_span("c", None, false),        // non-structural - gets coalesced
+            make_span("c", None, false), // non-structural - gets coalesced
             make_span("ancellation", Some(LineSource::DeletedBase), true), // change region 1
-            make_span("l", None, false),        // unchanged in middle
+            make_span("l", None, false), // unchanged in middle
             make_span("ause", Some(LineSource::Committed), false), // change region 2
         ];
 
@@ -766,9 +730,13 @@ mod tests {
         // The character diff would scatter shared chars (o, n, i, etc.)
         // Simulate what a character diff might produce (simplified):
         let spans = vec![
-            make_span("  ", None, false),           // structural prefix (spaces) - PRESERVED
-            make_span("c", None, false),            // non-structural - gets coalesced (coincidental match)
-            make_span("ommercial_renewal.principal_mailing_address", Some(LineSource::DeletedBase), true),
+            make_span("  ", None, false), // structural prefix (spaces) - PRESERVED
+            make_span("c", None, false),  // non-structural - gets coalesced (coincidental match)
+            make_span(
+                "ommercial_renewal.principal_mailing_address",
+                Some(LineSource::DeletedBase),
+                true,
+            ),
             make_span("b", Some(LineSource::Committed), false),
             make_span("o", None, false),
             make_span("n", None, false),
@@ -804,8 +772,10 @@ mod tests {
         eprintln!("is_meaningful: {}", result.is_meaningful);
         eprintln!("Raw spans ({}):", result.spans.len());
         for (i, span) in result.spans.iter().enumerate() {
-            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         let coalesced = coalesce_spans(&result.spans);
@@ -813,8 +783,10 @@ mod tests {
         // Debug: print coalesced spans
         eprintln!("Coalesced spans ({}):", coalesced.len());
         for (i, span) in coalesced.iter().enumerate() {
-            eprintln!("  span[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  span[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         // We should have structural prefix preserved, then coalesced old/new, then structural suffix
@@ -831,7 +803,8 @@ mod tests {
         // The deletion should contain "commercial_renewal", not scattered chars
         assert!(
             deletion.text.contains("commercial_renewal") || deletion.text == "commercial_renewal",
-            "Deletion should be 'commercial_renewal', got: {:?}", deletion.text
+            "Deletion should be 'commercial_renewal', got: {:?}",
+            deletion.text
         );
 
         // Find the insertion span
@@ -842,7 +815,8 @@ mod tests {
         // The insertion should contain "bond", not scattered chars
         assert!(
             insertion.text.contains("bond") || insertion.text == "bond",
-            "Insertion should be 'bond', got: {:?}", insertion.text
+            "Insertion should be 'bond', got: {:?}",
+            insertion.text
         );
     }
 
@@ -861,8 +835,10 @@ mod tests {
         eprintln!("is_meaningful: {}", result.is_meaningful);
         eprintln!("Raw spans ({}):", result.spans.len());
         for (i, span) in result.spans.iter().enumerate() {
-            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         let coalesced = coalesce_spans(&result.spans);
@@ -870,8 +846,10 @@ mod tests {
         // Debug: print coalesced spans
         eprintln!("Coalesced spans ({}):", coalesced.len());
         for (i, span) in coalesced.iter().enumerate() {
-            eprintln!("  span[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  span[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         // Build display string to verify no garbled output
@@ -901,8 +879,10 @@ mod tests {
         eprintln!("is_meaningful: {}", result.is_meaningful);
         eprintln!("Raw spans ({}):", result.spans.len());
         for (i, span) in result.spans.iter().enumerate() {
-            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         let coalesced = coalesce_spans(&result.spans);
@@ -910,8 +890,10 @@ mod tests {
         // Debug: print coalesced spans
         eprintln!("Coalesced spans ({}):", coalesced.len());
         for (i, span) in coalesced.iter().enumerate() {
-            eprintln!("  span[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  span[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         // Find the deletion span
@@ -922,13 +904,15 @@ mod tests {
         // The deletion should NOT start with "ancellation" - it should include the 'c'
         assert!(
             !deletion.text.starts_with("ancellation"),
-            "Deletion should NOT start with 'ancellation' (missing 'c'), got: {:?}", deletion.text
+            "Deletion should NOT start with 'ancellation' (missing 'c'), got: {:?}",
+            deletion.text
         );
 
         // Should contain the full word being replaced
         assert!(
             deletion.text.contains("cancellation"),
-            "Deletion should contain 'cancellation', got: {:?}", deletion.text
+            "Deletion should contain 'cancellation', got: {:?}",
+            deletion.text
         );
     }
 
@@ -939,42 +923,43 @@ mod tests {
 
         let result = compute_inline_diff_merged(old, new, LineSource::Committed);
 
-        let num_unchanged: usize = result.spans.iter()
-            .filter(|s| s.source.is_none())
-            .count();
+        let num_unchanged: usize = result.spans.iter().filter(|s| s.source.is_none()).count();
         eprintln!("\n=== def_pos -> inserted_pribond_pos ===");
         eprintln!("is_meaningful: {}", result.is_meaningful);
         eprintln!("num unchanged segments: {}", num_unchanged);
         eprintln!("Raw spans ({}):", result.spans.len());
         for (i, span) in result.spans.iter().enumerate() {
-            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         let coalesced = coalesce_spans(&result.spans);
         eprintln!("Coalesced spans ({}):", coalesced.len());
         for (i, span) in coalesced.iter().enumerate() {
-            eprintln!("  span[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  span[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
-        assert!(
-            result.is_meaningful,
-            "Variable rename should be meaningful"
-        );
+        assert!(result.is_meaningful, "Variable rename should be meaningful");
 
         let deletion = coalesced.iter().find(|s| s.is_deletion);
         assert!(deletion.is_some(), "Should have deletion");
         assert!(
             deletion.unwrap().text.contains("def"),
-            "Deletion should contain 'def', got: {:?}", deletion.unwrap().text
+            "Deletion should contain 'def', got: {:?}",
+            deletion.unwrap().text
         );
 
         let insertion = coalesced.iter().find(|s| !s.is_deletion && s.source.is_some());
         assert!(insertion.is_some(), "Should have insertion");
         assert!(
             insertion.unwrap().text.contains("inserted_pribond"),
-            "Insertion should contain 'inserted_pribond', got: {:?}", insertion.unwrap().text
+            "Insertion should contain 'inserted_pribond', got: {:?}",
+            insertion.unwrap().text
         );
     }
 
@@ -985,16 +970,16 @@ mod tests {
 
         let result = compute_inline_diff_merged(old, new, LineSource::Committed);
 
-        let num_unchanged: usize = result.spans.iter()
-            .filter(|s| s.source.is_none())
-            .count();
+        let num_unchanged: usize = result.spans.iter().filter(|s| s.source.is_none()).count();
         eprintln!("\n=== def principal -> pribond ===");
         eprintln!("is_meaningful: {}", result.is_meaningful);
         eprintln!("num unchanged segments: {}", num_unchanged);
         eprintln!("Raw spans ({}):", result.spans.len());
         for (i, span) in result.spans.iter().enumerate() {
-            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         assert!(
@@ -1007,20 +992,21 @@ mod tests {
     #[test]
     fn test_for_loop_to_comment_should_not_be_meaningful() {
         let old = "    for i in (last_changed + 1..spans.len()).rev() {";
-        let new = "    // Always preserve the final unchanged span if it exists - it's the common suffix";
+        let new =
+            "    // Always preserve the final unchanged span if it exists - it's the common suffix";
 
         let result = compute_inline_diff_merged(old, new, LineSource::Committed);
 
-        let num_unchanged: usize = result.spans.iter()
-            .filter(|s| s.source.is_none())
-            .count();
+        let num_unchanged: usize = result.spans.iter().filter(|s| s.source.is_none()).count();
         eprintln!("\n=== for loop -> comment ===");
         eprintln!("is_meaningful: {}", result.is_meaningful);
         eprintln!("num unchanged segments: {}", num_unchanged);
         eprintln!("Raw spans ({}):", result.spans.len());
         for (i, span) in result.spans.iter().enumerate() {
-            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         assert!(
@@ -1041,16 +1027,20 @@ mod tests {
         eprintln!("is_meaningful: {}", result.is_meaningful);
         eprintln!("Raw spans ({}):", result.spans.len());
         for (i, span) in result.spans.iter().enumerate() {
-            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         let coalesced = coalesce_spans(&result.spans);
 
         eprintln!("Coalesced spans ({}):", coalesced.len());
         for (i, span) in coalesced.iter().enumerate() {
-            eprintln!("  span[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  span[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         let deletion = coalesced.iter().find(|s| s.is_deletion);
@@ -1059,7 +1049,8 @@ mod tests {
 
         assert!(
             deletion.text.contains("inactive account"),
-            "Deletion should contain 'inactive account', got: {:?}", deletion.text
+            "Deletion should contain 'inactive account', got: {:?}",
+            deletion.text
         );
 
         let insertion = coalesced.iter().find(|s| !s.is_deletion && s.source.is_some());
@@ -1068,21 +1059,24 @@ mod tests {
 
         assert!(
             insertion.text.contains("authorization"),
-            "Insertion should contain 'authorization', got: {:?}", insertion.text
+            "Insertion should contain 'authorization', got: {:?}",
+            insertion.text
         );
 
         let prefix = coalesced.first().filter(|s| s.source.is_none());
         assert!(prefix.is_some(), "Should have unchanged prefix");
         assert!(
             prefix.unwrap().text.contains("describe"),
-            "Prefix should contain 'describe', got: {:?}", prefix.unwrap().text
+            "Prefix should contain 'describe', got: {:?}",
+            prefix.unwrap().text
         );
 
         let suffix = coalesced.last().filter(|s| s.source.is_none());
         assert!(suffix.is_some(), "Should have unchanged suffix");
         assert!(
             suffix.unwrap().text.contains(" do"),
-            "Suffix should contain ' do', got: {:?}", suffix.unwrap().text
+            "Suffix should contain ' do', got: {:?}",
+            suffix.unwrap().text
         );
     }
 
@@ -1097,16 +1091,20 @@ mod tests {
         eprintln!("is_meaningful: {}", result.is_meaningful);
         eprintln!("Raw spans ({}):", result.spans.len());
         for (i, span) in result.spans.iter().enumerate() {
-            eprintln!("  raw[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  raw[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         let coalesced = coalesce_spans(&result.spans);
 
         eprintln!("Coalesced spans ({}):", coalesced.len());
         for (i, span) in coalesced.iter().enumerate() {
-            eprintln!("  span[{}]: {:?} is_del={} text={:?}",
-                i, span.source, span.is_deletion, span.text);
+            eprintln!(
+                "  span[{}]: {:?} is_del={} text={:?}",
+                i, span.source, span.is_deletion, span.text
+            );
         }
 
         let deletion = coalesced.iter().find(|s| s.is_deletion);
@@ -1115,7 +1113,8 @@ mod tests {
 
         assert!(
             deletion.text.contains("letters_of_bondability_requests_policy"),
-            "Deletion should contain the full variable name, got: {:?}", deletion.text
+            "Deletion should contain the full variable name, got: {:?}",
+            deletion.text
         );
 
         let insertion = coalesced.iter().find(|s| !s.is_deletion && s.source.is_some());
@@ -1124,21 +1123,24 @@ mod tests {
 
         assert!(
             insertion.text.contains("principal"),
-            "Insertion should contain 'principal', got: {:?}", insertion.text
+            "Insertion should contain 'principal', got: {:?}",
+            insertion.text
         );
 
         let prefix = coalesced.first().filter(|s| s.source.is_none());
         assert!(prefix.is_some(), "Should have unchanged prefix");
         assert!(
             prefix.unwrap().text.starts_with("let(:"),
-            "Prefix should start with 'let(:', got: {:?}", prefix.unwrap().text
+            "Prefix should start with 'let(:', got: {:?}",
+            prefix.unwrap().text
         );
 
         let suffix = coalesced.last().filter(|s| s.source.is_none());
         assert!(suffix.is_some(), "Should have unchanged suffix");
         assert!(
             suffix.unwrap().text == ")",
-            "Suffix should be ')', got: {:?}", suffix.unwrap().text
+            "Suffix should be ')', got: {:?}",
+            suffix.unwrap().text
         );
     }
 
@@ -1213,7 +1215,11 @@ mod tests {
             make_span("inserted", Some(LineSource::Committed), false),
         ];
 
-        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("unchanged deleted", None));
+        let result = build_deletion_spans_with_highlight(
+            &spans,
+            LineSource::DeletedBase,
+            &segments_for("unchanged deleted", None),
+        );
 
         // Should include unchanged and deletion, but NOT insertion
         assert_eq!(result.len(), 2, "Should have 2 spans (unchanged + deletion)");
@@ -1228,7 +1234,11 @@ mod tests {
             make_span("deleted", Some(LineSource::DeletedBase), true),
         ];
 
-        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("unchanged deleted", None));
+        let result = build_deletion_spans_with_highlight(
+            &spans,
+            LineSource::DeletedBase,
+            &segments_for("unchanged deleted", None),
+        );
 
         // Unchanged should have base style (no background highlight)
         let base_style = line_style(LineSource::DeletedBase);
@@ -1247,7 +1257,11 @@ mod tests {
             make_span("inserted", Some(LineSource::Committed), false),
         ];
 
-        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("unchanged inserted", None));
+        let result = build_insertion_spans_with_highlight(
+            &spans,
+            LineSource::Committed,
+            &segments_for("unchanged inserted", None),
+        );
 
         // Should include unchanged and insertion, but NOT deletion
         assert_eq!(result.len(), 2, "Should have 2 spans (unchanged + insertion)");
@@ -1262,7 +1276,11 @@ mod tests {
             make_span("inserted", Some(LineSource::Committed), false),
         ];
 
-        let result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("unchanged inserted", None));
+        let result = build_insertion_spans_with_highlight(
+            &spans,
+            LineSource::Committed,
+            &segments_for("unchanged inserted", None),
+        );
 
         // Unchanged should have base style (no background highlight)
         let base_style = line_style(LineSource::Committed);
@@ -1277,8 +1295,16 @@ mod tests {
     fn test_build_spans_with_highlight_empty_input() {
         let spans: Vec<InlineSpan> = vec![];
 
-        let del_result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("", None));
-        let ins_result = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("", None));
+        let del_result = build_deletion_spans_with_highlight(
+            &spans,
+            LineSource::DeletedBase,
+            &segments_for("", None),
+        );
+        let ins_result = build_insertion_spans_with_highlight(
+            &spans,
+            LineSource::Committed,
+            &segments_for("", None),
+        );
 
         assert!(del_result.is_empty(), "Empty input should produce empty deletion spans");
         assert!(ins_result.is_empty(), "Empty input should produce empty insertion spans");
@@ -1293,8 +1319,16 @@ mod tests {
             make_span("earth", Some(LineSource::Committed), false),
         ];
 
-        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("hello world", None));
-        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("hello earth", None));
+        let del_spans = build_deletion_spans_with_highlight(
+            &spans,
+            LineSource::DeletedBase,
+            &segments_for("hello world", None),
+        );
+        let ins_spans = build_insertion_spans_with_highlight(
+            &spans,
+            LineSource::Committed,
+            &segments_for("hello earth", None),
+        );
 
         // Deletion line should be "hello world"
         let del_text: String = del_spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1319,8 +1353,16 @@ mod tests {
             make_span("c", None, false),
         ];
 
-        let del_spans = build_deletion_spans_with_highlight(&spans, LineSource::DeletedBase, &segments_for("aold1bold2c", None));
-        let ins_spans = build_insertion_spans_with_highlight(&spans, LineSource::Committed, &segments_for("anew1bnew2c", None));
+        let del_spans = build_deletion_spans_with_highlight(
+            &spans,
+            LineSource::DeletedBase,
+            &segments_for("aold1bold2c", None),
+        );
+        let ins_spans = build_insertion_spans_with_highlight(
+            &spans,
+            LineSource::Committed,
+            &segments_for("anew1bnew2c", None),
+        );
 
         // After coalescing, short gaps get absorbed
         // Deletion text should be: aold1bold2c (coalesced into fewer spans)
@@ -1396,7 +1438,8 @@ mod tests {
     fn test_classify_real_world_mixed() {
         // Real-world case: "hello world" -> "goodbye world"
         // This replaces "hello" with "goodbye" - mixed change
-        let result = compute_inline_diff_merged("hello world", "goodbye world", LineSource::Committed);
+        let result =
+            compute_inline_diff_merged("hello world", "goodbye world", LineSource::Committed);
         assert_eq!(classify_inline_change(&result.spans), InlineChangeType::Mixed);
     }
 
@@ -1408,7 +1451,11 @@ mod tests {
             make_span("inserted", Some(LineSource::Unstaged), false),
         ];
 
-        let result = build_insertion_spans_with_highlight(&spans, LineSource::Unstaged, &segments_for("unchanged inserted", None));
+        let result = build_insertion_spans_with_highlight(
+            &spans,
+            LineSource::Unstaged,
+            &segments_for("unchanged inserted", None),
+        );
 
         // The inserted span should have dark foreground
         let inserted_span = &result[1];
@@ -1459,7 +1506,11 @@ mod tests {
             make_span("deleted", Some(LineSource::DeletedStaged), true),
         ];
 
-        let result = build_deletion_spans_with_highlight(&spans, LineSource::DeletedStaged, &segments_for("unchanged deleted", None));
+        let result = build_deletion_spans_with_highlight(
+            &spans,
+            LineSource::DeletedStaged,
+            &segments_for("unchanged deleted", None),
+        );
 
         // The deleted span should have light foreground (reddish bg works with light text)
         let deleted_span = &result[1];
@@ -1532,8 +1583,16 @@ mod tests {
     #[test]
     fn test_get_insertion_source_ignores_deletions() {
         let spans = vec![
-            InlineSpan { text: "deleted".to_string(), source: Some(LineSource::DeletedBase), is_deletion: true },
-            InlineSpan { text: "inserted".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+            InlineSpan {
+                text: "deleted".to_string(),
+                source: Some(LineSource::DeletedBase),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "inserted".to_string(),
+                source: Some(LineSource::Unstaged),
+                is_deletion: false,
+            },
         ];
 
         let source = get_insertion_source(&spans);

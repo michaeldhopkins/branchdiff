@@ -120,10 +120,7 @@ pub(crate) fn read_cat_file_batch<R: BufRead>(
         let _ = reader.read_exact(&mut trailing);
 
         if *obj_type == "blob" {
-            results.insert(
-                path.to_string(),
-                String::from_utf8_lossy(&content_buf).into_owned(),
-            );
+            results.insert(path.to_string(), String::from_utf8_lossy(&content_buf).into_owned());
         }
     }
 

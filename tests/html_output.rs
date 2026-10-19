@@ -19,9 +19,7 @@ fn html_mode_writes_a_page_naming_the_changed_file() {
     let dir = TempDir::new().expect("create temp dir");
 
     let assert_git = |cmd: &mut Command, what: &str| {
-        let out = cmd
-            .output()
-            .unwrap_or_else(|e| panic!("run git {what}: {e}"));
+        let out = cmd.output().unwrap_or_else(|e| panic!("run git {what}: {e}"));
         assert!(
             out.status.success(),
             "git {what} failed: {}",
@@ -59,16 +57,7 @@ fn html_mode_writes_a_page_naming_the_changed_file() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lower = stdout.to_lowercase();
     assert!(lower.contains("<html"), "stdout missing <html:\n{stdout}");
-    assert!(
-        lower.contains("</html>"),
-        "stdout missing </html>:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("notes.txt"),
-        "stdout must name notes.txt:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("second"),
-        "stdout must contain 'second':\n{stdout}"
-    );
+    assert!(lower.contains("</html>"), "stdout missing </html>:\n{stdout}");
+    assert!(stdout.contains("notes.txt"), "stdout must name notes.txt:\n{stdout}");
+    assert!(stdout.contains("second"), "stdout must contain 'second':\n{stdout}");
 }

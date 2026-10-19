@@ -67,7 +67,11 @@ impl SyntaxHighlighter {
 
     /// Highlight a single line of code, maintaining state for multi-line constructs.
     /// Call `reset_highlight_state` when switching files or when line order is non-sequential.
-    pub fn highlight_line(&'static self, content: &str, file_path: Option<&str>) -> Vec<SyntaxSegment> {
+    pub fn highlight_line(
+        &'static self,
+        content: &str,
+        file_path: Option<&str>,
+    ) -> Vec<SyntaxSegment> {
         // Handle empty content
         if content.is_empty() {
             return vec![];
@@ -77,10 +81,7 @@ impl SyntaxHighlighter {
         // the cost being avoided, and such lines are generated content with no
         // following lines to mis-color.
         if content.len() > MAX_HIGHLIGHT_LINE_LEN {
-            return vec![SyntaxSegment {
-                text: content.to_string(),
-                fg_color: DEFAULT_FG,
-            }];
+            return vec![SyntaxSegment { text: content.to_string(), fg_color: DEFAULT_FG }];
         }
 
         let path = file_path.unwrap_or("");
@@ -117,10 +118,7 @@ impl SyntaxHighlighter {
             // would pass either way.
             let content_with_newline = format!("{}\n", content);
 
-            match hl_state
-                .highlighter
-                .highlight_line(&content_with_newline, &self.syntax_set)
-            {
+            match hl_state.highlighter.highlight_line(&content_with_newline, &self.syntax_set) {
                 Ok(ranges) => ranges
                     .into_iter()
                     .filter_map(|(style, text)| {
@@ -138,10 +136,7 @@ impl SyntaxHighlighter {
                     .collect(),
                 Err(_) => {
                     // Fallback to plain text on error
-                    vec![SyntaxSegment {
-                        text: content.to_string(),
-                        fg_color: DEFAULT_FG,
-                    }]
+                    vec![SyntaxSegment { text: content.to_string(), fg_color: DEFAULT_FG }]
                 }
             }
         })
@@ -149,11 +144,7 @@ impl SyntaxHighlighter {
 }
 
 fn style_color(style: syntect::highlighting::Style) -> Color {
-    Color::Rgb(
-        style.foreground.r,
-        style.foreground.g,
-        style.foreground.b,
-    )
+    Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b)
 }
 
 /// Reset the highlight state - call when switching files or after non-sequential rendering
@@ -247,9 +238,9 @@ mod tests {
         // The entire line should be string-colored since we're inside quotes
         assert!(!line2.is_empty());
         // Check that line2 has string-like coloring (not default gray)
-        let has_string_color = line2.iter().any(|s| {
-            matches!(s.fg_color, Color::Rgb(r, g, b) if r > 200 && g > 150 && b < 180)
-        });
+        let has_string_color = line2
+            .iter()
+            .any(|s| matches!(s.fg_color, Color::Rgb(r, g, b) if r > 200 && g > 150 && b < 180));
         assert!(has_string_color, "Line 2 should have string highlighting color");
 
         // Line 3 should end the string

@@ -9,8 +9,8 @@ pub(crate) mod selection;
 mod view_mode;
 mod view_state;
 
-pub use frame::{DisplayableItem, FrameContext};
 pub use crate::vcs::RefreshResult;
+pub use frame::{DisplayableItem, FrameContext};
 pub use search::SearchState;
 pub use selection::{Position, Selection};
 pub use view_state::ViewState;
@@ -22,11 +22,11 @@ use std::path::PathBuf;
 use ratatui_image::picker::Picker;
 
 use crate::diff::{DiffLine, FileDiff};
+use crate::gitignore::GitignoreFilter;
+use crate::image_diff::ImageCache;
 use crate::syntax::HighlightCache;
 use crate::update::RecoveryHint;
 use crate::vcs::{ComparisonContext, DiffBase, VcsBackend};
-use crate::gitignore::GitignoreFilter;
-use crate::image_diff::ImageCache;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -124,7 +124,10 @@ impl App {
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
             image_picker: None,
-            font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
+            font_size: (
+                crate::image_diff::FONT_WIDTH_PX as u16,
+                crate::image_diff::FONT_HEIGHT_PX as u16,
+            ),
             search: None,
             diff_base: DiffBase::default(),
             highlight_cache: RefCell::new(HighlightCache::new()),
@@ -160,7 +163,10 @@ impl App {
             file_links: HashMap::new(),
             image_cache: ImageCache::new(),
             image_picker: None,
-            font_size: (crate::image_diff::FONT_WIDTH_PX as u16, crate::image_diff::FONT_HEIGHT_PX as u16),
+            font_size: (
+                crate::image_diff::FONT_WIDTH_PX as u16,
+                crate::image_diff::FONT_HEIGHT_PX as u16,
+            ),
             search: None,
             diff_base: DiffBase::default(),
             highlight_cache: RefCell::new(HighlightCache::new()),
@@ -240,7 +246,9 @@ impl App {
             false
         } else {
             // Review: record hash, collapse, lock
-            let hash = self.files.iter()
+            let hash = self
+                .files
+                .iter()
                 .find(|f| f.lines.first().and_then(|l| l.file_path.as_deref()) == Some(path))
                 .map(|f| f.content_hash)
                 .unwrap_or(0);
@@ -256,10 +264,17 @@ impl App {
     /// Check reviewed files against current content hashes.
     /// Un-reviews any file whose content changed.
     pub fn check_reviewed_staleness(&mut self) {
-        let stale: Vec<String> = self.view.reviewed_files.iter()
+        let stale: Vec<String> = self
+            .view
+            .reviewed_files
+            .iter()
             .filter(|(path, old_hash)| {
-                let current_hash = self.files.iter()
-                    .find(|f| f.lines.first().and_then(|l| l.file_path.as_deref()) == Some(path.as_str()))
+                let current_hash = self
+                    .files
+                    .iter()
+                    .find(|f| {
+                        f.lines.first().and_then(|l| l.file_path.as_deref()) == Some(path.as_str())
+                    })
                     .map(|f| f.content_hash);
                 match current_hash {
                     Some(h) => h != **old_hash,
@@ -280,7 +295,9 @@ impl App {
     /// Toggle all files reviewed/un-reviewed.
     /// If any file is un-reviewed, review all. Otherwise un-review all.
     pub fn toggle_all_reviewed(&mut self) {
-        let all_paths: Vec<String> = self.files.iter()
+        let all_paths: Vec<String> = self
+            .files
+            .iter()
             .filter_map(|f| f.lines.first().and_then(|l| l.file_path.clone()))
             .collect();
 
@@ -406,7 +423,10 @@ impl App {
 
     /// Compute inline spans for visible lines and return the displayable items.
     /// Returns the items so they can be reused by FrameContext (avoiding double computation).
-    pub fn ensure_inline_spans_for_visible(&mut self, visible_height: usize) -> Vec<DisplayableItem> {
+    pub fn ensure_inline_spans_for_visible(
+        &mut self,
+        visible_height: usize,
+    ) -> Vec<DisplayableItem> {
         // Use the SAME items that will be rendered (including collapsed file filtering)
         let items = self.compute_displayable_items();
         let start = self.view.scroll_offset.min(items.len());
@@ -425,7 +445,8 @@ impl App {
 
     pub fn update_single_file(&mut self, file_path: &str, new_diff: Option<FileDiff>) {
         let existing_idx = self.files.iter().position(|f| {
-            f.lines.first()
+            f.lines
+                .first()
                 .and_then(|l| l.file_path.as_ref())
                 .map(|p| p == file_path)
                 .unwrap_or(false)
@@ -441,8 +462,7 @@ impl App {
             (None, Some(diff)) => {
                 self.files.push(diff);
             }
-            (None, None) => {
-            }
+            (None, None) => {}
         }
 
         self.regenerate_lines();
@@ -549,11 +569,8 @@ impl App {
         {
             let start = search.current;
             loop {
-                search.current = if search.current == 0 {
-                    search.matches.len() - 1
-                } else {
-                    search.current - 1
-                };
+                search.current =
+                    if search.current == 0 { search.matches.len() - 1 } else { search.current - 1 };
                 if visible.contains(&search.matches[search.current].line_idx)
                     || search.current == start
                 {
@@ -584,9 +601,11 @@ impl App {
         let Some(line_idx) = line_idx else { return };
 
         let ctx = FrameContext::new(self);
-        if let Some(item_idx) = ctx.items().iter().position(|item| {
-            matches!(item, DisplayableItem::Line(i) if *i == line_idx)
-        }) {
+        if let Some(item_idx) = ctx
+            .items()
+            .iter()
+            .position(|item| matches!(item, DisplayableItem::Line(i) if *i == line_idx))
+        {
             // Work in absolute screen rows so centering is correct even when the
             // lines above the match wrap to multiple rows.
             let match_abs = ctx.to_abs_row(self, item_idx, 0);
@@ -676,28 +695,16 @@ impl App {
         use crate::ui::PREFIX_CHAR_WIDTH;
 
         // Find max line number to estimate line_num_width
-        let max_line_num = self
-            .lines
-            .iter()
-            .filter_map(|line| line.line_number)
-            .max()
-            .unwrap_or(0);
+        let max_line_num = self.lines.iter().filter_map(|line| line.line_number).max().unwrap_or(0);
 
-        let line_num_width = if max_line_num > 0 {
-            max_line_num.to_string().len() + 1
-        } else {
-            0
-        };
+        let line_num_width = if max_line_num > 0 { max_line_num.to_string().len() + 1 } else { 0 };
 
         // Calculate available width (terminal - borders)
         let available_width = (terminal_width as usize).saturating_sub(2);
 
         // Calculate prefix width (line numbers + space + prefix char)
-        let prefix_width = if line_num_width > 0 {
-            line_num_width + 1
-        } else {
-            0
-        } + PREFIX_CHAR_WIDTH;
+        let prefix_width =
+            if line_num_width > 0 { line_num_width + 1 } else { 0 } + PREFIX_CHAR_WIDTH;
 
         self.view.content_width = available_width.saturating_sub(prefix_width);
         self.view.panel_width = terminal_width;
@@ -708,7 +715,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::diff::{DiffLine, LineSource};
-    use crate::test_support::{base_line, change_line, TestAppBuilder};
+    use crate::test_support::{TestAppBuilder, base_line, change_line};
 
     /// The benchmarks page through a bench app without drawing it, so it must
     /// start with a real viewport: 50 rows, a page of 48.
@@ -741,27 +748,24 @@ mod tests {
 
     fn get_visible_lines(app: &App) -> Vec<&DiffLine> {
         let ctx = FrameContext::new(app);
-        ctx.iter_visible_items(app)
-            .filter_map(|item| item_to_line(app, item))
-            .collect()
+        ctx.iter_visible_items(app).filter_map(|item| item_to_line(app, item)).collect()
     }
 
     #[test]
     fn test_auto_collapse_lock_files() {
         let gemfile_lock = FileDiff::new(vec![
-                DiffLine::file_header("Gemfile.lock"),
-                change_line("some lock content"),
+            DiffLine::file_header("Gemfile.lock"),
+            change_line("some lock content"),
         ]);
-        let regular_file = FileDiff::new(vec![
-                DiffLine::file_header("src/main.rs"),
-                change_line("some code"),
-        ]);
+        let regular_file =
+            FileDiff::new(vec![DiffLine::file_header("src/main.rs"), change_line("some code")]);
         let cargo_lock = FileDiff::new(vec![
-                DiffLine::file_header("Cargo.lock"),
-                change_line("more lock content"),
+            DiffLine::file_header("Cargo.lock"),
+            change_line("more lock content"),
         ]);
 
-        let mut app = TestAppBuilder::new().with_files(vec![gemfile_lock, regular_file, cargo_lock]).build();
+        let mut app =
+            TestAppBuilder::new().with_files(vec![gemfile_lock, regular_file, cargo_lock]).build();
 
         assert!(!app.is_file_collapsed("Gemfile.lock"));
         assert!(!app.is_file_collapsed("src/main.rs"));
@@ -777,13 +781,11 @@ mod tests {
     #[test]
     fn test_auto_collapse_deleted_files() {
         let deleted_file = FileDiff::new(vec![
-                DiffLine::deleted_file_header("src/old_file.rs", 1),
-                change_line("deleted content"),
+            DiffLine::deleted_file_header("src/old_file.rs", 1),
+            change_line("deleted content"),
         ]);
-        let regular_file = FileDiff::new(vec![
-                DiffLine::file_header("src/main.rs"),
-                change_line("some code"),
-        ]);
+        let regular_file =
+            FileDiff::new(vec![DiffLine::file_header("src/main.rs"), change_line("some code")]);
 
         let mut app = TestAppBuilder::new().with_files(vec![deleted_file, regular_file]).build();
 
@@ -799,8 +801,8 @@ mod tests {
     #[test]
     fn test_manually_toggled_files_not_auto_collapsed() {
         let gemfile_lock = FileDiff::new(vec![
-                DiffLine::file_header("Gemfile.lock"),
-                change_line("some lock content"),
+            DiffLine::file_header("Gemfile.lock"),
+            change_line("some lock content"),
         ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![gemfile_lock]).build();
@@ -812,14 +814,17 @@ mod tests {
         assert!(!app.is_file_collapsed("Gemfile.lock"), "should be expanded after toggle");
 
         app.auto_collapse_files();
-        assert!(!app.is_file_collapsed("Gemfile.lock"), "should stay expanded after re-running auto-collapse");
+        assert!(
+            !app.is_file_collapsed("Gemfile.lock"),
+            "should stay expanded after re-running auto-collapse"
+        );
     }
 
     #[test]
     fn test_manually_toggled_deleted_files_not_auto_collapsed() {
         let deleted_file = FileDiff::new(vec![
-                DiffLine::deleted_file_header("src/old_file.rs", 1),
-                change_line("deleted content"),
+            DiffLine::deleted_file_header("src/old_file.rs", 1),
+            change_line("deleted content"),
         ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![deleted_file]).build();
@@ -831,15 +836,18 @@ mod tests {
         assert!(!app.is_file_collapsed("src/old_file.rs"), "should be expanded after toggle");
 
         app.auto_collapse_files();
-        assert!(!app.is_file_collapsed("src/old_file.rs"), "should stay expanded after re-running auto-collapse");
+        assert!(
+            !app.is_file_collapsed("src/old_file.rs"),
+            "should stay expanded after re-running auto-collapse"
+        );
     }
 
     #[test]
     fn test_undeleted_file_uncollapses() {
         // Simulate a file that was deleted (auto-collapsed) then restored
         let deleted_file = FileDiff::new(vec![
-                DiffLine::deleted_file_header("src/restored.rs", 1),
-                change_line("content"),
+            DiffLine::deleted_file_header("src/restored.rs", 1),
+            change_line("content"),
         ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![deleted_file]).build();
@@ -847,10 +855,8 @@ mod tests {
         assert!(app.is_file_collapsed("src/restored.rs"), "deleted file should be collapsed");
 
         // Simulate the file being restored (no longer deleted)
-        let restored_file = FileDiff::new(vec![
-                DiffLine::file_header("src/restored.rs"),
-                change_line("content"),
-        ]);
+        let restored_file =
+            FileDiff::new(vec![DiffLine::file_header("src/restored.rs"), change_line("content")]);
         app.files = vec![restored_file];
 
         app.auto_collapse_files();
@@ -861,8 +867,8 @@ mod tests {
     fn test_undeleted_lock_file_stays_collapsed() {
         // Lock files should stay collapsed even after being "restored"
         let deleted_lock = FileDiff::new(vec![
-                DiffLine::deleted_file_header("Gemfile.lock", 1),
-                change_line("content"),
+            DiffLine::deleted_file_header("Gemfile.lock", 1),
+            change_line("content"),
         ]);
 
         let mut app = TestAppBuilder::new().with_files(vec![deleted_lock]).build();
@@ -870,14 +876,15 @@ mod tests {
         assert!(app.is_file_collapsed("Gemfile.lock"), "deleted lock file should be collapsed");
 
         // Simulate the lock file being restored
-        let restored_lock = FileDiff::new(vec![
-                DiffLine::file_header("Gemfile.lock"),
-                change_line("content"),
-        ]);
+        let restored_lock =
+            FileDiff::new(vec![DiffLine::file_header("Gemfile.lock"), change_line("content")]);
         app.files = vec![restored_lock];
 
         app.auto_collapse_files();
-        assert!(app.is_file_collapsed("Gemfile.lock"), "lock file should stay collapsed even after restore");
+        assert!(
+            app.is_file_collapsed("Gemfile.lock"),
+            "lock file should stay collapsed even after restore"
+        );
     }
 
     #[test]
@@ -900,15 +907,13 @@ mod tests {
 
     #[test]
     fn test_changed_line_count_includes_modified_base_lines() {
-        let mut modified_line = DiffLine::new(LineSource::Base, "new content".to_string(), ' ', Some(1));
+        let mut modified_line =
+            DiffLine::new(LineSource::Base, "new content".to_string(), ' ', Some(1));
         modified_line.old_content = Some("old content".to_string());
         modified_line.change_source = Some(LineSource::Unstaged);
 
-        let lines = vec![
-            DiffLine::file_header("test.rs"),
-            base_line("plain context"),
-            modified_line,
-        ];
+        let lines =
+            vec![DiffLine::file_header("test.rs"), base_line("plain context"), modified_line];
         let app = TestAppBuilder::new().with_lines(lines).build();
         assert_eq!(app.changed_line_count(), 1, "modified base line should be counted as changed");
     }
@@ -938,11 +943,7 @@ mod tests {
 
     #[test]
     fn test_cycle_view_mode_few_lines() {
-        let lines = vec![
-            base_line("line1"),
-            change_line("changed"),
-            base_line("line3"),
-        ];
+        let lines = vec![base_line("line1"), change_line("changed"), base_line("line3")];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.viewport_height = 10;
 
@@ -1136,7 +1137,7 @@ mod tests {
         // Add a line with inline spans (merged modification)
         // This simulates: "commercial_renewal.name" -> "bond.name"
         let mut merged_line = DiffLine::new(
-            LineSource::Base,  // Source is Base for merged lines
+            LineSource::Base, // Source is Base for merged lines
             "bond.name".to_string(),
             ' ',
             Some(21),
@@ -1152,11 +1153,7 @@ mod tests {
                 source: Some(LineSource::Committed),
                 is_deletion: false,
             },
-            InlineSpan {
-                text: ".name".to_string(),
-                source: None,
-                is_deletion: false,
-            },
+            InlineSpan { text: ".name".to_string(), source: None, is_deletion: false },
         ];
         lines.push(merged_line);
 
@@ -1174,14 +1171,15 @@ mod tests {
 
         // The line with inline spans should be visible
         let has_merged_line = filtered.iter().any(|l| l.content == "bond.name");
-        assert!(has_merged_line,
+        assert!(
+            has_merged_line,
             "Line with inline spans should be visible in context view. \
              Filtered lines: {:?}",
-            filtered.iter().map(|l| &l.content).collect::<Vec<_>>());
+            filtered.iter().map(|l| &l.content).collect::<Vec<_>>()
+        );
 
         // Should also have context lines around it (not just the change)
-        assert!(filtered.len() > 1,
-            "Should have context lines around the merged line");
+        assert!(filtered.len() > 1, "Should have context lines around the merged line");
     }
 
     #[test]
@@ -1204,12 +1202,7 @@ mod tests {
         }
 
         // Add a committed change
-        lines.push(DiffLine::new(
-            LineSource::Committed,
-            "new_line".to_string(),
-            '+',
-            Some(21),
-        ));
+        lines.push(DiffLine::new(LineSource::Committed, "new_line".to_string(), '+', Some(21)));
 
         // Add trailing base lines (these should show as context)
         lines.push(base_line("end"));
@@ -1226,14 +1219,16 @@ mod tests {
         assert!(has_change, "The change should be visible");
 
         // The trailing "end" lines should be visible as context
-        let trailing_ends = filtered.iter()
-            .filter(|l| l.content == "end" && l.source == LineSource::Base)
-            .count();
-        assert_eq!(trailing_ends, 2,
+        let trailing_ends =
+            filtered.iter().filter(|l| l.content == "end" && l.source == LineSource::Base).count();
+        assert_eq!(
+            trailing_ends,
+            2,
             "Both trailing 'end' lines should be visible. Found {} of 2. \
              Filtered: {:?}",
             trailing_ends,
-            filtered.iter().map(|l| &l.content).collect::<Vec<_>>());
+            filtered.iter().map(|l| &l.content).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1273,9 +1268,9 @@ mod tests {
         lines.push(DiffLine::new(LineSource::Committed, "added_line_1".to_string(), '+', Some(51)));
         lines.push(DiffLine::new(LineSource::Committed, "added_line_2".to_string(), '+', Some(52)));
         lines.push(DiffLine::new(LineSource::Committed, "added_line_3".to_string(), '+', Some(53)));
-        lines.push(DiffLine::new(LineSource::Committed, "  end".to_string(), '+', Some(54)));  // The "+ end" from bug
+        lines.push(DiffLine::new(LineSource::Committed, "  end".to_string(), '+', Some(54))); // The "+ end" from bug
         // Trailing base lines
-        lines.push(base_line("end"));   // These are the missing lines
+        lines.push(base_line("end")); // These are the missing lines
         lines.push(base_line("end"));
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
@@ -1285,16 +1280,18 @@ mod tests {
         let filtered = collect_lines(&app, &items);
 
         // The "+ end" line should be visible (it's Committed)
-        let has_added_end = filtered.iter().any(|l| l.content == "  end" && l.source == LineSource::Committed);
+        let has_added_end =
+            filtered.iter().any(|l| l.content == "  end" && l.source == LineSource::Committed);
         assert!(has_added_end, "The '+ end' addition should be visible");
 
         // The trailing base "end" lines should be visible as context
-        let trailing_base_ends = filtered.iter()
-            .filter(|l| l.content == "end" && l.source == LineSource::Base)
-            .count();
-        assert_eq!(trailing_base_ends, 2,
+        let trailing_base_ends =
+            filtered.iter().filter(|l| l.content == "end" && l.source == LineSource::Base).count();
+        assert_eq!(
+            trailing_base_ends, 2,
             "Both trailing base 'end' lines should be visible as context. Found {}",
-            trailing_base_ends);
+            trailing_base_ends
+        );
     }
 
     #[test]
@@ -1337,8 +1334,11 @@ mod tests {
 
         // The last visible line should be trailing_3
         let last_visible = visible.last().unwrap();
-        assert_eq!(last_visible.content, "trailing_3",
-            "Last visible line should be 'trailing_3', got '{}'", last_visible.content);
+        assert_eq!(
+            last_visible.content, "trailing_3",
+            "Last visible line should be 'trailing_3', got '{}'",
+            last_visible.content
+        );
 
         // All three trailing lines should be visible
         let has_trailing_1 = visible.iter().any(|l| l.content == "trailing_1");
@@ -1363,21 +1363,35 @@ mod tests {
         // Each region: base lines, then changes, then more base lines
 
         // Region 1 at the start
-        for i in 0..10 { lines.push(base_line(&format!("region1_base_{}", i))); }
-        for i in 0..3 { lines.push(change_line(&format!("region1_change_{}", i))); }
+        for i in 0..10 {
+            lines.push(base_line(&format!("region1_base_{}", i)));
+        }
+        for i in 0..3 {
+            lines.push(change_line(&format!("region1_change_{}", i)));
+        }
 
         // Large gap of base lines
-        for i in 0..50 { lines.push(base_line(&format!("gap1_base_{}", i))); }
+        for i in 0..50 {
+            lines.push(base_line(&format!("gap1_base_{}", i)));
+        }
 
         // Region 2 in the middle
-        for i in 0..3 { lines.push(change_line(&format!("region2_change_{}", i))); }
-        for i in 0..20 { lines.push(base_line(&format!("region2_after_{}", i))); }
+        for i in 0..3 {
+            lines.push(change_line(&format!("region2_change_{}", i)));
+        }
+        for i in 0..20 {
+            lines.push(base_line(&format!("region2_after_{}", i)));
+        }
 
         // Large gap of base lines
-        for i in 0..50 { lines.push(base_line(&format!("gap2_base_{}", i))); }
+        for i in 0..50 {
+            lines.push(base_line(&format!("gap2_base_{}", i)));
+        }
 
         // Region 3 near the end (the one we care about)
-        for i in 0..5 { lines.push(change_line(&format!("region3_change_{}", i))); }
+        for i in 0..5 {
+            lines.push(change_line(&format!("region3_change_{}", i)));
+        }
 
         // Trailing base lines
         lines.push(base_line("final_end_1"));
@@ -1392,8 +1406,11 @@ mod tests {
             let items = app.compute_displayable_items();
             let all_displayable = collect_lines(&app, &items);
             let last_displayable = all_displayable.last().unwrap();
-            assert_eq!(last_displayable.content, "final_end_2",
-                "Last displayable line should be final_end_2, got '{}'", last_displayable.content);
+            assert_eq!(
+                last_displayable.content, "final_end_2",
+                "Last displayable line should be final_end_2, got '{}'",
+                last_displayable.content
+            );
         }
 
         // Scroll to bottom
@@ -1428,12 +1445,27 @@ mod tests {
         for file_num in 1..=3 {
             lines.push(DiffLine::file_header(&format!("file{}.rb", file_num)));
             for i in 0..20 {
-                lines.push(DiffLine::new(LineSource::Base, format!("file{}_line{}", file_num, i), ' ', Some(i+1)));
+                lines.push(DiffLine::new(
+                    LineSource::Base,
+                    format!("file{}_line{}", file_num, i),
+                    ' ',
+                    Some(i + 1),
+                ));
             }
             // A change in each file
-            lines.push(DiffLine::new(LineSource::Committed, format!("file{}_change", file_num), '+', Some(21)));
+            lines.push(DiffLine::new(
+                LineSource::Committed,
+                format!("file{}_change", file_num),
+                '+',
+                Some(21),
+            ));
             for i in 0..10 {
-                lines.push(DiffLine::new(LineSource::Base, format!("file{}_after{}", file_num, i), ' ', Some(22+i)));
+                lines.push(DiffLine::new(
+                    LineSource::Base,
+                    format!("file{}_after{}", file_num, i),
+                    ' ',
+                    Some(22 + i),
+                ));
             }
             // Separator
             lines.push(DiffLine::new(LineSource::Base, "".to_string(), ' ', None));
@@ -1453,10 +1485,20 @@ mod tests {
         }
 
         // The added test block (lines 102-105)
-        lines.push(DiffLine::new(LineSource::Committed, "".to_string(), '+', Some(102)));  // empty line
-        lines.push(DiffLine::new(LineSource::Committed, "    it \"calculates total_due\" do".to_string(), '+', Some(103)));
-        lines.push(DiffLine::new(LineSource::Committed, "      expect(letter.send(:total_due)).to eq(...)".to_string(), '+', Some(104)));
-        lines.push(DiffLine::new(LineSource::Committed, "    end".to_string(), '+', Some(105)));  // THIS IS THE + end
+        lines.push(DiffLine::new(LineSource::Committed, "".to_string(), '+', Some(102))); // empty line
+        lines.push(DiffLine::new(
+            LineSource::Committed,
+            "    it \"calculates total_due\" do".to_string(),
+            '+',
+            Some(103),
+        ));
+        lines.push(DiffLine::new(
+            LineSource::Committed,
+            "      expect(letter.send(:total_due)).to eq(...)".to_string(),
+            '+',
+            Some(104),
+        ));
+        lines.push(DiffLine::new(LineSource::Committed, "    end".to_string(), '+', Some(105))); // THIS IS THE + end
 
         // Trailing base lines (lines 106-107) - THESE ARE MISSING IN THE BUG
         lines.push(DiffLine::new(LineSource::Base, "  end".to_string(), ' ', Some(106)));
@@ -1472,15 +1514,20 @@ mod tests {
             let all_displayable = collect_lines(&app, &items);
 
             // 1. The "    end" (Committed) should be in displayable items
-            let has_committed_end = all_displayable.iter().any(|l| l.content == "    end" && l.source == LineSource::Committed);
+            let has_committed_end = all_displayable
+                .iter()
+                .any(|l| l.content == "    end" && l.source == LineSource::Committed);
             assert!(has_committed_end, "Should have Committed '    end' in displayable lines");
 
             // 2. The "  end" (Base) should be in displayable items
-            let has_base_end_indented = all_displayable.iter().any(|l| l.content == "  end" && l.source == LineSource::Base);
+            let has_base_end_indented = all_displayable
+                .iter()
+                .any(|l| l.content == "  end" && l.source == LineSource::Base);
             assert!(has_base_end_indented, "Should have Base '  end' in displayable lines");
 
             // 3. The "end" (Base) should be in displayable items
-            let has_base_end = all_displayable.iter().any(|l| l.content == "end" && l.source == LineSource::Base);
+            let has_base_end =
+                all_displayable.iter().any(|l| l.content == "end" && l.source == LineSource::Base);
             assert!(has_base_end, "Should have Base 'end' in displayable lines");
         }
 
@@ -1496,24 +1543,40 @@ mod tests {
 
     #[test]
     fn test_vcs_refresh_returns_valid_result() {
-        use std::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-        use std::process::Command;
-        use tempfile::TempDir;
-        use crate::vcs::git::GitVcs;
         use crate::vcs::Vcs;
+        use crate::vcs::git::GitVcs;
+        use std::process::Command;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().to_path_buf();
 
         Command::new("git").args(["init"]).current_dir(&repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(&repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.name", "Test"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
 
         std::fs::write(repo_path.join("test.txt"), "initial content\n").unwrap();
         Command::new("git").args(["add", "."]).current_dir(&repo_path).output().unwrap();
-        Command::new("git").args(["commit", "-m", "initial"]).current_dir(&repo_path).output().unwrap();
-        Command::new("git").args(["branch", "-M", "main"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
 
         std::fs::write(repo_path.join("test.txt"), "modified content\n").unwrap();
 
@@ -1549,7 +1612,8 @@ mod tests {
             current_branch: Some("new-branch".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         };
@@ -1565,7 +1629,7 @@ mod tests {
 
     #[test]
     fn test_lines_appended_to_end_of_file_show_as_unstaged() {
-        use crate::diff::{compute_four_way_diff, DiffInput};
+        use crate::diff::{DiffInput, compute_four_way_diff};
 
         let base = "line1\nline2\nline3\n";
         let working = "line1\nline2\nline3\nline4\nline5\n";
@@ -1579,11 +1643,7 @@ mod tests {
             old_path: None,
         });
 
-        let unstaged: Vec<_> = diff
-            .lines
-            .iter()
-            .filter(|l| l.source.is_unstaged())
-            .collect();
+        let unstaged: Vec<_> = diff.lines.iter().filter(|l| l.source.is_unstaged()).collect();
 
         assert_eq!(unstaged.len(), 2);
         assert_eq!(unstaged[0].content, "line4");
@@ -1592,7 +1652,7 @@ mod tests {
 
     #[test]
     fn test_middle_insertion_plus_appends_at_end() {
-        use crate::diff::{compute_four_way_diff, DiffInput};
+        use crate::diff::{DiffInput, compute_four_way_diff};
 
         let base = "line1\nline2\nline3\nline4\nline5\n";
         let working = "line1\nINSERTED\nline2\nline3\nline4\nline5\nAPPEND1\nAPPEND2\n";
@@ -1606,11 +1666,7 @@ mod tests {
             old_path: None,
         });
 
-        let unstaged: Vec<_> = diff
-            .lines
-            .iter()
-            .filter(|l| l.source.is_unstaged())
-            .collect();
+        let unstaged: Vec<_> = diff.lines.iter().filter(|l| l.source.is_unstaged()).collect();
 
         assert!(unstaged.iter().any(|l| l.content == "INSERTED"));
         assert!(unstaged.iter().any(|l| l.content == "APPEND1"));
@@ -1619,27 +1675,43 @@ mod tests {
 
     #[test]
     fn test_refresh_channel_communication() {
-        use std::sync::mpsc;
-        use std::sync::atomic::AtomicBool;
+        use crate::vcs::Vcs;
+        use crate::vcs::git::GitVcs;
+        use std::process::Command;
         use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
         use std::thread;
         use std::time::Duration;
         use tempfile::TempDir;
-        use std::process::Command;
-        use crate::vcs::git::GitVcs;
-        use crate::vcs::Vcs;
 
         let temp_dir = TempDir::new().unwrap();
         let repo_path = temp_dir.path().to_path_buf();
 
         Command::new("git").args(["init"]).current_dir(&repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(&repo_path).output().unwrap();
-        Command::new("git").args(["config", "user.name", "Test"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
 
         std::fs::write(repo_path.join("file.txt"), "content\n").unwrap();
         Command::new("git").args(["add", "."]).current_dir(&repo_path).output().unwrap();
-        Command::new("git").args(["commit", "-m", "initial"]).current_dir(&repo_path).output().unwrap();
-        Command::new("git").args(["branch", "-M", "main"]).current_dir(&repo_path).output().unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
 
         let vcs = Arc::new(GitVcs::new(repo_path).unwrap());
         let (tx, rx) = mpsc::channel::<RefreshResult>();
@@ -1753,7 +1825,8 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         };
@@ -2062,10 +2135,7 @@ mod tests {
 
         // Populate both caches against the first set of lines.
         let stale = app.highlight_cache.borrow_mut().segments(app.lines(), 0);
-        assert_eq!(
-            stale.iter().map(|s| s.text.as_str()).collect::<String>(),
-            "let old = 1;"
-        );
+        assert_eq!(stale.iter().map(|s| s.text.as_str()).collect::<String>(), "let old = 1;");
         assert_eq!(app.additions_count(), 1);
 
         let result = RefreshResult {
@@ -2108,7 +2178,8 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         };
@@ -2131,7 +2202,8 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         };
@@ -2144,9 +2216,7 @@ mod tests {
     /// down, not at the top edge.
     #[test]
     fn a_match_below_the_viewport_scrolls_to_a_quarter_down() {
-        let lines = (0..100)
-            .map(|i| base_line(if i == 60 { "needle" } else { "hay" }))
-            .collect();
+        let lines = (0..100).map(|i| base_line(if i == 60 { "needle" } else { "hay" })).collect();
         let mut app = TestAppBuilder::new()
             .with_lines(lines)
             .with_view_mode(ViewMode::Full)
@@ -2164,9 +2234,7 @@ mod tests {
 
     #[test]
     fn a_match_above_the_viewport_scrolls_up_to_it() {
-        let lines = (0..100)
-            .map(|i| base_line(if i == 10 { "needle" } else { "hay" }))
-            .collect();
+        let lines = (0..100).map(|i| base_line(if i == 10 { "needle" } else { "hay" })).collect();
         let mut app = TestAppBuilder::new()
             .with_lines(lines)
             .with_view_mode(ViewMode::Full)
@@ -2238,9 +2306,7 @@ mod tests {
 
     #[test]
     fn test_refresh_recomputes_search_matches() {
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![base_line("hello world")])
-            .build();
+        let mut app = TestAppBuilder::new().with_lines(vec![base_line("hello world")]).build();
 
         app.open_search();
         app.search_insert_char('h');
@@ -2259,7 +2325,8 @@ mod tests {
             current_branch: None,
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         };
@@ -2304,9 +2371,7 @@ mod tests {
         app.view.view_mode = ViewMode::CommitOnly;
 
         let mut result = empty_jj_refresh();
-        result.lines = vec![
-            DiffLine::new(LineSource::Staged, "new line".to_string(), '+', None),
-        ];
+        result.lines = vec![DiffLine::new(LineSource::Staged, "new line".to_string(), '+', None)];
         app.apply_refresh_result(result);
 
         assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
@@ -2319,11 +2384,8 @@ mod tests {
         app.view.view_mode = ViewMode::CommitOnly;
 
         let mut result = empty_jj_refresh();
-        result.stack_position = Some(crate::vcs::StackPosition {
-            current: 1,
-            total: 3,
-            head_count: 1,
-        });
+        result.stack_position =
+            Some(crate::vcs::StackPosition { current: 1, total: 3, head_count: 1 });
         app.apply_refresh_result(result);
 
         assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
@@ -2491,9 +2553,8 @@ mod tests {
 
     #[test]
     fn a_refresh_that_shrinks_the_matches_moves_the_current_match_to_the_last() {
-        let mut app = TestAppBuilder::new()
-            .with_lines((0..5).map(|_| base_line("hel")).collect())
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines((0..5).map(|_| base_line("hel")).collect()).build();
         app.open_search();
         for c in "hel".chars() {
             app.search_insert_char(c);
@@ -2515,11 +2576,10 @@ mod tests {
         image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2))
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        let vcs = crate::test_support::StubVcs::new(PathBuf::from("/repo"))
-            .with_working_file_bytes(png);
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::image_marker("a.png")])
-            .build();
+        let vcs =
+            crate::test_support::StubVcs::new(PathBuf::from("/repo")).with_working_file_bytes(png);
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![DiffLine::image_marker("a.png")]).build();
 
         app.load_images_for_markers(&vcs);
 

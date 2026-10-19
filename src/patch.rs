@@ -49,11 +49,7 @@ impl Hunk {
 
 /// Formats a line range for hunk headers. Per git spec, count is omitted when 1.
 fn format_range(start: usize, count: usize) -> String {
-    if count == 1 {
-        start.to_string()
-    } else {
-        format!("{},{}", start, count)
-    }
+    if count == 1 { start.to_string() } else { format!("{},{}", start, count) }
 }
 
 impl fmt::Display for Hunk {
@@ -82,12 +78,7 @@ impl FilePatch {
         // Detect deleted file: all hunks have new_count == 0
         let is_deleted_file = !hunks.is_empty() && hunks.iter().all(|h| h.new_count == 0);
 
-        Self {
-            path,
-            hunks,
-            is_new_file,
-            is_deleted_file,
-        }
+        Self { path, hunks, is_new_file, is_deleted_file }
     }
 }
 
@@ -319,13 +310,7 @@ fn create_hunk(lines: &[PatchLine]) -> Hunk {
     let old_start = if old_count == 0 { 0 } else { old_start.unwrap_or(1) };
     let new_start = if new_count == 0 { 0 } else { new_start.unwrap_or(1) };
 
-    Hunk {
-        old_start,
-        old_count,
-        new_start,
-        new_count,
-        lines: lines.to_vec(),
-    }
+    Hunk { old_start, old_count, new_start, new_count, lines: lines.to_vec() }
 }
 
 /// Generates a git unified patch from DiffLines.
@@ -376,9 +361,9 @@ mod tests {
         let prefix = match source {
             LineSource::Base => ' ',
             LineSource::Committed | LineSource::Staged | LineSource::Unstaged => '+',
-            LineSource::DeletedBase
-            | LineSource::DeletedCommitted
-            | LineSource::DeletedStaged => '-',
+            LineSource::DeletedBase | LineSource::DeletedCommitted | LineSource::DeletedStaged => {
+                '-'
+            }
             _ => ' ',
         };
         DiffLine::new(source, content.to_string(), prefix, None).with_file_path(file_path)
@@ -505,13 +490,7 @@ mod tests {
 
     #[test]
     fn test_hunk_header_format_with_counts() {
-        let hunk = Hunk {
-            old_start: 10,
-            old_count: 5,
-            new_start: 12,
-            new_count: 7,
-            lines: vec![],
-        };
+        let hunk = Hunk { old_start: 10, old_count: 5, new_start: 12, new_count: 7, lines: vec![] };
 
         assert_eq!(hunk.header(), "@@ -10,5 +12,7 @@");
     }
@@ -519,26 +498,14 @@ mod tests {
     #[test]
     fn test_hunk_header_omits_count_when_one() {
         // Per git spec, count is omitted when it equals 1
-        let hunk = Hunk {
-            old_start: 5,
-            old_count: 1,
-            new_start: 7,
-            new_count: 1,
-            lines: vec![],
-        };
+        let hunk = Hunk { old_start: 5, old_count: 1, new_start: 7, new_count: 1, lines: vec![] };
 
         assert_eq!(hunk.header(), "@@ -5 +7 @@");
     }
 
     #[test]
     fn test_hunk_header_mixed_counts() {
-        let hunk = Hunk {
-            old_start: 10,
-            old_count: 1,
-            new_start: 12,
-            new_count: 3,
-            lines: vec![],
-        };
+        let hunk = Hunk { old_start: 10, old_count: 1, new_start: 12, new_count: 3, lines: vec![] };
 
         assert_eq!(hunk.header(), "@@ -10 +12,3 @@");
     }
@@ -546,13 +513,7 @@ mod tests {
     #[test]
     fn test_hunk_header_zero_counts() {
         // Zero counts for new/deleted files
-        let hunk = Hunk {
-            old_start: 0,
-            old_count: 0,
-            new_start: 1,
-            new_count: 5,
-            lines: vec![],
-        };
+        let hunk = Hunk { old_start: 0, old_count: 0, new_start: 1, new_count: 5, lines: vec![] };
 
         assert_eq!(hunk.header(), "@@ -0,0 +1,5 @@");
     }
@@ -562,17 +523,10 @@ mod tests {
         // Create a file with many lines and one change in the middle
         let mut lines = Vec::new();
         for i in 1..=20 {
-            lines.push(make_diff_line(
-                LineSource::Base,
-                &format!("line {}", i),
-                "test.txt",
-            ));
+            lines.push(make_diff_line(LineSource::Base, &format!("line {}", i), "test.txt"));
         }
         // Insert a change at position 10
-        lines.insert(
-            10,
-            make_diff_line(LineSource::Committed, "new line", "test.txt"),
-        );
+        lines.insert(10, make_diff_line(LineSource::Committed, "new line", "test.txt"));
 
         let patch = generate_patch(&lines);
 
@@ -655,11 +609,7 @@ mod tests {
         // Hunk contains:
         // - Old file: 4 lines (line 1, 2, 3, 4 - context around insertion)
         // - New file: 5 lines (line 1, 2, 3, inserted, 4)
-        assert!(
-            patch.contains("@@ -1,4 +1,5 @@"),
-            "Unexpected hunk header in:\n{}",
-            patch
-        );
+        assert!(patch.contains("@@ -1,4 +1,5 @@"), "Unexpected hunk header in:\n{}", patch);
     }
 
     #[test]
@@ -676,11 +626,7 @@ mod tests {
 
         // Old file: 5 lines (4 kept + 1 deleted)
         // New file: 4 lines (the kept ones)
-        assert!(
-            patch.contains("@@ -1,5 +1,4 @@"),
-            "Unexpected hunk header in:\n{}",
-            patch
-        );
+        assert!(patch.contains("@@ -1,5 +1,4 @@"), "Unexpected hunk header in:\n{}", patch);
     }
 
     #[test]
@@ -693,7 +639,9 @@ mod tests {
 
         let patch = generate_patch(&lines);
 
-        assert!(patch.contains("diff --git a/path with spaces/file name.txt b/path with spaces/file name.txt"));
+        assert!(patch.contains(
+            "diff --git a/path with spaces/file name.txt b/path with spaces/file name.txt"
+        ));
         assert!(patch.contains("--- a/path with spaces/file name.txt"));
         assert!(patch.contains("+++ b/path with spaces/file name.txt"));
     }
@@ -745,7 +693,7 @@ mod tests {
     }
 
     fn diff_to_patch(base: &str, working: &str) -> String {
-        use crate::diff::{compute_four_way_diff, DiffInput};
+        use crate::diff::{DiffInput, compute_four_way_diff};
         let diff = compute_four_way_diff(DiffInput {
             path: "f.rs",
             base: Some(base),
@@ -776,7 +724,7 @@ mod tests {
 
     #[test]
     fn a_committed_line_edited_in_the_index_is_only_an_addition() {
-        use crate::diff::{compute_four_way_diff, DiffInput};
+        use crate::diff::{DiffInput, compute_four_way_diff};
         // Base has nothing; HEAD adds "1n mai"; the index edits it to "n mai".
         // Against base that is one added line. The staged edit claimed to come
         // from base, so the patch also deleted "1n mai", which base never had.
@@ -795,7 +743,7 @@ mod tests {
 
     #[test]
     fn a_line_modified_twice_still_deletes_its_base_line() {
-        use crate::diff::{compute_four_way_diff, DiffInput};
+        use crate::diff::{DiffInput, compute_four_way_diff};
         // Base "= 3;3" is edited in HEAD and edited again in the index. The base
         // line must still be deleted: the working line traces back to it only
         // through two edits, which the patch cannot express as one modification.

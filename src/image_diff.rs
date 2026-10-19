@@ -60,14 +60,9 @@ pub fn is_image_file(path: &str) -> bool {
     }
 
     // Use image crate's extension detection + readability check
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    ImageFormat::from_extension(ext)
-        .map(|fmt| fmt.can_read())
-        .unwrap_or(false)
+    ImageFormat::from_extension(ext).map(|fmt| fmt.can_read()).unwrap_or(false)
 }
 
 /// Check if a file is an SVG (handled via resvg, not image crate)
@@ -99,10 +94,7 @@ impl CachedImage {
     /// Format metadata for display below image
     pub fn metadata_string(&self) -> String {
         let size = format_file_size(self.file_size);
-        format!(
-            "{}x{} {}, {}",
-            self.original_width, self.original_height, self.format_name, size
-        )
+        format!("{}x{} {}, {}", self.original_width, self.original_height, self.format_name, size)
     }
 
     /// Get the display image width (may be downscaled from original).
@@ -153,10 +145,7 @@ impl Default for ImageCache {
 
 impl ImageCache {
     pub fn new() -> Self {
-        Self {
-            images: HashMap::new(),
-            access_order: VecDeque::new(),
-        }
+        Self { images: HashMap::new(), access_order: VecDeque::new() }
     }
 
     /// Get an image from cache, updating access order
@@ -209,10 +198,8 @@ impl ImageCache {
 
     /// Remove stale images that are no longer in the diff
     pub fn evict_stale(&mut self, current_image_paths: &HashSet<&str>) {
-        self.images
-            .retain(|path, _| current_image_paths.contains(path.as_str()));
-        self.access_order
-            .retain(|path| current_image_paths.contains(path.as_str()));
+        self.images.retain(|path, _| current_image_paths.contains(path.as_str()));
+        self.access_order.retain(|path| current_image_paths.contains(path.as_str()));
     }
 
     /// Clear entire cache
@@ -364,10 +351,7 @@ pub fn format_name_from_path(path: &str) -> String {
 /// - After: working tree via VCS (current version)
 ///
 /// Returns None if both versions fail to load.
-pub fn load_image_diff(
-    vcs: &dyn crate::vcs::Vcs,
-    file_path: &str,
-) -> Option<ImageDiffState> {
+pub fn load_image_diff(vcs: &dyn crate::vcs::Vcs, file_path: &str) -> Option<ImageDiffState> {
     let format_name = format_name_from_path(file_path);
 
     let load_bytes = |bytes: &[u8]| -> Option<CachedImage> {
@@ -381,15 +365,10 @@ pub fn load_image_diff(
         }
     };
 
-    let before = vcs.base_file_bytes(file_path)
-        .ok()
-        .flatten()
-        .and_then(|bytes| load_bytes(&bytes));
+    let before = vcs.base_file_bytes(file_path).ok().flatten().and_then(|bytes| load_bytes(&bytes));
 
-    let after = vcs.working_file_bytes(file_path)
-        .ok()
-        .flatten()
-        .and_then(|bytes| load_bytes(&bytes));
+    let after =
+        vcs.working_file_bytes(file_path).ok().flatten().and_then(|bytes| load_bytes(&bytes));
 
     if before.is_none() && after.is_none() {
         return None;
@@ -438,7 +417,8 @@ mod tests {
 
     #[test]
     fn test_is_lfs_pointer() {
-        let lfs_content = b"version https://git-lfs.github.com/spec/v1\noid sha256:abc123\nsize 12345";
+        let lfs_content =
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:abc123\nsize 12345";
         assert!(is_lfs_pointer(lfs_content));
 
         let normal_content = b"\x89PNG\r\n\x1a\n"; // PNG header
@@ -528,11 +508,7 @@ mod tests {
     }
 
     fn size_strategy() -> impl proptest::strategy::Strategy<Value = u64> {
-        proptest::prop_oneof![
-            0u64..1024,
-            1024u64..1_048_576,
-            1_048_576u64..=10 * 1_048_576,
-        ]
+        proptest::prop_oneof![0u64..1024, 1024u64..1_048_576, 1_048_576u64..=10 * 1_048_576,]
     }
 
     proptest::proptest! {
@@ -594,25 +570,13 @@ mod tests {
         // Fill cache to capacity
         for i in 0..MAX_CACHED_IMAGES {
             let path = format!("image{}.png", i);
-            cache.insert(
-                path,
-                ImageDiffState {
-                    before: None,
-                    after: None,
-                },
-            );
+            cache.insert(path, ImageDiffState { before: None, after: None });
         }
 
         assert_eq!(cache.len(), MAX_CACHED_IMAGES);
 
         // Insert one more - should evict oldest
-        cache.insert(
-            "new_image.png".to_string(),
-            ImageDiffState {
-                before: None,
-                after: None,
-            },
-        );
+        cache.insert("new_image.png".to_string(), ImageDiffState { before: None, after: None });
 
         assert_eq!(cache.len(), MAX_CACHED_IMAGES);
         assert!(!cache.contains("image0.png")); // First one evicted
@@ -623,20 +587,8 @@ mod tests {
     fn test_image_cache_evict_stale() {
         let mut cache = ImageCache::new();
 
-        cache.insert(
-            "keep.png".to_string(),
-            ImageDiffState {
-                before: None,
-                after: None,
-            },
-        );
-        cache.insert(
-            "remove.png".to_string(),
-            ImageDiffState {
-                before: None,
-                after: None,
-            },
-        );
+        cache.insert("keep.png".to_string(), ImageDiffState { before: None, after: None });
+        cache.insert("remove.png".to_string(), ImageDiffState { before: None, after: None });
 
         let current: HashSet<&str> = ["keep.png"].iter().copied().collect();
         cache.evict_stale(&current);
@@ -664,33 +616,15 @@ mod tests {
         let mut cache = ImageCache::new();
 
         // Insert two images
-        cache.insert(
-            "first.png".to_string(),
-            ImageDiffState {
-                before: None,
-                after: None,
-            },
-        );
-        cache.insert(
-            "second.png".to_string(),
-            ImageDiffState {
-                before: None,
-                after: None,
-            },
-        );
+        cache.insert("first.png".to_string(), ImageDiffState { before: None, after: None });
+        cache.insert("second.png".to_string(), ImageDiffState { before: None, after: None });
 
         // Peek at first (should NOT move it to back of access order)
         assert!(cache.peek("first.png").is_some());
 
         // Fill cache to capacity to trigger eviction
         for i in 0..MAX_CACHED_IMAGES {
-            cache.insert(
-                format!("filler{}.png", i),
-                ImageDiffState {
-                    before: None,
-                    after: None,
-                },
-            );
+            cache.insert(format!("filler{}.png", i), ImageDiffState { before: None, after: None });
         }
 
         // "first.png" should be evicted since peek didn't update access order
@@ -702,20 +636,8 @@ mod tests {
         let mut cache = ImageCache::new();
 
         // Insert two images
-        cache.insert(
-            "first.png".to_string(),
-            ImageDiffState {
-                before: None,
-                after: None,
-            },
-        );
-        cache.insert(
-            "second.png".to_string(),
-            ImageDiffState {
-                before: None,
-                after: None,
-            },
-        );
+        cache.insert("first.png".to_string(), ImageDiffState { before: None, after: None });
+        cache.insert("second.png".to_string(), ImageDiffState { before: None, after: None });
 
         // Get first (should move it to back of access order)
         // Order is now: [second, first]
@@ -724,13 +646,7 @@ mod tests {
         // Fill cache to trigger exactly one eviction (second.png, since it's oldest)
         // 2 initial + 9 fillers = 11 insertions, triggering 1 eviction to stay at 10
         for i in 0..(MAX_CACHED_IMAGES - 1) {
-            cache.insert(
-                format!("filler{}.png", i),
-                ImageDiffState {
-                    before: None,
-                    after: None,
-                },
-            );
+            cache.insert(format!("filler{}.png", i), ImageDiffState { before: None, after: None });
         }
 
         // "first.png" should still exist since get() updated access order
@@ -782,10 +698,7 @@ mod tests {
     }
 
     fn empty_state() -> ImageDiffState {
-        ImageDiffState {
-            before: None,
-            after: None,
-        }
+        ImageDiffState { before: None, after: None }
     }
 
     #[test]

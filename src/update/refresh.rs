@@ -4,7 +4,7 @@ use crate::app::App;
 use crate::message::{FetchResult, LoopAction, RefreshOutcome, RefreshTrigger, UpdateResult};
 use crate::vcs::Vcs;
 
-use super::recovery::{classify_error, ErrorClass};
+use super::recovery::{ErrorClass, classify_error};
 use super::{RefreshState, Timers, UpdateConfig};
 
 /// Delay before processing VCS internal events (500ms reduces lock collisions by ~80%)
@@ -50,11 +50,8 @@ pub(super) fn handle_refresh(
             if app.performance_warning.as_ref().is_some_and(|w| w.contains("repo")) {
                 // Keep existing watch warning, but append diff warning if present
                 if let Some(dw) = diff_warning {
-                    app.performance_warning = Some(format!(
-                        "{} | {}",
-                        app.performance_warning.as_ref().unwrap(),
-                        dw
-                    ));
+                    app.performance_warning =
+                        Some(format!("{} | {}", app.performance_warning.as_ref().unwrap(), dw));
                 }
             } else {
                 // Set or clear diff warning
@@ -105,10 +102,8 @@ pub(super) fn handle_refresh(
                         Some(Instant::now() + Duration::from_millis(delay_ms));
                     timers.transient_retry_attempt += 1;
                     app.pending_recovery = None;
-                    app.error = Some(format!(
-                        "{msg} (retrying in {:.0}s...)",
-                        delay_ms as f64 / 1000.0
-                    ));
+                    app.error =
+                        Some(format!("{msg} (retrying in {:.0}s...)", delay_ms as f64 / 1000.0));
                 }
                 ErrorClass::Actionable(hint) => {
                     // Don't auto-retry: this won't self-heal. Surface the
@@ -251,11 +246,11 @@ pub(super) fn handle_tick(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use crate::message::FALLBACK_REFRESH_SECS;
-    use crate::test_support::{base_line, StubVcs, TestAppBuilder};
+    use crate::test_support::{StubVcs, TestAppBuilder, base_line};
 
     #[test]
     fn test_handle_refresh_success() {
@@ -264,10 +259,8 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers {
-            last_refresh: Instant::now() - Duration::from_secs(60),
-            ..Default::default()
-        };
+        let mut timers =
+            Timers { last_refresh: Instant::now() - Duration::from_secs(60), ..Default::default() };
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
         let outcome = RefreshOutcome::success(crate::vcs::RefreshResult {
@@ -278,13 +271,15 @@ mod tests {
             current_branch: Some("feature".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         });
 
         let config = UpdateConfig::default();
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
         assert_eq!(result.refresh, RefreshTrigger::None);
         assert!(refresh_state.is_idle());
@@ -304,7 +299,8 @@ mod tests {
 
         let outcome = RefreshOutcome::Error("test error".to_string());
         let config = UpdateConfig::default();
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
         assert_eq!(result.refresh, RefreshTrigger::Full);
         assert!(refresh_state.is_idle());
@@ -329,12 +325,14 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         });
 
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
         assert!(result.needs_redraw);
     }
 
@@ -355,7 +353,8 @@ mod tests {
             revision_id: None,
         };
 
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
         assert!(result.needs_redraw);
     }
 
@@ -437,7 +436,8 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         });
@@ -496,7 +496,8 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         });
@@ -518,7 +519,11 @@ mod tests {
 
         let result = handle_refresh(
             RefreshOutcome::Cancelled,
-            &mut app, &mut refresh_state, &mut timers, &config, &vcs,
+            &mut app,
+            &mut refresh_state,
+            &mut timers,
+            &config,
+            &vcs,
         );
 
         assert!(result.needs_redraw);
@@ -539,7 +544,11 @@ mod tests {
 
         let result = handle_refresh(
             RefreshOutcome::Cancelled,
-            &mut app, &mut refresh_state, &mut timers, &config, &vcs,
+            &mut app,
+            &mut refresh_state,
+            &mut timers,
+            &config,
+            &vcs,
         );
 
         assert_eq!(result.refresh, RefreshTrigger::Full);
@@ -550,15 +559,9 @@ mod tests {
     fn test_handle_fetch_with_conflicts() {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers {
-            fetch_in_progress: true,
-            ..Default::default()
-        };
+        let mut timers = Timers { fetch_in_progress: true, ..Default::default() };
 
-        let fetch_result = FetchResult {
-            has_conflicts: true,
-            new_merge_base: None,
-        };
+        let fetch_result = FetchResult { has_conflicts: true, new_merge_base: None };
 
         handle_fetch(fetch_result, &mut app, &mut refresh_state, &mut timers);
 
@@ -571,15 +574,9 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         app.conflict_warning = Some("old warning".to_string());
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers {
-            fetch_in_progress: true,
-            ..Default::default()
-        };
+        let mut timers = Timers { fetch_in_progress: true, ..Default::default() };
 
-        let fetch_result = FetchResult {
-            has_conflicts: false,
-            new_merge_base: None,
-        };
+        let fetch_result = FetchResult { has_conflicts: false, new_merge_base: None };
 
         handle_fetch(fetch_result, &mut app, &mut refresh_state, &mut timers);
         assert!(app.conflict_warning.is_none());
@@ -590,15 +587,10 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         app.base_identifier = "old_base".to_string();
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers {
-            fetch_in_progress: true,
-            ..Default::default()
-        };
+        let mut timers = Timers { fetch_in_progress: true, ..Default::default() };
 
-        let fetch_result = FetchResult {
-            has_conflicts: false,
-            new_merge_base: Some("new_base".to_string()),
-        };
+        let fetch_result =
+            FetchResult { has_conflicts: false, new_merge_base: Some("new_base".to_string()) };
 
         let result = handle_fetch(fetch_result, &mut app, &mut refresh_state, &mut timers);
 
@@ -610,17 +602,11 @@ mod tests {
     fn test_handle_fetch_conflict_change_sets_needs_redraw() {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers {
-            fetch_in_progress: true,
-            ..Default::default()
-        };
+        let mut timers = Timers { fetch_in_progress: true, ..Default::default() };
 
         // No conflict -> conflict = change
         let result = handle_fetch(
-            FetchResult {
-                has_conflicts: true,
-                new_merge_base: None,
-            },
+            FetchResult { has_conflicts: true, new_merge_base: None },
             &mut app,
             &mut refresh_state,
             &mut timers,
@@ -632,17 +618,11 @@ mod tests {
     fn test_handle_fetch_no_change_no_redraw() {
         let mut app = TestAppBuilder::new().build();
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers {
-            fetch_in_progress: true,
-            ..Default::default()
-        };
+        let mut timers = Timers { fetch_in_progress: true, ..Default::default() };
 
         // No conflict before, no conflict after = no change
         let result = handle_fetch(
-            FetchResult {
-                has_conflicts: false,
-                new_merge_base: None,
-            },
+            FetchResult { has_conflicts: false, new_merge_base: None },
             &mut app,
             &mut refresh_state,
             &mut timers,
@@ -678,10 +658,7 @@ mod tests {
             fetch_in_progress: false,
             ..Default::default()
         };
-        let config = UpdateConfig {
-            auto_fetch: false,
-            ..Default::default()
-        };
+        let config = UpdateConfig { auto_fetch: false, ..Default::default() };
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
         assert!(!result.trigger_fetch);
@@ -711,10 +688,7 @@ mod tests {
             RefreshTrigger::None,
             "watchdog must not request a new Full refresh on top of an in-flight one"
         );
-        assert!(
-            cancel_flag.load(Ordering::Relaxed),
-            "watchdog must set the in-flight cancel flag"
-        );
+        assert!(cancel_flag.load(Ordering::Relaxed), "watchdog must set the in-flight cancel flag");
         assert!(
             !refresh_state.is_idle(),
             "state must stay InProgress until the slow thread actually reports"
@@ -792,14 +766,8 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
         let outcome = RefreshOutcome::Cancelled;
-        let result = handle_refresh(
-            outcome,
-            &mut app,
-            &mut refresh_state,
-            &mut timers,
-            &config,
-            &vcs,
-        );
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
         assert_eq!(
             result.refresh,
@@ -816,10 +784,7 @@ mod tests {
             last_refresh: Instant::now() - Duration::from_secs(FALLBACK_REFRESH_SECS + 5),
             ..Default::default()
         };
-        let config = UpdateConfig {
-            needs_fallback_refresh: true,
-            ..Default::default()
-        };
+        let config = UpdateConfig { needs_fallback_refresh: true, ..Default::default() };
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
         assert_eq!(result.refresh, RefreshTrigger::Full);
@@ -858,10 +823,7 @@ mod tests {
     #[test]
     fn test_handle_tick_does_not_process_pending_vcs_event_too_early() {
         let mut refresh_state = RefreshState::Idle;
-        let mut timers = Timers {
-            pending_vcs_event: Some(Instant::now()),
-            ..Default::default()
-        };
+        let mut timers = Timers { pending_vcs_event: Some(Instant::now()), ..Default::default() };
 
         let config = UpdateConfig::default();
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
@@ -874,10 +836,7 @@ mod tests {
     fn test_handle_tick_no_redraw() {
         let mut refresh_state = RefreshState::Idle;
         let mut timers = Timers::default();
-        let config = UpdateConfig {
-            auto_fetch: false,
-            ..Default::default()
-        };
+        let config = UpdateConfig { auto_fetch: false, ..Default::default() };
 
         let result = handle_tick(&mut refresh_state, &mut timers, &config);
         assert!(!result.needs_redraw);
@@ -976,10 +935,8 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers {
-            last_known_revision: Some("old_rev".to_string()),
-            ..Default::default()
-        };
+        let mut timers =
+            Timers { last_known_revision: Some("old_rev".to_string()), ..Default::default() };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
@@ -991,15 +948,20 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: Some("new_rev".to_string()),
             divergence: None,
         });
 
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
-        assert_eq!(result.refresh, RefreshTrigger::Full,
-            "revision change should trigger follow-up Full refresh");
+        assert_eq!(
+            result.refresh,
+            RefreshTrigger::Full,
+            "revision change should trigger follow-up Full refresh"
+        );
         assert_eq!(timers.last_known_revision.as_deref(), Some("new_rev"));
     }
 
@@ -1010,10 +972,8 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers {
-            last_known_revision: Some("same_rev".to_string()),
-            ..Default::default()
-        };
+        let mut timers =
+            Timers { last_known_revision: Some("same_rev".to_string()), ..Default::default() };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
@@ -1025,15 +985,20 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: Some("same_rev".to_string()),
             divergence: None,
         });
 
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
-        assert_eq!(result.refresh, RefreshTrigger::None,
-            "same revision should not trigger follow-up refresh");
+        assert_eq!(
+            result.refresh,
+            RefreshTrigger::None,
+            "same revision should not trigger follow-up refresh"
+        );
     }
 
     #[test]
@@ -1043,10 +1008,8 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers {
-            last_known_revision: Some("old_rev".to_string()),
-            ..Default::default()
-        };
+        let mut timers =
+            Timers { last_known_revision: Some("old_rev".to_string()), ..Default::default() };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
@@ -1056,10 +1019,14 @@ mod tests {
             revision_id: Some("new_rev".to_string()),
         };
 
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
-        assert_eq!(result.refresh, RefreshTrigger::Full,
-            "SingleFile with revision change should trigger Full refresh");
+        assert_eq!(
+            result.refresh,
+            RefreshTrigger::Full,
+            "SingleFile with revision change should trigger Full refresh"
+        );
         assert_eq!(timers.last_known_revision.as_deref(), Some("new_rev"));
     }
 
@@ -1083,15 +1050,20 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: Some("first_rev".to_string()),
             divergence: None,
         });
 
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
-        assert_eq!(result.refresh, RefreshTrigger::None,
-            "first refresh should just store revision, not trigger follow-up");
+        assert_eq!(
+            result.refresh,
+            RefreshTrigger::None,
+            "first refresh should just store revision, not trigger follow-up"
+        );
         assert_eq!(timers.last_known_revision.as_deref(), Some("first_rev"));
     }
 
@@ -1107,10 +1079,9 @@ mod tests {
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
         // Lock contention is transient — should schedule a retry.
-        let outcome = RefreshOutcome::Error(
-            "could not acquire .git/index.lock".to_string(),
-        );
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let outcome = RefreshOutcome::Error("could not acquire .git/index.lock".to_string());
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
         assert!(result.needs_redraw);
         assert!(timers.transient_retry_at.is_some());
@@ -1138,9 +1109,11 @@ mod tests {
 
         let outcome = RefreshOutcome::Error(
             "Error: The working copy is stale (not updated since operation 26a0bbff5afe). \
-             Hint: Run `jj workspace update-stale` to update it.".to_string(),
+             Hint: Run `jj workspace update-stale` to update it."
+                .to_string(),
         );
-        let result = handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        let result =
+            handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
         assert!(result.needs_redraw);
         assert!(
@@ -1263,7 +1236,8 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         });
@@ -1306,9 +1280,7 @@ mod tests {
                 cancel_flag: Arc::new(AtomicBool::new(false)),
             };
             // Use a lock message — that's the transient case that backs off.
-            let outcome = RefreshOutcome::Error(
-                "could not acquire .git/index.lock".to_string(),
-            );
+            let outcome = RefreshOutcome::Error("could not acquire .git/index.lock".to_string());
             handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
             let retry_at = timers.transient_retry_at.unwrap();
             let delay = retry_at.duration_since(Instant::now());
@@ -1331,16 +1303,12 @@ mod tests {
             started_at: Instant::now(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
         };
-        let mut timers = Timers {
-            transient_retry_attempt: TRANSIENT_RETRY_MAX_ATTEMPTS,
-            ..Default::default()
-        };
+        let mut timers =
+            Timers { transient_retry_attempt: TRANSIENT_RETRY_MAX_ATTEMPTS, ..Default::default() };
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        let outcome = RefreshOutcome::Error(
-            "could not acquire .git/index.lock".to_string(),
-        );
+        let outcome = RefreshOutcome::Error("could not acquire .git/index.lock".to_string());
         handle_refresh(outcome, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
 
         assert!(timers.transient_retry_at.is_none(), "should not schedule retry past max attempts");
@@ -1418,7 +1386,8 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         });
@@ -1443,7 +1412,14 @@ mod tests {
         let config = UpdateConfig::default();
         let vcs = StubVcs::new(PathBuf::from("/tmp/test"));
 
-        handle_refresh(RefreshOutcome::Cancelled, &mut app, &mut refresh_state, &mut timers, &config, &vcs);
+        handle_refresh(
+            RefreshOutcome::Cancelled,
+            &mut app,
+            &mut refresh_state,
+            &mut timers,
+            &config,
+            &vcs,
+        );
 
         assert!(
             timers.transient_retry_at.is_some(),
@@ -1451,5 +1427,4 @@ mod tests {
         );
         assert_eq!(timers.transient_retry_attempt, 3);
     }
-
 }

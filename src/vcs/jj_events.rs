@@ -6,7 +6,12 @@ use super::VcsEventType;
 
 /// `op_store_dir` is the resolved store, which a secondary workspace shares from outside its own
 /// `.jj`. `colocated` is asked only for a path under `.git`.
-pub(super) fn classify(path: &Path, repo_path: &Path, op_store_dir: &Path, colocated: impl FnOnce() -> bool) -> VcsEventType {
+pub(super) fn classify(
+    path: &Path,
+    repo_path: &Path,
+    op_store_dir: &Path,
+    colocated: impl FnOnce() -> bool,
+) -> VcsEventType {
     let relative = path.strip_prefix(repo_path).unwrap_or(path);
     let first = relative.components().next().map(|c| c.as_os_str());
     let in_jj = first.is_some_and(|c| c == ".jj");
@@ -83,7 +88,14 @@ mod tests {
 
     #[test]
     fn a_shared_op_store_outside_the_workspace_is_classified_the_same() {
-        let shared = |path: &str| classify(Path::new(path), Path::new("/ws"), Path::new("/main/.jj/repo/op_store"), || false);
+        let shared = |path: &str| {
+            classify(
+                Path::new(path),
+                Path::new("/ws"),
+                Path::new("/main/.jj/repo/op_store"),
+                || false,
+            )
+        };
         assert_eq!(shared("/main/.jj/repo/op_store/operations/abc"), VcsEventType::Internal);
         assert_eq!(shared("/main/.jj/repo/op_store/views/.tmp5wPuyV"), VcsEventType::Lock);
     }
@@ -97,7 +109,8 @@ mod tests {
     #[test]
     fn git_paths_are_internal_only_when_colocated() {
         assert_eq!(kind("/repo/.git/index"), VcsEventType::Internal);
-        let alone = classify(Path::new("/repo/.git/index"), Path::new(REPO), Path::new(OP_STORE), || false);
+        let alone =
+            classify(Path::new("/repo/.git/index"), Path::new(REPO), Path::new(OP_STORE), || false);
         assert_eq!(alone, VcsEventType::Source);
     }
 

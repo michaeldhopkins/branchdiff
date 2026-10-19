@@ -43,11 +43,8 @@ fn test_e_opens_current_file_in_editor() {
     let mock_dir = tempfile::TempDir::new().unwrap();
     let sentinel = mock_dir.path().join("opened.txt");
     let script = mock_dir.path().join("mock_editor.sh");
-    std::fs::write(
-        &script,
-        format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", sentinel.display()),
-    )
-    .unwrap();
+    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", sentinel.display()))
+        .unwrap();
     let mut perms = std::fs::metadata(&script).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&script, perms).unwrap();
@@ -72,10 +69,7 @@ fn test_e_opens_current_file_in_editor() {
             }
         }
     };
-    assert!(
-        recorded.ends_with("src/main.rs"),
-        "editor opened the wrong file: {recorded}"
-    );
+    assert!(recorded.ends_with("src/main.rs"), "editor opened the wrong file: {recorded}");
 
     session.assert_contains("src/main.rs");
 }
@@ -98,11 +92,8 @@ fn test_shift_e_opens_repo_in_editor() {
     let sentinel = mock_dir.path().join("opened.txt");
     // Named `vim` so `opens_directory` accepts it; it records the path handed in.
     let script = mock_dir.path().join("vim");
-    std::fs::write(
-        &script,
-        format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", sentinel.display()),
-    )
-    .unwrap();
+    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", sentinel.display()))
+        .unwrap();
     let mut perms = std::fs::metadata(&script).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&script, perms).unwrap();
@@ -351,10 +342,7 @@ fn test_base_flag_overrides_the_diff_base() {
     // be mistaken for "not a repository".
     let (_, err, ok) = run(&["-p", "--base", "no-such-ref"]);
     assert!(!ok, "an unresolvable --base must exit non-zero, not print an empty diff");
-    assert!(
-        err.contains("no-such-ref"),
-        "the error must name the offending base; got:\n{err}"
-    );
+    assert!(err.contains("no-such-ref"), "the error must name the offending base; got:\n{err}");
     assert!(
         !err.contains("Not a git or jj repository"),
         "a bad --base must not be reported as a missing repo; got:\n{err}"

@@ -1,26 +1,26 @@
 pub(crate) mod changed_files;
 pub(crate) mod commands;
-pub(crate) mod parse;
 mod fingerprint;
+pub(crate) mod parse;
 mod refresh;
 
 #[cfg(test)]
 mod tests;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result};
 
 use crate::diff::FileDiff;
 use crate::vcs::{ComparisonContext, RefreshResult, Vcs, VcsBackend};
 
-pub use changed_files::{get_all_changed_files, ChangedFile};
+pub use changed_files::{ChangedFile, get_all_changed_files};
 pub use commands::{
-    detect_base_branch, fetch_base_branch, get_binary_files, get_current_branch,
+    GitVersion, detect_base_branch, fetch_base_branch, get_binary_files, get_current_branch,
     get_file_bytes_at_ref, get_git_version, get_merge_base_preferring_origin, get_repo_root,
-    get_working_tree_bytes, has_merge_conflicts, is_binary_file, is_index_locked, GitVersion,
+    get_working_tree_bytes, has_merge_conflicts, is_binary_file, is_index_locked,
 };
 
 /// Git backend for branchdiff.
@@ -95,9 +95,8 @@ impl GitVcs {
                 // Prove it can actually produce a merge-base: that is the lookup
                 // every refresh performs, and a failure here would otherwise
                 // surface as a silent "0 files" rather than an error.
-                get_merge_base_preferring_origin(&repo_path, &resolved.0).with_context(|| {
-                    format!("--base {base:?} has no common ancestor with HEAD")
-                })?;
+                get_merge_base_preferring_origin(&repo_path, &resolved.0)
+                    .with_context(|| format!("--base {base:?} has no common ancestor with HEAD"))?;
                 resolved
             }
             // Deliberately not defaulted to "main": a base that doesn't exist
@@ -109,8 +108,7 @@ impl GitVcs {
                 (detected.clone(), detected)
             }
         };
-        let git_version = get_git_version()
-            .context("Failed to detect git version")?;
+        let git_version = get_git_version().context("Failed to detect git version")?;
         Ok(Self { repo_path, base_branch, base_label, git_version })
     }
 
@@ -140,14 +138,21 @@ impl Vcs for GitVcs {
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
-        refresh::git_compute_refresh(&self.repo_path, &self.base_branch, &self.base_label, cancel_flag)
+        refresh::git_compute_refresh(
+            &self.repo_path, &self.base_branch, &self.base_label, cancel_flag,
+        )
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
         let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
             .unwrap_or_default();
         let old_path = changed_files::find_rename_source(&self.repo_path, file_path, &merge_base);
-        refresh::git_compute_single_file_diff(&self.repo_path, file_path, old_path.as_deref(), &merge_base)
+        refresh::git_compute_single_file_diff(
+            &self.repo_path,
+            file_path,
+            old_path.as_deref(),
+            &merge_base,
+        )
     }
 
     fn base_identifier(&self) -> Result<String> {
@@ -188,10 +193,7 @@ impl Vcs for GitVcs {
         use crate::vcs::VcsEventType;
 
         let relative = path.strip_prefix(&self.repo_path).unwrap_or(path);
-        let is_git_path = relative
-            .components()
-            .next()
-            .is_some_and(|c| c.as_os_str() == ".git");
+        let is_git_path = relative.components().next().is_some_and(|c| c.as_os_str() == ".git");
 
         if !is_git_path {
             return VcsEventType::Source;

@@ -278,11 +278,7 @@ mod tests {
 
     fn channel(c: u8) -> f64 {
         let c = f64::from(c) / 255.0;
-        if c <= 0.03928 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
+        if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
     }
 
     fn relative_luminance(rgb: (u8, u8, u8)) -> f64 {
@@ -298,27 +294,16 @@ mod tests {
     fn over(hue: (u8, u8, u8), alpha: f64, panel: (u8, u8, u8)) -> (u8, u8, u8) {
         let mix =
             |c: u8, p: u8| (f64::from(c) * alpha + f64::from(p) * (1.0 - alpha)).round() as u8;
-        (
-            mix(hue.0, panel.0),
-            mix(hue.1, panel.1),
-            mix(hue.2, panel.2),
-        )
+        (mix(hue.0, panel.0), mix(hue.1, panel.1), mix(hue.2, panel.2))
     }
 
     #[test]
     fn the_light_palette_defines_every_variable_the_dark_one_does() {
         let dark = palette_vars(DARK_PALETTE);
         let light = palette_vars(LIGHT_PALETTE);
-        assert_eq!(
-            dark.len(),
-            light.len(),
-            "the two palettes cover the same variables"
-        );
+        assert_eq!(dark.len(), light.len(), "the two palettes cover the same variables");
         for name in dark.keys() {
-            assert!(
-                light.contains_key(name),
-                "the light palette is missing {name}"
-            );
+            assert!(light.contains_key(name), "the light palette is missing {name}");
         }
     }
 
@@ -344,11 +329,7 @@ mod tests {
         ] {
             assert_eq!(token_class(color), Some(class));
         }
-        assert_eq!(
-            token_class(Color::Rgb(255, 0, 128)),
-            None,
-            "an unknown colour has no class"
-        );
+        assert_eq!(token_class(Color::Rgb(255, 0, 128)), None, "an unknown colour has no class");
         assert_eq!(token_class(Color::Reset), None);
     }
 
@@ -374,11 +355,15 @@ mod tests {
     #[test]
     fn every_token_has_a_rule_and_a_value_in_both_themes() {
         let css = stylesheet();
-        let names = ["keyword", "string", "comment", "number", "type", "func", "macro", "param", "punct"];
+        let names =
+            ["keyword", "string", "comment", "number", "type", "func", "macro", "param", "punct"];
         for name in names {
             assert!(css.contains(&format!(".tk-{name} {{ color: var(--tk-{name}); }}")), "{name}");
             for palette in [DARK_PALETTE, LIGHT_PALETTE] {
-                assert!(palette_vars(palette).contains_key(format!("--tk-{name}").as_str()), "{name}");
+                assert!(
+                    palette_vars(palette).contains_key(format!("--tk-{name}").as_str()),
+                    "{name}"
+                );
             }
         }
     }
@@ -404,24 +389,13 @@ mod tests {
                 "{theme}: --fg-sec on --panel is below 7:1"
             );
             for hue in [
-                "--c-added",
-                "--c-staged",
-                "--c-unstaged",
-                "--c-deleted",
-                "--c-moved",
+                "--c-added", "--c-staged", "--c-unstaged", "--c-deleted", "--c-moved",
                 "--c-canceled",
             ] {
                 let tint = over(var(hue), 0.19, panel);
                 for token in [
-                    "--tk-keyword",
-                    "--tk-string",
-                    "--tk-comment",
-                    "--tk-number",
-                    "--tk-type",
-                    "--tk-func",
-                    "--tk-macro",
-                    "--tk-param",
-                    "--tk-punct",
+                    "--tk-keyword", "--tk-string", "--tk-comment", "--tk-number", "--tk-type",
+                    "--tk-func", "--tk-macro", "--tk-param", "--tk-punct",
                 ] {
                     assert!(
                         contrast_ratio(var(token), tint) >= 4.5,

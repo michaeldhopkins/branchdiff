@@ -12,8 +12,7 @@ impl JjVcs {
             DiffBase::TrunkTip => &self.from_rev,
         };
         let id_of = |rev: &str| {
-            self.commit_id_of(rev)
-                .ok_or_else(|| anyhow::anyhow!("could not resolve {rev:?}"))
+            self.commit_id_of(rev).ok_or_else(|| anyhow::anyhow!("could not resolve {rev:?}"))
         };
         let base = id_of(effective_from)?;
         let mut head = id_of("@")?;

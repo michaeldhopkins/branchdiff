@@ -30,12 +30,8 @@ impl DiffLine {
 
     /// Create a file header line for a renamed file.
     pub fn renamed_file_header(old_path: &str, new_path: &str) -> Self {
-        let mut line = Self::new(
-            LineSource::FileHeader,
-            format!("{} → {}", old_path, new_path),
-            ' ',
-            None,
-        );
+        let mut line =
+            Self::new(LineSource::FileHeader, format!("{} → {}", old_path, new_path), ' ', None);
         line.file_path = Some(new_path.to_string());
         line
     }

@@ -12,39 +12,21 @@ use crate::diff::FileDiff;
 /// File patterns that should be collapsed by default (lock files, generated files)
 pub(super) const AUTO_COLLAPSE_PATTERNS: &[&str] = &[
     // Ruby/Rails
-    "Gemfile.lock",
-    "db/schema.rb",
-    "db/structure.sql",
-    // JavaScript/Node
-    "package-lock.json",
-    "yarn.lock",
-    "pnpm-lock.yaml",
-    "bun.lockb",
-    // Rust
-    "Cargo.lock",
-    // Python
-    "poetry.lock",
-    "Pipfile.lock",
-    "pdm.lock",
-    // PHP
-    "composer.lock",
-    // .NET
-    "packages.lock.json",
-    // Go
-    "go.sum",
-    // Elixir
-    "mix.lock",
-    // Swift
-    "Package.resolved",
-    // Dart/Flutter
+    "Gemfile.lock", "db/schema.rb", "db/structure.sql", // JavaScript/Node
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb",  // Rust
+    "Cargo.lock", // Python
+    "poetry.lock", "Pipfile.lock", "pdm.lock",           // PHP
+    "composer.lock",      // .NET
+    "packages.lock.json", // Go
+    "go.sum",             // Elixir
+    "mix.lock",           // Swift
+    "Package.resolved",   // Dart/Flutter
     "pubspec.lock",
 ];
 
 /// Check if a file path matches any auto-collapse pattern (lock files)
 pub(super) fn should_auto_collapse(path: &str) -> bool {
-    AUTO_COLLAPSE_PATTERNS
-        .iter()
-        .any(|pattern| path.ends_with(pattern))
+    AUTO_COLLAPSE_PATTERNS.iter().any(|pattern| path.ends_with(pattern))
 }
 
 /// Check if a file header indicates a deleted file. Deletion headers are either

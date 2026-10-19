@@ -123,7 +123,8 @@ pub fn json_string(s: &str) -> String {
 pub fn render_text(list: &FileList) -> String {
     let mut out = format!("# base {}\n# head {}\n", list.base, list.head);
     for f in &list.files {
-        let _ = writeln!(out, "{}\t+{}\t-{}\t{}", f.status.as_str(), f.additions, f.deletions, f.path);
+        let _ =
+            writeln!(out, "{}\t+{}\t-{}\t{}", f.status.as_str(), f.additions, f.deletions, f.path);
     }
     out
 }
@@ -156,10 +157,16 @@ pub fn render_json(list: &FileList) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::{compute_four_way_diff, DiffInput};
+    use crate::diff::{DiffInput, compute_four_way_diff};
     use proptest::prelude::*;
 
-    fn diff(path: &str, base: Option<&str>, head: Option<&str>, working: Option<&str>, old: Option<&str>) -> FileDiff {
+    fn diff(
+        path: &str,
+        base: Option<&str>,
+        head: Option<&str>,
+        working: Option<&str>,
+        old: Option<&str>,
+    ) -> FileDiff {
         compute_four_way_diff(DiffInput {
             path,
             base,
@@ -203,7 +210,13 @@ mod tests {
 
     #[test]
     fn an_edited_file_is_modified_with_both_counts() {
-        let e = entries(&[diff("m.txt", Some("a\nb\nc\n"), Some("a\nb\nc\n"), Some("a\nB\nc\nd\n"), None)]);
+        let e = entries(&[diff(
+            "m.txt",
+            Some("a\nb\nc\n"),
+            Some("a\nb\nc\n"),
+            Some("a\nB\nc\nd\n"),
+            None,
+        )]);
         assert_eq!(e[0].status, FileStatus::Modified);
         assert_eq!((e[0].additions, e[0].deletions), (2, 1));
     }

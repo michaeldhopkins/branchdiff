@@ -119,7 +119,8 @@ mod tests {
     }
 
     fn text(path: &str) -> DiffLine {
-        DiffLine::new(LineSource::Unstaged, "let x = 1;".to_string(), ' ', None).with_file_path(path)
+        DiffLine::new(LineSource::Unstaged, "let x = 1;".to_string(), ' ', None)
+            .with_file_path(path)
     }
 
     fn data(lines: Vec<DiffLine>) -> OutputData {
@@ -127,7 +128,13 @@ mod tests {
             repo_name: "repo".into(),
             to_label: "to".into(),
             from_label: "from".into(),
-            files: vec![OutputFile { path: "f".into(), lines, additions: 0, deletions: 0, collapsed: false }],
+            files: vec![OutputFile {
+                path: "f".into(),
+                lines,
+                additions: 0,
+                deletions: 0,
+                collapsed: false,
+            }],
             total_additions: 0,
             total_deletions: 0,
         }

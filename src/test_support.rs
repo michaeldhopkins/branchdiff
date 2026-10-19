@@ -4,15 +4,17 @@
 //! eliminating duplication across test modules.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::Result;
 
 use crate::app::{App, ViewMode, ViewState};
 use crate::diff::{DiffLine, FileDiff, LineSource};
 use crate::gitignore::GitignoreFilter;
-use crate::vcs::{ComparisonContext, RefreshResult, StackPosition, VcsBackend, VcsEventType, VcsWatchPaths};
+use crate::vcs::{
+    ComparisonContext, RefreshResult, StackPosition, VcsBackend, VcsEventType, VcsWatchPaths,
+};
 
 /// Builder for creating test App instances with sensible defaults.
 ///
@@ -206,24 +208,41 @@ impl StubVcs {
 }
 
 impl crate::vcs::Vcs for StubVcs {
-    fn repo_path(&self) -> &Path { &self.repo_path }
+    fn repo_path(&self) -> &Path {
+        &self.repo_path
+    }
 
-    fn comparison_context(&self) -> Result<ComparisonContext> { unimplemented!() }
+    fn comparison_context(&self) -> Result<ComparisonContext> {
+        unimplemented!()
+    }
 
-    fn refresh(&self, _: &Arc<AtomicBool>) -> Result<RefreshResult> { unimplemented!() }
+    fn refresh(&self, _: &Arc<AtomicBool>) -> Result<RefreshResult> {
+        unimplemented!()
+    }
 
-    fn single_file_diff(&self, _: &str) -> Option<FileDiff> { unimplemented!() }
+    fn single_file_diff(&self, _: &str) -> Option<FileDiff> {
+        unimplemented!()
+    }
 
-    fn base_identifier(&self) -> Result<String> { unimplemented!() }
+    fn base_identifier(&self) -> Result<String> {
+        unimplemented!()
+    }
 
-    fn base_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
+    fn base_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
 
-    fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(self.working_bytes.clone()) }
+    fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.working_bytes.clone())
+    }
 
+    fn fetch(&self) -> Result<()> {
+        unimplemented!()
+    }
 
-    fn fetch(&self) -> Result<()> { unimplemented!() }
-
-    fn has_conflicts(&self) -> Result<bool> { unimplemented!() }
+    fn has_conflicts(&self) -> Result<bool> {
+        unimplemented!()
+    }
 
     fn is_locked(&self) -> bool {
         self.repo_path.join(".git/index.lock").exists()
@@ -235,10 +254,11 @@ impl crate::vcs::Vcs for StubVcs {
 
     fn classify_event(&self, path: &Path) -> VcsEventType {
         let relative = path.strip_prefix(&self.repo_path).unwrap_or(path);
-        let is_vcs_path = relative.components().next()
-            .is_some_and(|c| c.as_os_str() == ".git");
+        let is_vcs_path = relative.components().next().is_some_and(|c| c.as_os_str() == ".git");
 
-        if !is_vcs_path { return VcsEventType::Source; }
+        if !is_vcs_path {
+            return VcsEventType::Source;
+        }
 
         // Any .lock file signals an external operation
         if relative.extension().is_some_and(|ext| ext == "lock") {
@@ -258,7 +278,11 @@ impl crate::vcs::Vcs for StubVcs {
         }
     }
 
-    fn backend(&self) -> VcsBackend { VcsBackend::Git }
+    fn backend(&self) -> VcsBackend {
+        VcsBackend::Git
+    }
 
-    fn current_revision_id(&self) -> Result<String> { Ok("stub_revision".to_string()) }
+    fn current_revision_id(&self) -> Result<String> {
+        Ok("stub_revision".to_string())
+    }
 }

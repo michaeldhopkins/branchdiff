@@ -3,10 +3,12 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
-use vcs_runner::{Cmd, run_git, run_git_with_retry, run_git_with_timeout, is_transient_error as vcs_is_transient};
 use crate::vcs::UpstreamDivergence;
+use vcs_runner::{
+    Cmd, is_transient_error as vcs_is_transient, run_git, run_git_with_retry, run_git_with_timeout,
+};
 
 use super::parse::{parse_numstat_binaries, read_cat_file_batch};
 
@@ -98,11 +100,10 @@ pub(super) fn rev_id(repo_path: &Path, git_ref: &str) -> Option<String> {
 /// It is git's own answer to "what is trunk" — the closest equivalent to jj's
 /// `trunk()` — so it beats guessing at names.
 fn origin_head_branch(repo_path: &Path) -> Option<String> {
-    let output = run_git(repo_path, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).ok()?;
+    let output =
+        run_git(repo_path, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).ok()?;
     let full = output.stdout_lossy().trim().to_string();
-    full.strip_prefix("origin/")
-        .map(str::to_string)
-        .filter(|s| !s.is_empty())
+    full.strip_prefix("origin/").map(str::to_string).filter(|s| !s.is_empty())
 }
 
 /// Detect the base branch to compare against.
@@ -145,8 +146,7 @@ pub fn detect_base_branch(repo_path: &Path) -> Result<String> {
 /// Get the merge-base between HEAD and the base branch, preferring origin
 pub fn get_merge_base_preferring_origin(repo_path: &Path, base_branch: &str) -> Result<String> {
     let remote_ref = format!("origin/{}", base_branch);
-    get_merge_base(repo_path, &remote_ref)
-        .or_else(|_| get_merge_base(repo_path, base_branch))
+    get_merge_base(repo_path, &remote_ref).or_else(|_| get_merge_base(repo_path, base_branch))
 }
 
 /// Get the merge-base between the base branch and HEAD
@@ -176,43 +176,33 @@ pub fn compute_upstream_divergence(
         return None;
     }
 
-    let upstream_files = upstream_changed_files(repo_path, merge_base, &remote_ref)
-        .unwrap_or_default();
+    let upstream_files =
+        upstream_changed_files(repo_path, merge_base, &remote_ref).unwrap_or_default();
 
-    Some(UpstreamDivergence {
-        behind_count,
-        upstream_files,
-    })
+    Some(UpstreamDivergence { behind_count, upstream_files })
 }
 
 /// Count commits reachable from `to` but not from `from`.
 fn rev_list_count(repo_path: &Path, from: &str, to: &str) -> Result<usize> {
     let range = format!("{}..{}", from, to);
     let output = run_git(repo_path, &["rev-list", "--count", &range])?;
-    output.stdout_lossy()
-        .trim()
-        .parse::<usize>()
-        .context("Failed to parse rev-list count")
+    output.stdout_lossy().trim().parse::<usize>().context("Failed to parse rev-list count")
 }
 
 /// Get files changed between two refs.
-fn upstream_changed_files(
-    repo_path: &Path,
-    from: &str,
-    to: &str,
-) -> Result<HashSet<String>> {
+fn upstream_changed_files(repo_path: &Path, from: &str, to: &str) -> Result<HashSet<String>> {
     let range = format!("{}..{}", from, to);
     let output = run_git(repo_path, &["diff", "--name-only", &range])?;
-    Ok(output.stdout_lossy()
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect())
+    Ok(output.stdout_lossy().lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect())
 }
 
 /// Get file content at a specific ref (commit, branch, or index)
 /// Use `:path` for staged content (index)
-pub(super) fn get_file_at_ref(repo_path: &Path, file_path: &str, git_ref: &str) -> Result<Option<String>> {
+pub(super) fn get_file_at_ref(
+    repo_path: &Path,
+    file_path: &str,
+    git_ref: &str,
+) -> Result<Option<String>> {
     let ref_path = if git_ref.is_empty() {
         // Empty ref means index (staged)
         format!(":{}", file_path)
@@ -263,13 +253,11 @@ pub(super) fn batch_file_contents(
 
     let specs: Vec<String> = file_paths
         .iter()
-        .map(|path| {
-            if git_ref.is_empty() {
-                format!(":{path}")
-            } else {
-                format!("{git_ref}:{path}")
-            }
-        })
+        .map(
+            |path| {
+                if git_ref.is_empty() { format!(":{path}") } else { format!("{git_ref}:{path}") }
+            },
+        )
         .collect();
 
     // Write all specs on a background thread to avoid deadlock when stdout
@@ -363,7 +351,11 @@ pub fn fetch_base_branch(repo_path: &Path, base_branch: &str) -> Result<()> {
 
 /// Check for merge conflicts using git merge-tree.
 /// Requires Git 2.38+ for --write-tree flag; returns Ok(false) on older versions.
-pub fn has_merge_conflicts(repo_path: &Path, base_branch: &str, git_version: &GitVersion) -> Result<bool> {
+pub fn has_merge_conflicts(
+    repo_path: &Path,
+    base_branch: &str,
+    git_version: &GitVersion,
+) -> Result<bool> {
     // merge-tree --write-tree requires Git 2.38+
     if !git_version.at_least(MERGE_TREE_MIN_VERSION.0, MERGE_TREE_MIN_VERSION.1) {
         return Ok(false);
@@ -392,9 +384,5 @@ pub fn get_current_branch(repo_path: &Path) -> Result<Option<String>> {
     };
 
     let branch = output.stdout_lossy().trim().to_string();
-    if branch == "HEAD" {
-        Ok(None)
-    } else {
-        Ok(Some(branch))
-    }
+    if branch == "HEAD" { Ok(None) } else { Ok(Some(branch)) }
 }

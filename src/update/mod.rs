@@ -10,17 +10,17 @@ pub mod recovery;
 mod refresh;
 mod search;
 
-pub use recovery::{classify_error, ErrorClass, RecoveryAction, RecoveryHint};
+pub use recovery::{ErrorClass, RecoveryAction, RecoveryHint, classify_error};
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::file_events::VcsLockState;
 use crate::limits::DiffThresholds;
-use crate::message::{Message, UpdateResult, FALLBACK_REFRESH_SECS};
+use crate::message::{FALLBACK_REFRESH_SECS, Message, UpdateResult};
 use crate::vcs::Vcs;
 
 /// Timer state for periodic operations.
@@ -70,14 +70,8 @@ impl Default for Timers {
 /// State machine for background refresh operations.
 pub enum RefreshState {
     Idle,
-    InProgress {
-        started_at: Instant,
-        cancel_flag: Arc<AtomicBool>,
-    },
-    InProgressPending {
-        started_at: Instant,
-        cancel_flag: Arc<AtomicBool>,
-    },
+    InProgress { started_at: Instant, cancel_flag: Arc<AtomicBool> },
+    InProgressPending { started_at: Instant, cancel_flag: Arc<AtomicBool> },
 }
 
 impl RefreshState {
@@ -98,11 +92,7 @@ impl RefreshState {
     }
 
     pub fn mark_pending(&mut self) {
-        if let RefreshState::InProgress {
-            started_at,
-            cancel_flag,
-        } = self
-        {
+        if let RefreshState::InProgress { started_at, cancel_flag } = self {
             *self = RefreshState::InProgressPending {
                 started_at: *started_at,
                 cancel_flag: cancel_flag.clone(),
@@ -112,10 +102,7 @@ impl RefreshState {
 
     pub fn cancel_and_mark_pending(&mut self) {
         match self {
-            RefreshState::InProgress {
-                started_at,
-                cancel_flag,
-            } => {
+            RefreshState::InProgress { started_at, cancel_flag } => {
                 cancel_flag.store(true, Ordering::Relaxed);
                 *self = RefreshState::InProgressPending {
                     started_at: *started_at,
@@ -234,7 +221,13 @@ impl UpdateConfig {
         repo_path: PathBuf,
         refresh_watchdog_timeout: Duration,
     ) -> Self {
-        Self { auto_fetch, needs_fallback_refresh, repo_path, refresh_watchdog_timeout, ..Self::default() }
+        Self {
+            auto_fetch,
+            needs_fallback_refresh,
+            repo_path,
+            refresh_watchdog_timeout,
+            ..Self::default()
+        }
     }
 }
 
@@ -282,7 +275,8 @@ mod tests {
     fn a_session_config_keeps_what_it_was_given() {
         let defaults = UpdateConfig::default();
         let timeout = DEFAULT_WATCHDOG_TIMEOUT + Duration::from_secs(7);
-        let config = UpdateConfig::for_session(!defaults.auto_fetch, true, PathBuf::from("/repo"), timeout);
+        let config =
+            UpdateConfig::for_session(!defaults.auto_fetch, true, PathBuf::from("/repo"), timeout);
 
         assert_eq!(config.auto_fetch, !defaults.auto_fetch);
         assert!(config.needs_fallback_refresh);
@@ -404,7 +398,7 @@ mod tests {
         use crate::file_events::VcsLockState;
         use crate::input::AppAction;
         use crate::message::{Message, RefreshOutcome};
-        use crate::test_support::{base_line, StubVcs, TestAppBuilder};
+        use crate::test_support::{StubVcs, TestAppBuilder, base_line};
         use std::path::PathBuf;
 
         let mut app = TestAppBuilder::new().build();
@@ -423,22 +417,12 @@ mod tests {
         )));
         update(stale, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &config, &vcs);
         assert!(app.pending_recovery.is_some(), "stale should surface recovery hint");
-        assert!(
-            timers.transient_retry_at.is_none(),
-            "stale must not schedule a transient retry"
-        );
+        assert!(timers.transient_retry_at.is_none(), "stale must not schedule a transient retry");
 
         // Step 2: user presses 'u' to accept the fix.
         let press = Message::Input(AppAction::RunRecovery);
-        let press_result = update(
-            press,
-            &mut app,
-            &mut refresh_state,
-            &mut vcs_lock,
-            &mut timers,
-            &config,
-            &vcs,
-        );
+        let press_result =
+            update(press, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &config, &vcs);
         assert!(
             press_result.trigger_recovery.is_some(),
             "RunRecovery must escalate to a recovery spawn"
@@ -466,15 +450,7 @@ mod tests {
                 divergence: None,
             },
         )));
-        update(
-            success,
-            &mut app,
-            &mut refresh_state,
-            &mut vcs_lock,
-            &mut timers,
-            &config,
-            &vcs,
-        );
+        update(success, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &config, &vcs);
         assert!(app.error.is_none());
         assert!(app.pending_recovery.is_none());
     }
@@ -488,7 +464,7 @@ mod tests {
     fn file_event_driven_auto_recovery_after_stale() {
         use crate::file_events::VcsLockState;
         use crate::message::{Message, RefreshOutcome, RefreshTrigger};
-        use crate::test_support::{base_line, StubVcs, TestAppBuilder};
+        use crate::test_support::{StubVcs, TestAppBuilder, base_line};
         use notify_debouncer_mini::{DebouncedEvent, DebouncedEventKind};
         use std::path::PathBuf;
 
@@ -511,22 +487,12 @@ mod tests {
             DebouncedEventKind::Any,
         )]);
         let r = update(
-            file_event,
-            &mut app,
-            &mut refresh_state,
-            &mut vcs_lock,
-            &mut timers,
-            &config,
-            &vcs,
+            file_event, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &config, &vcs,
         );
         // The watcher should have asked us to refresh. Without this, no
         // auto-recovery would ever happen — guard against a future change
         // that breaks the wiring.
-        assert_eq!(
-            r.refresh,
-            RefreshTrigger::Full,
-            "revision-change event must trigger a refresh"
-        );
+        assert_eq!(r.refresh, RefreshTrigger::Full, "revision-change event must trigger a refresh");
 
         // Banner is unchanged yet — the refresh hasn't completed.
         assert!(app.error.is_some());
@@ -553,20 +519,9 @@ mod tests {
                 divergence: None,
             },
         )));
-        update(
-            success,
-            &mut app,
-            &mut refresh_state,
-            &mut vcs_lock,
-            &mut timers,
-            &config,
-            &vcs,
-        );
+        update(success, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &config, &vcs);
         assert!(app.error.is_none(), "external fix must clear the banner");
-        assert!(
-            app.pending_recovery.is_none(),
-            "external fix must drop the now-stale hint"
-        );
+        assert!(app.pending_recovery.is_none(), "external fix must drop the now-stale hint");
     }
 
     /// Counterpart to the happy path: if the recovery command itself fails,
@@ -595,15 +550,7 @@ mod tests {
         let failure = Message::RefreshCompleted(Box::new(RefreshOutcome::Error(
             "Recovery action failed: jj exited with code 2".to_string(),
         )));
-        update(
-            failure,
-            &mut app,
-            &mut refresh_state,
-            &mut vcs_lock,
-            &mut timers,
-            &config,
-            &vcs,
-        );
+        update(failure, &mut app, &mut refresh_state, &mut vcs_lock, &mut timers, &config, &vcs);
 
         assert!(
             app.error.as_ref().unwrap().contains("Recovery action failed"),

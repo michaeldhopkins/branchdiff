@@ -82,7 +82,9 @@ mod tests {
     #[test]
     fn a_page_with_refresh_off_never_fetches_or_sets_a_timer() {
         let s = script(Refresh::Off);
-        for forbidden in ["setInterval", "setTimeout", "fetch(", "XMLHttpRequest", "EventSource", "WebSocket"] {
+        for forbidden in
+            ["setInterval", "setTimeout", "fetch(", "XMLHttpRequest", "EventSource", "WebSocket"]
+        {
             assert!(!s.contains(forbidden), "{forbidden} in a page with refresh off");
         }
     }

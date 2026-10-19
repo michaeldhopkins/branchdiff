@@ -8,9 +8,13 @@ use super::jj::TRUNK_BOOKMARK_CANDIDATES;
 
 /// Whether a revset resolves to at least one commit.
 pub(super) fn revset_resolves(repo_path: &Path, revset: &str) -> bool {
-    run_jj(repo_path, &[
-        "--ignore-working-copy", "log", "-r", revset, "--no-graph", "--limit", "1", "-T", r#""x""#,
-    ])
+    run_jj(
+        repo_path,
+        &[
+            "--ignore-working-copy", "log", "-r", revset, "--no-graph", "--limit", "1", "-T",
+            r#""x""#,
+        ],
+    )
     .map(|o| !o.stdout_lossy().trim().is_empty())
     .unwrap_or(false)
 }
@@ -21,9 +25,13 @@ pub(super) fn revset_resolves(repo_path: &Path, revset: &str) -> bool {
 /// answers ">= 1", and `jj diff --from` takes exactly one revision. Limiting to
 /// 2 is enough to tell none / one / many apart without walking a large set.
 pub(super) fn revset_commit_count(repo_path: &Path, revset: &str) -> usize {
-    run_jj(repo_path, &[
-        "--ignore-working-copy", "log", "-r", revset, "--no-graph", "--limit", "2", "-T", r#""x\n""#,
-    ])
+    run_jj(
+        repo_path,
+        &[
+            "--ignore-working-copy", "log", "-r", revset, "--no-graph", "--limit", "2", "-T",
+            r#""x\n""#,
+        ],
+    )
     .map(|o| o.stdout_lossy().lines().filter(|l| !l.trim().is_empty()).count())
     .unwrap_or(0)
 }
@@ -31,10 +39,20 @@ pub(super) fn revset_commit_count(repo_path: &Path, revset: &str) -> usize {
 /// Committer timestamp (epoch seconds) of the commit a revset resolves to, or
 /// `None` if it resolves to nothing.
 pub(super) fn revset_committer_epoch(repo_path: &Path, revset: &str) -> Option<i64> {
-    let output = run_jj(repo_path, &[
-        "--ignore-working-copy", "log", "-r", revset, "--no-graph", "--limit", "1",
-        "-T", r#"committer.timestamp().utc().format("%s")"#,
-    ])
+    let output = run_jj(
+        repo_path,
+        &[
+            "--ignore-working-copy",
+            "log",
+            "-r",
+            revset,
+            "--no-graph",
+            "--limit",
+            "1",
+            "-T",
+            r#"committer.timestamp().utc().format("%s")"#,
+        ],
+    )
     .ok()?;
     output.stdout_lossy().trim().parse::<i64>().ok()
 }
@@ -91,4 +109,3 @@ pub(super) fn pick_trunk_remote(raw: &str) -> Option<String> {
         .map(|preferred| (*preferred).to_string())
         .or_else(|| remotes.first().map(|r| (*r).to_string()))
 }
-

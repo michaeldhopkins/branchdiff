@@ -97,7 +97,8 @@ mod tests {
     /// Pinned: the value is compared across builds, so it must never drift.
     #[test]
     fn the_value_for_known_inputs_is_stable() {
-        let f = fingerprint(&inputs("base1", "head1", "M a.rs", &["a.rs"]), files(&[("a.rs", "x\n")]));
+        let f =
+            fingerprint(&inputs("base1", "head1", "M a.rs", &["a.rs"]), files(&[("a.rs", "x\n")]));
         assert_eq!(f, "50223c162af14d23");
     }
 

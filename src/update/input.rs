@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::app::App;
 use crate::app::selection::MULTI_CLICK_MS;
 use crate::input::AppAction;
-use crate::message::{LoopAction, OpenTarget, Repaint, RefreshTrigger, UpdateResult};
+use crate::message::{LoopAction, OpenTarget, RefreshTrigger, Repaint, UpdateResult};
 
 use super::RefreshState;
 const POSITION_TOLERANCE: u16 = 2;
@@ -208,11 +208,11 @@ pub(super) fn handle_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::time::Instant;
 
-    use crate::test_support::{base_line, TestAppBuilder};
+    use crate::test_support::{TestAppBuilder, base_line};
 
     #[test]
     fn test_handle_input_quit() {
@@ -241,10 +241,7 @@ mod tests {
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::OpenEditor, &mut app, &mut refresh_state);
-        assert_eq!(
-            result.open_editor,
-            Some(OpenTarget::File(app.repo_path.join("src/foo.rs")))
-        );
+        assert_eq!(result.open_editor, Some(OpenTarget::File(app.repo_path.join("src/foo.rs"))));
     }
 
     #[test]
@@ -278,9 +275,7 @@ mod tests {
 
     #[test]
     fn test_handle_input_sets_needs_redraw_for_scroll() {
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![base_line("line")])
-            .build();
+        let mut app = TestAppBuilder::new().with_lines(vec![base_line("line")]).build();
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::ScrollDown(1), &mut app, &mut refresh_state);
@@ -436,9 +431,7 @@ mod tests {
 
     #[test]
     fn test_handle_input_copy_patch_sets_needs_redraw() {
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![base_line("content")])
-            .build();
+        let mut app = TestAppBuilder::new().with_lines(vec![base_line("content")]).build();
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::CopyPatch, &mut app, &mut refresh_state);
@@ -449,9 +442,7 @@ mod tests {
 
     #[test]
     fn test_handle_input_copy_diff_sets_needs_redraw() {
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![base_line("content")])
-            .build();
+        let mut app = TestAppBuilder::new().with_lines(vec![base_line("content")]).build();
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::CopyDiff, &mut app, &mut refresh_state);
@@ -461,9 +452,7 @@ mod tests {
 
     #[test]
     fn test_handle_input_copy_path_sets_needs_redraw() {
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![base_line("content")])
-            .build();
+        let mut app = TestAppBuilder::new().with_lines(vec![base_line("content")]).build();
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::CopyPath, &mut app, &mut refresh_state);
@@ -475,9 +464,7 @@ mod tests {
     fn test_handle_input_cycle_view_mode() {
         use crate::app::ViewMode;
 
-        let mut app = TestAppBuilder::new()
-            .with_view_mode(ViewMode::Full)
-            .build();
+        let mut app = TestAppBuilder::new().with_view_mode(ViewMode::Full).build();
         let mut refresh_state = RefreshState::Idle;
 
         let result = handle_input(AppAction::CycleViewMode, &mut app, &mut refresh_state);
@@ -608,11 +595,7 @@ mod tests {
         // The error swap to "Running `...`" gives the user feedback that the
         // command is in flight — relying just on an empty banner would feel
         // like the keypress did nothing.
-        assert!(
-            app.error.as_ref().unwrap().starts_with("Running `"),
-            "got: {:?}",
-            app.error
-        );
+        assert!(app.error.as_ref().unwrap().starts_with("Running `"), "got: {:?}", app.error);
     }
 
     #[test]

@@ -4,10 +4,7 @@ use super::{App, ViewMode};
 
 impl App {
     pub fn changed_line_count(&self) -> usize {
-        self.lines
-            .iter()
-            .filter(|line| line.is_change())
-            .count()
+        self.lines.iter().filter(|line| line.is_change()).count()
     }
 
     pub fn additions_count(&self) -> usize {
@@ -36,14 +33,14 @@ impl App {
 
     /// Compute visibility using a predicate to determine "interesting" lines.
     /// Lines within CONTEXT_LINES of interesting lines are shown; headers always show.
-    fn compute_visibility_with_predicate(&self, is_interesting: impl Fn(&DiffLine) -> bool) -> Vec<bool> {
+    fn compute_visibility_with_predicate(
+        &self,
+        is_interesting: impl Fn(&DiffLine) -> bool,
+    ) -> Vec<bool> {
         const CONTEXT_LINES: usize = 5;
 
-        let interesting: Vec<bool> = self
-            .lines
-            .iter()
-            .map(|line| line.source.is_header() || is_interesting(line))
-            .collect();
+        let interesting: Vec<bool> =
+            self.lines.iter().map(|line| line.source.is_header() || is_interesting(line)).collect();
 
         let mut show = vec![false; self.lines.len()];
         for (i, &is_interesting) in interesting.iter().enumerate() {
@@ -61,9 +58,7 @@ impl App {
     /// Compute which original line indices are visible in context mode
     fn compute_context_visibility(&self) -> Vec<bool> {
         self.compute_visibility_with_predicate(|line| {
-            line.old_content.is_some()
-                || !line.inline_spans.is_empty()
-                || line.source.is_change()
+            line.old_content.is_some() || !line.inline_spans.is_empty() || line.source.is_change()
         })
     }
 
@@ -105,7 +100,10 @@ impl App {
 
     /// Build filtered lines with elided markers for a visibility-based mode.
     /// Returns (filtered_lines, mapping from filtered index to original index)
-    fn build_lines_with_mapping_from_visibility(&self, show: &[bool]) -> (Vec<DiffLine>, Vec<Option<usize>>) {
+    fn build_lines_with_mapping_from_visibility(
+        &self,
+        show: &[bool],
+    ) -> (Vec<DiffLine>, Vec<Option<usize>>) {
         // Build result with elided markers between gaps
         let mut result = Vec::new();
         let mut index_map = Vec::new(); // Maps filtered index -> original index (None for elided)
@@ -130,9 +128,7 @@ impl App {
         // Handle trailing gap - count elided lines after last shown line
         if let Some(last) = last_shown {
             let trailing = self.lines.len().saturating_sub(last + 1);
-            let trailing_hidden: usize = (last + 1..self.lines.len())
-                .filter(|&i| !show[i])
-                .count();
+            let trailing_hidden: usize = (last + 1..self.lines.len()).filter(|&i| !show[i]).count();
             if trailing_hidden > 0 && trailing > 0 {
                 result.push(DiffLine::elided(trailing_hidden));
                 index_map.push(None);
@@ -173,9 +169,7 @@ impl App {
 
     /// Full mode: all lines as indices
     fn compute_full_items(&self) -> Vec<super::DisplayableItem> {
-        (0..self.lines.len())
-            .map(super::DisplayableItem::Line)
-            .collect()
+        (0..self.lines.len()).map(super::DisplayableItem::Line).collect()
     }
 
     /// Build displayable items from a visibility array, inserting Elided markers for gaps
@@ -201,9 +195,7 @@ impl App {
         }
 
         if let Some(last) = last_shown {
-            let trailing_hidden: usize = (last + 1..self.lines.len())
-                .filter(|&i| !show[i])
-                .count();
+            let trailing_hidden: usize = (last + 1..self.lines.len()).filter(|&i| !show[i]).count();
             if trailing_hidden > 0 {
                 result.push(DisplayableItem::Elided(trailing_hidden));
             }
@@ -223,9 +215,7 @@ impl App {
         let show = self.compute_commit_only_visibility();
         let items = self.build_items_from_visibility(&show);
         if items.is_empty() {
-            return vec![super::DisplayableItem::Message(
-                "No changes in current commit (@)",
-            )];
+            return vec![super::DisplayableItem::Message("No changes in current commit (@)")];
         }
         items
     }
@@ -269,15 +259,16 @@ impl App {
         let show = self.compute_bookmark_only_visibility();
         let items = self.build_items_from_visibility(&show);
         if items.is_empty() {
-            return vec![super::DisplayableItem::Message(
-                "No changes in current bookmark",
-            )];
+            return vec![super::DisplayableItem::Message("No changes in current bookmark")];
         }
         items
     }
 
     /// Filter out items belonging to collapsed files (keep headers)
-    fn filter_collapsed_items(&self, items: Vec<super::DisplayableItem>) -> Vec<super::DisplayableItem> {
+    fn filter_collapsed_items(
+        &self,
+        items: Vec<super::DisplayableItem>,
+    ) -> Vec<super::DisplayableItem> {
         use super::DisplayableItem;
 
         if self.view.collapsed_files.is_empty() {
@@ -460,7 +451,7 @@ impl App {
 mod tests {
     use crate::app::{DisplayableItem, ViewMode};
     use crate::diff::{DiffLine, LineSource};
-    use crate::test_support::{base_line, TestAppBuilder};
+    use crate::test_support::{TestAppBuilder, base_line};
     use crate::vcs::VcsBackend;
 
     #[test]
@@ -523,20 +514,27 @@ mod tests {
 
     // === CommitOnly view mode tests ===
 
-    fn collect_visible_lines<'a>(app: &'a crate::app::App, items: &[DisplayableItem]) -> Vec<&'a DiffLine> {
-        items.iter().filter_map(|item| match item {
-            DisplayableItem::Line(idx) => Some(&app.lines[*idx]),
-            _ => None,
-        }).collect()
+    fn collect_visible_lines<'a>(
+        app: &'a crate::app::App,
+        items: &[DisplayableItem],
+    ) -> Vec<&'a DiffLine> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                DisplayableItem::Line(idx) => Some(&app.lines[*idx]),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
     fn test_cycle_jj_includes_commit_only() {
-        let lines = vec![base_line("ctx"), DiffLine::new(LineSource::Staged, "current".to_string(), '+', None)];
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let lines = vec![
+            base_line("ctx"),
+            DiffLine::new(LineSource::Staged, "current".to_string(), '+', None),
+        ];
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::Full;
 
         app.cycle_view_mode();
@@ -551,11 +549,12 @@ mod tests {
 
     #[test]
     fn test_cycle_git_skips_commit_only() {
-        let lines = vec![base_line("ctx"), DiffLine::new(LineSource::Staged, "staged".to_string(), '+', None)];
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Git)
-            .build();
+        let lines = vec![
+            base_line("ctx"),
+            DiffLine::new(LineSource::Staged, "staged".to_string(), '+', None),
+        ];
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Git).build();
         app.view.view_mode = ViewMode::Full;
 
         app.cycle_view_mode();
@@ -566,9 +565,7 @@ mod tests {
 
     #[test]
     fn test_cycle_jj_empty_lines_includes_commit_only() {
-        let mut app = TestAppBuilder::new()
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app = TestAppBuilder::new().with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::Context;
         app.cycle_view_mode();
         assert_eq!(app.view.view_mode, ViewMode::CommitOnly);
@@ -585,32 +582,37 @@ mod tests {
         for i in 0..20 {
             lines.push(base_line(&format!("before{}", i)));
         }
-        lines.push(DiffLine::new(LineSource::Staged, "current_commit_add".to_string(), '+', Some(21)));
+        lines.push(DiffLine::new(
+            LineSource::Staged,
+            "current_commit_add".to_string(),
+            '+',
+            Some(21),
+        ));
         for i in 0..20 {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
         let visible = collect_visible_lines(&app, &items);
 
-        assert!(visible.iter().any(|l| l.content == "current_commit_add"),
-            "Staged line should be visible in CommitOnly mode");
+        assert!(
+            visible.iter().any(|l| l.content == "current_commit_add"),
+            "Staged line should be visible in CommitOnly mode"
+        );
 
         // Context lines within ±5 should be visible
-        assert!(visible.iter().any(|l| l.content == "before15"),
-            "Context before should be visible");
-        assert!(visible.iter().any(|l| l.content == "after4"),
-            "Context after should be visible");
+        assert!(
+            visible.iter().any(|l| l.content == "before15"),
+            "Context before should be visible"
+        );
+        assert!(visible.iter().any(|l| l.content == "after4"), "Context after should be visible");
 
         // Lines far from the change should not be visible
-        assert!(!visible.iter().any(|l| l.content == "before0"),
-            "Far-away lines should be hidden");
+        assert!(!visible.iter().any(|l| l.content == "before0"), "Far-away lines should be hidden");
     }
 
     #[test]
@@ -620,23 +622,28 @@ mod tests {
         for i in 0..20 {
             lines.push(base_line(&format!("before{}", i)));
         }
-        lines.push(DiffLine::new(LineSource::Committed, "earlier_commit".to_string(), '+', Some(21)));
+        lines.push(DiffLine::new(
+            LineSource::Committed,
+            "earlier_commit".to_string(),
+            '+',
+            Some(21),
+        ));
         for i in 0..20 {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
         let visible = collect_visible_lines(&app, &items);
 
         // The Committed line should NOT be visible (it's not current commit)
-        assert!(!visible.iter().any(|l| l.content == "earlier_commit"),
-            "Committed (earlier commit) line should be hidden in CommitOnly mode");
+        assert!(
+            !visible.iter().any(|l| l.content == "earlier_commit"),
+            "Committed (earlier commit) line should be hidden in CommitOnly mode"
+        );
     }
 
     #[test]
@@ -645,22 +652,27 @@ mod tests {
         for i in 0..20 {
             lines.push(base_line(&format!("before{}", i)));
         }
-        lines.push(DiffLine::new(LineSource::DeletedCommitted, "deleted_in_current".to_string(), '-', None));
+        lines.push(DiffLine::new(
+            LineSource::DeletedCommitted,
+            "deleted_in_current".to_string(),
+            '-',
+            None,
+        ));
         for i in 0..20 {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
         let visible = collect_visible_lines(&app, &items);
 
-        assert!(visible.iter().any(|l| l.content == "deleted_in_current"),
-            "DeletedCommitted should be visible in CommitOnly mode");
+        assert!(
+            visible.iter().any(|l| l.content == "deleted_in_current"),
+            "DeletedCommitted should be visible in CommitOnly mode"
+        );
     }
 
     #[test]
@@ -670,7 +682,8 @@ mod tests {
         for i in 0..20 {
             lines.push(base_line(&format!("before{}", i)));
         }
-        let mut modified = DiffLine::new(LineSource::Base, "modified_content".to_string(), ' ', Some(21));
+        let mut modified =
+            DiffLine::new(LineSource::Base, "modified_content".to_string(), ' ', Some(21));
         modified.change_source = Some(LineSource::Staged);
         modified.old_content = Some("old_content".to_string());
         lines.push(modified);
@@ -678,17 +691,17 @@ mod tests {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
         let visible = collect_visible_lines(&app, &items);
 
-        assert!(visible.iter().any(|l| l.content == "modified_content"),
-            "Base line with change_source=Staged should be visible in CommitOnly mode");
+        assert!(
+            visible.iter().any(|l| l.content == "modified_content"),
+            "Base line with change_source=Staged should be visible in CommitOnly mode"
+        );
     }
 
     #[test]
@@ -703,10 +716,8 @@ mod tests {
             base_line("after"),
         ];
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
@@ -714,15 +725,16 @@ mod tests {
 
         let earlier = visible.iter().find(|l| l.content == "earlier_nearby");
         assert!(earlier.is_some(), "Nearby Committed line should be visible as context");
-        assert_eq!(earlier.unwrap().source, LineSource::Committed,
-            "Committed line should retain its original source");
+        assert_eq!(
+            earlier.unwrap().source,
+            LineSource::Committed,
+            "Committed line should retain its original source"
+        );
     }
 
     #[test]
     fn test_backend_switch_falls_back_from_commit_only() {
-        let mut app = TestAppBuilder::new()
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app = TestAppBuilder::new().with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         // Simulate a refresh that switches backend to Git
@@ -734,15 +746,19 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         };
         app.comparison.vcs_backend = VcsBackend::Git;
         app.apply_refresh_result(result);
 
-        assert_eq!(app.view.view_mode, ViewMode::Context,
-            "Should fall back from CommitOnly to Context when backend switches to Git");
+        assert_eq!(
+            app.view.view_mode,
+            ViewMode::Context,
+            "Should fall back from CommitOnly to Context when backend switches to Git"
+        );
     }
 
     #[test]
@@ -751,24 +767,31 @@ mod tests {
         for i in 0..20 {
             lines.push(base_line(&format!("before{}", i)));
         }
-        lines.push(DiffLine::new(LineSource::CanceledStaged, "canceled_in_child".to_string(), '±', None));
+        lines.push(DiffLine::new(
+            LineSource::CanceledStaged,
+            "canceled_in_child".to_string(),
+            '±',
+            None,
+        ));
         for i in 0..20 {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
         let visible = collect_visible_lines(&app, &items);
 
-        assert!(visible.iter().any(|l| l.content == "canceled_in_child"),
-            "CanceledStaged should be visible in CommitOnly mode");
-        assert!(visible.iter().any(|l| l.content == "before15"),
-            "Context before CanceledStaged should be visible");
+        assert!(
+            visible.iter().any(|l| l.content == "canceled_in_child"),
+            "CanceledStaged should be visible in CommitOnly mode"
+        );
+        assert!(
+            visible.iter().any(|l| l.content == "before15"),
+            "Context before CanceledStaged should be visible"
+        );
     }
 
     #[test]
@@ -784,10 +807,8 @@ mod tests {
             lines.push(base_line(&format!("more{}", i)));
         }
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
@@ -811,22 +832,23 @@ mod tests {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
 
-        let elided_count = items.iter()
-            .filter(|item| matches!(item, DisplayableItem::Elided(_)))
-            .count();
-        assert!(elided_count >= 1,
-            "Should have at least one Elided marker for hidden lines, got {}", elided_count);
+        let elided_count =
+            items.iter().filter(|item| matches!(item, DisplayableItem::Elided(_))).count();
+        assert!(
+            elided_count >= 1,
+            "Should have at least one Elided marker for hidden lines, got {}",
+            elided_count
+        );
 
         // Verify the elided marker has a reasonable count
-        let total_elided_lines: usize = items.iter()
+        let total_elided_lines: usize = items
+            .iter()
             .filter_map(|item| match item {
                 DisplayableItem::Elided(n) => Some(*n),
                 _ => None,
@@ -834,8 +856,11 @@ mod tests {
             .sum();
         // 41 total lines, ~11 visible (5 context before + staged + 5 context after),
         // so ~30 lines should be elided
-        assert!(total_elided_lines > 20,
-            "Elided markers should account for hidden lines, got {}", total_elided_lines);
+        assert!(
+            total_elided_lines > 20,
+            "Elided markers should account for hidden lines, got {}",
+            total_elided_lines
+        );
     }
 
     #[test]
@@ -853,23 +878,29 @@ mod tests {
         }
         lines.push(DiffLine::new(LineSource::Committed, "from_parent".to_string(), '+', Some(11)));
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::CommitOnly;
 
         let items = app.compute_displayable_items();
         let visible = collect_visible_lines(&app, &items);
 
-        assert!(visible.iter().any(|l| l.content == "current.rs"),
-            "File with current-commit changes should be visible");
-        assert!(visible.iter().any(|l| l.content == "new_in_current"),
-            "Current-commit line should be visible");
-        assert!(!visible.iter().any(|l| l.content == "earlier.rs"),
-            "File with no current-commit changes should be hidden");
-        assert!(!visible.iter().any(|l| l.content == "from_parent"),
-            "Committed-only line should be hidden");
+        assert!(
+            visible.iter().any(|l| l.content == "current.rs"),
+            "File with current-commit changes should be visible"
+        );
+        assert!(
+            visible.iter().any(|l| l.content == "new_in_current"),
+            "Current-commit line should be visible"
+        );
+        assert!(
+            !visible.iter().any(|l| l.content == "earlier.rs"),
+            "File with no current-commit changes should be hidden"
+        );
+        assert!(
+            !visible.iter().any(|l| l.content == "from_parent"),
+            "Committed-only line should be hidden"
+        );
     }
 
     // === BookmarkOnly view mode tests ===
@@ -877,7 +908,9 @@ mod tests {
     fn make_bookmark_line(source: LineSource, content: &str, in_bookmark: bool) -> DiffLine {
         let prefix = match source {
             LineSource::Committed | LineSource::Staged | LineSource::Unstaged => '+',
-            LineSource::DeletedBase | LineSource::DeletedCommitted | LineSource::DeletedStaged => '-',
+            LineSource::DeletedBase | LineSource::DeletedCommitted | LineSource::DeletedStaged => {
+                '-'
+            }
             _ => ' ',
         };
         let mut line = DiffLine::new(source, content.to_string(), prefix, None);
@@ -896,19 +929,21 @@ mod tests {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::BookmarkOnly;
 
         let items = app.compute_displayable_items();
         let visible = collect_visible_lines(&app, &items);
 
-        assert!(visible.iter().any(|l| l.content == "in_bookmark"),
-            "Current bookmark line should be visible");
-        assert!(visible.iter().any(|l| l.content == "before15"),
-            "Context before should be visible");
+        assert!(
+            visible.iter().any(|l| l.content == "in_bookmark"),
+            "Current bookmark line should be visible"
+        );
+        assert!(
+            visible.iter().any(|l| l.content == "before15"),
+            "Context before should be visible"
+        );
     }
 
     #[test]
@@ -922,17 +957,17 @@ mod tests {
             lines.push(base_line(&format!("after{}", i)));
         }
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::BookmarkOnly;
 
         let items = app.compute_displayable_items();
         let visible = collect_visible_lines(&app, &items);
 
-        assert!(!visible.iter().any(|l| l.content == "earlier_bookmark"),
-            "Earlier bookmark line should be hidden");
+        assert!(
+            !visible.iter().any(|l| l.content == "earlier_bookmark"),
+            "Earlier bookmark line should be hidden"
+        );
     }
 
     #[test]
@@ -945,10 +980,8 @@ mod tests {
             base_line("after"),
         ];
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::BookmarkOnly;
 
         let items = app.compute_displayable_items();
@@ -956,8 +989,11 @@ mod tests {
 
         let earlier = visible.iter().find(|l| l.content == "earlier_nearby");
         assert!(earlier.is_some(), "Nearby earlier bookmark line should be visible as context");
-        assert_eq!(earlier.unwrap().source, LineSource::Committed,
-            "Earlier bookmark line should retain its original source");
+        assert_eq!(
+            earlier.unwrap().source,
+            LineSource::Committed,
+            "Earlier bookmark line should retain its original source"
+        );
     }
 
     #[test]
@@ -978,19 +1014,21 @@ mod tests {
         }
         lines.push(make_bookmark_line(LineSource::Committed, "from_earlier", false));
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::BookmarkOnly;
 
         let items = app.compute_displayable_items();
         let visible = collect_visible_lines(&app, &items);
 
-        assert!(visible.iter().any(|l| l.content == "in_bookmark"),
-            "Current bookmark line should be visible");
-        assert!(!visible.iter().any(|l| l.content == "earlier.rs"),
-            "File with no bookmark changes should be hidden");
+        assert!(
+            visible.iter().any(|l| l.content == "in_bookmark"),
+            "Current bookmark line should be visible"
+        );
+        assert!(
+            !visible.iter().any(|l| l.content == "earlier.rs"),
+            "File with no bookmark changes should be hidden"
+        );
     }
 
     #[test]
@@ -1002,26 +1040,19 @@ mod tests {
         }
         lines.push(make_bookmark_line(LineSource::Committed, "earlier", false));
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(lines).with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::BookmarkOnly;
 
         let items = app.compute_displayable_items();
 
         assert_eq!(items.len(), 1);
-        assert_eq!(
-            items[0],
-            DisplayableItem::Message("No changes in current bookmark"),
-        );
+        assert_eq!(items[0], DisplayableItem::Message("No changes in current bookmark"),);
     }
 
     #[test]
     fn test_backend_switch_falls_back_from_bookmark_only() {
-        let mut app = TestAppBuilder::new()
-            .with_vcs_backend(VcsBackend::Jj)
-            .build();
+        let mut app = TestAppBuilder::new().with_vcs_backend(VcsBackend::Jj).build();
         app.view.view_mode = ViewMode::BookmarkOnly;
 
         let result = crate::app::RefreshResult {
@@ -1032,14 +1063,18 @@ mod tests {
             current_branch: Some("main".to_string()),
             metrics: crate::limits::DiffMetrics::default(),
             file_links: std::collections::HashMap::new(),
-            stack_position: None, bookmark_name: None,
+            stack_position: None,
+            bookmark_name: None,
             revision_id: None,
             divergence: None,
         };
         app.comparison.vcs_backend = VcsBackend::Git;
         app.apply_refresh_result(result);
 
-        assert_eq!(app.view.view_mode, ViewMode::Context,
-            "Should fall back from BookmarkOnly to Context when backend switches to Git");
+        assert_eq!(
+            app.view.view_mode,
+            ViewMode::Context,
+            "Should fall back from BookmarkOnly to Context when backend switches to Git"
+        );
     }
 }

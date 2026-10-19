@@ -43,11 +43,7 @@ impl SearchState {
 
     /// 1-based display position among visible matches (0 if no visible matches).
     pub fn current_display(&self) -> usize {
-        if self.visible_count == 0 {
-            0
-        } else {
-            self.visible_position + 1
-        }
+        if self.visible_count == 0 { 0 } else { self.visible_position + 1 }
     }
 
     /// Update `visible_count` and `visible_position` from a set of visible line indices.
@@ -57,7 +53,8 @@ impl SearchState {
             self.visible_position = 0;
             return;
         }
-        self.visible_count = self.matches.iter().filter(|m| visible_lines.contains(&m.line_idx)).count();
+        self.visible_count =
+            self.matches.iter().filter(|m| visible_lines.contains(&m.line_idx)).count();
         self.visible_position = self.matches[..=self.current.min(self.matches.len() - 1)]
             .iter()
             .filter(|m| visible_lines.contains(&m.line_idx))
@@ -83,13 +80,10 @@ pub fn compute_matches(lines: &[DiffLine], query: &str) -> Vec<SearchMatch> {
         while let Some(byte_pos) = content_lower[byte_start..].find(&query_lower) {
             let abs_byte = byte_start + byte_pos;
             let char_start = content_lower[..abs_byte].chars().count();
-            matches.push(SearchMatch {
-                line_idx: idx,
-                char_start,
-                char_len: query_char_len,
-            });
+            matches.push(SearchMatch { line_idx: idx, char_start, char_len: query_char_len });
             // Advance by one char (not one byte) to allow overlapping matches
-            byte_start = abs_byte + content_lower[abs_byte..].chars().next().map_or(1, |c| c.len_utf8());
+            byte_start =
+                abs_byte + content_lower[abs_byte..].chars().next().map_or(1, |c| c.len_utf8());
         }
     }
     matches

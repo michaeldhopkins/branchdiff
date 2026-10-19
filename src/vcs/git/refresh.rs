@@ -1,16 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
-use crate::diff::{compute_four_way_diff, compute_four_way_diff_cancellable, DiffInput, FileDiff};
+use crate::diff::{DiffInput, FileDiff, compute_four_way_diff, compute_four_way_diff_cancellable};
 use crate::file_links::compute_file_links;
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
-use crate::vcs::shared::{assemble_results, process_files_parallel, FileProcessResult};
 use crate::vcs::RefreshResult;
+use crate::vcs::shared::{FileProcessResult, assemble_results, process_files_parallel};
 
 use super::changed_files::get_all_changed_files;
 use super::commands::{
@@ -32,32 +32,23 @@ impl FileContents {
         let base = if merge_base.is_empty() {
             None
         } else {
-            get_file_at_ref(repo_path, base_path, merge_base)
-                .ok()
-                .flatten()
+            get_file_at_ref(repo_path, base_path, merge_base).ok().flatten()
         };
 
-        let head = get_file_at_ref(repo_path, file_path, "HEAD")
-            .ok()
-            .flatten()
-            .or_else(|| {
-                old_path.and_then(|p| get_file_at_ref(repo_path, p, "HEAD").ok().flatten())
-            });
+        let head = get_file_at_ref(repo_path, file_path, "HEAD").ok().flatten().or_else(|| {
+            old_path.and_then(|p| get_file_at_ref(repo_path, p, "HEAD").ok().flatten())
+        });
 
         let index = get_file_at_ref(repo_path, file_path, "")
             .ok()
             .flatten()
-            .or_else(|| {
-                old_path.and_then(|p| get_file_at_ref(repo_path, p, "").ok().flatten())
-            });
+            .or_else(|| old_path.and_then(|p| get_file_at_ref(repo_path, p, "").ok().flatten()));
 
         Self {
             base,
             head,
             index,
-            working: get_working_tree_file(repo_path, file_path)
-                .ok()
-                .flatten(),
+            working: get_working_tree_file(repo_path, file_path).ok().flatten(),
         }
     }
 
@@ -105,22 +96,13 @@ fn process_single_file_batched(
 
     if binary_files.contains(file_path) {
         if is_image_file(file_path) {
-            return FileProcessResult::Image {
-                path: file_path.to_string(),
-            };
+            return FileProcessResult::Image { path: file_path.to_string() };
         }
-        return FileProcessResult::Binary {
-            path: file_path.to_string(),
-        };
+        return FileProcessResult::Binary { path: file_path.to_string() };
     }
 
     let contents = FileContents::from_batch(
-        file_path,
-        old_path,
-        base_contents,
-        head_contents,
-        index_contents,
-        repo_path,
+        file_path, old_path, base_contents, head_contents, index_contents, repo_path,
     );
     FileProcessResult::Diff(compute_four_way_diff_cancellable(
         DiffInput {
@@ -188,8 +170,7 @@ pub(super) fn git_compute_refresh(
     base_label: &str,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<RefreshResult> {
-    let merge_base = get_merge_base_preferring_origin(repo_path, base_branch)
-        .unwrap_or_default();
+    let merge_base = get_merge_base_preferring_origin(repo_path, base_branch).unwrap_or_default();
 
     if cancel_flag.load(Ordering::Relaxed) {
         return Err(anyhow!("refresh cancelled"));
@@ -255,10 +236,7 @@ pub(super) fn git_compute_refresh(
     let current_branch = get_current_branch(repo_path).unwrap_or(None);
     let divergence = compute_upstream_divergence(repo_path, &merge_base, base_branch);
 
-    let metrics = DiffMetrics {
-        total_lines: lines.len(),
-        file_count: files.len(),
-    };
+    let metrics = DiffMetrics { total_lines: lines.len(), file_count: files.len() };
 
     let file_paths: Vec<&str> = files
         .iter()

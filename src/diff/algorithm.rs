@@ -49,9 +49,7 @@ pub struct DiffInput<'a> {
 fn build_deletion_diff(path: &str, content: &str, source: LineSource) -> FileDiff {
     let mut lines = vec![DiffLine::deleted_file_header(path, content.lines().count())];
     for (i, line) in content.lines().enumerate() {
-        lines.push(
-            DiffLine::new(source, line.to_string(), '-', Some(i + 1)).with_file_path(path),
-        );
+        lines.push(DiffLine::new(source, line.to_string(), '-', Some(i + 1)).with_file_path(path));
     }
     FileDiff::new(lines)
 }
@@ -96,10 +94,7 @@ pub fn compute_four_way_diff(input: DiffInput<'_>) -> FileDiff {
 /// is observed set. Thin wrapper over `compute_four_way_diff_with_predicate`
 /// for the production hot path; tests use the predicate form directly so they
 /// can deterministically fire cancel after a known number of checkpoints.
-pub fn compute_four_way_diff_cancellable(
-    input: DiffInput<'_>,
-    cancel: &AtomicBool,
-) -> FileDiff {
+pub fn compute_four_way_diff_cancellable(input: DiffInput<'_>, cancel: &AtomicBool) -> FileDiff {
     compute_four_way_diff_with_predicate(input, &|| cancel.load(Ordering::Relaxed))
 }
 
@@ -158,12 +153,7 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
         let working_from_index = build_provenance_map(&index_lines, &working_lines);
 
         lines.extend(collect_canceled_simple(
-            &head_lines,
-            &index_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
-            path,
+            &head_lines, &index_lines, &head_from_base, &index_from_head, &working_from_index, path,
         ));
 
         return FileDiff::new(lines);
@@ -177,7 +167,8 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
     // Build modification maps for adjacent delete-insert pairs with meaningful similarity
     let base_head_mods = build_modification_map(&base_lines, &head_lines, LineSource::Committed);
     let head_index_mods = build_modification_map(&head_lines, &index_lines, LineSource::Staged);
-    let index_working_mods = build_modification_map(&index_lines, &working_lines, LineSource::Unstaged);
+    let index_working_mods =
+        build_modification_map(&index_lines, &working_lines, LineSource::Unstaged);
     if is_cancelled() {
         return bail();
     }
@@ -270,7 +261,9 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
     // did not apply (found by the `diff_patch` fuzz target).
     let mut working_to_base: Vec<Option<usize>> = vec![None; working_lines.len()];
     for (base_idx, working_idx) in base_to_working.iter().enumerate() {
-        if let Some(w) = working_idx { working_to_base[*w] = Some(base_idx); }
+        if let Some(w) = working_idx {
+            working_to_base[*w] = Some(base_idx);
+        }
     }
     let get_working_base_pos = |working_idx: usize| working_to_base[working_idx];
 
@@ -321,22 +314,16 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
                 if base_to_working[next_base_deletion].is_none() {
                     let base_content = base_lines[next_base_deletion].trim_end();
                     let delete_source = determine_deletion_source(
-                        next_base_deletion,
-                        &base_lines,
-                        &head_lines,
-                        &index_lines,
-                        &head_from_base,
-                        &index_from_head,
+                        next_base_deletion, &base_lines, &head_lines, &index_lines,
+                        &head_from_base, &index_from_head,
                     );
 
-                    lines.push(DiffLine::new(
-                        delete_source,
-                        base_content.to_string(),
-                        '-',
-                        None,
-                    ).with_file_path(path));
-                    let head_idx_for_deletion = head_from_base.iter()
-                        .position(|&h| h == Some(next_base_deletion));
+                    lines.push(
+                        DiffLine::new(delete_source, base_content.to_string(), '-', None)
+                            .with_file_path(path),
+                    );
+                    let head_idx_for_deletion =
+                        head_from_base.iter().position(|&h| h == Some(next_base_deletion));
                     output_head_positions.push(head_idx_for_deletion);
                 }
                 next_base_deletion += 1;
@@ -347,21 +334,9 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
         let working_head_idx = get_working_head_idx(working_idx);
         output_head_positions.push(working_head_idx);
         let output_line = build_working_line_output(
-            working_idx,
-            working_content,
-            source,
-            line_num,
-            path,
-            &working_from_index,
-            &index_from_head,
-            &head_from_base,
-            &index_working_mods,
-            &base_head_mods,
-            &head_index_mods,
-            &index_lines,
-            &head_lines,
-            &trace_index_source,
-            &trace_head_source,
+            working_idx, working_content, source, line_num, path, &working_from_index,
+            &index_from_head, &head_from_base, &index_working_mods, &base_head_mods,
+            &head_index_mods, &index_lines, &head_lines, &trace_index_source, &trace_head_source,
         );
 
         lines.push(output_line);
@@ -375,21 +350,15 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
         if base_to_working[next_base_deletion].is_none() {
             let base_content = base_lines[next_base_deletion].trim_end();
             let delete_source = determine_deletion_source(
-                next_base_deletion,
-                &base_lines,
-                &head_lines,
-                &index_lines,
-                &head_from_base,
+                next_base_deletion, &base_lines, &head_lines, &index_lines, &head_from_base,
                 &index_from_head,
             );
-            lines.push(DiffLine::new(
-                delete_source,
-                base_content.to_string(),
-                '-',
-                None,
-            ).with_file_path(path));
-            let head_idx_for_deletion = head_from_base.iter()
-                .position(|&h| h == Some(next_base_deletion));
+            lines.push(
+                DiffLine::new(delete_source, base_content.to_string(), '-', None)
+                    .with_file_path(path),
+            );
+            let head_idx_for_deletion =
+                head_from_base.iter().position(|&h| h == Some(next_base_deletion));
             output_head_positions.push(head_idx_for_deletion);
         }
         next_base_deletion += 1;
@@ -434,11 +403,7 @@ fn append_canceled_sections(
     is_cancelled: &dyn Fn() -> bool,
 ) -> Option<()> {
     let canceled_committed = collect_canceled_committed(
-        head_lines,
-        head_from_base,
-        index_from_head,
-        working_from_index,
-        head_index_mods,
+        head_lines, head_from_base, index_from_head, working_from_index, head_index_mods,
         index_working_mods,
     );
     insert_canceled_lines(
@@ -450,10 +415,7 @@ fn append_canceled_sections(
     );
 
     let canceled_staged = collect_canceled_staged(
-        index_lines,
-        index_from_head,
-        working_from_index,
-        index_working_mods,
+        index_lines, index_from_head, working_from_index, index_working_mods,
     );
     // O(output × index_lines) scan; on a 5M-line working tree this can run for
     // tens of seconds. Walk it manually so we can poll the cancel flag.
@@ -462,8 +424,7 @@ fn append_canceled_sections(
         if i & (CANCEL_CHECK_INTERVAL - 1) == 0 && is_cancelled() {
             return None;
         }
-        output_index_positions
-            .push(index_lines.iter().position(|h| h.trim_end() == line.content));
+        output_index_positions.push(index_lines.iter().position(|h| h.trim_end() == line.content));
     }
     insert_canceled_lines(
         lines,
@@ -520,8 +481,8 @@ mod tests {
             path: "staged_delete.rs",
             base: Some("base content"),
             head: Some("head content\nhead line 2"),
-            index: None,    // Not in index
-            working: None,  // Not in working
+            index: None,   // Not in index
+            working: None, // Not in working
             old_path: None,
         };
 
@@ -668,9 +629,8 @@ mod tests {
         });
 
         // Should have header + canceled line
-        let canceled: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::CanceledCommitted)
-            .collect();
+        let canceled: Vec<_> =
+            diff.lines.iter().filter(|l| l.source == LineSource::CanceledCommitted).collect();
         assert_eq!(canceled.len(), 1);
         assert_eq!(canceled[0].content, "inserted");
     }
@@ -690,9 +650,8 @@ mod tests {
         });
 
         // line3 should be marked as Unstaged addition
-        let additions: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::Unstaged)
-            .collect();
+        let additions: Vec<_> =
+            diff.lines.iter().filter(|l| l.source == LineSource::Unstaged).collect();
         assert_eq!(additions.len(), 1);
         assert_eq!(additions[0].content, "line3");
         assert_eq!(additions[0].prefix, '+');
@@ -713,9 +672,7 @@ mod tests {
         });
 
         // line2 should be marked as deleted
-        let deletions: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source.is_deletion())
-            .collect();
+        let deletions: Vec<_> = diff.lines.iter().filter(|l| l.source.is_deletion()).collect();
         assert_eq!(deletions.len(), 1);
         assert_eq!(deletions[0].content, "line2");
         assert_eq!(deletions[0].prefix, '-');
@@ -743,18 +700,28 @@ mod tests {
 
         // The result should show the current content with old_content attached
         // for inline diff rendering
-        let modified_line = diff.lines.iter()
+        let modified_line = diff
+            .lines
+            .iter()
             .find(|l| l.content == "new_function_name()")
             .expect("Should have the current content");
 
-        assert_eq!(modified_line.old_content, Some("old_function_name()".to_string()),
-            "Should have old content for inline diff");
-        assert_eq!(modified_line.change_source, Some(LineSource::Committed),
-            "Should indicate change came from commit");
-        assert_eq!(modified_line.source, LineSource::Base,
-            "Source should be Base since line traces back to base");
-        assert_eq!(modified_line.prefix, ' ',
-            "Prefix should be space (not deletion marker)");
+        assert_eq!(
+            modified_line.old_content,
+            Some("old_function_name()".to_string()),
+            "Should have old content for inline diff"
+        );
+        assert_eq!(
+            modified_line.change_source,
+            Some(LineSource::Committed),
+            "Should indicate change came from commit"
+        );
+        assert_eq!(
+            modified_line.source,
+            LineSource::Base,
+            "Source should be Base since line traces back to base"
+        );
+        assert_eq!(modified_line.prefix, ' ', "Prefix should be space (not deletion marker)");
     }
 
     #[test]
@@ -774,13 +741,14 @@ mod tests {
         });
 
         // Should show deletion of old content
-        let has_deletion = diff.lines.iter()
+        let has_deletion = diff
+            .lines
+            .iter()
             .any(|l| l.source.is_deletion() && l.content == "func foo() { return 42; }");
         assert!(has_deletion, "Should show deletion when lines are too different");
 
         // Should show the new content
-        let has_new = diff.lines.iter()
-            .any(|l| l.content == "struct Bar { x: i32, y: i32 }");
+        let has_new = diff.lines.iter().any(|l| l.content == "struct Bar { x: i32, y: i32 }");
         assert!(has_new, "Should show new content");
     }
 
@@ -799,9 +767,7 @@ mod tests {
         });
 
         // Should have staged addition
-        let staged: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source == LineSource::Staged)
-            .collect();
+        let staged: Vec<_> = diff.lines.iter().filter(|l| l.source == LineSource::Staged).collect();
         assert!(!staged.is_empty(), "Should have staged content");
     }
 
@@ -849,9 +815,8 @@ mod tests {
         });
 
         // All content should be Unstaged additions
-        let content_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.source != LineSource::FileHeader)
-            .collect();
+        let content_lines: Vec<_> =
+            diff.lines.iter().filter(|l| l.source != LineSource::FileHeader).collect();
         assert_eq!(content_lines.len(), 1);
         assert_eq!(content_lines[0].source, LineSource::Unstaged);
         assert_eq!(content_lines[0].content, "new content");
@@ -890,7 +855,9 @@ mod tests {
 
         // Should have: header + 5 original lines (some modified) + 1 addition + 2 deletions
         // Total content depends on algorithm specifics, but verify key aspects
-        let additions: Vec<_> = diff.lines.iter()
+        let additions: Vec<_> = diff
+            .lines
+            .iter()
             .filter(|l| l.source == LineSource::Unstaged && l.prefix == '+')
             .collect();
         assert!(!additions.is_empty(), "Should have additions");
@@ -914,9 +881,7 @@ mod tests {
         });
 
         // Line numbers should be sequential starting from 1
-        let content_lines: Vec<_> = diff.lines.iter()
-            .filter(|l| l.line_number.is_some())
-            .collect();
+        let content_lines: Vec<_> = diff.lines.iter().filter(|l| l.line_number.is_some()).collect();
 
         for (i, line) in content_lines.iter().enumerate() {
             assert_eq!(line.line_number, Some(i + 1));
@@ -968,7 +933,8 @@ mod tests {
 
     /// Helper: extract (prefix, content) pairs, skipping the file header.
     fn line_pairs(diff: &FileDiff) -> Vec<(char, &str)> {
-        diff.lines.iter()
+        diff.lines
+            .iter()
             .filter(|l| l.source != LineSource::FileHeader)
             .map(|l| (l.prefix, l.content.as_str()))
             .collect()
@@ -989,15 +955,17 @@ fn three() {\n    println!(\"three\");\n}\n\n\
 fn five() {\n    println!(\"five\");\n}";
 
         let diff = diff_base_to_working(base, working);
-        let deletions: Vec<&str> = diff.lines.iter()
-            .filter(|l| l.prefix == '-')
-            .map(|l| l.content.as_str())
-            .collect();
+        let deletions: Vec<&str> =
+            diff.lines.iter().filter(|l| l.prefix == '-').map(|l| l.content.as_str()).collect();
 
-        assert_eq!(deletions[0], "fn four() {",
-            "first deleted line should be 'fn four() {{', got: {deletions:?}");
-        assert!(deletions.contains(&"}"),
-            "deletion should include the closing '}}', got: {deletions:?}");
+        assert_eq!(
+            deletions[0], "fn four() {",
+            "first deleted line should be 'fn four() {{', got: {deletions:?}"
+        );
+        assert!(
+            deletions.contains(&"}"),
+            "deletion should include the closing '}}', got: {deletions:?}"
+        );
     }
 
     #[test]
@@ -1015,15 +983,17 @@ fn new_func() {\n    println!(\"new\");\n}\n\n\
 fn seven() {\n    println!(\"seven\");\n}";
 
         let diff = diff_base_to_working(base, working);
-        let additions: Vec<&str> = diff.lines.iter()
-            .filter(|l| l.prefix == '+')
-            .map(|l| l.content.as_str())
-            .collect();
+        let additions: Vec<&str> =
+            diff.lines.iter().filter(|l| l.prefix == '+').map(|l| l.content.as_str()).collect();
 
-        assert_eq!(additions[0], "fn new_func() {",
-            "first added line should be 'fn new_func() {{', got: {additions:?}");
-        assert!(additions.contains(&"}"),
-            "addition should include the closing '}}', got: {additions:?}");
+        assert_eq!(
+            additions[0], "fn new_func() {",
+            "first added line should be 'fn new_func() {{', got: {additions:?}"
+        );
+        assert!(
+            additions.contains(&"}"),
+            "addition should include the closing '}}', got: {additions:?}"
+        );
     }
 
     #[test]
@@ -1060,16 +1030,26 @@ fn five() {\n    println!(\"five\");\n}";
             deletion_runs.push(current_run);
         }
 
-        assert_eq!(deletion_runs.len(), 2,
-            "should have 2 deletion runs, got {}: {deletion_runs:?}", deletion_runs.len());
+        assert_eq!(
+            deletion_runs.len(),
+            2,
+            "should have 2 deletion runs, got {}: {deletion_runs:?}",
+            deletion_runs.len()
+        );
 
         // First deletion run should start with fn two
-        assert_eq!(deletion_runs[0][0], "fn two() {",
-            "first deletion should start with 'fn two() {{', got: {:?}", deletion_runs[0]);
+        assert_eq!(
+            deletion_runs[0][0], "fn two() {",
+            "first deletion should start with 'fn two() {{', got: {:?}",
+            deletion_runs[0]
+        );
 
         // Second deletion run should start with fn four
-        assert_eq!(deletion_runs[1][0], "fn four() {",
-            "second deletion should start with 'fn four() {{', got: {:?}", deletion_runs[1]);
+        assert_eq!(
+            deletion_runs[1][0], "fn four() {",
+            "second deletion should start with 'fn four() {{', got: {:?}",
+            deletion_runs[1]
+        );
     }
 
     #[test]
@@ -1087,31 +1067,33 @@ fn three() {\n    println!(\"three\");\n}\n\n\
 fn brand_new() {\n    println!(\"new\");\n}";
 
         let diff = diff_base_to_working(base, working);
-        let deletions: Vec<&str> = diff.lines.iter()
-            .filter(|l| l.prefix == '-')
-            .map(|l| l.content.as_str())
-            .collect();
-        let additions: Vec<&str> = diff.lines.iter()
-            .filter(|l| l.prefix == '+')
-            .map(|l| l.content.as_str())
-            .collect();
+        let deletions: Vec<&str> =
+            diff.lines.iter().filter(|l| l.prefix == '-').map(|l| l.content.as_str()).collect();
+        let additions: Vec<&str> =
+            diff.lines.iter().filter(|l| l.prefix == '+').map(|l| l.content.as_str()).collect();
 
-        assert_eq!(deletions[0], "fn two() {",
-            "deletion should start with 'fn two() {{', got: {deletions:?}");
+        assert_eq!(
+            deletions[0], "fn two() {",
+            "deletion should start with 'fn two() {{', got: {deletions:?}"
+        );
         // The blank line before fn brand_new is genuinely new content,
         // so it's acceptable as the first addition line.
-        let first_nonblank_add = additions.iter()
+        let first_nonblank_add = additions
+            .iter()
             .find(|l| !l.trim().is_empty())
             .expect("should have non-blank additions");
-        assert_eq!(*first_nonblank_add, "fn brand_new() {",
-            "first non-blank addition should be 'fn brand_new() {{', got: {additions:?}");
+        assert_eq!(
+            *first_nonblank_add, "fn brand_new() {",
+            "first non-blank addition should be 'fn brand_new() {{', got: {additions:?}"
+        );
     }
 
     // === Tests for compute_four_way_diff_cancellable ===
 
     fn make_large_input(lines: usize) -> (String, String) {
         let base = (0..lines).map(|i| format!("base line {i}")).collect::<Vec<_>>().join("\n");
-        let working = (0..lines).map(|i| format!("working line {i}")).collect::<Vec<_>>().join("\n");
+        let working =
+            (0..lines).map(|i| format!("working line {i}")).collect::<Vec<_>>().join("\n");
         (base, working)
     }
 
@@ -1142,8 +1124,10 @@ fn brand_new() {\n    println!(\"new\");\n}";
         assert!(diff.lines[0].content.contains("huge.log"));
         // Loose bound: a real diff of 50k lines takes hundreds of ms+; a
         // header-only stub returns in microseconds. Use 100ms to absorb CI noise.
-        assert!(elapsed < std::time::Duration::from_millis(100),
-            "cancelled diff took too long ({elapsed:?}), suggesting a heavy phase missed its cancel check");
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "cancelled diff took too long ({elapsed:?}), suggesting a heavy phase missed its cancel check"
+        );
     }
 
     #[test]
@@ -1207,10 +1191,8 @@ fn brand_new() {\n    println!(\"new\");\n}";
         // Stay well under CANCEL_CHECK_INTERVAL (1024) so we get exactly one
         // poll per loop's iter 0.
         let line_count = 200;
-        let working: String = (0..line_count)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let working: String =
+            (0..line_count).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let base = "different content";
 
         let polls = AtomicUsize::new(0);
@@ -1302,10 +1284,8 @@ fn brand_new() {\n    println!(\"new\");\n}";
         // "never partial" check, so this is paired with the strict-time
         // `test_cancellable_bails_when_cancel_pre_set` above.
         let line_count = 50_000;
-        let working: String = (0..line_count)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let working: String =
+            (0..line_count).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let base = "totally different content";
 
         let cancel = std::sync::Arc::new(AtomicBool::new(false));

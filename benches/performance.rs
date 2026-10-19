@@ -4,7 +4,7 @@
 //! Quick run: cargo bench -- --quick
 //! Single benchmark: cargo bench frame_context
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 use branchdiff::app::{App, FrameContext, ViewMode};
@@ -12,7 +12,11 @@ use branchdiff::diff::{DiffLine, LineSource};
 
 /// Create a synthetic diff with the given number of files and lines per file.
 /// If `with_inline_diffs` is true, adds old_content to trigger inline span computation.
-fn create_test_diff(file_count: usize, lines_per_file: usize, with_inline_diffs: bool) -> Vec<DiffLine> {
+fn create_test_diff(
+    file_count: usize,
+    lines_per_file: usize,
+    with_inline_diffs: bool,
+) -> Vec<DiffLine> {
     let mut lines = Vec::with_capacity(file_count * (lines_per_file + 2));
 
     for f in 0..file_count {
@@ -36,8 +40,13 @@ fn create_test_diff(file_count: usize, lines_per_file: usize, with_inline_diffs:
             );
 
             // Add old_content for changed lines to trigger inline diff computation
-            if with_inline_diffs && (source == LineSource::Committed || source == LineSource::Staged || source == LineSource::Unstaged) {
-                line.old_content = Some(format!("    let old_var_{} = different_content_{};", l, f));
+            if with_inline_diffs
+                && (source == LineSource::Committed
+                    || source == LineSource::Staged
+                    || source == LineSource::Unstaged)
+            {
+                line.old_content =
+                    Some(format!("    let old_var_{} = different_content_{};", l, f));
             }
 
             lines.push(line);
@@ -54,10 +63,7 @@ fn bench_frame_context(c: &mut Criterion) {
     let mut group = c.benchmark_group("frame_context");
     group.measurement_time(Duration::from_secs(3));
 
-    for (files, lines_per_file, label) in [
-        (10, 100, "1k_lines"),
-        (30, 300, "10k_lines"),
-    ] {
+    for (files, lines_per_file, label) in [(10, 100, "1k_lines"), (30, 300, "10k_lines")] {
         let diff = create_test_diff(files, lines_per_file, false);
 
         for mode in [ViewMode::Full, ViewMode::Context, ViewMode::CommitOnly] {
@@ -72,11 +78,9 @@ fn bench_frame_context(c: &mut Criterion) {
             app.view.view_mode = mode;
             app.view.viewport_height = 50;
 
-            group.bench_with_input(
-                BenchmarkId::new(mode_label, label),
-                &(),
-                |b, _| b.iter(|| black_box(FrameContext::new(&app))),
-            );
+            group.bench_with_input(BenchmarkId::new(mode_label, label), &(), |b, _| {
+                b.iter(|| black_box(FrameContext::new(&app)))
+            });
         }
     }
 
@@ -94,21 +98,16 @@ fn bench_inline_spans(c: &mut Criterion) {
     app.view.viewport_height = 50;
 
     // Count lines that need inline spans
-    let lines_with_old: usize = app.lines().iter()
-        .filter(|l| l.old_content.is_some())
-        .count();
+    let lines_with_old: usize = app.lines().iter().filter(|l| l.old_content.is_some()).count();
 
-    group.bench_function(
-        format!("ensure_visible_{}_candidates", lines_with_old),
-        |b| {
-            b.iter(|| {
-                // Reset inline spans
-                app.clear_inline_spans();
-                app.ensure_inline_spans_for_visible(50);
-                black_box(app.lines().iter().filter(|l| !l.inline_spans.is_empty()).count())
-            })
-        },
-    );
+    group.bench_function(format!("ensure_visible_{}_candidates", lines_with_old), |b| {
+        b.iter(|| {
+            // Reset inline spans
+            app.clear_inline_spans();
+            app.ensure_inline_spans_for_visible(50);
+            black_box(app.lines().iter().filter(|l| !l.inline_spans.is_empty()).count())
+        })
+    });
 
     group.finish();
 }
@@ -207,18 +206,13 @@ fn bench_context_mode(c: &mut Criterion) {
     let mut group = c.benchmark_group("context_mode");
     group.measurement_time(Duration::from_secs(3));
 
-    for (files, lines_per_file, label) in [
-        (10, 100, "1k_lines"),
-        (30, 300, "10k_lines"),
-    ] {
+    for (files, lines_per_file, label) in [(10, 100, "1k_lines"), (30, 300, "10k_lines")] {
         let diff = create_test_diff(files, lines_per_file, false);
         let app = App::new_for_bench(diff);
 
-        group.bench_with_input(
-            BenchmarkId::new("build_context_lines", label),
-            &(),
-            |b, _| b.iter(|| black_box(app.build_context_lines_with_mapping())),
-        );
+        group.bench_with_input(BenchmarkId::new("build_context_lines", label), &(), |b, _| {
+            b.iter(|| black_box(app.build_context_lines_with_mapping()))
+        });
     }
 
     group.finish();
@@ -228,20 +222,51 @@ fn bench_context_mode(c: &mut Criterion) {
 struct BenchVcs;
 
 impl branchdiff::vcs::Vcs for BenchVcs {
-    fn repo_path(&self) -> &std::path::Path { std::path::Path::new("/bench") }
-    fn comparison_context(&self) -> anyhow::Result<branchdiff::vcs::ComparisonContext> { unimplemented!() }
-    fn refresh(&self, _: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> anyhow::Result<branchdiff::vcs::RefreshResult> { unimplemented!() }
-    fn single_file_diff(&self, _: &str) -> Option<branchdiff::diff::FileDiff> { unimplemented!() }
-    fn base_identifier(&self) -> anyhow::Result<String> { unimplemented!() }
-    fn base_file_bytes(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> { unimplemented!() }
-    fn working_file_bytes(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> { unimplemented!() }
-    fn fetch(&self) -> anyhow::Result<()> { unimplemented!() }
-    fn has_conflicts(&self) -> anyhow::Result<bool> { unimplemented!() }
-    fn is_locked(&self) -> bool { false }
-    fn watch_paths(&self) -> branchdiff::vcs::VcsWatchPaths { unimplemented!() }
-    fn classify_event(&self, _: &std::path::Path) -> branchdiff::vcs::VcsEventType { unimplemented!() }
-    fn backend(&self) -> branchdiff::vcs::VcsBackend { branchdiff::vcs::VcsBackend::Git }
-    fn current_revision_id(&self) -> anyhow::Result<String> { unimplemented!() }
+    fn repo_path(&self) -> &std::path::Path {
+        std::path::Path::new("/bench")
+    }
+    fn comparison_context(&self) -> anyhow::Result<branchdiff::vcs::ComparisonContext> {
+        unimplemented!()
+    }
+    fn refresh(
+        &self,
+        _: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> anyhow::Result<branchdiff::vcs::RefreshResult> {
+        unimplemented!()
+    }
+    fn single_file_diff(&self, _: &str) -> Option<branchdiff::diff::FileDiff> {
+        unimplemented!()
+    }
+    fn base_identifier(&self) -> anyhow::Result<String> {
+        unimplemented!()
+    }
+    fn base_file_bytes(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        unimplemented!()
+    }
+    fn working_file_bytes(&self, _: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        unimplemented!()
+    }
+    fn fetch(&self) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn has_conflicts(&self) -> anyhow::Result<bool> {
+        unimplemented!()
+    }
+    fn is_locked(&self) -> bool {
+        false
+    }
+    fn watch_paths(&self) -> branchdiff::vcs::VcsWatchPaths {
+        unimplemented!()
+    }
+    fn classify_event(&self, _: &std::path::Path) -> branchdiff::vcs::VcsEventType {
+        unimplemented!()
+    }
+    fn backend(&self) -> branchdiff::vcs::VcsBackend {
+        branchdiff::vcs::VcsBackend::Git
+    }
+    fn current_revision_id(&self) -> anyhow::Result<String> {
+        unimplemented!()
+    }
 }
 
 /// Benchmark message update handling
@@ -249,7 +274,7 @@ fn bench_update(c: &mut Criterion) {
     use branchdiff::file_events::VcsLockState;
     use branchdiff::input::AppAction;
     use branchdiff::message::Message;
-    use branchdiff::update::{update, RefreshState, Timers, UpdateConfig};
+    use branchdiff::update::{RefreshState, Timers, UpdateConfig, update};
 
     let mut group = c.benchmark_group("update");
     group.measurement_time(Duration::from_secs(2));
@@ -330,21 +355,39 @@ fn make_bench_repo(
 
     let ext = if external {
         let e = tempfile::tempdir().expect("ext tempdir");
-        Command::new("git").args(["init", "--bare"]).current_dir(e.path()).output().expect("git init --bare");
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(e.path())
+            .output()
+            .expect("git init --bare");
         let arg = format!("--git-repo={}", e.path().display());
-        Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().expect("jj git init --git-repo");
+        Command::new("jj")
+            .args(["git", "init", &arg])
+            .current_dir(repo)
+            .output()
+            .expect("jj git init --git-repo");
         Some(e)
     } else {
-        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().expect("jj git init");
+        Command::new("jj")
+            .args(["git", "init", "--colocate"])
+            .current_dir(repo)
+            .output()
+            .expect("jj git init");
         None
     };
 
     for f in 0..total {
-        std::fs::write(repo.join(format!("file_{f}.txt")), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+        std::fs::write(repo.join(format!("file_{f}.txt")), "one\ntwo\nthree\nfour\nfive\n")
+            .unwrap();
     }
-    Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().expect("jj commit");
+    Command::new("jj")
+        .args(["commit", "-m", "init"])
+        .current_dir(repo)
+        .output()
+        .expect("jj commit");
     for f in 0..changed.min(total) {
-        std::fs::write(repo.join(format!("file_{f}.txt")), "one\nCHANGED\nthree\nfour\nfive\n").unwrap();
+        std::fs::write(repo.join(format!("file_{f}.txt")), "one\nCHANGED\nthree\nfour\nfive\n")
+            .unwrap();
     }
     let vcs = branchdiff::vcs::detect(repo).expect("detect backend");
     (tmp, ext, vcs)
@@ -380,13 +423,7 @@ fn bench_refresh(c: &mut Criterion) {
 }
 
 criterion_group!(
-    benches,
-    bench_frame_context,
-    bench_inline_spans,
-    bench_navigation,
-    bench_view_mode,
-    bench_context_mode,
-    bench_update,
-    bench_refresh,
+    benches, bench_frame_context, bench_inline_spans, bench_navigation, bench_view_mode,
+    bench_context_mode, bench_update, bench_refresh,
 );
 criterion_main!(benches);

@@ -47,21 +47,13 @@ fn contrasting_fg(bg: Color) -> Color {
     let dark = Color::Rgb(30, 30, 30);
 
     // Pick whichever foreground color has better contrast with the background
-    if contrast_ratio(light, bg) > contrast_ratio(dark, bg) {
-        light
-    } else {
-        dark
-    }
+    if contrast_ratio(light, bg) > contrast_ratio(dark, bg) { light } else { dark }
 }
 
 /// Ensure foreground has sufficient contrast against background.
 /// Returns the original fg if contrast is good, otherwise a contrasting color.
 pub fn ensure_contrast(fg: Color, bg: Color) -> Color {
-    if contrast_ratio(fg, bg) >= MIN_CONTRAST_RATIO {
-        fg
-    } else {
-        contrasting_fg(bg)
-    }
+    if contrast_ratio(fg, bg) >= MIN_CONTRAST_RATIO { fg } else { contrasting_fg(bg) }
 }
 
 /// Background color for entire lines (subtle semantic tinting)
@@ -69,14 +61,14 @@ pub fn ensure_contrast(fg: Color, bg: Color) -> Color {
 /// DeletedStaged = unstaged deletion (named for where line WAS, not where deletion IS)
 pub fn line_bg_color(source: LineSource) -> Color {
     match source {
-        LineSource::Base => Color::Reset,  // Use terminal's default background
+        LineSource::Base => Color::Reset, // Use terminal's default background
         LineSource::Committed => Color::Rgb(25, 50, 50),
         LineSource::Staged => Color::Rgb(25, 50, 25),
         LineSource::Unstaged => Color::Rgb(60, 60, 18),
         // Deletion brightness: committed=dark, staged=medium, unstaged=bright
-        LineSource::DeletedBase => Color::Rgb(50, 30, 30),         // committed deletion
-        LineSource::DeletedCommitted => Color::Rgb(58, 30, 28),    // staged deletion
-        LineSource::DeletedStaged => Color::Rgb(65, 30, 25),       // unstaged deletion
+        LineSource::DeletedBase => Color::Rgb(50, 30, 30), // committed deletion
+        LineSource::DeletedCommitted => Color::Rgb(58, 30, 28), // staged deletion
+        LineSource::DeletedStaged => Color::Rgb(65, 30, 25), // unstaged deletion
         LineSource::CanceledCommitted | LineSource::CanceledStaged => Color::Rgb(50, 25, 50),
         LineSource::FileHeader => Color::Reset,
         LineSource::Elided => Color::Reset,
@@ -93,9 +85,9 @@ pub fn highlight_bg_color(source: LineSource) -> Color {
         LineSource::Staged => Color::Rgb(50, 100, 50),
         LineSource::Unstaged => Color::Rgb(130, 130, 35),
         // Deletion brightness: committed=dark, staged=medium, unstaged=bright
-        LineSource::DeletedBase => Color::Rgb(95, 55, 55),         // committed deletion
-        LineSource::DeletedCommitted => Color::Rgb(105, 52, 52),   // staged deletion
-        LineSource::DeletedStaged => Color::Rgb(115, 55, 45),      // unstaged deletion
+        LineSource::DeletedBase => Color::Rgb(95, 55, 55), // committed deletion
+        LineSource::DeletedCommitted => Color::Rgb(105, 52, 52), // staged deletion
+        LineSource::DeletedStaged => Color::Rgb(115, 55, 45), // unstaged deletion
         LineSource::CanceledCommitted | LineSource::CanceledStaged => Color::Rgb(100, 50, 100),
         _ => line_bg_color(source),
     }
@@ -112,9 +104,7 @@ fn line_fg_color(source: LineSource) -> Color {
 
 /// Complete line style with background
 pub fn line_style(source: LineSource) -> Style {
-    let mut style = Style::default()
-        .fg(line_fg_color(source))
-        .bg(line_bg_color(source));
+    let mut style = Style::default().fg(line_fg_color(source)).bg(line_bg_color(source));
 
     if source == LineSource::FileHeader {
         style = style.add_modifier(Modifier::BOLD);
@@ -164,19 +154,13 @@ pub fn print_line_style(source: LineSource) -> Style {
         LineSource::Committed => Style::default().fg(Color::Cyan),
         LineSource::Staged => Style::default().fg(Color::Green),
         LineSource::Unstaged => Style::default().fg(Color::Yellow),
-        LineSource::DeletedBase => Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::DIM),
+        LineSource::DeletedBase => Style::default().fg(Color::Red).add_modifier(Modifier::DIM),
         LineSource::DeletedCommitted => Style::default().fg(Color::Red),
         LineSource::DeletedStaged => Style::default().fg(Color::Red),
         LineSource::CanceledCommitted => Style::default().fg(Color::Magenta),
         LineSource::CanceledStaged => Style::default().fg(Color::Magenta),
-        LineSource::FileHeader => Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-        LineSource::Elided => Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM),
+        LineSource::FileHeader => Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        LineSource::Elided => Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
     }
 }
 
@@ -218,7 +202,12 @@ mod tests {
         // Green has higher perceptual luminance than blue
         let green_lum = luminance(Color::Rgb(0, 255, 0));
         let blue_lum = luminance(Color::Rgb(0, 0, 255));
-        assert!(green_lum > blue_lum, "Green ({}) should be brighter than blue ({})", green_lum, blue_lum);
+        assert!(
+            green_lum > blue_lum,
+            "Green ({}) should be brighter than blue ({})",
+            green_lum,
+            blue_lum
+        );
     }
 
     #[test]
@@ -342,10 +331,7 @@ mod tests {
         assert_ne!(line_bg, highlight_bg, "Highlight should differ from line bg");
 
         // For sources that fall through to line_bg_color, they should be equal
-        assert_eq!(
-            highlight_bg_color(LineSource::Base),
-            line_bg_color(LineSource::Base)
-        );
+        assert_eq!(highlight_bg_color(LineSource::Base), line_bg_color(LineSource::Base));
     }
 
     #[test]
@@ -407,9 +393,12 @@ mod tests {
             if raw_contrast < MIN_CONTRAST_RATIO {
                 // The corrected fg should have better or equal contrast
                 let corrected_contrast = contrast_ratio(fg, bg);
-                assert!(corrected_contrast >= raw_contrast,
+                assert!(
+                    corrected_contrast >= raw_contrast,
                     "Corrected contrast ({}) should be >= raw ({})",
-                    corrected_contrast, raw_contrast);
+                    corrected_contrast,
+                    raw_contrast
+                );
             }
         }
     }

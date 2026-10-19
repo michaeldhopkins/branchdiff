@@ -12,11 +12,11 @@ use vcs_runner::{
 };
 
 use super::jj_revset::{
-    local_trunk_bookmark, pick_trunk_remote, revset_commit_count, revset_committer_epoch,
-    revset_resolves, TRUNK_REMOTE_PREFERENCE,
+    TRUNK_REMOTE_PREFERENCE, local_trunk_bookmark, pick_trunk_remote, revset_commit_count,
+    revset_committer_epoch, revset_resolves,
 };
 mod fingerprint;
-use super::shared::{assemble_results, process_files_parallel, FileProcessResult};
+use super::shared::{FileProcessResult, assemble_results, process_files_parallel};
 
 /// Prepend `--ignore-working-copy` to skip jj's auto-snapshot.
 /// Only a diff of committed revisions that must include edits in `@` needs a snapshot;
@@ -28,10 +28,13 @@ fn no_snapshot<'a>(args: &[&'a str]) -> Vec<&'a str> {
     full
 }
 
-use crate::diff::{compute_four_way_diff, compute_four_way_diff_cancellable, DiffInput, FileDiff};
+use crate::diff::{DiffInput, FileDiff, compute_four_way_diff, compute_four_way_diff_cancellable};
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
-use crate::vcs::{ComparisonContext, DiffBase, RefreshResult, StackPosition, UpstreamDivergence, VcsBackend, VcsEventType, VcsWatchPaths};
+use crate::vcs::{
+    ComparisonContext, DiffBase, RefreshResult, StackPosition, UpstreamDivergence, VcsBackend,
+    VcsEventType, VcsWatchPaths,
+};
 
 /// Jujutsu (jj) backend for branchdiff.
 pub struct JjVcs {
@@ -98,11 +101,7 @@ fn resolve_jj_op_store(repo_path: &Path) -> PathBuf {
             .ok()
             .map(|contents| {
                 let target = Path::new(contents.trim());
-                if target.is_absolute() {
-                    target.to_path_buf()
-                } else {
-                    jj_dir.join(target)
-                }
+                if target.is_absolute() { target.to_path_buf() } else { jj_dir.join(target) }
             })
             .map(|joined| std::fs::canonicalize(&joined).unwrap_or(joined))
             .unwrap_or(repo)
@@ -205,20 +204,20 @@ fn resolve_fork_point(
 
     let fork_revset = format!("heads(::({from_rev}) & ::@)");
     let args = no_snapshot(&[
-        "log", "-r", &fork_revset, "--no-graph",
-        "--limit", "1", "-T", "commit_id.short(12)",
+        "log", "-r", &fork_revset, "--no-graph", "--limit", "1", "-T", "commit_id.short(12)",
     ]);
-    let fork_id = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()
+    let fork_id = run_jj_cancellable(repo_path, &args, Arc::clone(cancel))
+        .ok()
         .map(|o| o.stdout_lossy().trim().to_string())
         .filter(|s| !s.is_empty())?;
 
     // Check if fork point equals trunk tip — if so, no divergence
     let trunk_commit = {
         let args = no_snapshot(&[
-            "log", "-r", from_rev, "--no-graph", "--limit", "1",
-            "-T", "commit_id.short(12)",
+            "log", "-r", from_rev, "--no-graph", "--limit", "1", "-T", "commit_id.short(12)",
         ]);
-        run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()
+        run_jj_cancellable(repo_path, &args, Arc::clone(cancel))
+            .ok()
             .map(|o| o.stdout_lossy().trim().to_string())?
     };
 
@@ -240,10 +239,7 @@ fn compute_jj_divergence(
 ) -> Option<UpstreamDivergence> {
     // Count commits between fork point and trunk
     let revset = format!("\"{fork_point}\"..({from_rev})");
-    let count_args = no_snapshot(&[
-        "log", "-r", &revset,
-        "--no-graph", "-T", r#""\n""#,
-    ]);
+    let count_args = no_snapshot(&["log", "-r", &revset, "--no-graph", "-T", r#""\n""#]);
     let behind_count = run_jj_cancellable(repo_path, &count_args, Arc::clone(cancel))
         .map(|o| o.stdout_lossy().lines().filter(|l| !l.is_empty()).count())
         .unwrap_or(0);
@@ -253,22 +249,12 @@ fn compute_jj_divergence(
     }
 
     // Get files changed between fork point and trunk
-    let diff_args = no_snapshot(&[
-        "diff", "--from", fork_point, "--to", from_rev, "--summary",
-    ]);
+    let diff_args = no_snapshot(&["diff", "--from", fork_point, "--to", from_rev, "--summary"]);
     let upstream_files = run_jj_cancellable(repo_path, &diff_args, Arc::clone(cancel))
-        .map(|o| {
-            parse_jj_summary(&o.stdout_lossy())
-                .into_iter()
-                .map(|f| f.path)
-                .collect()
-        })
+        .map(|o| parse_jj_summary(&o.stdout_lossy()).into_iter().map(|f| f.path).collect())
         .unwrap_or_default();
 
-    Some(UpstreamDivergence {
-        behind_count,
-        upstream_files,
-    })
+    Some(UpstreamDivergence { behind_count, upstream_files })
 }
 
 /// Info about the stack tip when @ is not at the top.
@@ -293,8 +279,12 @@ fn resolve_stack_tip(
 
     let tip_revset = format!("heads(({from_rev})..(@::))");
     let args = no_snapshot(&[
-        "log", "-r", &tip_revset, "--no-graph",
-        "-T", r#"change_id.short(12) ++ "\n""#,
+        "log",
+        "-r",
+        &tip_revset,
+        "--no-graph",
+        "-T",
+        r#"change_id.short(12) ++ "\n""#,
     ]);
     let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
     let stdout = output.stdout_lossy();
@@ -310,10 +300,7 @@ fn resolve_stack_tip(
         return None;
     }
 
-    Some(StackTip {
-        change_id: heads[0].trim().to_string(),
-        head_count: heads.len(),
-    })
+    Some(StackTip { change_id: heads[0].trim().to_string(), head_count: heads.len() })
 }
 
 /// Recover a useful tip when `@` is an empty commit orphaned by abandoning the
@@ -343,7 +330,8 @@ fn resolve_orphaned_tip(
         repo_path,
         &no_snapshot(&["log", "-r", "(@-)+ ~ @", "--no-graph", "--limit", "1", "-T", r#""x""#]),
         Arc::clone(cancel),
-    ).ok()?;
+    )
+    .ok()?;
     if siblings.stdout_lossy().trim().is_empty() {
         return None;
     }
@@ -358,7 +346,8 @@ fn resolve_orphaned_tip(
         repo_path,
         &["log", "-r", "@ & empty()", "--no-graph", "--limit", "1", "-T", r#""x""#],
         Arc::clone(cancel),
-    ).ok()?;
+    )
+    .ok()?;
     if at_empty.stdout_lossy().trim().is_empty() {
         return None;
     }
@@ -373,11 +362,17 @@ fn resolve_orphaned_tip(
     // show another workspace's diff. A genuinely abandoned tip in *this* workspace
     // is neither a working copy nor an ancestor of one, so it survives.
     let args = no_snapshot(&[
-        "log", "-r",
+        "log",
+        "-r",
         "latest((heads((@-)::) ~ (@::) ~ working_copies() ~ ::working_copies()) ~ empty())",
-        "--no-graph", "--limit", "1", "-T", "change_id.short(12)",
+        "--no-graph",
+        "--limit",
+        "1",
+        "-T",
+        "change_id.short(12)",
     ]);
-    let id = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()
+    let id = run_jj_cancellable(repo_path, &args, Arc::clone(cancel))
+        .ok()
         .map(|o| o.stdout_lossy().trim().to_string())
         .filter(|s| !s.is_empty())?;
 
@@ -394,8 +389,14 @@ fn trunk_remote(repo_path: &Path, cancel: &Arc<AtomicBool>) -> Option<String> {
 /// The remote(s) holding a bookmark at `revset`, reduced to a single preferred one.
 fn remote_of(repo_path: &Path, revset: &str, cancel: &Arc<AtomicBool>) -> Option<String> {
     let args = no_snapshot(&[
-        "log", "-r", revset, "--no-graph", "--limit", "1",
-        "-T", r#"remote_bookmarks.map(|b| b.remote()).join("\n")"#,
+        "log",
+        "-r",
+        revset,
+        "--no-graph",
+        "--limit",
+        "1",
+        "-T",
+        r#"remote_bookmarks.map(|b| b.remote()).join("\n")"#,
     ]);
     let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
     pick_trunk_remote(&output.stdout_lossy())
@@ -444,8 +445,14 @@ fn resolve_bookmark_boundary(
     // Step 1: Find the current bookmark — at @ or the nearest descendant with a bookmark
     let template = r#"bookmarks.join(",") ++ "\0" ++ change_id.short(12)"#;
     let args = no_snapshot(&[
-        "log", "-r", "latest((@:: | @) & bookmarks())", "--no-graph", "--limit", "1",
-        "-T", template,
+        "log",
+        "-r",
+        "latest((@:: | @) & bookmarks())",
+        "--no-graph",
+        "--limit",
+        "1",
+        "-T",
+        template,
     ]);
     let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
     let stdout = output.stdout_lossy();
@@ -471,8 +478,7 @@ fn resolve_bookmark_boundary(
     let remote = remote_of(repo_path, from_rev, cancel);
     let revset = boundary_revset(&current_bm_id, from_rev, remote.as_deref());
     let prev_args = no_snapshot(&[
-        "log", "-r", &revset, "--no-graph", "--limit", "1",
-        "-T", "change_id.short(12)",
+        "log", "-r", &revset, "--no-graph", "--limit", "1", "-T", "change_id.short(12)",
     ]);
     let boundary_id = run_jj_cancellable(repo_path, &prev_args, Arc::clone(cancel))
         .ok()
@@ -482,23 +488,19 @@ fn resolve_bookmark_boundary(
 
     // Step 3: Get the list of files changed between boundary and @
     let range = format!("\"{}\"..@", boundary_id);
-    let diff_args = no_snapshot(&[
-        "diff", "-r", &range, "--name-only",
-    ]);
-    let changed_files: HashSet<String> = run_jj_cancellable(repo_path, &diff_args, Arc::clone(cancel))
-        .map(|o| {
-            o.stdout_lossy()
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let diff_args = no_snapshot(&["diff", "-r", &range, "--name-only"]);
+    let changed_files: HashSet<String> =
+        run_jj_cancellable(repo_path, &diff_args, Arc::clone(cancel))
+            .map(|o| {
+                o.stdout_lossy()
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
 
-    Some(BookmarkBoundary {
-        bookmark_name,
-        changed_files,
-    })
+    Some(BookmarkBoundary { bookmark_name, changed_files })
 }
 
 /// Mark each DiffLine in a FileDiff with bookmark provenance.
@@ -514,10 +516,14 @@ fn mark_bookmark_provenance(file_diff: &mut crate::diff::FileDiff, file_in_curre
         line.in_current_bookmark = Some(match line.source {
             // Change lines: belong to the current bookmark only if the file was
             // modified between the previous bookmark boundary and @.
-            LineSource::Committed | LineSource::CanceledCommitted
-            | LineSource::DeletedBase | LineSource::Staged
-            | LineSource::DeletedCommitted | LineSource::CanceledStaged
-            | LineSource::Unstaged | LineSource::DeletedStaged => file_in_current_bookmark,
+            LineSource::Committed
+            | LineSource::CanceledCommitted
+            | LineSource::DeletedBase
+            | LineSource::Staged
+            | LineSource::DeletedCommitted
+            | LineSource::CanceledStaged
+            | LineSource::Unstaged
+            | LineSource::DeletedStaged => file_in_current_bookmark,
 
             LineSource::Base if line.change_source.is_some() => file_in_current_bookmark,
 
@@ -528,10 +534,8 @@ fn mark_bookmark_provenance(file_diff: &mut crate::diff::FileDiff, file_in_curre
 
 /// Get a change_id without requiring a JjVcs instance.
 fn get_change_id_static(repo_path: &Path, rev: &str, cancel: &Arc<AtomicBool>) -> Option<String> {
-    let args = no_snapshot(&[
-        "log", "-r", rev, "--no-graph", "--limit", "1",
-        "-T", "change_id.short(12)",
-    ]);
+    let args =
+        no_snapshot(&["log", "-r", rev, "--no-graph", "--limit", "1", "-T", "change_id.short(12)"]);
     run_jj_cancellable(repo_path, &args, Arc::clone(cancel))
         .ok()
         .map(|o| o.stdout_lossy().trim().to_string())
@@ -539,11 +543,19 @@ fn get_change_id_static(repo_path: &Path, rev: &str, cancel: &Arc<AtomicBool>) -
 
 /// Compute @'s position in the stack from trunk to tip.
 /// Returns (1-based position of @, total commits in stack).
-fn compute_stack_position(repo_path: &Path, tip_id: &str, from_rev: &str) -> Option<(usize, usize)> {
+fn compute_stack_position(
+    repo_path: &Path,
+    tip_id: &str,
+    from_rev: &str,
+) -> Option<(usize, usize)> {
     let revset = format!("({from_rev})..\"{tip_id}\"");
     let args = no_snapshot(&[
-        "log", "-r", &revset, "--no-graph",
-        "-T", r#"if(self.contained_in("@"), "@", ".") ++ "\n""#,
+        "log",
+        "-r",
+        &revset,
+        "--no-graph",
+        "-T",
+        r#"if(self.contained_in("@"), "@", ".") ++ "\n""#,
     ]);
     let output = run_jj(repo_path, &args).ok()?;
     let stdout = output.stdout_lossy();
@@ -663,7 +675,9 @@ impl JjVcs {
     /// Resolve a jj revision to its git commit id, working-copy-agnostically.
     fn commit_id_of(&self, rev: &str) -> Option<String> {
         let out = self
-            .run_jj(&no_snapshot(&["log", "-r", rev, "--no-graph", "--limit", "1", "-T", "commit_id"]))
+            .run_jj(&no_snapshot(&[
+                "log", "-r", rev, "--no-graph", "--limit", "1", "-T", "commit_id",
+            ]))
             .ok()?;
         let id = out.trim().to_string();
         (!id.is_empty()).then_some(id)
@@ -703,12 +717,7 @@ impl JjVcs {
     /// The base tree's file list, read working-copy-agnostically.
     fn base_file_list(&self, base: &str) -> Result<Vec<String>> {
         let out = self.run_jj(&no_snapshot(&["file", "list", "-r", base]))?;
-        Ok(out
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect())
+        Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect())
     }
 
     /// Seed the stat-cache from jj's own last working-copy snapshot.
@@ -858,7 +867,9 @@ impl JjVcs {
                     verdict
                 } else {
                     self.base_read_count.fetch_add(1, Ordering::Relaxed);
-                    let disk = crate::vcs::shared::read_working_file(&self.repo_path, &path).ok().flatten();
+                    let disk = crate::vcs::shared::read_working_file(&self.repo_path, &path)
+                        .ok()
+                        .flatten();
                     let base = if base_set.contains(path.as_str()) {
                         file_content_no_snapshot(&self.repo_path, &path, effective_from, cancel)
                     } else {
@@ -918,9 +929,7 @@ impl JjVcs {
         effective_to: &str,
         cancel: &Arc<AtomicBool>,
     ) -> HashSet<String> {
-        let args = no_snapshot(&[
-            "diff", "--from", from, "--to", effective_to, "--stat",
-        ]);
+        let args = no_snapshot(&["diff", "--from", from, "--to", effective_to, "--stat"]);
         match run_jj_with_retry_cancellable(
             &self.repo_path,
             &args,
@@ -950,13 +959,17 @@ impl JjVcs {
 
     /// Get the current change ID for a revision.
     fn get_change_id(&self, rev: &str) -> Result<String> {
-        let output = self.run_jj(&no_snapshot(&["log", "-r", rev, "-T", "change_id.short(12)", "--no-graph", "--limit", "1"]))?;
+        let output = self.run_jj(&no_snapshot(&[
+            "log", "-r", rev, "-T", "change_id.short(12)", "--no-graph", "--limit", "1",
+        ]))?;
         Ok(output.trim().to_string())
     }
 
     #[cfg(test)]
     fn get_bookmarks(&self, rev: &str) -> Option<String> {
-        let output = self.run_jj(&["log", "-r", rev, "-T", "bookmarks", "--no-graph", "--limit", "1"]).ok()?;
+        let output = self
+            .run_jj(&["log", "-r", rev, "-T", "bookmarks", "--no-graph", "--limit", "1"])
+            .ok()?;
         let trimmed = output.trim().trim_end_matches('*');
         if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
     }
@@ -971,10 +984,9 @@ impl JjVcs {
     /// using `--ignore-working-copy` to avoid redundant auto-snapshots.
     /// Returns (change_id, display_label).
     fn rev_metadata_no_snapshot(&self, rev: &str) -> (String, String) {
-        let template = r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
-        let args = no_snapshot(&[
-            "log", "-r", rev, "-T", template, "--no-graph", "--limit", "1",
-        ]);
+        let template =
+            r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
+        let args = no_snapshot(&["log", "-r", rev, "-T", template, "--no-graph", "--limit", "1"]);
         match self.run_jj(&args) {
             Ok(raw) => parse_rev_metadata(&raw),
             Err(_) => (rev.to_string(), rev.to_string()),
@@ -1069,9 +1081,11 @@ fn process_jj_file(
     // commit. `at_rev` is `@` normally, or the re-anchored sibling tip when `@`
     // is an orphaned empty commit; its parent is `<at_rev>-`.
     let at_parent = format!("{at_rev}-");
-    let parent = file_content_no_snapshot(repo_path, &changed.path, &at_parent, cancel)
-        .or_else(|| {
-            changed.old_path.as_deref()
+    let parent =
+        file_content_no_snapshot(repo_path, &changed.path, &at_parent, cancel).or_else(|| {
+            changed
+                .old_path
+                .as_deref()
                 .and_then(|old| file_content_no_snapshot(repo_path, old, &at_parent, cancel))
         });
     if cancel.load(Ordering::Relaxed) {
@@ -1089,8 +1103,8 @@ fn process_jj_file(
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
     }
-    let tip_content = tip_rev
-        .and_then(|tip| file_content_no_snapshot(repo_path, &changed.path, tip, cancel));
+    let tip_content =
+        tip_rev.and_then(|tip| file_content_no_snapshot(repo_path, &changed.path, tip, cancel));
 
     // When tip_rev is None (@ is at tip), working == index.
     // When tip_rev is Some, working is the tip content — even if None (file
@@ -1136,11 +1150,14 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
-        let template = r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
+        let template =
+            r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
         // No snapshot: the working side is read from disk (see `get_changed_files_with_from` for the exception).
         let from_label = match run_jj_with_retry(
             &self.repo_path,
-            &no_snapshot(&["log", "-r", &self.from_rev, "-T", template, "--no-graph", "--limit", "1"]),
+            &no_snapshot(&[
+                "log", "-r", &self.from_rev, "-T", template, "--no-graph", "--limit", "1",
+            ]),
             is_transient_error,
         ) {
             Ok(output) => parse_rev_metadata(&output.stdout_lossy()).1,
@@ -1148,9 +1165,8 @@ impl crate::vcs::Vcs for JjVcs {
         };
 
         // Second call skips snapshot (already fresh)
-        let to_args = no_snapshot(&[
-            "log", "-r", "@", "-T", template, "--no-graph", "--limit", "1",
-        ]);
+        let to_args =
+            no_snapshot(&["log", "-r", "@", "-T", template, "--no-graph", "--limit", "1"]);
         let to_label = match run_jj_with_retry(&self.repo_path, &to_args, is_transient_error) {
             Ok(output) => parse_rev_metadata(&output.stdout_lossy()).1,
             Err(_) => "@".to_string(),
@@ -1158,13 +1174,21 @@ impl crate::vcs::Vcs for JjVcs {
 
         // stack_position is computed by refresh() and applied via
         // apply_refresh_result — no need to resolve it here too.
-        Ok(ComparisonContext { from_label, to_label, stack_position: None, vcs_backend: VcsBackend::Jj, bookmark_name: None, divergence: None })
+        Ok(ComparisonContext {
+            from_label,
+            to_label,
+            stack_position: None,
+            vcs_backend: VcsBackend::Jj,
+            bookmark_name: None,
+            divergence: None,
+        })
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
         // Resolve fork point for divergence detection and fork-point mode
         let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev, cancel_flag);
-        let divergence = fork_point.as_deref()
+        let divergence = fork_point
+            .as_deref()
             .and_then(|fp| compute_jj_divergence(&self.repo_path, fp, &self.from_rev, cancel_flag));
 
         // Determine the effective --from rev based on diff_base mode
@@ -1188,17 +1212,15 @@ impl crate::vcs::Vcs for JjVcs {
         // color as the current commit and show in the [commit] view.
         let at_rev = orphaned.as_ref().map(|t| t.change_id.as_str()).unwrap_or("@");
         // Visible tip to enumerate and diff against.
-        let effective_to = stack_tip
-            .as_ref()
-            .or(orphaned.as_ref())
-            .map(|t| t.change_id.as_str())
-            .unwrap_or("@");
+        let effective_to =
+            stack_tip.as_ref().or(orphaned.as_ref()).map(|t| t.change_id.as_str()).unwrap_or("@");
         // The "above @" (Unstaged) layer only exists for a real stack tip above a
         // mid-stack @; an orphaned tip *is* the anchor, so nothing sits above it.
         let tip_rev = stack_tip.as_ref().map(|t| t.change_id.as_str());
 
         // Resolve bookmark boundary for BookmarkOnly view mode
-        let bookmark_boundary = resolve_bookmark_boundary(&self.repo_path, &self.from_rev, cancel_flag);
+        let bookmark_boundary =
+            resolve_bookmark_boundary(&self.repo_path, &self.from_rev, cancel_flag);
         let bookmark_changed_files = bookmark_boundary.as_ref().map(|b| &b.changed_files);
 
         // Discover changed files. When the working copy is the diff target (the
@@ -1228,14 +1250,8 @@ impl crate::vcs::Vcs for JjVcs {
 
         let results = process_files_parallel(&changed_files, cancel_flag, |changed| {
             process_jj_file(
-                &self.repo_path,
-                effective_from,
-                changed,
-                &binary_files,
-                tip_rev,
-                at_rev,
-                bookmark_changed_files,
-                cancel_flag,
+                &self.repo_path, effective_from, changed, &binary_files, tip_rev, at_rev,
+                bookmark_changed_files, cancel_flag,
             )
         });
 
@@ -1248,20 +1264,13 @@ impl crate::vcs::Vcs for JjVcs {
         let all_lines = assembled.lines;
 
         let stack_position = stack_tip.as_ref().and_then(|tip| {
-            let (current, total) = compute_stack_position(&self.repo_path, &tip.change_id, &self.from_rev)?;
-            Some(StackPosition {
-                current,
-                total,
-                head_count: tip.head_count,
-            })
+            let (current, total) =
+                compute_stack_position(&self.repo_path, &tip.change_id, &self.from_rev)?;
+            Some(StackPosition { current, total, head_count: tip.head_count })
         });
 
-        let metrics = DiffMetrics {
-            total_lines: all_lines.len(),
-            file_count: files.len(),
-        };
-        let (base_identifier, base_label_str) =
-            self.rev_metadata_no_snapshot(effective_from);
+        let metrics = DiffMetrics { total_lines: all_lines.len(), file_count: files.len() };
+        let (base_identifier, base_label_str) = self.rev_metadata_no_snapshot(effective_from);
         // Normally the "to" label is @ (where the working copy sits). When we
         // re-anchored to an orphaned sibling tip, @ is an empty throwaway commit,
         // so label the tip we actually diffed against instead.
@@ -1312,11 +1321,8 @@ impl crate::vcs::Vcs for JjVcs {
             None
         };
         let at_rev = orphaned.as_ref().map(|t| t.change_id.as_str()).unwrap_or("@");
-        let effective_to = stack_tip
-            .as_ref()
-            .or(orphaned.as_ref())
-            .map(|t| t.change_id.as_str())
-            .unwrap_or("@");
+        let effective_to =
+            stack_tip.as_ref().or(orphaned.as_ref()).map(|t| t.change_id.as_str()).unwrap_or("@");
 
         // Discover from disk/git without snapshotting in the common case.
         let changed_files = if effective_to == "@" {
@@ -1334,7 +1340,9 @@ impl crate::vcs::Vcs for JjVcs {
         let at_parent = format!("{at_rev}-");
         let parent = file_content_no_snapshot(&self.repo_path, file_path, &at_parent, &cancel)
             .or_else(|| {
-                old_path.and_then(|old| file_content_no_snapshot(&self.repo_path, old, &at_parent, &cancel))
+                old_path.and_then(|old| {
+                    file_content_no_snapshot(&self.repo_path, old, &at_parent, &cancel)
+                })
             });
 
         // Working side from disk (see `process_jj_file`); committed `at_rev` via jj.
@@ -1344,9 +1352,9 @@ impl crate::vcs::Vcs for JjVcs {
             file_content_no_snapshot(&self.repo_path, file_path, at_rev, &cancel)
         };
         // Only a real stack tip sits above @; an orphaned tip is itself the anchor.
-        let tip_content = stack_tip
-            .as_ref()
-            .and_then(|t| file_content_no_snapshot(&self.repo_path, file_path, &t.change_id, &cancel));
+        let tip_content = stack_tip.as_ref().and_then(|t| {
+            file_content_no_snapshot(&self.repo_path, file_path, &t.change_id, &cancel)
+        });
         let has_tip = stack_tip.is_some();
 
         if base.is_none() && index.is_none() && tip_content.is_none() {
@@ -1374,7 +1382,8 @@ impl crate::vcs::Vcs for JjVcs {
         });
 
         // Mark bookmark provenance for BookmarkOnly view mode
-        if let Some(boundary) = resolve_bookmark_boundary(&self.repo_path, &self.from_rev, &cancel) {
+        if let Some(boundary) = resolve_bookmark_boundary(&self.repo_path, &self.from_rev, &cancel)
+        {
             let in_bookmark = boundary.changed_files.contains(file_path);
             mark_bookmark_provenance(&mut file_diff, in_bookmark);
         }
@@ -1388,9 +1397,8 @@ impl crate::vcs::Vcs for JjVcs {
 
     fn current_revision_id(&self) -> Result<String> {
         self.run_jj(&[
-            "--ignore-working-copy",
-            "log", "-r", "@", "--no-graph", "--limit", "1",
-            "-T", "change_id.short(12)",
+            "--ignore-working-copy", "log", "-r", "@", "--no-graph", "--limit", "1", "-T",
+            "change_id.short(12)",
         ])
         .map(|s| s.trim().to_string())
     }
@@ -1435,7 +1443,9 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn classify_event(&self, path: &Path) -> VcsEventType {
-        super::jj_events::classify(path, &self.repo_path, &self.op_store_dir, || self.is_colocated())
+        super::jj_events::classify(path, &self.repo_path, &self.op_store_dir, || {
+            self.is_colocated()
+        })
     }
 
     fn fingerprint_inputs(&self) -> Result<crate::fingerprint::FingerprintInputs> {
@@ -1550,13 +1560,14 @@ pub(crate) fn parse_binary_from_stat(output: &str) -> HashSet<String> {
                 return None;
             }
             // Renames show as "{old => new}" — extract the new name
-            let path = if let Some(inner) = raw_path.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-                inner.split(" => ").last().unwrap_or(inner).trim()
-            } else if raw_path.contains(" => ") {
-                raw_path.split(" => ").last().unwrap_or(raw_path).trim()
-            } else {
-                raw_path
-            };
+            let path =
+                if let Some(inner) = raw_path.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+                    inner.split(" => ").last().unwrap_or(inner).trim()
+                } else if raw_path.contains(" => ") {
+                    raw_path.split(" => ").last().unwrap_or(raw_path).trim()
+                } else {
+                    raw_path
+                };
             if path.is_empty() { None } else { Some(path.to_string()) }
         })
         .collect()
@@ -1565,9 +1576,9 @@ pub(crate) fn parse_binary_from_stat(output: &str) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
     use crate::diff::LineSource;
     use crate::vcs::Vcs;
+    use std::process::Command;
 
     // === parse_jj_summary tests ===
 
@@ -1721,7 +1732,10 @@ mod tests {
         let output = "{original.bin => renamed.bin} | (binary)\n";
         let binaries = parse_binary_from_stat(output);
         assert!(binaries.contains("renamed.bin"), "should extract new name from rename");
-        assert!(!binaries.contains("{original.bin => renamed.bin}"), "should not store raw rename format");
+        assert!(
+            !binaries.contains("{original.bin => renamed.bin}"),
+            "should not store raw rename format"
+        );
     }
 
     #[test]
@@ -1783,10 +1797,7 @@ mod tests {
     #[test]
     fn test_classify_source_file() {
         let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
-        assert_eq!(
-            vcs.classify_event(Path::new("/repo/src/main.rs")),
-            VcsEventType::Source
-        );
+        assert_eq!(vcs.classify_event(Path::new("/repo/src/main.rs")), VcsEventType::Source);
     }
 
     #[test]
@@ -1819,10 +1830,7 @@ mod tests {
     #[test]
     fn test_classify_path_outside_repo() {
         let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
-        assert_eq!(
-            vcs.classify_event(Path::new("/other/file.rs")),
-            VcsEventType::Source
-        );
+        assert_eq!(vcs.classify_event(Path::new("/other/file.rs")), VcsEventType::Source);
     }
 
     #[test]
@@ -1831,10 +1839,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join(".jj")).unwrap();
         std::fs::create_dir_all(temp.path().join(".git")).unwrap();
         let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
-        assert_eq!(
-            vcs.classify_event(&temp.path().join(".git/index")),
-            VcsEventType::Internal
-        );
+        assert_eq!(vcs.classify_event(&temp.path().join(".git/index")), VcsEventType::Internal);
     }
 
     #[test]
@@ -1867,19 +1872,13 @@ mod tests {
         std::fs::create_dir_all(temp.path().join(".jj")).unwrap();
         std::fs::create_dir_all(temp.path().join(".git")).unwrap();
         let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
-        assert_eq!(
-            vcs.classify_event(&temp.path().join(".git/HEAD")),
-            VcsEventType::Internal
-        );
+        assert_eq!(vcs.classify_event(&temp.path().join(".git/HEAD")), VcsEventType::Internal);
     }
 
     #[test]
     fn test_classify_git_path_as_source_in_non_colocated_repo() {
         let vcs = JjVcs::new(PathBuf::from("/repo")).unwrap();
-        assert_eq!(
-            vcs.classify_event(Path::new("/repo/.git/index")),
-            VcsEventType::Source
-        );
+        assert_eq!(vcs.classify_event(Path::new("/repo/.git/index")), VcsEventType::Source);
     }
 
     #[test]
@@ -1888,10 +1887,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join(".jj")).unwrap();
         std::fs::create_dir_all(temp.path().join(".git")).unwrap();
         let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
-        assert_eq!(
-            vcs.classify_event(&temp.path().join("src/main.rs")),
-            VcsEventType::Source
-        );
+        assert_eq!(vcs.classify_event(&temp.path().join("src/main.rs")), VcsEventType::Source);
     }
 
     // === watch_paths tests ===
@@ -1910,10 +1906,7 @@ mod tests {
         // `.jj/repo` is a real directory: op_store lives directly under it.
         let temp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(temp.path().join(".jj/repo")).unwrap();
-        assert_eq!(
-            resolve_jj_op_store(temp.path()),
-            temp.path().join(".jj/repo/op_store")
-        );
+        assert_eq!(resolve_jj_op_store(temp.path()), temp.path().join(".jj/repo/op_store"));
     }
 
     #[test]
@@ -1923,7 +1916,8 @@ mod tests {
         std::fs::create_dir_all(shared.path().join("op_store")).unwrap();
         let ws = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(ws.path().join(".jj")).unwrap();
-        std::fs::write(ws.path().join(".jj/repo"), shared.path().to_string_lossy().as_bytes()).unwrap();
+        std::fs::write(ws.path().join(".jj/repo"), shared.path().to_string_lossy().as_bytes())
+            .unwrap();
 
         let resolved = resolve_jj_op_store(ws.path());
         assert_eq!(
@@ -1941,14 +1935,12 @@ mod tests {
         std::fs::create_dir_all(shared.path().join("op_store")).unwrap();
         let ws = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(ws.path().join(".jj")).unwrap();
-        std::fs::write(ws.path().join(".jj/repo"), shared.path().to_string_lossy().as_bytes()).unwrap();
+        std::fs::write(ws.path().join(".jj/repo"), shared.path().to_string_lossy().as_bytes())
+            .unwrap();
 
         let vcs = JjVcs::new(ws.path().to_path_buf()).unwrap();
         let canonical_op = std::fs::canonicalize(shared.path().join("op_store")).unwrap();
-        assert_eq!(
-            vcs.classify_event(&canonical_op.join("heads")),
-            VcsEventType::Internal
-        );
+        assert_eq!(vcs.classify_event(&canonical_op.join("heads")), VcsEventType::Internal);
     }
 
     // === Integration tests (require jj installed) ===
@@ -1959,7 +1951,9 @@ mod tests {
 
     #[test]
     fn test_jj_refresh_detects_modified_file() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -1981,13 +1975,18 @@ mod tests {
         assert!(has_staged, "modified lines should have Staged source (current commit)");
         let header = &result.lines[0];
         assert_eq!(header.source, LineSource::FileHeader, "first line should be file header");
-        assert!(!header.content.contains("(deleted)"),
-            "modified file should not have deletion header, got: {}", header.content);
+        assert!(
+            !header.content.contains("(deleted)"),
+            "modified file should not have deletion header, got: {}",
+            header.content
+        );
     }
 
     #[test]
     fn test_jj_refresh_detects_new_file() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2008,7 +2007,9 @@ mod tests {
 
     #[test]
     fn test_jj_comparison_context() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2029,7 +2030,9 @@ mod tests {
 
     #[test]
     fn test_jj_base_file_bytes() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2049,7 +2052,9 @@ mod tests {
 
     #[test]
     fn test_jj_refresh_detects_deleted_file() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2065,16 +2070,22 @@ mod tests {
 
         assert!(!result.files.is_empty(), "should detect deleted file");
         let header = &result.lines[0];
-        assert!(header.content.contains("(deleted"),
-            "deleted file should have deletion header, got: {}", header.content);
+        assert!(
+            header.content.contains("(deleted"),
+            "deleted file should have deletion header, got: {}",
+            header.content
+        );
         // With from_rev=@- (no remote), base==head so deletions in @ are DeletedCommitted
-        let has_deleted_source = result.lines.iter().any(|l| l.source == LineSource::DeletedCommitted);
+        let has_deleted_source =
+            result.lines.iter().any(|l| l.source == LineSource::DeletedCommitted);
         assert!(has_deleted_source, "deleted file lines should have DeletedCommitted source");
     }
 
     #[test]
     fn test_jj_single_file_diff_handles_rename() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2100,7 +2111,9 @@ mod tests {
 
     #[test]
     fn test_jj_get_repo_root() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2116,7 +2129,9 @@ mod tests {
 
     #[test]
     fn test_jj_refresh_returns_base_label_with_bookmark() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2124,7 +2139,11 @@ mod tests {
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
         std::fs::write(repo.join("file.txt"), "content\n").unwrap();
         Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
-        Command::new("jj").args(["bookmark", "set", "my-base", "-r", "@-"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["bookmark", "set", "my-base", "-r", "@-"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
         std::fs::write(repo.join("file.txt"), "changed\n").unwrap();
 
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
@@ -2132,15 +2151,18 @@ mod tests {
         let result = vcs.refresh(&cancel).unwrap();
 
         let base_label = result.base_label.expect("should have base_label");
-        assert!(base_label.contains("(my-base)"),
-            "label should contain bookmark in parens, got: {base_label}");
-        assert!(base_label.ends_with(')'),
-            "label should end with ), got: {base_label}");
+        assert!(
+            base_label.contains("(my-base)"),
+            "label should contain bookmark in parens, got: {base_label}"
+        );
+        assert!(base_label.ends_with(')'), "label should end with ), got: {base_label}");
     }
 
     #[test]
     fn test_jj_refresh_returns_base_label_as_change_id_without_bookmark() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2156,13 +2178,18 @@ mod tests {
 
         let base_label = result.base_label.expect("should have base_label");
         assert!(!base_label.is_empty());
-        assert!(result.base_identifier.starts_with(&base_label),
-            "without bookmark, base_label should be a prefix of base_identifier: label={base_label}, id={}", result.base_identifier);
+        assert!(
+            result.base_identifier.starts_with(&base_label),
+            "without bookmark, base_label should be a prefix of base_identifier: label={base_label}, id={}",
+            result.base_identifier
+        );
     }
 
     #[test]
     fn test_jj_bookmark_strips_tracking_marker() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2170,7 +2197,11 @@ mod tests {
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
         std::fs::write(repo.join("file.txt"), "content\n").unwrap();
         Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
-        Command::new("jj").args(["bookmark", "set", "my-branch"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["bookmark", "set", "my-branch"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
 
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
         let label = vcs.rev_label("@");
@@ -2179,7 +2210,9 @@ mod tests {
 
     #[test]
     fn test_jj_refresh_parallel_with_multiple_files() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2203,7 +2236,9 @@ mod tests {
 
     #[test]
     fn test_jj_rev_metadata_no_snapshot_with_bookmark() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2211,21 +2246,28 @@ mod tests {
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
         std::fs::write(repo.join("file.txt"), "content\n").unwrap();
         Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
-        Command::new("jj").args(["bookmark", "set", "test-bm", "-r", "@-"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["bookmark", "set", "test-bm", "-r", "@-"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
 
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
         let (change_id, label) = vcs.rev_metadata_no_snapshot("@-");
 
         assert!(!change_id.is_empty());
-        assert!(label.contains("(test-bm)"),
-            "label should contain bookmark in parens, got: {label}");
-        assert!(label.ends_with(')'),
-            "label should end with ), got: {label}");
+        assert!(
+            label.contains("(test-bm)"),
+            "label should contain bookmark in parens, got: {label}"
+        );
+        assert!(label.ends_with(')'), "label should end with ), got: {label}");
     }
 
     #[test]
     fn test_jj_rev_metadata_no_snapshot_without_bookmark() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2238,8 +2280,10 @@ mod tests {
         let (change_id, label) = vcs.rev_metadata_no_snapshot("@-");
 
         assert!(!change_id.is_empty());
-        assert!(change_id.starts_with(&label),
-            "without bookmark, label should be shortest prefix of change_id: label={label}, id={change_id}");
+        assert!(
+            change_id.starts_with(&label),
+            "without bookmark, label should be shortest prefix of change_id: label={label}, id={change_id}"
+        );
         assert!(label.len() >= 4, "shortest ID should be at least 4 chars, got: {label}");
     }
 
@@ -2250,7 +2294,9 @@ mod tests {
     /// to override a heuristic that guessed wrong.
     #[test]
     fn test_explicit_base_overrides_inferred_trunk() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2262,8 +2308,11 @@ mod tests {
         jj(&["bookmark", "set", "develop", "-r", "@-"]);
         jj(&["git", "push", "--bookmark", "develop", "--remote", "origin"]);
 
-        assert_eq!(JjVcs::new(repo.to_path_buf()).unwrap().from_rev, "trunk()",
-            "precondition: this repo would otherwise infer trunk()");
+        assert_eq!(
+            JjVcs::new(repo.to_path_buf()).unwrap().from_rev,
+            "trunk()",
+            "precondition: this repo would otherwise infer trunk()"
+        );
 
         let vcs = JjVcs::with_base(repo.to_path_buf(), Some("develop@origin")).unwrap();
         assert_eq!(vcs.from_rev, "develop@origin", "an explicit base must win");
@@ -2276,7 +2325,9 @@ mod tests {
     /// spelling of the same commit shows.
     #[test]
     fn test_explicit_base_parent_is_not_mistaken_for_the_no_trunk_sentinel() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2306,7 +2357,9 @@ mod tests {
     /// to prevent, so "resolves" has to mean "resolves to one commit".
     #[test]
     fn test_explicit_base_that_resolves_to_many_commits_is_rejected() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2331,22 +2384,30 @@ mod tests {
     /// it produces an empty or nonsense diff that looks like "no changes".
     #[test]
     fn test_explicit_base_that_does_not_resolve_is_rejected() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let result = JjVcs::with_base(temp.path().to_path_buf(), Some("no-such-bookmark@origin"));
         let msg = match result {
-            Ok(_) => panic!("a base that resolves to nothing must be rejected, not silently diffed"),
+            Ok(_) => {
+                panic!("a base that resolves to nothing must be rejected, not silently diffed")
+            }
             Err(e) => e.to_string(),
         };
-        assert!(msg.contains("no-such-bookmark@origin"),
-            "the error must name the offending base, got: {msg}");
+        assert!(
+            msg.contains("no-such-bookmark@origin"),
+            "the error must name the offending base, got: {msg}"
+        );
     }
 
     /// Passing no base keeps the inferred behaviour untouched.
     #[test]
     fn test_no_explicit_base_falls_back_to_inference() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let vcs = JjVcs::with_base(temp.path().to_path_buf(), None).unwrap();
@@ -2358,7 +2419,9 @@ mod tests {
     /// particular spelling.
     #[test]
     fn test_explicit_base_still_drives_the_stack_machinery() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2374,10 +2437,14 @@ mod tests {
 
         let cancel = Arc::new(AtomicBool::new(false));
         let result = vcs.refresh(&cancel).unwrap();
-        assert!(result.lines.iter().any(|l| l.source == LineSource::Committed),
-            "stack colouring must survive an explicit base");
-        assert!(result.lines.iter().any(|l| l.source == LineSource::Staged),
-            "stack colouring must survive an explicit base");
+        assert!(
+            result.lines.iter().any(|l| l.source == LineSource::Committed),
+            "stack colouring must survive an explicit base"
+        );
+        assert!(
+            result.lines.iter().any(|l| l.source == LineSource::Staged),
+            "stack colouring must survive an explicit base"
+        );
     }
 
     /// jj's documented rule: try main/master/trunk on the `upstream` and
@@ -2389,7 +2456,9 @@ mod tests {
     /// commit already merged upstream is reported as your own work.
     #[test]
     fn test_preferred_trunk_picks_the_newest_candidate_not_origin_by_default() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let origin_dir = tempfile::TempDir::new().unwrap();
         let upstream_dir = tempfile::TempDir::new().unwrap();
@@ -2405,8 +2474,12 @@ mod tests {
         // Pin committer timestamps: the whole point is which candidate is
         // *newer*, and two commits made back to back land in the same second.
         let jj_at = |stamp: &str, args: &[&str]| {
-            Command::new("jj").args(args).current_dir(repo)
-                .env("JJ_TIMESTAMP", stamp).output().unwrap();
+            Command::new("jj")
+                .args(args)
+                .current_dir(repo)
+                .env("JJ_TIMESTAMP", stamp)
+                .output()
+                .unwrap();
         };
         jj(&["git", "init"]);
         jj(&["git", "remote", "add", "origin", &origin_dir.path().to_string_lossy()]);
@@ -2428,19 +2501,25 @@ mod tests {
 
         let origin_epoch = revset_committer_epoch(repo, "main@origin").expect("main@origin");
         let upstream_epoch = revset_committer_epoch(repo, "main@upstream").expect("main@upstream");
-        assert!(upstream_epoch > origin_epoch,
-            "fixture: upstream's main must be newer ({upstream_epoch} vs {origin_epoch})");
+        assert!(
+            upstream_epoch > origin_epoch,
+            "fixture: upstream's main must be newer ({upstream_epoch} vs {origin_epoch})"
+        );
 
         let newest = preferred_trunk_revset(repo).expect("a trunk candidate must be found");
-        assert_eq!(newest, "main@upstream",
-            "jj picks the newest trunk candidate; a stale fork's main@origin must not win");
+        assert_eq!(
+            newest, "main@upstream",
+            "jj picks the newest trunk candidate; a stale fork's main@origin must not win"
+        );
     }
 
     /// With nothing to separate them, order decides — and origin leads, because
     /// it is the review remote this whole path exists to protect.
     #[test]
     fn test_preferred_trunk_breaks_ties_toward_origin() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let origin_dir = tempfile::TempDir::new().unwrap();
         let upstream_dir = tempfile::TempDir::new().unwrap();
@@ -2456,8 +2535,12 @@ mod tests {
         jj(&["git", "remote", "add", "origin", &origin_dir.path().to_string_lossy()]);
         jj(&["git", "remote", "add", "upstream", &upstream_dir.path().to_string_lossy()]);
         std::fs::write(repo.join("base.txt"), "base\n").unwrap();
-        Command::new("jj").args(["commit", "-m", "base"]).current_dir(repo)
-            .env("JJ_TIMESTAMP", "2020-01-01T00:00:00Z").output().unwrap();
+        Command::new("jj")
+            .args(["commit", "-m", "base"])
+            .current_dir(repo)
+            .env("JJ_TIMESTAMP", "2020-01-01T00:00:00Z")
+            .output()
+            .unwrap();
         jj(&["bookmark", "set", "main", "-r", "@-"]);
         // Same commit on both remotes.
         jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
@@ -2480,7 +2563,9 @@ mod tests {
     fn pin_trunk_alias(repo: &Path, value: &str) {
         Command::new("jj")
             .args(["config", "set", "--repo", r#"revset-aliases."trunk()""#, value])
-            .current_dir(repo).output().unwrap();
+            .current_dir(repo)
+            .output()
+            .unwrap();
     }
 
     /// jj pins `trunk()` into repo config at init from whatever remote was
@@ -2494,12 +2579,22 @@ mod tests {
     /// rather than rewriting a base that isn't hurting anyone.
     #[test]
     fn test_resolve_base_rev_prefers_origin_when_deploy_remote_is_behind() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let origin_dir = tempfile::TempDir::new().unwrap();
         let heroku_dir = tempfile::TempDir::new().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(origin_dir.path()).output().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(heroku_dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(origin_dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(heroku_dir.path())
+            .output()
+            .unwrap();
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2524,21 +2619,34 @@ mod tests {
         jj(&["bookmark", "set", "main", "-r", "@-"]);
         jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
 
-        assert_eq!(resolve_base_rev(repo), "main@origin",
+        assert_eq!(
+            resolve_base_rev(repo),
+            "main@origin",
             "a trunk() pinned to a deploy remote that has fallen behind origin \
-             must not become the diff base");
+             must not become the diff base"
+        );
     }
 
     /// When the deploy remote still agrees with origin there is nothing to fix,
     /// and `trunk()` produces an identical diff — leave it alone.
     #[test]
     fn test_resolve_base_rev_leaves_trunk_alone_when_remotes_agree() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let origin_dir = tempfile::TempDir::new().unwrap();
         let heroku_dir = tempfile::TempDir::new().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(origin_dir.path()).output().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(heroku_dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(origin_dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(heroku_dir.path())
+            .output()
+            .unwrap();
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2557,15 +2665,20 @@ mod tests {
 
         pin_trunk_alias(repo, "main@heroku_test");
 
-        assert_eq!(resolve_base_rev(repo), "trunk()",
-            "with the deploy remote level with origin, trunk() is already correct");
+        assert_eq!(
+            resolve_base_rev(repo),
+            "trunk()",
+            "with the deploy remote level with origin, trunk() is already correct"
+        );
     }
 
     /// A `trunk()` already resolving on origin is the user's call — it may point
     /// at something other than main on purpose. Don't hijack it.
     #[test]
     fn test_resolve_base_rev_respects_deliberate_trunk_on_origin() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2579,13 +2692,18 @@ mod tests {
 
         pin_trunk_alias(repo, "develop@origin");
 
-        assert_eq!(resolve_base_rev(repo), "trunk()",
-            "a deliberate trunk() on origin must be respected, not rewritten to main@origin");
+        assert_eq!(
+            resolve_base_rev(repo),
+            "trunk()",
+            "a deliberate trunk() on origin must be respected, not rewritten to main@origin"
+        );
     }
 
     #[test]
     fn test_resolve_base_rev_fallback_without_remote() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2616,14 +2734,18 @@ mod tests {
     /// branch's own bookmark: the feature commit vanished from the diff.
     #[test]
     fn test_resolve_base_rev_without_remote_uses_local_main() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = setup_local_only_feature_repo();
         assert_eq!(resolve_base_rev(temp.path()), "main");
     }
 
     #[test]
     fn test_resolve_base_rev_without_remote_uses_local_master_when_no_main() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         let jj = |args: &[&str]| {
@@ -2638,7 +2760,9 @@ mod tests {
 
     #[test]
     fn test_resolve_base_rev_without_remote_or_trunk_bookmark_keeps_parent() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         let jj = |args: &[&str]| {
@@ -2655,26 +2779,35 @@ mod tests {
     /// `0 files` because its base was the feature bookmark itself.
     #[test]
     fn test_workspace_at_feature_bookmark_diffs_against_main() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = setup_local_only_feature_repo();
         let repo = temp.path();
         let ws_parent = tempfile::TempDir::new().unwrap();
         let ws = ws_parent.path().join("ws");
         let out = Command::new("jj")
             .args(["workspace", "add", ws.to_str().unwrap(), "-r", "feature"])
-            .current_dir(repo).output().unwrap();
+            .current_dir(repo)
+            .output()
+            .unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 
         let vcs = JjVcs::new(ws.clone()).unwrap();
         assert_eq!(vcs.from_rev, "main");
-        let out = run_jj(&ws, &["diff", "--from", &vcs.from_rev, "--to", "@", "--summary"]).unwrap();
+        let out =
+            run_jj(&ws, &["diff", "--from", &vcs.from_rev, "--to", "@", "--summary"]).unwrap();
         let files = out.stdout_lossy();
         assert!(files.contains("g.txt"), "the feature commit must be in the diff: {files}");
     }
 
     fn operation_count(repo: &Path) -> usize {
-        jj_out(repo, &["--ignore-working-copy", "op", "log", "--no-graph", "-T", r#"id.short() ++ "\n""#])
-            .lines().count()
+        jj_out(
+            repo,
+            &["--ignore-working-copy", "op", "log", "--no-graph", "-T", r#"id.short() ++ "\n""#],
+        )
+        .lines()
+        .count()
     }
 
     /// A read-only viewer must not add to the repo's operation log: with
@@ -2682,7 +2815,9 @@ mod tests {
     /// "snapshot working copy" operation on every run.
     #[test]
     fn test_one_shot_read_records_no_jj_operation_and_still_shows_uncommitted_edits() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = setup_local_only_feature_repo();
         let repo = temp.path();
         std::fs::write(repo.join("h.txt"), "dirty\n").unwrap();
@@ -2694,8 +2829,8 @@ mod tests {
         let result = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
 
         assert_eq!(operation_count(repo), before, "reading the diff recorded a jj operation");
-        let paths: Vec<_> = result.files.iter()
-            .filter_map(|f| f.lines.first()?.file_path.clone()).collect();
+        let paths: Vec<_> =
+            result.files.iter().filter_map(|f| f.lines.first()?.file_path.clone()).collect();
         assert!(paths.contains(&"h.txt".to_string()), "uncommitted edit missing: {paths:?}");
         assert!(paths.contains(&"g.txt".to_string()), "committed feature work missing: {paths:?}");
     }
@@ -2704,7 +2839,9 @@ mod tests {
     /// the disk; that path must stay snapshot-free and live too.
     #[test]
     fn test_secondary_workspace_read_records_no_jj_operation() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = setup_local_only_feature_repo();
         // Park the first workspace on `feature` itself so the new one has no sibling
         // (a sibling makes the orphaned-tip check snapshot, on purpose).
@@ -2713,7 +2850,9 @@ mod tests {
         let ws = ws_parent.path().join("ws");
         let out = Command::new("jj")
             .args(["workspace", "add", ws.to_str().unwrap(), "-r", "feature"])
-            .current_dir(temp.path()).output().unwrap();
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
         assert!(out.status.success());
         std::fs::write(ws.join("h.txt"), "dirty\n").unwrap();
         let before = operation_count(&ws);
@@ -2723,18 +2862,27 @@ mod tests {
         let result = vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
 
         assert_eq!(operation_count(&ws), before);
-        let paths: Vec<_> = result.files.iter()
-            .filter_map(|f| f.lines.first()?.file_path.clone()).collect();
-        assert!(paths.contains(&"h.txt".to_string()) && paths.contains(&"g.txt".to_string()), "{paths:?}");
+        let paths: Vec<_> =
+            result.files.iter().filter_map(|f| f.lines.first()?.file_path.clone()).collect();
+        assert!(
+            paths.contains(&"h.txt".to_string()) && paths.contains(&"g.txt".to_string()),
+            "{paths:?}"
+        );
     }
 
     #[test]
     fn test_resolve_base_rev_uses_trunk_with_remote() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         // Create a bare git repo as the "remote"
         let remote_dir = tempfile::TempDir::new().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(remote_dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .unwrap();
 
         // Create a jj repo and add the remote
         let temp = tempfile::TempDir::new().unwrap();
@@ -2742,10 +2890,22 @@ mod tests {
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
         std::fs::write(repo.join("file.txt"), "content\n").unwrap();
         Command::new("jj").args(["commit", "-m", "initial"]).current_dir(repo).output().unwrap();
-        Command::new("jj").args(["bookmark", "set", "main", "-r", "@-"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["bookmark", "set", "main", "-r", "@-"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
         let remote_path = remote_dir.path().to_string_lossy().to_string();
-        Command::new("jj").args(["git", "remote", "add", "origin", &remote_path]).current_dir(repo).output().unwrap();
-        Command::new("jj").args(["git", "push", "--bookmark", "main"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["git", "remote", "add", "origin", &remote_path])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        Command::new("jj")
+            .args(["git", "push", "--bookmark", "main"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
 
         let rev = resolve_base_rev(repo);
         assert_eq!(rev, "trunk()", "should use trunk() when remote tracking bookmarks exist");
@@ -2757,34 +2917,57 @@ mod tests {
     /// Returns (repo_tempdir, remote_tempdir) — keep both alive.
     fn setup_repo_with_remote() -> (tempfile::TempDir, tempfile::TempDir) {
         let remote_dir = tempfile::TempDir::new().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(remote_dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .unwrap();
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
         std::fs::write(repo.join("base.txt"), "trunk content\n").unwrap();
         Command::new("jj").args(["commit", "-m", "base"]).current_dir(repo).output().unwrap();
-        Command::new("jj").args(["bookmark", "set", "main", "-r", "@-"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["bookmark", "set", "main", "-r", "@-"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
         let remote_path = remote_dir.path().to_string_lossy().to_string();
-        Command::new("jj").args(["git", "remote", "add", "origin", &remote_path]).current_dir(repo).output().unwrap();
-        Command::new("jj").args(["git", "push", "--bookmark", "main"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["git", "remote", "add", "origin", &remote_path])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        Command::new("jj")
+            .args(["git", "push", "--bookmark", "main"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
 
         (temp, remote_dir)
     }
 
     #[test]
     fn test_jj_stack_coloring_two_commits() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
 
         // First stack commit: add a file
         std::fs::write(repo.join("stack.txt"), "from earlier commit\n").unwrap();
-        Command::new("jj").args(["commit", "-m", "stack commit 1"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["commit", "-m", "stack commit 1"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
 
         // Current commit (@): modify the file
-        std::fs::write(repo.join("stack.txt"), "from earlier commit\nfrom current commit\n").unwrap();
+        std::fs::write(repo.join("stack.txt"), "from earlier commit\nfrom current commit\n")
+            .unwrap();
 
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
         assert_eq!(vcs.from_rev, "trunk()");
@@ -2800,7 +2983,9 @@ mod tests {
 
     #[test]
     fn test_jj_single_commit_above_trunk_all_staged() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2825,7 +3010,9 @@ mod tests {
 
     #[test]
     fn test_resolve_stack_tip_at_tip() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2839,7 +3026,9 @@ mod tests {
 
     #[test]
     fn test_resolve_stack_tip_mid_stack() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2864,7 +3053,9 @@ mod tests {
 
     #[test]
     fn test_resolve_stack_tip_without_trunk() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -2876,7 +3067,9 @@ mod tests {
 
     #[test]
     fn test_resolve_stack_tip_branching() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2933,7 +3126,9 @@ mod tests {
 
     #[test]
     fn test_resolve_orphaned_tip_follows_sibling_after_abandon() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote, c_id) = setup_orphaned_after_abandon();
         let repo = temp.path();
@@ -2942,13 +3137,16 @@ mod tests {
             .expect("orphaned empty @ with a sibling should resolve to the sibling tip");
         assert!(
             c_id.starts_with(&tip.change_id) || tip.change_id.starts_with(&c_id),
-            "orphaned tip {} should be c ({c_id})", tip.change_id
+            "orphaned tip {} should be c ({c_id})",
+            tip.change_id
         );
     }
 
     #[test]
     fn test_orphaned_tip_refresh_shows_remaining_stack() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote, _c_id) = setup_orphaned_after_abandon();
         let repo = temp.path();
@@ -2962,13 +3160,16 @@ mod tests {
 
         // c is treated as the current commit: its content must be Staged so the
         // [commit] view shows c rather than "No changes in current commit".
-        let c_is_staged = result.lines.iter().any(|l| l.source == LineSource::Staged && l.content.contains("c"));
+        let c_is_staged =
+            result.lines.iter().any(|l| l.source == LineSource::Staged && l.content.contains("c"));
         assert!(c_is_staged, "c's change should color as the current commit (Staged)");
     }
 
     #[test]
     fn test_resolve_orphaned_tip_none_for_normal_tip() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -2982,7 +3183,9 @@ mod tests {
 
     #[test]
     fn test_resolve_orphaned_tip_none_when_at_nonempty() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         // @ is non-empty AND has a sibling: deliberate forked work, do not hijack.
         let (temp, _remote) = setup_repo_with_remote();
@@ -3003,7 +3206,9 @@ mod tests {
 
     #[test]
     fn test_resolve_orphaned_tip_none_without_trunk() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -3015,7 +3220,9 @@ mod tests {
 
     #[test]
     fn test_resolve_orphaned_tip_ignores_sibling_workspace() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         // Regression for #2: several workspaces branched off the same trunk share
         // that commit as their parent, so a fresh, empty workspace must not adopt
@@ -3028,11 +3235,16 @@ mod tests {
         let ws2_path = ws2.path().to_string_lossy().to_string();
         Command::new("jj")
             .args(["workspace", "add", "--name", "ws2", "-r", "trunk()", &ws2_path])
-            .current_dir(repo).output().unwrap();
+            .current_dir(repo)
+            .output()
+            .unwrap();
         std::fs::write(ws2.path().join("ws2_work.txt"), "sibling work\n").unwrap();
         Command::new("jj").args(["status"]).current_dir(ws2.path()).output().unwrap();
-        Command::new("jj").args(["bookmark", "create", "feature", "-r", "@"])
-            .current_dir(ws2.path()).output().unwrap();
+        Command::new("jj")
+            .args(["bookmark", "create", "feature", "-r", "@"])
+            .current_dir(ws2.path())
+            .output()
+            .unwrap();
 
         let tip = resolve_orphaned_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false)));
         assert!(
@@ -3043,7 +3255,9 @@ mod tests {
 
     #[test]
     fn test_stack_position_mid_stack() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -3059,18 +3273,23 @@ mod tests {
         // Move @ to commit2 (position 2 of 3 mutable commits, plus the empty @)
         Command::new("jj").args(["edit", "@---"]).current_dir(repo).output().unwrap();
 
-        let tip = resolve_stack_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false))).expect("should have a tip");
+        let tip = resolve_stack_tip(repo, "trunk()", &Arc::new(AtomicBool::new(false)))
+            .expect("should have a tip");
         let (current, total) = compute_stack_position(repo, &tip.change_id, "trunk()")
             .expect("should compute position");
 
-        assert!(current >= 1 && current <= total,
-            "current ({current}) should be within 1..={total}");
+        assert!(
+            current >= 1 && current <= total,
+            "current ({current}) should be within 1..={total}"
+        );
         assert!(total >= 3, "total ({total}) should be at least 3 commits");
     }
 
     #[test]
     fn test_jj_midstack_coloring() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -3109,7 +3328,9 @@ mod tests {
 
     #[test]
     fn test_jj_midstack_later_only_file() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -3134,21 +3355,25 @@ mod tests {
         let result = vcs.refresh(&cancel).unwrap();
 
         // later.txt should appear with Unstaged lines (only changed above @)
-        let later_file = result.files.iter().find(|f| {
-            f.lines.first().is_some_and(|l| l.content.contains("later.txt"))
-        });
+        let later_file = result
+            .files
+            .iter()
+            .find(|f| f.lines.first().is_some_and(|l| l.content.contains("later.txt")));
         assert!(later_file.is_some(), "later.txt should be in diff (file only in later commit)");
 
-        let later_lines: Vec<_> = later_file.unwrap().lines.iter()
-            .filter(|l| l.source == LineSource::Unstaged)
-            .collect();
-        assert!(!later_lines.is_empty(),
-            "later.txt content should be Unstaged (only changed in later commit)");
+        let later_lines: Vec<_> =
+            later_file.unwrap().lines.iter().filter(|l| l.source == LineSource::Unstaged).collect();
+        assert!(
+            !later_lines.is_empty(),
+            "later.txt content should be Unstaged (only changed in later commit)"
+        );
     }
 
     #[test]
     fn test_jj_at_tip_no_stack_position() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
@@ -3160,16 +3385,24 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let result = vcs.refresh(&cancel).unwrap();
 
-        assert!(result.stack_position.is_none(),
-            "stack_position should be None when @ is at the tip");
+        assert!(
+            result.stack_position.is_none(),
+            "stack_position should be None when @ is at the tip"
+        );
     }
 
     #[test]
     fn test_jj_trunk_deletion_coloring() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let remote_dir = tempfile::TempDir::new().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(remote_dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote_dir.path())
+            .output()
+            .unwrap();
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -3178,10 +3411,22 @@ mod tests {
         // File exists at trunk
         std::fs::write(repo.join("doomed.txt"), "will be deleted\n").unwrap();
         Command::new("jj").args(["commit", "-m", "base"]).current_dir(repo).output().unwrap();
-        Command::new("jj").args(["bookmark", "set", "main", "-r", "@-"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["bookmark", "set", "main", "-r", "@-"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
         let remote_path = remote_dir.path().to_string_lossy().to_string();
-        Command::new("jj").args(["git", "remote", "add", "origin", &remote_path]).current_dir(repo).output().unwrap();
-        Command::new("jj").args(["git", "push", "--bookmark", "main"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["git", "remote", "add", "origin", &remote_path])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        Command::new("jj")
+            .args(["git", "push", "--bookmark", "main"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
 
         // Current commit (@): delete the file
         std::fs::remove_file(repo.join("doomed.txt")).unwrap();
@@ -3194,8 +3439,11 @@ mod tests {
 
         assert!(!result.files.is_empty(), "should detect deleted file");
         let header = &result.lines[0];
-        assert!(header.content.contains("(deleted"),
-            "deleted file should have deletion header, got: {}", header.content);
+        assert!(
+            header.content.contains("(deleted"),
+            "deleted file should have deletion header, got: {}",
+            header.content
+        );
         let has_deleted = result.lines.iter().any(|l| l.source == LineSource::DeletedCommitted);
         assert!(has_deleted, "file deleted in current commit should have DeletedCommitted source");
     }
@@ -3262,14 +3510,26 @@ mod tests {
 
         mark_bookmark_provenance(&mut fd, true);
 
-        assert_eq!(fd.lines[0].in_current_bookmark, Some(true),
-            "Committed lines in a bookmark file should be marked true");
-        assert_eq!(fd.lines[1].in_current_bookmark, Some(true),
-            "DeletedBase lines in a bookmark file should be marked true");
-        assert_eq!(fd.lines[2].in_current_bookmark, Some(true),
-            "Staged lines in a bookmark file should be marked true");
-        assert_eq!(fd.lines[3].in_current_bookmark, Some(false),
-            "Base context lines are never in current bookmark");
+        assert_eq!(
+            fd.lines[0].in_current_bookmark,
+            Some(true),
+            "Committed lines in a bookmark file should be marked true"
+        );
+        assert_eq!(
+            fd.lines[1].in_current_bookmark,
+            Some(true),
+            "DeletedBase lines in a bookmark file should be marked true"
+        );
+        assert_eq!(
+            fd.lines[2].in_current_bookmark,
+            Some(true),
+            "Staged lines in a bookmark file should be marked true"
+        );
+        assert_eq!(
+            fd.lines[3].in_current_bookmark,
+            Some(false),
+            "Base context lines are never in current bookmark"
+        );
     }
 
     #[test]
@@ -3284,33 +3544,53 @@ mod tests {
 
         mark_bookmark_provenance(&mut fd, false);
 
-        assert_eq!(fd.lines[0].in_current_bookmark, Some(false),
-            "Committed lines NOT in bookmark file should be marked false");
-        assert_eq!(fd.lines[1].in_current_bookmark, Some(false),
-            "DeletedBase lines NOT in bookmark file should be marked false");
-        assert_eq!(fd.lines[2].in_current_bookmark, Some(false),
-            "Staged lines NOT in bookmark file should be marked false");
-        assert_eq!(fd.lines[3].in_current_bookmark, Some(false),
-            "Base context lines are never in current bookmark");
+        assert_eq!(
+            fd.lines[0].in_current_bookmark,
+            Some(false),
+            "Committed lines NOT in bookmark file should be marked false"
+        );
+        assert_eq!(
+            fd.lines[1].in_current_bookmark,
+            Some(false),
+            "DeletedBase lines NOT in bookmark file should be marked false"
+        );
+        assert_eq!(
+            fd.lines[2].in_current_bookmark,
+            Some(false),
+            "Staged lines NOT in bookmark file should be marked false"
+        );
+        assert_eq!(
+            fd.lines[3].in_current_bookmark,
+            Some(false),
+            "Base context lines are never in current bookmark"
+        );
     }
 
     #[test]
     fn test_mark_bookmark_provenance_base_with_change_source() {
-        let mut line = crate::diff::DiffLine::new(LineSource::Base, "modified".to_string(), ' ', None);
+        let mut line =
+            crate::diff::DiffLine::new(LineSource::Base, "modified".to_string(), ' ', None);
         line.change_source = Some(LineSource::Committed);
         let mut fd = make_file_diff(vec![line]);
 
         mark_bookmark_provenance(&mut fd, true);
-        assert_eq!(fd.lines[0].in_current_bookmark, Some(true),
-            "Base with change_source in bookmark file should be marked true");
+        assert_eq!(
+            fd.lines[0].in_current_bookmark,
+            Some(true),
+            "Base with change_source in bookmark file should be marked true"
+        );
 
-        let mut line2 = crate::diff::DiffLine::new(LineSource::Base, "modified".to_string(), ' ', None);
+        let mut line2 =
+            crate::diff::DiffLine::new(LineSource::Base, "modified".to_string(), ' ', None);
         line2.change_source = Some(LineSource::Committed);
         let mut fd2 = make_file_diff(vec![line2]);
 
         mark_bookmark_provenance(&mut fd2, false);
-        assert_eq!(fd2.lines[0].in_current_bookmark, Some(false),
-            "Base with change_source NOT in bookmark file should be marked false");
+        assert_eq!(
+            fd2.lines[0].in_current_bookmark,
+            Some(false),
+            "Base with change_source NOT in bookmark file should be marked false"
+        );
     }
 
     /// Verify the boundary revset includes remote bookmarks so that stacks with
@@ -3318,10 +3598,14 @@ mod tests {
     #[test]
     fn test_boundary_revset_includes_remote_bookmarks() {
         let revset = boundary_revset("abc123def456", "trunk()", Some("origin"));
-        assert!(revset.contains("remote_bookmarks("),
-            "Boundary revset must include remote bookmarks for pushed bookmark segments");
-        assert!(revset.contains("\"abc123def456\""),
-            "Boundary revset must reference the current bookmark's change ID");
+        assert!(
+            revset.contains("remote_bookmarks("),
+            "Boundary revset must include remote bookmarks for pushed bookmark segments"
+        );
+        assert!(
+            revset.contains("\"abc123def456\""),
+            "Boundary revset must reference the current bookmark's change ID"
+        );
     }
 
     /// The remote must be scoped: an unscoped `remote_bookmarks()` matches every
@@ -3329,10 +3613,14 @@ mod tests {
     #[test]
     fn test_boundary_revset_scopes_remote_bookmarks_to_trunk_remote() {
         let revset = boundary_revset("abc123def456", "trunk()", Some("origin"));
-        assert!(revset.contains(r#"remote_bookmarks(remote=exact:"origin")"#),
-            "Boundary revset must scope remote bookmarks to trunk's remote, got: {revset}");
-        assert!(!revset.contains("remote_bookmarks()"),
-            "Boundary revset must never use an unscoped remote_bookmarks(), got: {revset}");
+        assert!(
+            revset.contains(r#"remote_bookmarks(remote=exact:"origin")"#),
+            "Boundary revset must scope remote bookmarks to trunk's remote, got: {revset}"
+        );
+        assert!(
+            !revset.contains("remote_bookmarks()"),
+            "Boundary revset must never use an unscoped remote_bookmarks(), got: {revset}"
+        );
     }
 
     /// With no known trunk remote, fall back to local bookmarks only rather than
@@ -3340,10 +3628,14 @@ mod tests {
     #[test]
     fn test_boundary_revset_without_trunk_remote_is_local_only() {
         let revset = boundary_revset("abc123def456", "trunk()", None);
-        assert!(!revset.contains("remote_bookmarks"),
-            "Without a trunk remote, no remote bookmarks may be considered, got: {revset}");
-        assert!(revset.contains("bookmarks()"),
-            "Local bookmarks must still be considered, got: {revset}");
+        assert!(
+            !revset.contains("remote_bookmarks"),
+            "Without a trunk remote, no remote bookmarks may be considered, got: {revset}"
+        );
+        assert!(
+            revset.contains("bookmarks()"),
+            "Local bookmarks must still be considered, got: {revset}"
+        );
     }
 
     /// jj emits trunk's remotes alphabetically, so a deploy remote sorting
@@ -3361,24 +3653,36 @@ mod tests {
     #[test]
     fn test_pick_trunk_remote_skips_colocated_git_pseudo_remote() {
         assert_eq!(pick_trunk_remote("git\norigin").as_deref(), Some("origin"));
-        assert_eq!(pick_trunk_remote("git").as_deref(), None,
-            "the colocated git pseudo-remote alone is not a real remote");
+        assert_eq!(
+            pick_trunk_remote("git").as_deref(),
+            None,
+            "the colocated git pseudo-remote alone is not a real remote"
+        );
     }
 
     #[test]
     fn test_pick_trunk_remote_falls_back_to_upstream_then_custom() {
-        assert_eq!(pick_trunk_remote("git\nheroku_test\nupstream").as_deref(), Some("upstream"),
-            "upstream is a remote jj resolves trunk() against; a deploy remote is not");
-        assert_eq!(pick_trunk_remote("git\ncompany-fork").as_deref(), Some("company-fork"),
-            "a lone custom-named remote is trunk's remote by elimination");
+        assert_eq!(
+            pick_trunk_remote("git\nheroku_test\nupstream").as_deref(),
+            Some("upstream"),
+            "upstream is a remote jj resolves trunk() against; a deploy remote is not"
+        );
+        assert_eq!(
+            pick_trunk_remote("git\ncompany-fork").as_deref(),
+            Some("company-fork"),
+            "a lone custom-named remote is trunk's remote by elimination"
+        );
     }
 
     #[test]
     fn test_pick_trunk_remote_empty_and_unsafe_names() {
         assert_eq!(pick_trunk_remote("").as_deref(), None);
         assert_eq!(pick_trunk_remote("\n  \n").as_deref(), None);
-        assert_eq!(pick_trunk_remote(r#"we"ird"#).as_deref(), None,
-            "a name that cannot be safely quoted in a revset must be rejected");
+        assert_eq!(
+            pick_trunk_remote(r#"we"ird"#).as_deref(),
+            None,
+            "a name that cannot be safely quoted in a revset must be rejected"
+        );
         assert_eq!(pick_trunk_remote("back\\slash").as_deref(), None);
     }
 
@@ -3389,12 +3693,22 @@ mod tests {
     /// and truncate the current bookmark's file scope.
     #[test]
     fn test_boundary_ignores_non_origin_remote_bookmark() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let origin_dir = tempfile::TempDir::new().unwrap();
         let heroku_dir = tempfile::TempDir::new().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(origin_dir.path()).output().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(heroku_dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(origin_dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(heroku_dir.path())
+            .output()
+            .unwrap();
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -3455,7 +3769,9 @@ mod tests {
     /// queued recovery.
     #[test]
     fn try_recover_short_circuits_on_preset_cancel() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
@@ -3464,10 +3780,7 @@ mod tests {
         let result = vcs.try_recover(crate::update::RecoveryAction::JjUpdateStale, &cancel);
         assert!(result.is_err(), "pre-set cancel must abort recovery");
         let msg = format!("{:#}", result.unwrap_err()).to_lowercase();
-        assert!(
-            msg.contains("cancel"),
-            "error must surface as cancellation, got: {msg:?}"
-        );
+        assert!(msg.contains("cancel"), "error must surface as cancellation, got: {msg:?}");
     }
 
     /// Counterpart: with cancel clear, try_recover on a non-stale repo should
@@ -3475,14 +3788,19 @@ mod tests {
     /// guards against accidentally short-circuiting on the wrong flag state.
     #[test]
     fn try_recover_succeeds_when_cancel_clear() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
 
         let cancel = Arc::new(AtomicBool::new(false));
         let result = vcs.try_recover(crate::update::RecoveryAction::JjUpdateStale, &cancel);
-        assert!(result.is_ok(), "non-stale repo should accept update-stale silently, got: {result:?}");
+        assert!(
+            result.is_ok(),
+            "non-stale repo should accept update-stale silently, got: {result:?}"
+        );
     }
 
     /// `refresh` with a pre-set cancel flag must bail quickly without doing
@@ -3490,7 +3808,9 @@ mod tests {
     /// the spawn thread starting — we want a fast, clean exit, not a hang.
     #[test]
     fn refresh_short_circuits_on_preset_cancel() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let (temp, _remote) = setup_repo_with_remote();
         std::fs::write(temp.path().join("feature.txt"), "new\n").unwrap();
@@ -3511,7 +3831,6 @@ mod tests {
         );
     }
 
-
     /// Whether `@` is an empty commit, read without snapshotting.
     fn at_is_empty(repo: &Path) -> String {
         jj_out(repo, &["log", "-r", "@", "--no-graph", "--ignore-working-copy", "-T", "empty"])
@@ -3523,7 +3842,9 @@ mod tests {
     /// asserting `@` stays empty across the fetch.
     #[test]
     fn fetch_is_working_copy_agnostic() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
 
@@ -3547,7 +3868,9 @@ mod tests {
     /// folds edits into `@` and writes `.jj/`, which wakes the watcher again.
     #[test]
     fn base_identifier_is_working_copy_agnostic() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
 
@@ -3575,7 +3898,9 @@ mod tests {
     /// needs revisiting.
     #[test]
     fn jj_snapshot_records_operation_only_on_a_real_change() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
@@ -3584,7 +3909,11 @@ mod tests {
 
         let base = op_count(repo);
         // A working-copy-agnostic read never snapshots.
-        Command::new("jj").args(["diff", "--ignore-working-copy"]).current_dir(repo).output().unwrap();
+        Command::new("jj")
+            .args(["diff", "--ignore-working-copy"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
         assert_eq!(op_count(repo), base, "ignore-working-copy read must not create an operation");
         // A snapshot on an unchanged working copy is a no-op.
         Command::new("jj").args(["diff"]).current_dir(repo).output().unwrap();
@@ -3601,7 +3930,9 @@ mod tests {
     /// sourced from disk instead.
     #[test]
     fn refresh_diff_includes_unsnapshotted_working_copy_edit() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
@@ -3627,7 +3958,9 @@ mod tests {
     /// load-bearing assumption.)
     #[test]
     fn colocated_git_sees_unsnapshotted_edit_without_churning_jj_oplog() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
@@ -3635,22 +3968,34 @@ mod tests {
         Command::new("jj").args(["commit", "-m", "init"]).current_dir(repo).output().unwrap();
 
         let git_head = {
-            let o = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(repo).output().unwrap();
+            let o =
+                Command::new("git").args(["rev-parse", "HEAD"]).current_dir(repo).output().unwrap();
             String::from_utf8_lossy(&o.stdout).trim().to_string()
         };
-        let jj_parent = jj_out(repo, &["log", "-r", "@-", "--no-graph", "--ignore-working-copy", "-T", "commit_id"]);
+        let jj_parent = jj_out(
+            repo,
+            &["log", "-r", "@-", "--no-graph", "--ignore-working-copy", "-T", "commit_id"],
+        );
         assert_eq!(git_head, jj_parent, "in a colocated repo, git HEAD must track jj @-");
 
         let ops_before = op_count(repo);
         std::fs::write(repo.join("f.txt"), "a\nb\nc\n").unwrap(); // un-snapshotted
 
         let changed = {
-            let o = Command::new("git").args(["diff", "--name-only", "HEAD"]).current_dir(repo).output().unwrap();
+            let o = Command::new("git")
+                .args(["diff", "--name-only", "HEAD"])
+                .current_dir(repo)
+                .output()
+                .unwrap();
             String::from_utf8_lossy(&o.stdout).trim().to_string()
         };
-        assert!(changed.contains("f.txt"), "git must see the un-snapshotted jj working-copy edit, got: {changed:?}");
+        assert!(
+            changed.contains("f.txt"),
+            "git must see the un-snapshotted jj working-copy edit, got: {changed:?}"
+        );
         assert_eq!(
-            op_count(repo), ops_before,
+            op_count(repo),
+            ops_before,
             "git-based change discovery must not churn the jj operation log"
         );
     }
@@ -3666,12 +4011,22 @@ mod tests {
     /// the revsets interpolate and still resolve.
     #[test]
     fn stack_machinery_works_with_an_explicit_bookmark_base() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let origin_dir = tempfile::TempDir::new().unwrap();
         let heroku_dir = tempfile::TempDir::new().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(origin_dir.path()).output().unwrap();
-        Command::new("git").args(["init", "--bare"]).current_dir(heroku_dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(origin_dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(heroku_dir.path())
+            .output()
+            .unwrap();
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
@@ -3701,14 +4056,18 @@ mod tests {
         // A two-commit stack on top of origin's main.
         std::fs::write(repo.join("stack.txt"), "from earlier commit\n").unwrap();
         jj(&["commit", "-m", "stack commit 1"]);
-        std::fs::write(repo.join("stack.txt"), "from earlier commit\nfrom current commit\n").unwrap();
+        std::fs::write(repo.join("stack.txt"), "from earlier commit\nfrom current commit\n")
+            .unwrap();
 
         let cancel = Arc::new(AtomicBool::new(false));
 
         // The revsets must interpolate `main@origin` and still resolve. Before
         // the refactor these silently returned None on a non-"trunk()" base.
         let tip = resolve_stack_tip(repo, &vcs.from_rev, &cancel);
-        assert!(tip.is_none() || tip.is_some(), "resolve_stack_tip must not panic on a bookmark base");
+        assert!(
+            tip.is_none() || tip.is_some(),
+            "resolve_stack_tip must not panic on a bookmark base"
+        );
         assert!(
             resolve_orphaned_tip(repo, &vcs.from_rev, &cancel).is_none(),
             "no sibling here, so no orphaned tip"
@@ -3730,7 +4089,9 @@ mod tests {
             "the current commit's lines must still be Staged with a bookmark base"
         );
         // The origin-side commit must NOT appear as the user's work.
-        let headers: Vec<&str> = result.lines.iter()
+        let headers: Vec<&str> = result
+            .lines
+            .iter()
             .filter(|l| l.source == LineSource::FileHeader)
             .map(|l| l.content.as_str())
             .collect();
@@ -3752,22 +4113,31 @@ mod tests {
     /// with the whole repo plus jj's own `.jj/` internals.
     #[test]
     fn secondary_workspace_with_git_worktree_file_is_not_colocated() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
 
         let temp = tempfile::TempDir::new().unwrap();
         let root = temp.path();
         let main_repo = root.join("repo");
         std::fs::create_dir_all(&main_repo).unwrap();
-        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(&main_repo).output().unwrap();
+        Command::new("jj")
+            .args(["git", "init", "--colocate"])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
         for i in 1..=4 {
-            std::fs::write(main_repo.join(format!("file{i}.txt")), format!("content {i}\n")).unwrap();
+            std::fs::write(main_repo.join(format!("file{i}.txt")), format!("content {i}\n"))
+                .unwrap();
         }
         Command::new("jj").args(["commit", "-m", "base"]).current_dir(&main_repo).output().unwrap();
 
         let ws = root.join("ws1");
         Command::new("jj")
             .args(["workspace", "add", "--name", "ws1", ws.to_str().unwrap()])
-            .current_dir(&main_repo).output().unwrap();
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
 
         // Replicate the git worktree plumbing `workon` plants beside the workspace.
         let wt_git_dir = main_repo.join(".git/worktrees/ws1");
@@ -3775,7 +4145,11 @@ mod tests {
         std::fs::write(wt_git_dir.join("gitdir"), format!("{}/.git\n", ws.display())).unwrap();
         std::fs::write(wt_git_dir.join("commondir"), "../..\n").unwrap();
         let head = {
-            let o = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&main_repo).output().unwrap();
+            let o = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&main_repo)
+                .output()
+                .unwrap();
             String::from_utf8_lossy(&o.stdout).trim().to_string()
         };
         std::fs::write(wt_git_dir.join("HEAD"), format!("{head}\n")).unwrap();
@@ -3785,16 +4159,21 @@ mod tests {
         assert!(!ws.join(".git").is_dir(), "fixture: workspace .git must be a FILE, not a dir");
 
         let vcs = JjVcs::new(ws.clone()).unwrap();
-        assert!(!vcs.is_colocated(),
-            "a secondary workspace whose .git is a worktree pointer file is not colocated");
+        assert!(
+            !vcs.is_colocated(),
+            "a secondary workspace whose .git is a worktree pointer file is not colocated"
+        );
 
         // And the discovery it gates must report only the real edit.
         std::fs::write(ws.join("file1.txt"), "content 1\nmy actual change\n").unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let changed = vcs.discover_working_changes(&vcs.from_rev.clone(), &cancel).unwrap();
         let names: Vec<&str> = changed.iter().map(|c| c.path.as_str()).collect();
-        assert_eq!(names, ["file1.txt"],
-            "only the edited file may be reported; jj internals and untouched files must not leak in");
+        assert_eq!(
+            names,
+            ["file1.txt"],
+            "only the edited file may be reported; jj internals and untouched files must not leak in"
+        );
     }
 
     /// GOAL of the de-snapshot refactor, written failing-first: a refresh over a
@@ -3804,7 +4183,9 @@ mod tests {
     /// `cargo test -- --ignored` to watch it fail, then delete the attribute.
     #[test]
     fn refresh_does_not_churn_the_oplog() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
@@ -3820,7 +4201,8 @@ mod tests {
         vcs.refresh(&cancel).unwrap();
 
         assert_eq!(
-            op_count(repo), before,
+            op_count(repo),
+            before,
             "refresh snapshotted the working copy — it must source the working side without churning the oplog"
         );
     }
@@ -3831,7 +4213,9 @@ mod tests {
     /// hot per-keystroke path is churn-free too.
     #[test]
     fn single_file_diff_does_not_churn_the_oplog() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
@@ -3843,7 +4227,8 @@ mod tests {
         let before = op_count(repo);
         let _ = vcs.single_file_diff("f.txt");
         assert_eq!(
-            op_count(repo), before,
+            op_count(repo),
+            before,
             "single-file refresh must source the working side without snapshotting"
         );
     }
@@ -3856,7 +4241,9 @@ mod tests {
     /// left it.
     #[test]
     fn refresh_does_not_record_the_users_edit_into_at() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
@@ -3883,7 +4270,9 @@ mod tests {
     /// Also guards against a partial fix that de-snapshots one path but not all.
     #[test]
     fn an_editing_session_produces_no_branchdiff_operations() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
@@ -3898,7 +4287,8 @@ mod tests {
             vcs.refresh(&cancel).unwrap();
         }
         assert_eq!(
-            op_count(repo), baseline,
+            op_count(repo),
+            baseline,
             "an edit-and-watch session must add zero operations from branchdiff"
         );
     }
@@ -3924,7 +4314,9 @@ mod tests {
 
     #[test]
     fn refresh_reports_a_renamed_file() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         // Enough identical content that jj's similarity heuristic sees a rename.
         let temp = repo_with_committed_file("old.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
         let repo = temp.path();
@@ -3947,7 +4339,9 @@ mod tests {
     /// the observable outcome pinned across that change.
     #[test]
     fn refresh_detects_a_binary_working_copy_file() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = repo_with_committed_file("readme.txt", "text\n");
         let repo = temp.path();
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
@@ -3973,7 +4367,9 @@ mod tests {
     /// doesn't hinge on `--colocate`.
     #[test]
     fn refresh_includes_unsnapshotted_edit_in_non_colocated_repo() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap(); // NO --colocate
@@ -4001,7 +4397,9 @@ mod tests {
     /// touched since it need reading.
     #[test]
     fn cold_disk_walk_reads_base_content_only_for_changed_files() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let root = tempfile::TempDir::new().unwrap();
         let main_repo = root.path().join("repo");
         std::fs::create_dir_all(&main_repo).unwrap();
@@ -4016,7 +4414,9 @@ mod tests {
         let ws = root.path().join("ws");
         Command::new("jj")
             .args(["workspace", "add", "--name", "ws", ws.to_str().unwrap()])
-            .current_dir(&main_repo).output().unwrap();
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
 
         // A fresh Vcs = a cold cache, exactly like a one-shot --print.
         let vcs = JjVcs::new(ws.clone()).unwrap();
@@ -4051,7 +4451,9 @@ mod tests {
     /// Absent must mean *unknown* (go and check), never *clean*.
     #[test]
     fn cold_disk_walk_does_not_lose_files_jj_refused_to_snapshot() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let root = tempfile::TempDir::new().unwrap();
         let main_repo = root.path().join("repo");
         std::fs::create_dir_all(&main_repo).unwrap();
@@ -4062,7 +4464,9 @@ mod tests {
         let ws = root.path().join("ws");
         Command::new("jj")
             .args(["workspace", "add", "--name", "ws", ws.to_str().unwrap()])
-            .current_dir(&main_repo).output().unwrap();
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
 
         // Over jj's default 1MiB snapshot limit: jj refuses it and leaves it untracked.
         std::fs::write(ws.join("big.txt"), "a".repeat(2 * 1024 * 1024)).unwrap();
@@ -4096,7 +4500,9 @@ mod tests {
     /// addition with no deletions — a plausible-looking wrong answer.
     #[test]
     fn diskwalk_with_an_unresolvable_base_errors_rather_than_reporting_everything_new() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let root = tempfile::TempDir::new().unwrap();
         let main_repo = root.path().join("repo");
         std::fs::create_dir_all(&main_repo).unwrap();
@@ -4107,7 +4513,9 @@ mod tests {
         let ws = root.path().join("ws");
         Command::new("jj")
             .args(["workspace", "add", "--name", "ws", ws.to_str().unwrap()])
-            .current_dir(&main_repo).output().unwrap();
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
 
         let vcs = JjVcs::new(ws.clone()).unwrap();
         assert!(!vcs.is_colocated(), "fixture must exercise the disk-walk path");
@@ -4131,7 +4539,9 @@ mod tests {
     /// cache, not the returned value.
     #[test]
     fn cancelled_diskwalk_does_not_fabricate_deletions() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let root = tempfile::TempDir::new().unwrap();
         let main_repo = root.path().join("repo");
         std::fs::create_dir_all(&main_repo).unwrap();
@@ -4143,7 +4553,9 @@ mod tests {
         let ws = root.path().join("ws");
         Command::new("jj")
             .args(["workspace", "add", "--name", "ws", ws.to_str().unwrap()])
-            .current_dir(&main_repo).output().unwrap();
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
 
         let vcs = JjVcs::new(ws.clone()).unwrap();
         assert!(!vcs.is_colocated(), "fixture must exercise the disk-walk path");
@@ -4166,7 +4578,9 @@ mod tests {
     /// snapshot for them).
     #[test]
     fn refresh_does_not_churn_the_oplog_non_colocated() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap(); // NO --colocate
@@ -4179,7 +4593,8 @@ mod tests {
         vcs.refresh(&Arc::new(AtomicBool::new(false))).unwrap();
 
         assert_eq!(
-            op_count(repo), before,
+            op_count(repo),
+            before,
             "non-colocated refresh must also source the working side without churning the oplog"
         );
     }
@@ -4194,7 +4609,9 @@ mod tests {
     /// colocate verified out-of-band; plain init is the representative here.)
     #[test]
     fn common_jj_init_leaves_a_workdir_git_index() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap(); // no --colocate
@@ -4212,14 +4629,17 @@ mod tests {
     /// still plain disk here, so the fallback needs no snapshot.
     #[test]
     fn jj_with_external_git_repo_has_no_workdir_git_index() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let ext = tempfile::TempDir::new().unwrap();
         Command::new("git").args(["init", "--bare"]).current_dir(ext.path()).output().unwrap();
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         let arg = format!("--git-repo={}", ext.path().display());
-        let out = Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().unwrap();
+        let out =
+            Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().unwrap();
         assert!(
             out.status.success(),
             "jj git init --git-repo failed: {}",
@@ -4228,7 +4648,10 @@ mod tests {
 
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
         assert!(!vcs.is_colocated(), "external-store jj repo must have no workdir git index");
-        assert!(!repo.join(".git").exists(), "no workdir .git → git worktree-diff is unavailable here");
+        assert!(
+            !repo.join(".git").exists(),
+            "no workdir .git → git worktree-diff is unavailable here"
+        );
 
         // The working copy is still ordinary disk — the fallback needs no snapshot.
         std::fs::write(repo.join("w.txt"), "live content\n").unwrap();
@@ -4246,14 +4669,17 @@ mod tests {
     /// failing the second. Only the disk-walk fallback passes both.
     #[test]
     fn refresh_without_git_index_uses_diskwalk_fallback_churn_free() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let ext = tempfile::TempDir::new().unwrap();
         Command::new("git").args(["init", "--bare"]).current_dir(ext.path()).output().unwrap();
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path();
         let arg = format!("--git-repo={}", ext.path().display());
-        let out = Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().unwrap();
+        let out =
+            Command::new("jj").args(["git", "init", &arg]).current_dir(repo).output().unwrap();
         assert!(
             out.status.success(),
             "jj git init --git-repo failed: {}",
@@ -4292,7 +4718,9 @@ mod tests {
     /// missing the change.
     #[test]
     fn diskwalk_fallback_warm_refresh_reads_only_changed_files() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let ext = tempfile::TempDir::new().unwrap();
         Command::new("git").args(["init", "--bare"]).current_dir(ext.path()).output().unwrap();
 
@@ -4346,7 +4774,9 @@ mod tests {
     /// makes mid-stack stop snapshotting (which would render a stale, wrong diff).
     #[test]
     fn mid_stack_refresh_snapshots_to_materialize_the_rebase() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let (temp, _remote) = setup_repo_with_remote();
         let repo = temp.path();
         std::fs::write(repo.join("file.txt"), "commit1\n").unwrap();
@@ -4372,7 +4802,9 @@ mod tests {
     /// trust missing entries as "unchanged" and silently drop a real edit.
     #[test]
     fn diskwalk_cancel_does_not_corrupt_the_manifest() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let ext = tempfile::TempDir::new().unwrap();
         Command::new("git").args(["init", "--bare"]).current_dir(ext.path()).output().unwrap();
         let temp = tempfile::TempDir::new().unwrap();
@@ -4408,7 +4840,9 @@ mod tests {
     /// still routes discovery through the snapshotting jj summary.
     #[test]
     fn refresh_does_not_churn_orphaned_tip() {
-        if !jj_available() { return; }
+        if !jj_available() {
+            return;
+        }
         let (temp, _remote, _c) = setup_orphaned_after_abandon();
         let repo = temp.path();
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
@@ -4420,5 +4854,4 @@ mod tests {
             "an orphaned-@ refresh must not snapshot the working copy"
         );
     }
-
 }

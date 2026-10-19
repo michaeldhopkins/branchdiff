@@ -7,31 +7,31 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use unicode_width::UnicodeWidthStr;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DisplayableItem, FrameContext, SearchState, Selection};
 use crate::diff::{DiffLine, LineSource};
-use crate::image_diff::{ImageCache, IMAGE_PANEL_OVERHEAD};
+use crate::image_diff::{IMAGE_PANEL_OVERHEAD, ImageCache};
 use crate::syntax::{HighlightCache, SyntaxSegment};
 use crate::vcs::VcsBackend;
 
-use super::colors::{line_style, status_symbol, SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
-use super::selection::{apply_selection_to_span, get_line_selection_range};
 use super::colors::line_style_with_highlight;
+use super::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG, line_style, status_symbol};
+use super::selection::{apply_selection_to_span, get_line_selection_range};
 use super::spans::{
-    build_deletion_spans_with_highlight, build_insertion_spans_with_highlight, classify_inline_change,
-    get_deletion_source, get_insertion_source, inline_display_width, InlineChangeType,
+    InlineChangeType, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight,
+    classify_inline_change, get_deletion_source, get_insertion_source, inline_display_width,
     syntax_highlight_content, syntax_highlight_inline_spans,
 };
 use super::wrapping::{content_display_width, wrap_content};
-use super::{ScreenRowInfo, PREFIX_CHAR_WIDTH};
+use super::{PREFIX_CHAR_WIDTH, ScreenRowInfo};
 
 /// Pure data needed for diff rendering (no App reference during render).
 pub struct DiffViewModel<'a> {
@@ -132,9 +132,7 @@ impl<'a> DiffViewModel<'a> {
     /// Syntax segments for the deletion side of a modified line, which carries
     /// the line's previous text rather than the text in `lines`.
     fn deletion_syntax_segments(&self, line_idx: usize, old_content: &str) -> Arc<[SyntaxSegment]> {
-        self.highlight_cache
-            .borrow_mut()
-            .alt_segments(self.lines, line_idx, old_content)
+        self.highlight_cache.borrow_mut().alt_segments(self.lines, line_idx, old_content)
     }
 
     /// Check if a file is collapsed.
@@ -159,17 +157,8 @@ impl<'a> DiffViewModel<'a> {
         // that shifted with the visible window would desync them and a deep
         // within-line scroll could render past the line's end. Matches
         // `App::estimate_content_width`.
-        let max_line_num = self
-            .lines
-            .iter()
-            .filter_map(|line| line.line_number)
-            .max()
-            .unwrap_or(0);
-        let line_num_width = if max_line_num > 0 {
-            max_line_num.to_string().len() + 1
-        } else {
-            0
-        };
+        let max_line_num = self.lines.iter().filter_map(|line| line.line_number).max().unwrap_or(0);
+        let line_num_width = if max_line_num > 0 { max_line_num.to_string().len() + 1 } else { 0 };
 
         let available_width = self.area.width.saturating_sub(2) as usize;
         let prefix_width =
@@ -191,35 +180,19 @@ impl<'a> DiffViewModel<'a> {
             match item {
                 DisplayableItem::Elided(count) => {
                     self.render_elided_marker(
-                        *count,
-                        line_num_width,
-                        &mut all_lines,
-                        &mut all_row_infos,
+                        *count, line_num_width, &mut all_lines, &mut all_row_infos,
                     );
                     screen_row_idx += 1;
                 }
                 DisplayableItem::Message(msg) => {
-                    self.render_message(
-                        msg,
-                        line_num_width,
-                        &mut all_lines,
-                        &mut all_row_infos,
-                    );
+                    self.render_message(msg, line_num_width, &mut all_lines, &mut all_row_infos);
                     screen_row_idx += 1;
                 }
                 DisplayableItem::Line(idx) => {
                     let rows_added = self.render_diff_line(
-                        &self.lines[*idx],
-                        *idx,
-                        line_num_width,
-                        prefix_width,
-                        content_width,
-                        screen_row_idx,
-                        max_content_rows,
-                        skip_rows,
-                        &mut all_lines,
-                        &mut all_row_infos,
-                        &mut image_positions,
+                        &self.lines[*idx], *idx, line_num_width, prefix_width, content_width,
+                        screen_row_idx, max_content_rows, skip_rows, &mut all_lines,
+                        &mut all_row_infos, &mut image_positions,
                     );
                     screen_row_idx += rows_added;
                 }
@@ -228,15 +201,9 @@ impl<'a> DiffViewModel<'a> {
 
         let current_file = self.find_current_file();
         let title = if let Some(msg) = &self.status_flash {
-            Line::from(vec![Span::styled(
-                format!(" {msg} "),
-                Style::default().fg(Color::Yellow),
-            )])
+            Line::from(vec![Span::styled(format!(" {msg} "), Style::default().fg(Color::Yellow))])
         } else if self.show_copied_flash {
-            Line::from(vec![Span::styled(
-                " ✓ Copied ",
-                Style::default().fg(Color::Green),
-            )])
+            Line::from(vec![Span::styled(" ✓ Copied ", Style::default().fg(Color::Green))])
         } else {
             match current_file {
                 Some(file) => Line::from(vec![Span::styled(
@@ -301,11 +268,8 @@ impl<'a> DiffViewModel<'a> {
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) {
-        let prefix_str = if line_num_width > 0 {
-            " ".repeat(line_num_width + 1)
-        } else {
-            String::new()
-        };
+        let prefix_str =
+            if line_num_width > 0 { " ".repeat(line_num_width + 1) } else { String::new() };
         let elided_style = line_style(LineSource::Elided);
         let elided_text = format!("{} lines hidden", count);
 
@@ -313,10 +277,7 @@ impl<'a> DiffViewModel<'a> {
         if !prefix_str.is_empty() {
             spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
         }
-        spans.push(Span::styled(
-            format!("┈┈ ⋮ {} ⋮ ┈┈", elided_text),
-            elided_style,
-        ));
+        spans.push(Span::styled(format!("┈┈ ⋮ {} ⋮ ┈┈", elided_text), elided_style));
 
         all_lines.push(Line::from(spans));
         all_row_infos.push(ScreenRowInfo {
@@ -335,21 +296,15 @@ impl<'a> DiffViewModel<'a> {
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) {
-        let prefix_str = if line_num_width > 0 {
-            " ".repeat(line_num_width + 1)
-        } else {
-            String::new()
-        };
+        let prefix_str =
+            if line_num_width > 0 { " ".repeat(line_num_width + 1) } else { String::new() };
         let style = line_style(LineSource::Elided);
 
         let mut spans = Vec::new();
         if !prefix_str.is_empty() {
             spans.push(Span::styled(prefix_str, Style::default().fg(Color::DarkGray)));
         }
-        spans.push(Span::styled(
-            format!("┈┈ ⋮ {} ⋮ ┈┈", msg),
-            style,
-        ));
+        spans.push(Span::styled(format!("┈┈ ⋮ {} ⋮ ┈┈", msg), style));
 
         all_lines.push(Line::from(spans));
         all_row_infos.push(ScreenRowInfo {
@@ -392,68 +347,35 @@ impl<'a> DiffViewModel<'a> {
 
         // File header
         if diff_line.source == LineSource::FileHeader {
-            return self.render_file_header(
-                diff_line,
-                &prefix_str,
-                style,
-                all_lines,
-                all_row_infos,
-            );
+            return self
+                .render_file_header(diff_line, &prefix_str, style, all_lines, all_row_infos);
         }
 
         // Elided line (legacy path)
         if diff_line.source == LineSource::Elided {
-            return self.render_elided_line(
-                diff_line,
-                &prefix_str,
-                style,
-                all_lines,
-                all_row_infos,
-            );
+            return self
+                .render_elided_line(diff_line, &prefix_str, style, all_lines, all_row_infos);
         }
 
         // Image marker (placeholder for actual image rendering)
         if diff_line.is_image_marker() {
             return self.render_image_marker(
-                diff_line,
-                &prefix_str,
-                screen_row_idx,
-                all_lines,
-                all_row_infos,
-                image_positions,
+                diff_line, &prefix_str, screen_row_idx, all_lines, all_row_infos, image_positions,
             );
         }
 
         // Lines with inline spans
         if !diff_line.inline_spans.is_empty() {
             return self.render_inline_spans(
-                diff_line,
-                line_idx,
-                &prefix_str,
-                style,
-                prefix_width,
-                content_width,
-                screen_row_idx,
-                max_rows,
-                skip_rows,
-                all_lines,
-                all_row_infos,
+                diff_line, line_idx, &prefix_str, style, prefix_width, content_width,
+                screen_row_idx, max_rows, skip_rows, all_lines, all_row_infos,
             );
         }
 
         // Plain content
         self.render_plain_content(
-            diff_line,
-            line_idx,
-            &prefix_str,
-            style,
-            prefix_width,
-            content_width,
-            screen_row_idx,
-            max_rows,
-            skip_rows,
-            all_lines,
-            all_row_infos,
+            diff_line, line_idx, &prefix_str, style, prefix_width, content_width, screen_row_idx,
+            max_rows, skip_rows, all_lines, all_row_infos,
         )
     }
 
@@ -467,17 +389,11 @@ impl<'a> DiffViewModel<'a> {
     ) -> usize {
         let mut spans = Vec::new();
         if !prefix_str.is_empty() {
-            spans.push(Span::styled(
-                prefix_str.to_string(),
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled(prefix_str.to_string(), Style::default().fg(Color::DarkGray)));
         }
 
-        let is_collapsed = diff_line
-            .file_path
-            .as_ref()
-            .map(|p| self.is_file_collapsed(p))
-            .unwrap_or(false);
+        let is_collapsed =
+            diff_line.file_path.as_ref().map(|p| self.is_file_collapsed(p)).unwrap_or(false);
         let chevron = if is_collapsed { "▶ " } else { "▼ " };
 
         spans.push(Span::styled(chevron, Style::default().fg(Color::DarkGray)));
@@ -521,15 +437,9 @@ impl<'a> DiffViewModel<'a> {
     ) -> usize {
         let mut spans = Vec::new();
         if !prefix_str.is_empty() {
-            spans.push(Span::styled(
-                prefix_str.to_string(),
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled(prefix_str.to_string(), Style::default().fg(Color::DarkGray)));
         }
-        spans.push(Span::styled(
-            format!("┈┈ ⋮ {} ⋮ ┈┈", diff_line.content),
-            style,
-        ));
+        spans.push(Span::styled(format!("┈┈ ⋮ {} ⋮ ┈┈", diff_line.content), style));
 
         all_lines.push(Line::from(spans));
         all_row_infos.push(ScreenRowInfo {
@@ -552,21 +462,14 @@ impl<'a> DiffViewModel<'a> {
         image_positions: &mut Vec<ImageRenderPosition>,
     ) -> usize {
         // Check if we have loaded image data in the cache
-        let image_info = diff_line
-            .file_path
-            .as_ref()
-            .and_then(|path| self.image_cache.peek(path));
+        let image_info = diff_line.file_path.as_ref().and_then(|path| self.image_cache.peek(path));
 
         // If we have image data, reserve space for rendering (protocols created lazily during render)
         let image_dims = image_info.map(|state| {
-            let before_dims = state
-                .before
-                .as_ref()
-                .map(|img| (img.original_width, img.original_height));
-            let after_dims = state
-                .after
-                .as_ref()
-                .map(|img| (img.original_width, img.original_height));
+            let before_dims =
+                state.before.as_ref().map(|img| (img.original_width, img.original_height));
+            let after_dims =
+                state.after.as_ref().map(|img| (img.original_width, img.original_height));
             (before_dims, after_dims)
         });
 
@@ -578,10 +481,7 @@ impl<'a> DiffViewModel<'a> {
         {
             // Calculate height based on actual image dimensions
             let image_height = crate::ui::image_view::calculate_image_height_for_images(
-                before_dims,
-                after_dims,
-                self.area.width,
-                self.font_size,
+                before_dims, after_dims, self.area.width, self.font_size,
             );
 
             // Calculate expected available height for consistent sizing
@@ -613,10 +513,7 @@ impl<'a> DiffViewModel<'a> {
         // Fallback: render text placeholder (no image available or protocols not ready)
         let mut spans = Vec::new();
         if !prefix_str.is_empty() {
-            spans.push(Span::styled(
-                prefix_str.to_string(),
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled(prefix_str.to_string(), Style::default().fg(Color::DarkGray)));
         }
 
         let display_text = match image_info {
@@ -683,9 +580,7 @@ impl<'a> DiffViewModel<'a> {
             let old_content = diff_line.old_content.as_deref().unwrap_or("");
             let del_segments = self.deletion_syntax_segments(line_idx, old_content);
             let del_spans = build_deletion_spans_with_highlight(
-                &diff_line.inline_spans,
-                del_source,
-                &del_segments,
+                &diff_line.inline_spans, del_source, &del_segments,
             );
 
             // Split the skip window across the concatenated del ++ ins rows. The
@@ -724,11 +619,7 @@ impl<'a> DiffViewModel<'a> {
                     max_rows.saturating_sub(screen_row_idx).max(1),
                 );
                 apply_selection_to_wrapped_lines(
-                    &mut del_lines,
-                    &del_row_infos,
-                    self.selection,
-                    screen_row_idx,
-                    prefix_width,
+                    &mut del_lines, &del_row_infos, self.selection, screen_row_idx, prefix_width,
                 );
 
                 screen_row_idx += del_lines.len();
@@ -758,11 +649,7 @@ impl<'a> DiffViewModel<'a> {
                 max_rows.saturating_sub(screen_row_idx).max(1),
             );
             apply_selection_to_wrapped_lines(
-                &mut ins_lines,
-                &ins_row_infos,
-                self.selection,
-                screen_row_idx,
-                prefix_width,
+                &mut ins_lines, &ins_row_infos, self.selection, screen_row_idx, prefix_width,
             );
 
             all_lines.extend(ins_lines);
@@ -783,9 +670,11 @@ impl<'a> DiffViewModel<'a> {
                         highlight_style,
                     );
 
-                    let content_spans = apply_search_to_content(content_spans, self.search, line_idx);
+                    let content_spans =
+                        apply_search_to_content(content_spans, self.search, line_idx);
 
-                    let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
+                    let prefix_char =
+                        self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
                     let (mut lines, row_infos) = wrap_content(
                         content_spans,
                         &diff_line.content,
@@ -798,11 +687,7 @@ impl<'a> DiffViewModel<'a> {
                         max_rows.saturating_sub(screen_row_idx).max(1),
                     );
                     apply_selection_to_wrapped_lines(
-                        &mut lines,
-                        &row_infos,
-                        self.selection,
-                        screen_row_idx,
-                        prefix_width,
+                        &mut lines, &row_infos, self.selection, screen_row_idx, prefix_width,
                     );
 
                     all_lines.extend(lines);
@@ -810,7 +695,9 @@ impl<'a> DiffViewModel<'a> {
 
                     return all_lines.len() - rows_before;
                 }
-                InlineChangeType::NoChange | InlineChangeType::Mixed | InlineChangeType::PureDeletion => {}
+                InlineChangeType::NoChange
+                | InlineChangeType::Mixed
+                | InlineChangeType::PureDeletion => {}
             }
         }
 
@@ -828,10 +715,7 @@ impl<'a> DiffViewModel<'a> {
         );
 
         let content_spans = apply_search_to_inline_render(
-            content_spans,
-            &diff_line.inline_spans,
-            self.search,
-            line_idx,
+            content_spans, &diff_line.inline_spans, self.search, line_idx,
         );
 
         let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
@@ -847,11 +731,7 @@ impl<'a> DiffViewModel<'a> {
             max_rows.saturating_sub(screen_row_idx).max(1),
         );
         apply_selection_to_wrapped_lines(
-            &mut lines,
-            &row_infos,
-            self.selection,
-            screen_row_idx,
-            prefix_width,
+            &mut lines, &row_infos, self.selection, screen_row_idx, prefix_width,
         );
 
         all_lines.extend(lines);
@@ -893,11 +773,7 @@ impl<'a> DiffViewModel<'a> {
             max_rows.saturating_sub(screen_row_idx).max(1),
         );
         apply_selection_to_wrapped_lines(
-            &mut lines,
-            &row_infos,
-            self.selection,
-            screen_row_idx,
-            prefix_width,
+            &mut lines, &row_infos, self.selection, screen_row_idx, prefix_width,
         );
 
         let rows_added = lines.len();
@@ -972,10 +848,7 @@ fn apply_selection_to_wrapped_lines(
             } else {
                 let span_width = UnicodeWidthStr::width(span.content.as_ref());
                 let selected = apply_selection_to_span(
-                    span,
-                    display_offset,
-                    content_sel_start,
-                    content_sel_end,
+                    span, display_offset, content_sel_start, content_sel_end,
                 );
                 display_offset += span_width;
                 result.extend(selected);
@@ -1186,22 +1059,14 @@ fn render_search_bar(frame: &mut Frame, search: &SearchState, area: Rect) {
 
 /// Draw the diff view using a pre-computed frame context.
 /// This is the main entry point that creates a DiffViewModel and renders.
-pub fn draw_diff_view_with_frame(
-    frame: &mut Frame,
-    app: &mut App,
-    area: Rect,
-    ctx: &FrameContext,
-) {
+pub fn draw_diff_view_with_frame(frame: &mut Frame, app: &mut App, area: Rect, ctx: &FrameContext) {
     let view_model = DiffViewModel::from_app(app, ctx, area);
     let output = view_model.render(frame);
 
     // Store computed values back to App
     app.set_content_layout(
-        output.content_offset.0,
-        output.content_offset.1,
-        output.line_num_width,
-        output.content_width,
-        area.width,
+        output.content_offset.0, output.content_offset.1, output.line_num_width,
+        output.content_width, area.width,
     );
     app.set_row_map(output.row_map.clone());
 
@@ -1285,12 +1150,12 @@ fn render_images_at_positions(
 mod tests {
     use super::*;
     use crate::app::search::SearchMatch;
-    use crate::test_support::{base_line, change_line, TestAppBuilder};
+    use crate::test_support::{TestAppBuilder, base_line, change_line};
 
     #[cfg(test)]
     fn fastest_render_frame(content: String, width: u16, height: u16) -> std::time::Duration {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
         use std::time::Instant;
 
         let mut line = DiffLine::new(LineSource::Committed, content, '+', Some(1));
@@ -1330,8 +1195,8 @@ mod tests {
     /// highlighter had to parse to do it.
     #[cfg(test)]
     fn parses_for_frame(app: &mut App, scroll_offset: usize, width: u16, height: u16) -> usize {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         app.view.scroll_offset = scroll_offset;
         let before = app.highlight_cache.borrow().parse_count();
@@ -1391,10 +1256,7 @@ mod tests {
         // These paragraphs wrap to many rows each, so scrolling one item down
         // exposes at most a couple of lines however tall they are.
         let scrolled = parses_for_frame(&mut app, 1, width, height);
-        assert!(
-            scrolled <= 2,
-            "one scroll step parsed {scrolled} lines; expected at most 2"
-        );
+        assert!(scrolled <= 2, "one scroll step parsed {scrolled} lines; expected at most 2");
     }
 
     #[test]
@@ -1435,8 +1297,8 @@ mod tests {
 
     #[test]
     fn test_huge_single_line_renders_bounded_rows() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let width: u16 = 80;
         let height: u16 = 24;
@@ -1472,8 +1334,8 @@ mod tests {
 
     #[test]
     fn test_content_width_stable_across_scroll() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let width: u16 = 80;
         let height: u16 = 8;
@@ -1521,8 +1383,8 @@ mod tests {
 
     #[test]
     fn test_render_with_sub_row_starts_mid_line() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let width: u16 = 80;
         let height: u16 = 20;
@@ -1559,22 +1421,18 @@ mod tests {
         );
         let cw = out.content_width;
         let expected: String = content.chars().skip(skip * cw).take(cw).collect();
-        assert_eq!(
-            out.row_map[0].content, expected,
-            "top visible row is the slice scrolled to"
-        );
+        assert_eq!(out.row_map[0].content, expected, "top visible row is the slice scrolled to");
     }
 
     #[test]
     fn test_render_deep_sub_row_stays_bounded() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let width: u16 = 80;
         let height: u16 = 20;
 
-        let mut line =
-            DiffLine::new(LineSource::Committed, "a".repeat(200_000), '+', Some(1));
+        let mut line = DiffLine::new(LineSource::Committed, "a".repeat(200_000), '+', Some(1));
         line.file_path = Some("bundle.js".to_string());
         let mut app = TestAppBuilder::new().with_lines(vec![line]).build();
         app.estimate_content_width(width);
@@ -1601,11 +1459,8 @@ mod tests {
 
     #[test]
     fn test_diff_view_model_find_current_file() {
-        let lines = vec![
-            DiffLine::file_header("test.rs"),
-            base_line("line1"),
-            change_line("line2"),
-        ];
+        let lines =
+            vec![DiffLine::file_header("test.rs"), base_line("line1"), change_line("line2")];
         let app = TestAppBuilder::new().with_lines(lines).build();
         let ctx = FrameContext::new(&app);
         let area = Rect::new(0, 0, 80, 24);
@@ -1630,10 +1485,7 @@ mod tests {
         line.file_path = Some("second.rs".to_string());
         lines.push(line);
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_viewport_height(4)
-            .build();
+        let mut app = TestAppBuilder::new().with_lines(lines).with_viewport_height(4).build();
         // Scroll down so first.rs header is above viewport but content is still visible
         app.view.scroll_offset = 2;
 
@@ -1650,9 +1502,8 @@ mod tests {
 
     #[test]
     fn test_diff_view_model_is_file_collapsed() {
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs")])
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs")]).build();
         app.view.collapsed_files.insert("test.rs".to_string());
 
         let ctx = FrameContext::new(&app);
@@ -1667,9 +1518,8 @@ mod tests {
     fn test_diff_view_model_with_selection() {
         use crate::app::Position;
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![base_line("selectable content")])
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![base_line("selectable content")]).build();
         app.view.selection = Some(Selection {
             start: Position { row: 0, col: 5 },
             end: Position { row: 0, col: 15 },
@@ -1685,9 +1535,8 @@ mod tests {
 
     #[test]
     fn test_diff_view_model_show_copied_flash() {
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs")])
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs")]).build();
 
         // Initially no flash
         let ctx = FrameContext::new(&app);
@@ -1702,7 +1551,8 @@ mod tests {
         assert!(view_model.show_copied_flash);
 
         // After 800ms+ elapsed, flash should be inactive
-        app.view.path_copied_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(900));
+        app.view.path_copied_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(900));
         let ctx = FrameContext::new(&app);
         let view_model = DiffViewModel::from_app(&app, &ctx, area);
         assert!(!view_model.show_copied_flash);
@@ -1717,12 +1567,17 @@ mod tests {
         #[test]
         fn test_modified_base_line_uses_span_source_for_highlight() {
             // Create a modified base line: source=Base, but has inline spans with Unstaged source
-            let mut line = DiffLine::new(LineSource::Base, "prefix inserted suffix".to_string(), ' ', Some(1));
+            let mut line =
+                DiffLine::new(LineSource::Base, "prefix inserted suffix".to_string(), ' ', Some(1));
             line.old_content = Some("prefix suffix".to_string());
             line.change_source = Some(LineSource::Unstaged);
             line.inline_spans = vec![
                 InlineSpan { text: "prefix ".to_string(), source: None, is_deletion: false },
-                InlineSpan { text: "inserted ".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+                InlineSpan {
+                    text: "inserted ".to_string(),
+                    source: Some(LineSource::Unstaged),
+                    is_deletion: false,
+                },
                 InlineSpan { text: "suffix".to_string(), source: None, is_deletion: false },
             ];
 
@@ -1731,13 +1586,18 @@ mod tests {
 
             // But the highlight source should come from the spans
             let highlight_source = get_insertion_source(&line.inline_spans);
-            assert_eq!(highlight_source, LineSource::Unstaged,
-                "Highlight source should be Unstaged (from spans), not Base (from line)");
+            assert_eq!(
+                highlight_source,
+                LineSource::Unstaged,
+                "Highlight source should be Unstaged (from spans), not Base (from line)"
+            );
 
             // And this should produce a visible highlight style
             let highlight_style = line_style_with_highlight(highlight_source);
-            assert!(matches!(highlight_style.bg, Some(Color::Rgb(130, 130, 35))),
-                "Highlight style should have visible yellow background");
+            assert!(
+                matches!(highlight_style.bg, Some(Color::Rgb(130, 130, 35))),
+                "Highlight style should have visible yellow background"
+            );
         }
 
         /// Test the specific bug scenario: import line modification
@@ -1749,8 +1609,16 @@ mod tests {
             // "Clear, " is inserted with source=Unstaged
 
             let inline_spans = vec![
-                InlineSpan { text: "    widgets::{Block, Borders, ".to_string(), source: None, is_deletion: false },
-                InlineSpan { text: "Clear, ".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+                InlineSpan {
+                    text: "    widgets::{Block, Borders, ".to_string(),
+                    source: None,
+                    is_deletion: false,
+                },
+                InlineSpan {
+                    text: "Clear, ".to_string(),
+                    source: Some(LineSource::Unstaged),
+                    is_deletion: false,
+                },
                 InlineSpan { text: "Paragraph},".to_string(), source: None, is_deletion: false },
             ];
 
@@ -1759,25 +1627,27 @@ mod tests {
 
             // BUG: Using line_source for highlight gives no visible highlight
             let bug_highlight_style = line_style_with_highlight(line_source);
-            assert_eq!(bug_highlight_style.bg, Some(Color::Reset),
-                "Bug: using line source gives Reset background (invisible)");
+            assert_eq!(
+                bug_highlight_style.bg,
+                Some(Color::Reset),
+                "Bug: using line source gives Reset background (invisible)"
+            );
 
             // FIX: Using the span's source gives visible highlight
             let fix_highlight_source = get_insertion_source(&inline_spans);
             assert_eq!(fix_highlight_source, LineSource::Unstaged);
 
             let fix_highlight_style = line_style_with_highlight(fix_highlight_source);
-            assert_eq!(fix_highlight_style.bg, Some(Color::Rgb(130, 130, 35)),
-                "Fix: using span source gives yellow background (visible)");
+            assert_eq!(
+                fix_highlight_style.bg,
+                Some(Color::Rgb(130, 130, 35)),
+                "Fix: using span source gives yellow background (visible)"
+            );
         }
     }
 
     /// Verify that Block border characters are intact in the rendered buffer.
-    fn verify_diff_area_borders(
-        buffer: &ratatui::buffer::Buffer,
-        width: u16,
-        diff_height: u16,
-    ) {
+    fn verify_diff_area_borders(buffer: &ratatui::buffer::Buffer, width: u16, diff_height: u16) {
         assert_eq!(buffer[(0, 0)].symbol(), "┌", "Top-left corner");
         assert_eq!(buffer[(width - 1, 0)].symbol(), "┐", "Top-right corner");
 
@@ -1785,24 +1655,12 @@ mod tests {
             let left = buffer[(0, y)].symbol();
             let right = buffer[(width - 1, y)].symbol();
             assert_eq!(left, "│", "Row {} left border: expected │, got {:?}", y, left);
-            assert_eq!(
-                right, "│",
-                "Row {} right border: expected │, got {:?}",
-                y, right
-            );
+            assert_eq!(right, "│", "Row {} right border: expected │, got {:?}", y, right);
         }
 
         if diff_height > 1 {
-            assert_eq!(
-                buffer[(0, diff_height - 1)].symbol(),
-                "└",
-                "Bottom-left corner"
-            );
-            assert_eq!(
-                buffer[(width - 1, diff_height - 1)].symbol(),
-                "┘",
-                "Bottom-right corner"
-            );
+            assert_eq!(buffer[(0, diff_height - 1)].symbol(), "└", "Bottom-left corner");
+            assert_eq!(buffer[(width - 1, diff_height - 1)].symbol(), "┘", "Bottom-right corner");
         }
     }
 
@@ -1810,8 +1668,8 @@ mod tests {
     /// that wrapped ASCII lines don't overwrite border characters.
     #[test]
     fn test_wrapped_ascii_lines_preserve_borders() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let width: u16 = 80;
         let height: u16 = 24;
@@ -1869,8 +1727,8 @@ mod tests {
     /// Same test at narrower terminal width (40 cols) to stress wrapping
     #[test]
     fn test_wrapped_ascii_lines_preserve_borders_narrow_terminal() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let width: u16 = 40;
         let height: u16 = 30;
@@ -1878,12 +1736,7 @@ mod tests {
         let long_content = "the_quick_brown_fox_jumps_over_the_lazy_dog_".repeat(5);
         let mut lines = vec![DiffLine::file_header("narrow.rs")];
         for i in 1..=20 {
-            let mut line = DiffLine::new(
-                LineSource::Committed,
-                long_content.clone(),
-                '+',
-                Some(i),
-            );
+            let mut line = DiffLine::new(LineSource::Committed, long_content.clone(), '+', Some(i));
             line.file_path = Some("narrow.rs".to_string());
             lines.push(line);
         }
@@ -1912,9 +1765,7 @@ mod tests {
 
     #[test]
     fn test_diff_view_model_includes_image_cache() {
-        let app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs")])
-            .build();
+        let app = TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs")]).build();
         let ctx = FrameContext::new(&app);
         let area = Rect::new(0, 0, 80, 24);
 
@@ -1926,14 +1777,11 @@ mod tests {
 
     #[test]
     fn test_image_marker_rendering_without_cache_data() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         // Create an image marker line
-        let lines = vec![
-            DiffLine::file_header("test.png"),
-            DiffLine::image_marker("test.png"),
-        ];
+        let lines = vec![DiffLine::file_header("test.png"), DiffLine::image_marker("test.png")];
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.estimate_content_width(80);
@@ -1965,10 +1813,7 @@ mod tests {
         use image::DynamicImage;
 
         // Create an image marker line
-        let lines = vec![
-            DiffLine::file_header("test.png"),
-            DiffLine::image_marker("test.png"),
-        ];
+        let lines = vec![DiffLine::file_header("test.png"), DiffLine::image_marker("test.png")];
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.estimate_content_width(80);
@@ -1983,10 +1828,7 @@ mod tests {
             format_name: "PNG".to_string(),
             protocol: None, // No protocol - this is the key condition
         };
-        let state = ImageDiffState {
-            before: Some(cached_image),
-            after: None,
-        };
+        let state = ImageDiffState { before: Some(cached_image), after: None };
         app.image_cache.insert("test.png".to_string(), state);
 
         // Render and check that image_positions is populated
@@ -1994,8 +1836,8 @@ mod tests {
         let area = Rect::new(0, 0, 80, 40);
         let view_model = DiffViewModel::from_app(&app, &ctx, area);
 
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
         let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).unwrap();
 
@@ -2127,8 +1969,8 @@ mod tests {
     /// Test with canceled lines (± prefix) which have multi-byte prefix char
     #[test]
     fn test_wrapped_canceled_lines_preserve_borders() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let width: u16 = 80;
         let height: u16 = 24;
@@ -2136,12 +1978,8 @@ mod tests {
         let long_content = "canceled_content_".repeat(15);
         let mut lines = vec![DiffLine::file_header("cancel.rs")];
         for i in 1..=10 {
-            let mut line = DiffLine::new(
-                LineSource::CanceledCommitted,
-                long_content.clone(),
-                '±',
-                Some(i),
-            );
+            let mut line =
+                DiffLine::new(LineSource::CanceledCommitted, long_content.clone(), '±', Some(i));
             line.file_path = Some("cancel.rs".to_string());
             lines.push(line);
         }
@@ -2189,11 +2027,11 @@ mod tests {
         // Simulate different viewport clipping scenarios
         // The key invariant: expected_available_height is always the same
         let viewport_scenarios = [
-            ("fully visible", image_height),       // Image fully in viewport
-            ("90% visible", image_height - 2),     // Top 2 rows clipped
-            ("50% visible", image_height / 2),     // Half the image visible
-            ("barely visible", 3u16),              // Only 3 rows visible
-            ("just entering", 1u16),               // Just 1 row visible
+            ("fully visible", image_height),   // Image fully in viewport
+            ("90% visible", image_height - 2), // Top 2 rows clipped
+            ("50% visible", image_height / 2), // Half the image visible
+            ("barely visible", 3u16),          // Only 3 rows visible
+            ("just entering", 1u16),           // Just 1 row visible
         ];
 
         for (scenario, clamped_height) in viewport_scenarios {
@@ -2220,7 +2058,7 @@ mod tests {
     /// expected_available_height vs viewport-clamped height.
     #[test]
     fn test_fit_dimensions_consistency_across_viewports() {
-        use crate::image_diff::{fit_dimensions, IMAGE_PANEL_OVERHEAD};
+        use crate::image_diff::{IMAGE_PANEL_OVERHEAD, fit_dimensions};
         use crate::ui::image_view::calculate_image_height_for_images;
 
         // Test with a real image scenario
@@ -2230,12 +2068,8 @@ mod tests {
         let font_size = (8u16, 16u16);
 
         // Calculate the full image height
-        let full_height = calculate_image_height_for_images(
-            Some((img_w, img_h)),
-            None,
-            panel_width,
-            font_size,
-        );
+        let full_height =
+            calculate_image_height_for_images(Some((img_w, img_h)), None, panel_width, font_size);
         let expected_available = full_height.saturating_sub(IMAGE_PANEL_OVERHEAD);
 
         // Calculate display dimensions using expected_available_height (correct)
@@ -2253,8 +2087,7 @@ mod tests {
 
         for clamped in clamped_heights {
             // Using expected_available (correct) should always produce the same dimensions
-            let (w, h) =
-                fit_dimensions(img_w, img_h, inner_width, expected_available, font_size);
+            let (w, h) = fit_dimensions(img_w, img_h, inner_width, expected_available, font_size);
             assert_eq!(
                 (w, h),
                 (expected_w, expected_h),
@@ -2285,16 +2118,13 @@ mod tests {
     /// based on image dimensions, not viewport position.
     #[test]
     fn test_image_render_position_expected_height_invariant() {
-        use crate::image_diff::{CachedImage, ImageDiffState, IMAGE_PANEL_OVERHEAD};
+        use crate::image_diff::{CachedImage, IMAGE_PANEL_OVERHEAD, ImageDiffState};
         use crate::ui::image_view::calculate_image_height_for_images;
         use image::DynamicImage;
 
         // Create image cache with a test image
         let mut app = TestAppBuilder::new()
-            .with_lines(vec![
-                DiffLine::file_header("test.png"),
-                DiffLine::image_marker("test.png"),
-            ])
+            .with_lines(vec![DiffLine::file_header("test.png"), DiffLine::image_marker("test.png")])
             .build();
         app.estimate_content_width(100);
 
@@ -2309,10 +2139,7 @@ mod tests {
         };
         app.image_cache.insert(
             "test.png".to_string(),
-            ImageDiffState {
-                before: None,
-                after: Some(cached_image),
-            },
+            ImageDiffState { before: None, after: Some(cached_image) },
         );
 
         // Calculate expected height from image dimensions
@@ -2333,8 +2160,8 @@ mod tests {
             let area = Rect::new(0, 0, 100, 30);
             let view_model = DiffViewModel::from_app(&app, &ctx, area);
 
-            use ratatui::backend::TestBackend;
             use ratatui::Terminal;
+            use ratatui::backend::TestBackend;
             let backend = TestBackend::new(100, 30);
             let mut terminal = Terminal::new(backend).unwrap();
 
@@ -2358,8 +2185,8 @@ mod tests {
 
     /// Helper: render a DiffViewModel and return the RenderOutput.
     fn render_to_output(app: &App, width: u16, height: u16) -> RenderOutput {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let ctx = FrameContext::new(app);
         let area = Rect::new(0, 0, width, height);
@@ -2377,9 +2204,14 @@ mod tests {
     }
 
     /// Helper: render with custom FrameContext items.
-    fn render_with_items(app: &App, items: Vec<DisplayableItem>, width: u16, height: u16) -> RenderOutput {
-        use ratatui::backend::TestBackend;
+    fn render_with_items(
+        app: &App,
+        items: Vec<DisplayableItem>,
+        width: u16,
+        height: u16,
+    ) -> RenderOutput {
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let ctx = FrameContext::with_items(items, app);
         let area = Rect::new(0, 0, width, height);
@@ -2426,9 +2258,7 @@ mod tests {
 
     #[test]
     fn test_render_elided_marker_row_map() {
-        let app = TestAppBuilder::new()
-            .with_lines(vec![base_line("placeholder")])
-            .build();
+        let app = TestAppBuilder::new().with_lines(vec![base_line("placeholder")]).build();
 
         let items = vec![DisplayableItem::Elided(42)];
         let output = render_with_items(&app, items, 80, 24);
@@ -2444,23 +2274,21 @@ mod tests {
         use crate::diff::InlineSpan;
 
         // PureDeletion: deletion spans exist, no insertion spans (unchanged has source: None)
-        let mut line = DiffLine::new(
-            LineSource::Committed,
-            "kept text".to_string(),
-            '+',
-            Some(1),
-        );
+        let mut line = DiffLine::new(LineSource::Committed, "kept text".to_string(), '+', Some(1));
         line.file_path = Some("test.rs".to_string());
         line.old_content = Some("deleted prefix kept text".to_string());
         line.change_source = Some(LineSource::Committed);
         line.inline_spans = vec![
-            InlineSpan { text: "deleted prefix ".to_string(), source: Some(LineSource::Committed), is_deletion: true },
+            InlineSpan {
+                text: "deleted prefix ".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: true,
+            },
             InlineSpan { text: "kept text".to_string(), source: None, is_deletion: false },
         ];
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs"), line])
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs"), line]).build();
         app.estimate_content_width(80);
 
         let output = render_to_output(&app, 80, 24);
@@ -2486,13 +2314,16 @@ mod tests {
         line.file_path = Some("test.rs".to_string());
         line.inline_spans = vec![
             InlineSpan { text: "prefix ".to_string(), source: None, is_deletion: false },
-            InlineSpan { text: "inserted ".to_string(), source: Some(LineSource::Committed), is_deletion: false },
+            InlineSpan {
+                text: "inserted ".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: false,
+            },
             InlineSpan { text: "suffix".to_string(), source: None, is_deletion: false },
         ];
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs"), line])
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs"), line]).build();
         app.estimate_content_width(80);
 
         let output = render_to_output(&app, 80, 24);
@@ -2510,9 +2341,8 @@ mod tests {
         line.line_number = Some(1);
         line.file_path = Some("test.rs".to_string());
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs"), line])
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs"), line]).build();
         app.estimate_content_width(40);
 
         let output = render_to_output(&app, 40, 24);
@@ -2528,8 +2358,8 @@ mod tests {
 
     #[test]
     fn test_render_title_shows_current_file() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let mut line = base_line("content");
         line.file_path = Some("src/main.rs".to_string());
@@ -2550,20 +2380,20 @@ mod tests {
             })
             .unwrap();
 
-        let top_row: String = (0..80)
-            .map(|x| frame.buffer[(x, 0)].symbol().to_string())
-            .collect();
-        assert!(top_row.contains("src/main.rs"), "title should show current file, got: {}", top_row);
+        let top_row: String = (0..80).map(|x| frame.buffer[(x, 0)].symbol().to_string()).collect();
+        assert!(
+            top_row.contains("src/main.rs"),
+            "title should show current file, got: {}",
+            top_row
+        );
     }
 
     #[test]
     fn test_render_title_shows_branchdiff_fallback() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![base_line("no file path")])
-            .build();
+        let mut app = TestAppBuilder::new().with_lines(vec![base_line("no file path")]).build();
         app.estimate_content_width(80);
 
         let backend = TestBackend::new(80, 24);
@@ -2577,9 +2407,7 @@ mod tests {
             })
             .unwrap();
 
-        let top_row: String = (0..80)
-            .map(|x| frame.buffer[(x, 0)].symbol().to_string())
-            .collect();
+        let top_row: String = (0..80).map(|x| frame.buffer[(x, 0)].symbol().to_string()).collect();
         assert!(top_row.contains("branchdiff"), "title should show fallback, got: {}", top_row);
     }
 
@@ -2644,9 +2472,7 @@ mod tests {
         assert_eq!(output.line_num_width, 2, "9 = 1 digit + 1 space");
 
         // No line numbers
-        let app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs")])
-            .build();
+        let app = TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs")]).build();
         let output = render_to_output(&app, 80, 24);
         assert_eq!(output.line_num_width, 0, "no line numbers = 0 width");
     }
@@ -2738,8 +2564,8 @@ mod tests {
     fn selection_on_wrapped_continuation_row_is_highlighted() {
         use crate::app::{Position, Selection};
         use crate::ui::selection::SELECTION_BG_COLOR;
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         // Create a line long enough to wrap to 3 rows at width 60.
         // With prefix ~6 chars, content_width ~54, so 162 chars wraps to 3 rows.
@@ -2820,8 +2646,8 @@ mod tests {
     fn selection_spanning_all_wrapped_rows_highlights_every_row() {
         use crate::app::{Position, Selection};
         use crate::ui::selection::SELECTION_BG_COLOR;
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let long_content = "y".repeat(162);
         let mut lines = vec![DiffLine::file_header("test.rb")];
@@ -2870,9 +2696,7 @@ mod tests {
             assert!(
                 has_selection_bg,
                 "row_map[{}] (screen_y={}, continuation={}) should have selection bg",
-                row_idx,
-                screen_y,
-                output.row_map[row_idx].is_continuation
+                row_idx, screen_y, output.row_map[row_idx].is_continuation
             );
         }
     }
@@ -2884,35 +2708,33 @@ mod tests {
     /// on the preceding red (removed) line because the offsets aliased.
     #[test]
     fn search_does_not_highlight_deletion_side_of_split_modification() {
-        use crate::app::search::{compute_matches, SearchState};
+        use crate::app::search::{SearchState, compute_matches};
         use crate::diff::InlineSpan;
         use crate::ui::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         // PureDeletion always splits regardless of width.
         //   old_content = "abc deleted XX def"  (chars 4-5 = "de" inside "deleted")
         //   content     = "abc XX def"          (chars 4-5 = "XX")
         // Searching "XX" finds it at chars 4-5 in `content`. The bug applies
         // those offsets to the deletion render, lighting up "de" of "deleted".
-        let mut line = DiffLine::new(
-            LineSource::Committed,
-            "abc XX def".to_string(),
-            '+',
-            Some(1),
-        );
+        let mut line = DiffLine::new(LineSource::Committed, "abc XX def".to_string(), '+', Some(1));
         line.file_path = Some("test.rs".to_string());
         line.old_content = Some("abc deleted XX def".to_string());
         line.change_source = Some(LineSource::Committed);
         line.inline_spans = vec![
             InlineSpan { text: "abc ".to_string(), source: None, is_deletion: false },
-            InlineSpan { text: "deleted ".to_string(), source: Some(LineSource::Committed), is_deletion: true },
+            InlineSpan {
+                text: "deleted ".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: true,
+            },
             InlineSpan { text: "XX def".to_string(), source: None, is_deletion: false },
         ];
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs"), line])
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs"), line]).build();
         app.estimate_content_width(80);
 
         let mut s = SearchState::new();
@@ -2931,7 +2753,11 @@ mod tests {
 
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| { view_model.render(f); }).unwrap();
+        terminal
+            .draw(|f| {
+                view_model.render(f);
+            })
+            .unwrap();
 
         // Layout: file header at row 0, deletion row at 1, insertion row at 2.
         let buf = terminal.backend().buffer();
@@ -2980,10 +2806,18 @@ mod tests {
             InlineSpan { text: text.to_string(), source: None, is_deletion: false }
         }
         fn insertion(text: &str) -> InlineSpan {
-            InlineSpan { text: text.to_string(), source: Some(LineSource::Committed), is_deletion: false }
+            InlineSpan {
+                text: text.to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: false,
+            }
         }
         fn deletion(text: &str) -> InlineSpan {
-            InlineSpan { text: text.to_string(), source: Some(LineSource::Committed), is_deletion: true }
+            InlineSpan {
+                text: text.to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: true,
+            }
         }
 
         #[test]
@@ -2997,14 +2831,8 @@ mod tests {
         fn no_deletions_is_identity() {
             // content = "hello world" (rendered identically)
             let spans = vec![unchanged("hello "), insertion("world")];
-            assert_eq!(
-                content_match_to_render_ranges(&spans, 6, 11),
-                vec![(6, 11)]
-            );
-            assert_eq!(
-                content_match_to_render_ranges(&spans, 0, 5),
-                vec![(0, 5)]
-            );
+            assert_eq!(content_match_to_render_ranges(&spans, 6, 11), vec![(6, 11)]);
+            assert_eq!(content_match_to_render_ranges(&spans, 0, 5), vec![(0, 5)]);
         }
 
         #[test]
@@ -3013,10 +2841,7 @@ mod tests {
             // content        :         "abc"  → "abc"     (3 chars)
             // match content [0, 3) → render [3, 6)
             let spans = vec![deletion("DEL"), insertion("abc")];
-            assert_eq!(
-                content_match_to_render_ranges(&spans, 0, 3),
-                vec![(3, 6)]
-            );
+            assert_eq!(content_match_to_render_ranges(&spans, 0, 3), vec![(3, 6)]);
         }
 
         #[test]
@@ -3025,10 +2850,7 @@ mod tests {
             // content : "abc"          → "abc"
             // match [0, 3) → render [0, 3)
             let spans = vec![insertion("abc"), deletion("DEL")];
-            assert_eq!(
-                content_match_to_render_ranges(&spans, 0, 3),
-                vec![(0, 3)]
-            );
+            assert_eq!(content_match_to_render_ranges(&spans, 0, 3), vec![(0, 3)]);
         }
 
         #[test]
@@ -3037,10 +2859,7 @@ mod tests {
             // content : "ab" +         "cd"  → "abcd"     (4 chars)
             // match content [0, 4) → render [0, 2) + [5, 7)
             let spans = vec![unchanged("ab"), deletion("DEL"), insertion("cd")];
-            assert_eq!(
-                content_match_to_render_ranges(&spans, 0, 4),
-                vec![(0, 2), (5, 7)]
-            );
+            assert_eq!(content_match_to_render_ranges(&spans, 0, 4), vec![(0, 2), (5, 7)]);
         }
 
         #[test]
@@ -3049,10 +2868,7 @@ mod tests {
             // content :         "hello"   → "hello"
             // match content [1, 4) ("ell") → render [4, 7)
             let spans = vec![deletion("DEL"), unchanged("hello")];
-            assert_eq!(
-                content_match_to_render_ranges(&spans, 1, 4),
-                vec![(4, 7)]
-            );
+            assert_eq!(content_match_to_render_ranges(&spans, 1, 4), vec![(4, 7)]);
         }
 
         #[test]
@@ -3060,10 +2876,7 @@ mod tests {
             // rendered: "ab" + "cd"  → "abcd"   (no deletions)
             // match across both → one coalesced range
             let spans = vec![unchanged("ab"), insertion("cd")];
-            assert_eq!(
-                content_match_to_render_ranges(&spans, 1, 3),
-                vec![(1, 3)]
-            );
+            assert_eq!(content_match_to_render_ranges(&spans, 1, 3), vec![(1, 3)]);
         }
 
         #[test]
@@ -3072,10 +2885,7 @@ mod tests {
             // content :         "ab" +         "cd"  → "abcd"     (4 chars)
             // match content [2, 4) ("cd") → render [6, 8)
             let spans = vec![deletion("D1"), unchanged("ab"), deletion("D2"), insertion("cd")];
-            assert_eq!(
-                content_match_to_render_ranges(&spans, 2, 4),
-                vec![(6, 8)]
-            );
+            assert_eq!(content_match_to_render_ranges(&spans, 2, 4), vec![(6, 8)]);
         }
 
         #[test]
@@ -3090,10 +2900,7 @@ mod tests {
             let spans = vec![deletion("café"), insertion("ok")];
             // rendered "caféok" (6 chars), content "ok" (2 chars)
             // match [0, 2) → render [4, 6)
-            assert_eq!(
-                content_match_to_render_ranges(&spans, 0, 2),
-                vec![(4, 6)]
-            );
+            assert_eq!(content_match_to_render_ranges(&spans, 0, 2), vec![(4, 6)]);
         }
     }
 
@@ -3103,35 +2910,37 @@ mod tests {
     /// not on whatever happens to live at those raw render offsets.
     #[test]
     fn search_highlight_aligned_on_inline_mixed_render() {
-        use crate::app::search::{compute_matches, SearchState};
+        use crate::app::search::{SearchState, compute_matches};
         use crate::diff::InlineSpan;
         use crate::ui::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         // Mixed change, fits within terminal width → does not split.
         // inline_spans render as: "ab" + "DEL" + "cd ZZ ef"
         // content (new):           "ab" +         "cd ZZ ef"  → "abcd ZZ ef"
         // Search "ZZ" matches content chars 5-6. Without translation, the
         // bug would highlight chars 5-6 of rendered "abDELcd ZZ ef" = "cd".
-        let mut line = DiffLine::new(
-            LineSource::Committed,
-            "abcd ZZ ef".to_string(),
-            ' ',
-            Some(1),
-        );
+        let mut line = DiffLine::new(LineSource::Committed, "abcd ZZ ef".to_string(), ' ', Some(1));
         line.file_path = Some("test.rs".to_string());
         line.old_content = Some("abDEL ef".to_string());
         line.change_source = Some(LineSource::Committed);
         line.inline_spans = vec![
             InlineSpan { text: "ab".to_string(), source: None, is_deletion: false },
-            InlineSpan { text: "DEL".to_string(), source: Some(LineSource::Committed), is_deletion: true },
-            InlineSpan { text: "cd ZZ ef".to_string(), source: Some(LineSource::Committed), is_deletion: false },
+            InlineSpan {
+                text: "DEL".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "cd ZZ ef".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: false,
+            },
         ];
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs"), line])
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs"), line]).build();
         app.estimate_content_width(80);
 
         let mut s = SearchState::new();
@@ -3149,7 +2958,11 @@ mod tests {
 
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| { view_model.render(f); }).unwrap();
+        terminal
+            .draw(|f| {
+                view_model.render(f);
+            })
+            .unwrap();
 
         let buf = terminal.backend().buffer();
         let offset_y = app.view.content_offset.1 as u16;
@@ -3178,34 +2991,36 @@ mod tests {
     /// produce two visually-disjoint highlight regions, not one shifted region.
     #[test]
     fn search_highlight_split_by_interior_deletion_yields_two_regions() {
-        use crate::app::search::{compute_matches, SearchState};
+        use crate::app::search::{SearchState, compute_matches};
         use crate::diff::InlineSpan;
         use crate::ui::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         // rendered: "ab" + "DEL" + "cd"  → "abDELcd"
         // content :  "ab" +        "cd"  → "abcd"
         // search "abcd" matches all of content; should highlight render
         // ranges [0, 2) ("ab") and [5, 7) ("cd"), skipping "DEL".
-        let mut line = DiffLine::new(
-            LineSource::Committed,
-            "abcd".to_string(),
-            ' ',
-            Some(1),
-        );
+        let mut line = DiffLine::new(LineSource::Committed, "abcd".to_string(), ' ', Some(1));
         line.file_path = Some("test.rs".to_string());
         line.old_content = Some("abDEL".to_string());
         line.change_source = Some(LineSource::Committed);
         line.inline_spans = vec![
             InlineSpan { text: "ab".to_string(), source: None, is_deletion: false },
-            InlineSpan { text: "DEL".to_string(), source: Some(LineSource::Committed), is_deletion: true },
-            InlineSpan { text: "cd".to_string(), source: Some(LineSource::Committed), is_deletion: false },
+            InlineSpan {
+                text: "DEL".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "cd".to_string(),
+                source: Some(LineSource::Committed),
+                is_deletion: false,
+            },
         ];
 
-        let mut app = TestAppBuilder::new()
-            .with_lines(vec![DiffLine::file_header("test.rs"), line])
-            .build();
+        let mut app =
+            TestAppBuilder::new().with_lines(vec![DiffLine::file_header("test.rs"), line]).build();
         app.estimate_content_width(80);
 
         let mut s = SearchState::new();
@@ -3223,7 +3038,11 @@ mod tests {
 
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| { view_model.render(f); }).unwrap();
+        terminal
+            .draw(|f| {
+                view_model.render(f);
+            })
+            .unwrap();
 
         let buf = terminal.backend().buffer();
         let offset_y = app.view.content_offset.1 as u16;

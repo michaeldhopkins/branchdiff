@@ -60,17 +60,10 @@ impl TestRepo {
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("failed to run git");
+    let output =
+        Command::new("git").args(args).current_dir(dir).output().expect("failed to run git");
 
     if !output.status.success() {
-        panic!(
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
+        panic!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
     }
 }

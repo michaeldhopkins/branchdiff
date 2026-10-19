@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use crate::ui::ScreenRowInfo;
 
-use super::selection::Selection;
 use super::ViewMode;
+use super::selection::Selection;
 
 /// View-related state for the diff viewer.
 ///

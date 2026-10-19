@@ -26,7 +26,10 @@ pub enum OutputMode {
 /// clap's `group(multiple = false)` enforces only one can be set.
 #[derive(clap::Args)]
 #[group(multiple = false)]
-#[expect(clippy::struct_excessive_bools, reason = "mutually exclusive clap flags, not independent state")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mutually exclusive clap flags, not independent state"
+)]
 pub struct OutputFlags {
     /// Print diff to stdout and exit (non-interactive mode)
     #[arg(short = 'p', long = "print")]
@@ -168,7 +171,6 @@ mod tests {
         assert!(!parse(&["branchdiff", "--no-auto-fetch"]).auto_fetch());
     }
 
-
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(std::iter::once("branchdiff").chain(args.iter().copied()))
     }
@@ -182,7 +184,9 @@ mod tests {
 
     #[test]
     fn output_flags_exclude_each_other() {
-        for pair in [["--files", "--html"], ["--fingerprint", "--files"], ["--print", "--fingerprint"]] {
+        for pair in
+            [["--files", "--html"], ["--fingerprint", "--files"], ["--print", "--fingerprint"]]
+        {
             assert!(parse(&pair).is_err(), "{pair:?} should conflict");
         }
     }
@@ -226,7 +230,11 @@ mod tests {
     #[test]
     fn version_flag_keeps_uppercase_and_long_aliases() {
         for arg in ["-V", "--version"] {
-            assert_eq!(version_kind(arg), Some(ErrorKind::DisplayVersion), "expected version output for {arg}");
+            assert_eq!(
+                version_kind(arg),
+                Some(ErrorKind::DisplayVersion),
+                "expected version output for {arg}"
+            );
         }
     }
 }

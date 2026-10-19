@@ -46,7 +46,11 @@ mod tests {
 
     fn run(dir: &Path, program: &str, args: &[&str]) {
         let out = Command::new(program).args(args).current_dir(dir).output().unwrap();
-        assert!(out.status.success(), "{program} {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{program} {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     fn available(program: &str) -> bool {
@@ -89,7 +93,9 @@ mod tests {
 
     #[test]
     fn other_modes_are_not_listings() {
-        if !available("git") { return; }
+        if !available("git") {
+            return;
+        }
         let t = git_repo();
         let vcs = crate::vcs::detect(t.path()).unwrap();
         for mode in [OutputMode::Tui, OutputMode::Print, OutputMode::Diff, OutputMode::Html] {
@@ -103,7 +109,9 @@ mod tests {
 
     #[test]
     fn git_files_lists_committed_and_uncommitted_with_counts() {
-        if !available("git") { return; }
+        if !available("git") {
+            return;
+        }
         let t = git_repo();
         std::fs::write(t.path().join("h.txt"), "new\n").unwrap();
         let vcs = crate::vcs::detect(t.path()).unwrap();
@@ -115,7 +123,9 @@ mod tests {
 
     #[test]
     fn git_files_json_names_both_ids() {
-        if !available("git") { return; }
+        if !available("git") {
+            return;
+        }
         let t = git_repo();
         let vcs = crate::vcs::detect(t.path()).unwrap();
         let v: serde_json::Value =
@@ -128,7 +138,9 @@ mod tests {
 
     #[test]
     fn git_fingerprint_moves_with_edits_staging_and_commits_and_otherwise_holds() {
-        if !available("git") { return; }
+        if !available("git") {
+            return;
+        }
         let t = git_repo();
         let d = t.path();
         let vcs = crate::vcs::detect(d).unwrap();
@@ -152,7 +164,9 @@ mod tests {
 
     #[test]
     fn jj_files_includes_the_feature_commit_and_uncommitted_edits() {
-        if !available("jj") { return; }
+        if !available("jj") {
+            return;
+        }
         let t = jj_repo();
         std::fs::write(t.path().join("h.txt"), "dirty\n").unwrap();
         let vcs = crate::vcs::detect(t.path()).unwrap();
@@ -163,14 +177,20 @@ mod tests {
 
     fn operation_count(repo: &Path) -> usize {
         let out = Command::new("jj")
-            .args(["--ignore-working-copy", "op", "log", "--no-graph", "-T", "id.short() ++ \"\\n\""])
-            .current_dir(repo).output().unwrap();
+            .args([
+                "--ignore-working-copy", "op", "log", "--no-graph", "-T", "id.short() ++ \"\\n\"",
+            ])
+            .current_dir(repo)
+            .output()
+            .unwrap();
         String::from_utf8_lossy(&out.stdout).lines().count()
     }
 
     #[test]
     fn jj_fingerprint_tracks_edits_without_recording_an_operation() {
-        if !available("jj") { return; }
+        if !available("jj") {
+            return;
+        }
         let t = jj_repo();
         let d = t.path();
         std::fs::write(d.join("h.txt"), "dirty\n").unwrap();
@@ -190,10 +210,11 @@ mod tests {
         assert_eq!(operation_count(d), before, "polling the fingerprint recorded a jj operation");
     }
 
-
     #[test]
     fn jj_fingerprint_in_a_secondary_workspace_tracks_edits_without_an_operation() {
-        if !available("jj") { return; }
+        if !available("jj") {
+            return;
+        }
         let t = jj_repo();
         run(t.path(), "jj", &["edit", "feature"]);
         let parent = tempfile::tempdir().unwrap();
@@ -212,7 +233,9 @@ mod tests {
     }
     #[test]
     fn jj_fingerprint_moves_when_the_commit_does() {
-        if !available("jj") { return; }
+        if !available("jj") {
+            return;
+        }
         let t = jj_repo();
         let d = t.path();
         let vcs = crate::vcs::detect(d).unwrap();

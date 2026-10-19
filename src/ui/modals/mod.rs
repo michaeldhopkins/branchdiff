@@ -6,10 +6,10 @@ pub use warning::{banner_row_count, draw_warning_banner, draw_warning_banner_wit
 
 pub mod prelude {
     pub use ratatui::{
+        Frame,
         layout::Rect,
         style::{Color, Modifier, Style},
         text::{Line, Span},
         widgets::{Block, Borders, Clear, Paragraph},
-        Frame,
     };
 }

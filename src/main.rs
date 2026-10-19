@@ -11,32 +11,32 @@ mod print;
 
 use branchdiff::app::{self, App, FrameContext};
 use branchdiff::cli::{Cli, OutputMode};
-use branchdiff::startup::{self, DetectFailure};
 use branchdiff::external::{self, ExternalCommand, LaunchMode};
-use clap::Parser;
 use branchdiff::file_events::VcsLockState;
 #[cfg(target_os = "linux")]
 use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::input::AppAction;
 use branchdiff::limits;
-use branchdiff::message::{
-    self, FetchResult, FileEvents, LoopAction, OpenTarget, Repaint, RefreshOutcome, RefreshTrigger,
-    FALLBACK_REFRESH_SECS,
-};
 #[cfg(target_os = "linux")]
 use branchdiff::message::Message;
+use branchdiff::message::{
+    self, FALLBACK_REFRESH_SECS, FetchResult, FileEvents, LoopAction, OpenTarget, RefreshOutcome,
+    RefreshTrigger, Repaint,
+};
+use branchdiff::startup::{self, DetectFailure};
+use branchdiff::ui;
 use branchdiff::update::{
-    classify_error, update, watchdog_timeout_from_env, ErrorClass,
-    RecoveryAction, RefreshState, Timers, UpdateConfig,
+    ErrorClass, RecoveryAction, RefreshState, Timers, UpdateConfig, classify_error, update,
+    watchdog_timeout_from_env,
 };
 use branchdiff::vcs::{self, ComparisonContext, RefreshResult, Vcs, VcsWatchPaths};
-use branchdiff::ui;
+use clap::Parser;
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -44,13 +44,13 @@ use anyhow::{Context, Result};
 use crossterm::{
     event::{self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 #[cfg(any(target_os = "linux", test))]
 use ignore::WalkBuilder;
 use notify::RecursiveMode::{NonRecursive, Recursive};
 use notify::{PollWatcher, RecommendedWatcher};
-use notify_debouncer_mini::{new_debouncer_opt, Config as DebouncerConfig, Debouncer};
+use notify_debouncer_mini::{Config as DebouncerConfig, Debouncer, new_debouncer_opt};
 use ratatui::prelude::*;
 
 /// Wrapper enum to hold either watcher type while keeping the debouncer alive.
@@ -189,11 +189,8 @@ fn vcs_editor_if_unset(app: &App, repo_path: &Path) -> Option<String> {
 
 /// Run a resolved external command, turning any spawn failure into a title flash
 /// rather than an error — a failed open must never tear down the session.
-fn launch_or_flash<B: Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-    cmd: &ExternalCommand,
-) where
+fn launch_or_flash<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, cmd: &ExternalCommand)
+where
     B::Error: Send + Sync + 'static,
 {
     if let Err(e) = run_external(terminal, cmd) {
@@ -244,15 +241,15 @@ impl AnyDebouncer {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let repo_path = cli
-        .path
-        .canonicalize()
-        .context("Failed to resolve repository path")?;
+    let repo_path = cli.path.canonicalize().context("Failed to resolve repository path")?;
 
     // Try to detect VCS - for non-TUI modes, fail immediately if not found
     let detected = match vcs::detect_with_base(&repo_path, cli.base.as_deref()) {
         Ok(vcs) => Some(vcs),
-        Err(e) => match startup::on_detect_failure(vcs::detect_repo_dir(&repo_path).is_some(), cli.output.mode()) {
+        Err(e) => match startup::on_detect_failure(
+            vcs::detect_repo_dir(&repo_path).is_some(),
+            cli.output.mode(),
+        ) {
             DetectFailure::Propagate => return Err(e),
             DetectFailure::NotARepo => anyhow::bail!("Not a git or jj repository"),
             DetectFailure::WaitForRepo => None,
@@ -279,14 +276,18 @@ fn main() -> Result<()> {
                     let data = branchdiff::output::prepare(&mut app);
 
                     for path in startup::images_to_preload(mode, &data, &app.image_cache) {
-                        if let Some(state) = branchdiff::image_diff::load_image_diff(vcs.as_ref(), &path) {
+                        if let Some(state) =
+                            branchdiff::image_diff::load_image_diff(vcs.as_ref(), &path)
+                        {
                             app.image_cache.insert(path, state);
                         }
                     }
 
                     match mode {
                         OutputMode::Print => print::print_diff(&data)?,
-                        OutputMode::Html => html::render_html(&data, &app.image_cache, cli.refresh())?,
+                        OutputMode::Html => {
+                            html::render_html(&data, &app.image_cache, cli.refresh())?
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -318,8 +319,8 @@ fn main() -> Result<()> {
 /// succeeds — surfacing errors on screen so PATH issues are visible.
 fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Result<()> {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::widgets::{Block, Borders, Paragraph};
     use ratatui::layout::Alignment;
+    use ratatui::widgets::{Block, Borders, Paragraph};
 
     let mut guard = TerminalGuard::new()?;
 
@@ -327,10 +328,11 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Res
     // detection of .jj/ or .git/ creation.
     let (watch_tx, watch_rx) = mpsc::channel();
     let _watcher = {
-        use notify::{Watcher, RecursiveMode};
-        let mut watcher = notify::recommended_watcher(move |_res: notify::Result<notify::Event>| {
-            let _ = watch_tx.send(());
-        })?;
+        use notify::{RecursiveMode, Watcher};
+        let mut watcher =
+            notify::recommended_watcher(move |_res: notify::Result<notify::Event>| {
+                let _ = watch_tx.send(());
+            })?;
         watcher.watch(path, RecursiveMode::NonRecursive)?;
         watcher
     };
@@ -354,8 +356,12 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Res
     loop {
         let display_msg = match (&repo_found, &last_error) {
             (None, _) => "Not a repository.\n\nWaiting for git init or jj init...".to_string(),
-            (Some(vcs_type), None) => format!("Repository found (.{vcs_type} detected)\n\nInitializing..."),
-            (Some(vcs_type), Some(err)) => format!("Repository found (.{vcs_type} detected)\n\nInitializing...\n\n{err}"),
+            (Some(vcs_type), None) => {
+                format!("Repository found (.{vcs_type} detected)\n\nInitializing...")
+            }
+            (Some(vcs_type), Some(err)) => {
+                format!("Repository found (.{vcs_type} detected)\n\nInitializing...\n\n{err}")
+            }
         };
 
         guard.terminal.draw(|f| {
@@ -389,9 +395,7 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Res
         }
 
         // Phase 1: check for VCS directory existence (filesystem only, no commands).
-        if repo_found.is_none()
-            && (watcher_fired || last_poll.elapsed() >= poll_interval)
-        {
+        if repo_found.is_none() && (watcher_fired || last_poll.elapsed() >= poll_interval) {
             last_poll = Instant::now();
             if let Some((vcs_type, _)) = vcs::detect_repo_dir(path) {
                 repo_found = Some(vcs_type);
@@ -400,9 +404,7 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Res
         }
 
         // Phase 2: repo directory exists — try full detection with commands.
-        if repo_found.is_some()
-            && last_detect_attempt.elapsed() >= retry_delay
-        {
+        if repo_found.is_some() && last_detect_attempt.elapsed() >= retry_delay {
             last_detect_attempt = Instant::now();
             match vcs::detect_with_base(path, base) {
                 Ok(detected) => {
@@ -455,9 +457,8 @@ fn run_main_app(
 
         // Setup file watcher (recreated on restart — old watcher is dropped)
         let (file_tx, file_rx) = mpsc::channel();
-        let debouncer_config = DebouncerConfig::default()
-            .with_timeout(Duration::from_millis(100))
-            .with_notify_config(
+        let debouncer_config =
+            DebouncerConfig::default().with_timeout(Duration::from_millis(100)).with_notify_config(
                 notify::Config::default().with_poll_interval(Duration::from_millis(500)),
             );
 
@@ -465,8 +466,7 @@ fn run_main_app(
             AnyDebouncer::Poll(new_debouncer_opt::<_, PollWatcher>(debouncer_config, file_tx)?)
         } else {
             AnyDebouncer::Recommended(new_debouncer_opt::<_, RecommendedWatcher>(
-                debouncer_config,
-                file_tx,
+                debouncer_config, file_tx,
             )?)
         };
 
@@ -476,10 +476,8 @@ fn run_main_app(
         let needs_fallback_refresh =
             limits::check_watch_warning(&watcher_metrics, watch_limit).is_some();
         if needs_fallback_refresh {
-            app.performance_warning = Some(format!(
-                "Large repo: refreshing every {}s",
-                FALLBACK_REFRESH_SECS
-            ));
+            app.performance_warning =
+                Some(format!("Large repo: refreshing every {}s", FALLBACK_REFRESH_SECS));
         }
 
         let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshOutcome>();
@@ -506,16 +504,14 @@ fn run_main_app(
 
         match loop_action {
             LoopAction::Quit => break,
-            LoopAction::RestartVcs => {
-                match vcs::detect_with_base(&repo_root, base) {
-                    Ok(new_vcs) => {
-                        repo_root = new_vcs.repo_path().to_path_buf();
-                        detected = new_vcs;
-                        continue;
-                    }
-                    Err(_) => break,
+            LoopAction::RestartVcs => match vcs::detect_with_base(&repo_root, base) {
+                Ok(new_vcs) => {
+                    repo_root = new_vcs.repo_path().to_path_buf();
+                    detected = new_vcs;
+                    continue;
                 }
-            }
+                Err(_) => break,
+            },
             LoopAction::Continue => unreachable!("run_app should not return Continue"),
         }
     }
@@ -707,11 +703,8 @@ mod startup_tests {
     #[test]
     fn apply_initial_refresh_failure_surfaces_banner_with_stale_hint() {
         let msg = "Error: The working copy is stale. Hint: Run `jj workspace update-stale`.";
-        let app = apply_initial_refresh(
-            Err(msg.to_string()),
-            PathBuf::from("/tmp/r"),
-            test_comparison(),
-        );
+        let app =
+            apply_initial_refresh(Err(msg.to_string()), PathBuf::from("/tmp/r"), test_comparison());
         assert_eq!(app.error.as_deref(), Some(msg));
         let hint = app.pending_recovery.expect("stale message should offer recovery");
         assert_eq!(hint.action, RecoveryAction::JjUpdateStale);
@@ -743,11 +736,8 @@ mod startup_tests {
             to_label: "to-label".to_string(),
             ..test_comparison()
         };
-        let app = apply_initial_refresh(
-            Err("stale".to_string()),
-            PathBuf::from("/tmp/r"),
-            comparison,
-        );
+        let app =
+            apply_initial_refresh(Err("stale".to_string()), PathBuf::from("/tmp/r"), comparison);
         assert_eq!(app.comparison.from_label, "from-label");
         assert_eq!(app.comparison.to_label, "to-label");
     }
@@ -810,20 +800,18 @@ fn spawn_refresh(
     refresh_tx: mpsc::Sender<RefreshOutcome>,
     cancel_flag: Arc<AtomicBool>,
 ) {
-    thread::spawn(move || {
-        match vcs.refresh(&cancel_flag) {
-            Ok(mut result) => {
-                result.revision_id = vcs.current_revision_id().ok();
-                let _ = refresh_tx.send(RefreshOutcome::success(result));
-            }
-            Err(e) => {
-                let outcome = if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                    RefreshOutcome::Cancelled
-                } else {
-                    RefreshOutcome::Error(format!("{e:#}"))
-                };
-                let _ = refresh_tx.send(outcome);
-            }
+    thread::spawn(move || match vcs.refresh(&cancel_flag) {
+        Ok(mut result) => {
+            result.revision_id = vcs.current_revision_id().ok();
+            let _ = refresh_tx.send(RefreshOutcome::success(result));
+        }
+        Err(e) => {
+            let outcome = if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                RefreshOutcome::Cancelled
+            } else {
+                RefreshOutcome::Error(format!("{e:#}"))
+            };
+            let _ = refresh_tx.send(outcome);
         }
     });
 }
@@ -896,9 +884,8 @@ where
                 watch_new_directories(watcher, vcs.repo_path(), events);
 
                 // When .gitignore changes, add watches for newly visible directories
-                let gitignore_changed = events
-                    .iter()
-                    .any(|e| GitignoreFilter::is_gitignore_file(&e.path));
+                let gitignore_changed =
+                    events.iter().any(|e| GitignoreFilter::is_gitignore_file(&e.path));
                 if gitignore_changed {
                     add_watches_for_visible_directories(watcher, vcs.repo_path(), watch_limit);
                 }
@@ -907,15 +894,8 @@ where
 
         let mut needs_redraw = false;
         for msg in messages {
-            let result = update(
-                msg,
-                app,
-                &mut refresh_state,
-                &mut vcs_lock,
-                &mut timers,
-                &config,
-                &*vcs,
-            );
+            let result =
+                update(msg, app, &mut refresh_state, &mut vcs_lock, &mut timers, &config, &*vcs);
 
             needs_redraw |= result.needs_redraw;
 
@@ -934,11 +914,7 @@ where
                     RefreshTrigger::Full => {
                         vcs.set_diff_base(app.diff_base);
                         let cancel_flag = refresh_state.start();
-                        spawn_refresh(
-                            vcs.clone(),
-                            refresh_tx.clone(),
-                            cancel_flag,
-                        );
+                        spawn_refresh(vcs.clone(), refresh_tx.clone(), cancel_flag);
                     }
                     RefreshTrigger::SingleFile(file_path) => {
                         refresh_state.start_single_file();
@@ -1384,7 +1360,12 @@ mod tests {
     fn changed(paths: &[PathBuf]) -> Vec<notify_debouncer_mini::DebouncedEvent> {
         paths
             .iter()
-            .map(|p| notify_debouncer_mini::DebouncedEvent::new(p.clone(), notify_debouncer_mini::DebouncedEventKind::Any))
+            .map(|p| {
+                notify_debouncer_mini::DebouncedEvent::new(
+                    p.clone(),
+                    notify_debouncer_mini::DebouncedEventKind::Any,
+                )
+            })
             .collect()
     }
 
@@ -1427,7 +1408,10 @@ mod tests {
 
         let mut watched: Vec<_> = watcher.watched.iter().map(|(p, _)| p.clone()).collect();
         watched.sort();
-        assert_eq!(watched, vec![root.to_path_buf(), root.join("a"), root.join("b"), root.join("c")]);
+        assert_eq!(
+            watched,
+            vec![root.to_path_buf(), root.join("a"), root.join("b"), root.join("c")]
+        );
     }
 
     #[test]
@@ -1452,9 +1436,8 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let temp_dir = TempDir::new().unwrap();
 
-        let config = DebouncerConfig::default()
-            .with_timeout(Duration::from_millis(100))
-            .with_notify_config(
+        let config =
+            DebouncerConfig::default().with_timeout(Duration::from_millis(100)).with_notify_config(
                 notify::Config::default().with_poll_interval(Duration::from_millis(500)),
             );
 
@@ -1473,9 +1456,8 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let temp_dir = TempDir::new().unwrap();
 
-        let config = DebouncerConfig::default()
-            .with_timeout(Duration::from_millis(100))
-            .with_notify_config(
+        let config =
+            DebouncerConfig::default().with_timeout(Duration::from_millis(100)).with_notify_config(
                 notify::Config::default().with_poll_interval(Duration::from_millis(500)),
             );
 
@@ -1563,26 +1545,61 @@ mod tests {
     struct IdleVcs(PathBuf);
 
     impl Vcs for IdleVcs {
-        fn repo_path(&self) -> &Path { &self.0 }
-        fn comparison_context(&self) -> Result<ComparisonContext> { anyhow::bail!("idle") }
-        fn refresh(&self, _: &Arc<AtomicBool>) -> Result<RefreshResult> { anyhow::bail!("idle") }
-        fn single_file_diff(&self, _: &str) -> Option<branchdiff::diff::FileDiff> { None }
-        fn base_identifier(&self) -> Result<String> { anyhow::bail!("idle") }
-        fn base_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
-        fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { Ok(None) }
-        fn fetch(&self) -> Result<()> { anyhow::bail!("idle") }
-        fn has_conflicts(&self) -> Result<bool> { Ok(false) }
-        fn is_locked(&self) -> bool { false }
-        fn watch_paths(&self) -> VcsWatchPaths { VcsWatchPaths { files: vec![], recursive_dirs: vec![] } }
-        fn classify_event(&self, _: &Path) -> vcs::VcsEventType { vcs::VcsEventType::Source }
-        fn backend(&self) -> vcs::VcsBackend { vcs::VcsBackend::Git }
-        fn current_revision_id(&self) -> Result<String> { Ok("idle".to_string()) }
+        fn repo_path(&self) -> &Path {
+            &self.0
+        }
+        fn comparison_context(&self) -> Result<ComparisonContext> {
+            anyhow::bail!("idle")
+        }
+        fn refresh(&self, _: &Arc<AtomicBool>) -> Result<RefreshResult> {
+            anyhow::bail!("idle")
+        }
+        fn single_file_diff(&self, _: &str) -> Option<branchdiff::diff::FileDiff> {
+            None
+        }
+        fn base_identifier(&self) -> Result<String> {
+            anyhow::bail!("idle")
+        }
+        fn base_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+        fn fetch(&self) -> Result<()> {
+            anyhow::bail!("idle")
+        }
+        fn has_conflicts(&self) -> Result<bool> {
+            Ok(false)
+        }
+        fn is_locked(&self) -> bool {
+            false
+        }
+        fn watch_paths(&self) -> VcsWatchPaths {
+            VcsWatchPaths { files: vec![], recursive_dirs: vec![] }
+        }
+        fn classify_event(&self, _: &Path) -> vcs::VcsEventType {
+            vcs::VcsEventType::Source
+        }
+        fn backend(&self) -> vcs::VcsBackend {
+            vcs::VcsBackend::Git
+        }
+        fn current_revision_id(&self) -> Result<String> {
+            Ok("idle".to_string())
+        }
     }
 
     /// An app showing `count` numbered lines, `line 1` at the top.
     fn app_with_lines(count: usize) -> App {
         let lines = (1..=count)
-            .map(|n| branchdiff::DiffLine::new(branchdiff::LineSource::Base, format!("line {n}"), ' ', Some(n)))
+            .map(|n| {
+                branchdiff::DiffLine::new(
+                    branchdiff::LineSource::Base,
+                    format!("line {n}"),
+                    ' ',
+                    Some(n),
+                )
+            })
             .collect();
         App::new_for_bench(lines)
     }
@@ -1590,7 +1607,11 @@ mod tests {
     /// Run the event loop over `script`, one terminal event per iteration.
     /// When the script runs out the input source fails, which ends the loop
     /// with that error, so a script that never quits still returns.
-    fn run_script(terminal: &mut Terminal<TestBackend>, app: &mut App, script: Vec<event::Event>) -> Result<LoopAction> {
+    fn run_script(
+        terminal: &mut Terminal<TestBackend>,
+        app: &mut App,
+        script: Vec<event::Event>,
+    ) -> Result<LoopAction> {
         let mut script = script.into_iter();
         let (_file_tx, file_rx) = mpsc::channel();
         let (refresh_tx, refresh_rx) = mpsc::channel();
@@ -1616,7 +1637,9 @@ mod tests {
     fn screen(terminal: &Terminal<TestBackend>) -> String {
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
-            .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n")
+            .map(|y| {
+                (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n"
+            })
             .collect()
     }
 
@@ -1681,7 +1704,12 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
         let lines = (1..=20)
             .map(|n| {
-                let line = branchdiff::DiffLine::new(branchdiff::LineSource::Unstaged, format!("line {n} new"), '+', Some(n));
+                let line = branchdiff::DiffLine::new(
+                    branchdiff::LineSource::Unstaged,
+                    format!("line {n} new"),
+                    '+',
+                    Some(n),
+                );
                 if n == 8 { line.with_old_content("line 8 old") } else { line }
             })
             .collect();

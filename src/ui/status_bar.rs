@@ -1,14 +1,14 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
+use super::selection::{apply_selection_to_span, get_line_selection_range};
 use crate::app::{App, FrameContext, ViewMode};
 use crate::vcs::DiffBase;
-use super::selection::{apply_selection_to_span, get_line_selection_range};
 
 /// View mode indicator for the status bar (e.g., " [context]", " [commit knmq]")
 fn view_mode_label(app: &App) -> String {
@@ -25,11 +25,7 @@ fn view_mode_label(app: &App) -> String {
 
 /// Get the repo directory name for display
 fn repo_name(app: &App) -> String {
-    app.repo_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("repo")
-        .to_string()
+    app.repo_path.file_name().and_then(|n| n.to_str()).unwrap_or("repo").to_string()
 }
 
 fn branch_info(app: &App) -> String {
@@ -81,11 +77,7 @@ pub fn status_bar_height(app: &App, ctx: &FrameContext, width: u16) -> u16 {
     let full_status = format!("{} | {}", branch_info, stats);
 
     // Check if everything fits on one line
-    if full_status.len() + help.len() + 2 <= width {
-        1
-    } else {
-        2
-    }
+    if full_status.len() + help.len() + 2 <= width { 1 } else { 2 }
 }
 
 /// Build stats spans with colored +/- counts
@@ -109,10 +101,7 @@ fn build_stats_spans(app: &App, ctx: &FrameContext) -> Vec<Span<'static>> {
 
     // Add performance warning if present
     if let Some(ref warning) = app.performance_warning {
-        spans.push(Span::styled(
-            format!(" [{}]", warning),
-            Style::default().fg(Color::Yellow),
-        ));
+        spans.push(Span::styled(format!(" [{}]", warning), Style::default().fg(Color::Yellow)));
     }
 
     spans
@@ -124,12 +113,7 @@ fn build_full_status_spans(app: &App, ctx: &FrameContext) -> Vec<Span<'static>> 
     let file_count = app.files.len();
     let mode = view_mode_label(app);
 
-    let mut spans = vec![
-        Span::styled(
-            branch_info.clone(),
-            Style::default().fg(Color::Cyan),
-        ),
-    ];
+    let mut spans = vec![Span::styled(branch_info.clone(), Style::default().fg(Color::Cyan))];
     // Add colored behind-count if diverged
     if let Some(ref div) = app.comparison.divergence
         && div.behind_count > 0
@@ -158,10 +142,7 @@ fn build_full_status_spans(app: &App, ctx: &FrameContext) -> Vec<Span<'static>> 
 
     // Add performance warning if present
     if let Some(ref warning) = app.performance_warning {
-        spans.push(Span::styled(
-            format!(" [{}]", warning),
-            Style::default().fg(Color::Yellow),
-        ));
+        spans.push(Span::styled(format!(" [{}]", warning), Style::default().fg(Color::Yellow)));
     }
 
     spans
@@ -182,7 +163,11 @@ pub fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
 
 /// Apply selection highlighting to a status bar line.
 /// `virtual_row` is `row_map.len() + line_index` — the virtual row index used by the selection system.
-fn apply_status_bar_selection(line: Line<'static>, selection: &Option<crate::app::Selection>, virtual_row: usize) -> Line<'static> {
+fn apply_status_bar_selection(
+    line: Line<'static>,
+    selection: &Option<crate::app::Selection>,
+    virtual_row: usize,
+) -> Line<'static> {
     let Some((sel_start, sel_end)) = get_line_selection_range(selection, virtual_row) else {
         return line;
     };
@@ -261,8 +246,10 @@ pub fn draw_status_bar(frame: &mut Frame, app: &App, ctx: &FrameContext, area: R
         };
 
         let row_map_len = app.view.row_map.len();
-        let line1_content = apply_status_bar_selection(line1_content, &app.view.selection, row_map_len);
-        let line2_content = apply_status_bar_selection(line2_content, &app.view.selection, row_map_len + 1);
+        let line1_content =
+            apply_status_bar_selection(line1_content, &app.view.selection, row_map_len);
+        let line2_content =
+            apply_status_bar_selection(line2_content, &app.view.selection, row_map_len + 1);
 
         let paragraph = Paragraph::new(vec![line1_content, line2_content]);
         frame.render_widget(paragraph, area);
@@ -344,11 +331,8 @@ pub fn status_bar_plain_text(app: &App, ctx: &FrameContext, width: u16) -> Vec<S
             format!("{}{}{}", truncated, " ".repeat(padding), help_short)
         };
 
-        let line2 = if stats.len() <= width {
-            stats
-        } else {
-            truncate_with_ellipsis(&stats, width)
-        };
+        let line2 =
+            if stats.len() <= width { stats } else { truncate_with_ellipsis(&stats, width) };
 
         vec![line1, line2]
     } else {
@@ -390,8 +374,8 @@ mod tests {
     /// was never on screen.
     #[test]
     fn the_plain_text_mirror_matches_what_is_painted() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         // Widths chosen to reach each layout arm: a wide single line, the
         // two-line split, and narrow enough that the stats line has to be
@@ -440,8 +424,8 @@ mod tests {
     /// arm becomes live and this fails.
     #[test]
     fn a_one_line_status_bar_always_shows_the_full_help() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let app = create_status_bar_test_app(Some("feature"), "main", 3);
         let ctx = FrameContext::new(&app);
@@ -455,9 +439,7 @@ mod tests {
 
             let backend = TestBackend::new(width, 1);
             let mut terminal = Terminal::new(backend).unwrap();
-            terminal
-                .draw(|f| draw_status_bar(f, &app, &ctx, Rect::new(0, 0, width, 1)))
-                .unwrap();
+            terminal.draw(|f| draw_status_bar(f, &app, &ctx, Rect::new(0, 0, width, 1))).unwrap();
 
             let buf = terminal.backend().buffer();
             let painted: String = (0..width).map(|x| buf[(x, 0)].symbol()).collect();
@@ -490,10 +472,8 @@ mod tests {
 
     #[test]
     fn test_branch_info_uses_head_when_no_current_branch() {
-        let app = TestAppBuilder::new()
-            .with_current_branch(None)
-            .with_base_branch("master")
-            .build();
+        let app =
+            TestAppBuilder::new().with_current_branch(None).with_base_branch("master").build();
 
         let spans = build_full_status_spans(&app, &FrameContext::new(&app));
         let combined: String = spans.iter().map(|s| s.content.to_string()).collect();
@@ -516,10 +496,8 @@ mod tests {
             .build();
 
         let info = branch_info(&app);
-        assert!(info.contains("[2/3]"),
-            "linear stack should show [2/3], got: {info}");
-        assert!(!info.contains("head"),
-            "linear stack should not show head count, got: {info}");
+        assert!(info.contains("[2/3]"), "linear stack should show [2/3], got: {info}");
+        assert!(!info.contains("head"), "linear stack should not show head count, got: {info}");
     }
 
     #[test]
@@ -533,8 +511,10 @@ mod tests {
             .build();
 
         let info = branch_info(&app);
-        assert!(info.contains("[3/5 head 1/2]"),
-            "branching stack should show [3/5 head 1/2], got: {info}");
+        assert!(
+            info.contains("[3/5 head 1/2]"),
+            "branching stack should show [3/5 head 1/2], got: {info}"
+        );
     }
 
     #[test]
@@ -545,8 +525,10 @@ mod tests {
             .build();
 
         let info = branch_info(&app);
-        assert!(info.ends_with("[fork]") || info.ends_with("[tip]"),
-            "without stack position, branch info should end with diff base indicator, got: {info}");
+        assert!(
+            info.ends_with("[fork]") || info.ends_with("[tip]"),
+            "without stack position, branch info should end with diff base indicator, got: {info}"
+        );
     }
 
     #[test]
@@ -593,9 +575,7 @@ mod tests {
 
     #[test]
     fn test_view_mode_label_commit_only_includes_to_label() {
-        let mut app = TestAppBuilder::new()
-            .with_current_branch(Some("knmq"))
-            .build();
+        let mut app = TestAppBuilder::new().with_current_branch(Some("knmq")).build();
         app.view.view_mode = crate::app::ViewMode::CommitOnly;
 
         assert_eq!(view_mode_label(&app), " [commit knmq]");
@@ -616,9 +596,7 @@ mod tests {
 
     #[test]
     fn test_view_mode_label_commit_only_with_bookmarks() {
-        let mut app = TestAppBuilder::new()
-            .with_current_branch(Some("knmq (main)"))
-            .build();
+        let mut app = TestAppBuilder::new().with_current_branch(Some("knmq (main)")).build();
         app.view.view_mode = crate::app::ViewMode::CommitOnly;
         assert_eq!(view_mode_label(&app), " [commit knmq (main)]");
     }
@@ -706,11 +684,19 @@ mod tests {
 
         let threshold = full_status.len() + help.len() + 2;
 
-        assert_eq!(status_bar_height(&app, &FrameContext::new(&app), threshold as u16), 1,
-            "At threshold width {} should use 1 line", threshold);
+        assert_eq!(
+            status_bar_height(&app, &FrameContext::new(&app), threshold as u16),
+            1,
+            "At threshold width {} should use 1 line",
+            threshold
+        );
 
-        assert_eq!(status_bar_height(&app, &FrameContext::new(&app), (threshold - 1) as u16), 2,
-            "At width {} (one below threshold) should use 2 lines", threshold - 1);
+        assert_eq!(
+            status_bar_height(&app, &FrameContext::new(&app), (threshold - 1) as u16),
+            2,
+            "At width {} (one below threshold) should use 2 lines",
+            threshold - 1
+        );
     }
 
     #[test]

@@ -174,9 +174,7 @@ mod tests {
 
     #[test]
     fn test_style_to_ansi_with_modifiers() {
-        let style = Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::BOLD);
+        let style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
         let ansi = style_to_ansi(style);
         assert!(ansi.contains("\x1b[31m"));
         assert!(ansi.contains("\x1b[1m"));
@@ -184,9 +182,7 @@ mod tests {
 
     #[test]
     fn test_style_to_ansi_with_dim() {
-        let style = Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::DIM);
+        let style = Style::default().fg(Color::Red).add_modifier(Modifier::DIM);
         let ansi = style_to_ansi(style);
         assert!(ansi.contains("\x1b[31m"));
         assert!(ansi.contains("\x1b[2m"));

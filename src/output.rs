@@ -70,9 +70,7 @@ fn filter_with_elided(lines: &[DiffLine], show: &[bool]) -> Vec<DiffLine> {
     }
 
     if let Some(last) = last_shown {
-        let trailing_hidden = (last + 1..lines.len())
-            .filter(|&i| !show[i])
-            .count();
+        let trailing_hidden = (last + 1..lines.len()).filter(|&i| !show[i]).count();
         if trailing_hidden > 0 {
             result.push(DiffLine::elided(trailing_hidden));
         }
@@ -121,25 +119,15 @@ pub fn prepare(app: &mut App) -> OutputData {
 
             let collapsed = app.view.collapsed_files.contains(&path);
 
-            Some(OutputFile {
-                path,
-                lines: filtered,
-                additions,
-                deletions,
-                collapsed,
-            })
+            Some(OutputFile { path, lines: filtered, additions, deletions, collapsed })
         })
         .collect();
 
     let total_additions = files.iter().map(|f| f.additions).sum();
     let total_deletions = files.iter().map(|f| f.deletions).sum();
 
-    let repo_name = app
-        .repo_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("repo")
-        .to_string();
+    let repo_name =
+        app.repo_path.file_name().and_then(|n| n.to_str()).unwrap_or("repo").to_string();
 
     OutputData {
         repo_name,
@@ -170,7 +158,7 @@ fn apply_view_mode(lines: &[DiffLine], view_mode: &crate::app::ViewMode) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::{compute_four_way_diff, DiffInput, DiffLine, FileDiff};
+    use crate::diff::{DiffInput, DiffLine, FileDiff, compute_four_way_diff};
     use crate::test_support::TestAppBuilder;
 
     #[test]
@@ -271,5 +259,4 @@ mod tests {
         let result = apply_view_mode(&lines, &crate::app::ViewMode::Full);
         assert_eq!(result.len(), 3);
     }
-
 }

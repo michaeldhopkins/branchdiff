@@ -207,12 +207,7 @@ mod tests {
     }
 
     fn mouse_event(kind: MouseEventKind) -> Event {
-        Event::Mouse(MouseEvent {
-            kind,
-            column: 0,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        })
+        Event::Mouse(MouseEvent { kind, column: 0, row: 0, modifiers: KeyModifiers::NONE })
     }
 
     // Quit tests
@@ -233,7 +228,6 @@ mod tests {
         let event = key_event(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(handle_event(event), AppAction::CopyOrQuit);
     }
-
 
     #[test]
     fn test_scroll_up_with_arrow() {

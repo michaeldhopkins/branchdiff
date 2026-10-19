@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use crate::diff::{DiffLine, FileDiff, LineSource};
 
-use super::{vcs_thread_pool, PARALLEL_THRESHOLD};
+use super::{PARALLEL_THRESHOLD, vcs_thread_pool};
 
 // Working-copy file access lives in vcs-runner (the shared VCS layer): reading
 // the working side of a diff from disk — so jj never snapshots to surface
@@ -21,7 +21,10 @@ pub(crate) fn read_working_file(repo_path: &Path, file_path: &str) -> Result<Opt
 }
 
 /// Bytes variant of [`read_working_file`] (for image/binary handling).
-pub(crate) fn read_working_file_bytes(repo_path: &Path, file_path: &str) -> Result<Option<Vec<u8>>> {
+pub(crate) fn read_working_file_bytes(
+    repo_path: &Path,
+    file_path: &str,
+) -> Result<Option<Vec<u8>>> {
     Ok(vcs_runner::read_working_file_bytes(repo_path, file_path)?)
 }
 
@@ -33,8 +36,12 @@ pub(crate) fn working_file_is_binary(repo_path: &Path, file_path: &str) -> bool 
 /// Result of processing a single file in a VCS refresh.
 pub(crate) enum FileProcessResult {
     Diff(FileDiff),
-    Binary { path: String },
-    Image { path: String },
+    Binary {
+        path: String,
+    },
+    Image {
+        path: String,
+    },
     /// Skipped because the refresh was cancelled before this file ran. Carries
     /// no diff data — callers throw the entire batch away once they observe
     /// the cancel flag, so the empty payload never reaches the UI.
@@ -60,12 +67,8 @@ pub(crate) fn assemble_results(results: Vec<FileProcessResult>) -> AssembledDiff
             }
             FileProcessResult::Binary { path } => {
                 let header = DiffLine::file_header(&path);
-                let marker = DiffLine::new(
-                    LineSource::Base,
-                    "[binary file]".to_string(),
-                    ' ',
-                    None,
-                );
+                let marker =
+                    DiffLine::new(LineSource::Base, "[binary file]".to_string(), ' ', None);
                 files.push(FileDiff::new(vec![header, marker]));
             }
             FileProcessResult::Image { path } => {
@@ -108,11 +111,7 @@ where
     F: Fn(&T) -> FileProcessResult + Sync,
 {
     let guarded = |item: &T| -> FileProcessResult {
-        if cancel.load(Ordering::Relaxed) {
-            FileProcessResult::Cancelled
-        } else {
-            process(item)
-        }
+        if cancel.load(Ordering::Relaxed) { FileProcessResult::Cancelled } else { process(item) }
     };
 
     if items.len() >= PARALLEL_THRESHOLD {
@@ -129,13 +128,8 @@ mod tests {
 
     fn diff_result(path: &str) -> FileProcessResult {
         FileProcessResult::Diff(FileDiff::new(vec![
-                DiffLine::file_header(path),
-                DiffLine::new(
-                    LineSource::Base,
-                    "content".to_string(),
-                    ' ',
-                    None,
-                ),
+            DiffLine::file_header(path),
+            DiffLine::new(LineSource::Base, "content".to_string(), ' ', None),
         ]))
     }
 
@@ -143,12 +137,8 @@ mod tests {
     fn test_assemble_diff_results() {
         let results = vec![
             diff_result("src/a.rs"),
-            FileProcessResult::Binary {
-                path: "data.bin".to_string(),
-            },
-            FileProcessResult::Image {
-                path: "logo.png".to_string(),
-            },
+            FileProcessResult::Binary { path: "data.bin".to_string() },
+            FileProcessResult::Image { path: "logo.png".to_string() },
         ];
 
         let assembled = assemble_results(results);
@@ -167,9 +157,7 @@ mod tests {
 
     #[test]
     fn test_assemble_binary_creates_header_and_marker() {
-        let results = vec![FileProcessResult::Binary {
-            path: "data.bin".to_string(),
-        }];
+        let results = vec![FileProcessResult::Binary { path: "data.bin".to_string() }];
 
         let assembled = assemble_results(results);
         assert_eq!(assembled.files.len(), 1);
@@ -177,18 +165,13 @@ mod tests {
 
         let file = &assembled.files[0];
         assert_eq!(file.lines.len(), 2);
-        assert_eq!(
-            file.lines[0].file_path.as_deref(),
-            Some("data.bin"),
-        );
+        assert_eq!(file.lines[0].file_path.as_deref(), Some("data.bin"),);
         assert_eq!(file.lines[1].content, "[binary file]");
     }
 
     #[test]
     fn test_assemble_image_creates_header_and_marker() {
-        let results = vec![FileProcessResult::Image {
-            path: "logo.png".to_string(),
-        }];
+        let results = vec![FileProcessResult::Image { path: "logo.png".to_string() }];
 
         let assembled = assemble_results(results);
         assert_eq!(assembled.files.len(), 1);
@@ -196,10 +179,7 @@ mod tests {
 
         let file = &assembled.files[0];
         assert_eq!(file.lines.len(), 2);
-        assert_eq!(
-            file.lines[0].file_path.as_deref(),
-            Some("logo.png"),
-        );
+        assert_eq!(file.lines[0].file_path.as_deref(), Some("logo.png"),);
         assert_eq!(file.lines[1].content, "[image]");
     }
 
@@ -234,8 +214,11 @@ mod tests {
             diff_result(path)
         });
 
-        assert_eq!(invoked.load(Ordering::Relaxed), 0,
-            "per-file processor must not be called when cancel is pre-set");
+        assert_eq!(
+            invoked.load(Ordering::Relaxed),
+            0,
+            "per-file processor must not be called when cancel is pre-set"
+        );
         assert_eq!(results.len(), 3);
         assert!(matches!(results[0], FileProcessResult::Cancelled));
         assert!(matches!(results[1], FileProcessResult::Cancelled));

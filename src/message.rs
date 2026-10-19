@@ -9,8 +9,8 @@ use std::sync::mpsc;
 use crossterm::event::Event;
 use notify_debouncer_mini::DebouncedEvent;
 
-use crate::vcs::RefreshResult;
 use crate::diff::FileDiff;
+use crate::vcs::RefreshResult;
 
 /// User input actions (from keyboard/mouse).
 /// Re-exported from input module for convenience.
@@ -202,12 +202,11 @@ mod tests {
     fn test_message_variants() {
         // Verify all message variants can be constructed
         let _input = Message::Input(AppAction::Quit);
-        let _refresh = Message::RefreshCompleted(Box::new(RefreshOutcome::Error("test".to_string())));
+        let _refresh =
+            Message::RefreshCompleted(Box::new(RefreshOutcome::Error("test".to_string())));
         let _file = Message::FileChanged(vec![]);
-        let _fetch = Message::FetchCompleted(FetchResult {
-            has_conflicts: false,
-            new_merge_base: None,
-        });
+        let _fetch =
+            Message::FetchCompleted(FetchResult { has_conflicts: false, new_merge_base: None });
         let _tick = Message::Tick;
     }
 
@@ -224,10 +223,8 @@ mod tests {
 
     #[test]
     fn test_fetch_result_with_conflicts() {
-        let result = FetchResult {
-            has_conflicts: true,
-            new_merge_base: Some("abc123".to_string()),
-        };
+        let result =
+            FetchResult { has_conflicts: true, new_merge_base: Some("abc123".to_string()) };
         assert!(result.has_conflicts);
         assert_eq!(result.new_merge_base, Some("abc123".to_string()));
     }
@@ -263,7 +260,9 @@ mod tests {
         }
 
         fn collect(&self, input: Option<Event>, search_input_active: bool) -> Vec<Message> {
-            collect_messages(input, &self.file_rx, &self.refresh_rx, &self.fetch_rx, search_input_active)
+            collect_messages(
+                input, &self.file_rx, &self.refresh_rx, &self.fetch_rx, search_input_active,
+            )
         }
     }
 
@@ -347,8 +346,12 @@ mod tests {
         sources.refresh_tx.send(RefreshOutcome::Error("second".to_string())).unwrap();
 
         let first = sources.collect(None, false);
-        assert!(matches!(first.as_slice(), [Message::RefreshCompleted(o), Message::Tick] if matches!(**o, RefreshOutcome::Cancelled)));
+        assert!(
+            matches!(first.as_slice(), [Message::RefreshCompleted(o), Message::Tick] if matches!(**o, RefreshOutcome::Cancelled))
+        );
         let second = sources.collect(None, false);
-        assert!(matches!(second.as_slice(), [Message::RefreshCompleted(o), Message::Tick] if matches!(**o, RefreshOutcome::Error(_))));
+        assert!(
+            matches!(second.as_slice(), [Message::RefreshCompleted(o), Message::Tick] if matches!(**o, RefreshOutcome::Error(_)))
+        );
     }
 }

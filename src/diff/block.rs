@@ -1,5 +1,5 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
@@ -119,12 +119,7 @@ pub fn extract_blocks(lines: &mut [DiffLine]) -> Vec<ChangeBlock> {
     blocks
 }
 
-fn finalize_block(
-    lines: &mut [DiffLine],
-    start: usize,
-    end: usize,
-    blocks: &mut Vec<ChangeBlock>,
-) {
+fn finalize_block(lines: &mut [DiffLine], start: usize, end: usize, blocks: &mut Vec<ChangeBlock>) {
     if start >= end {
         return;
     }
@@ -142,10 +137,7 @@ fn finalize_block(
         return;
     }
     let range = trimmed_start..trimmed_end;
-    let change_count = lines[range.clone()]
-        .iter()
-        .filter(|l| is_change_line(l))
-        .count();
+    let change_count = lines[range.clone()].iter().filter(|l| is_change_line(l)).count();
     if change_count == 0 {
         return;
     }
@@ -160,12 +152,7 @@ fn finalize_block(
         }
     }
 
-    blocks.push(ChangeBlock {
-        range,
-        kind,
-        content_hash: hash,
-        change_count,
-    });
+    blocks.push(ChangeBlock { range, kind, content_hash: hash, change_count });
 }
 
 /// A matched pair of blocks: code deleted in one place and added in another.
@@ -188,10 +175,7 @@ pub fn match_blocks(files: &mut [FileDiff]) -> Vec<BlockMatch> {
     for (file_idx, file) in files.iter().enumerate() {
         for (block_idx, block) in file.blocks.iter().enumerate() {
             if block.kind == BlockKind::Addition {
-                add_index
-                    .entry(block.content_hash)
-                    .or_default()
-                    .push((file_idx, block_idx));
+                add_index.entry(block.content_hash).or_default().push((file_idx, block_idx));
             }
         }
     }
@@ -218,11 +202,8 @@ pub fn match_blocks(files: &mut [FileDiff]) -> Vec<BlockMatch> {
             continue;
         };
         // Filter to unconsumed candidates
-        let available: Vec<(usize, usize)> = candidates
-            .iter()
-            .copied()
-            .filter(|c| !consumed.contains(c))
-            .collect();
+        let available: Vec<(usize, usize)> =
+            candidates.iter().copied().filter(|c| !consumed.contains(c)).collect();
 
         if available.len() != 1 {
             continue; // ambiguous or no match
@@ -230,10 +211,8 @@ pub fn match_blocks(files: &mut [FileDiff]) -> Vec<BlockMatch> {
 
         let (add_file, add_block) = available[0];
         consumed.insert((add_file, add_block));
-        matches.push(BlockMatch {
-            deletion: (del_file, del_block),
-            addition: (add_file, add_block),
-        });
+        matches
+            .push(BlockMatch { deletion: (del_file, del_block), addition: (add_file, add_block) });
     }
 
     // Annotate lines with move_target
@@ -256,11 +235,7 @@ pub fn match_blocks(files: &mut [FileDiff]) -> Vec<BlockMatch> {
 }
 
 fn file_path_of(files: &[FileDiff], file_idx: usize) -> String {
-    files[file_idx]
-        .lines
-        .first()
-        .and_then(|l| l.file_path.clone())
-        .unwrap_or_default()
+    files[file_idx].lines.first().and_then(|l| l.file_path.clone()).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -370,12 +345,10 @@ mod tests {
 
     #[test]
     fn test_content_hash_ignores_leading_whitespace() {
-        let mut lines1 = vec![
-            DiffLine::new(LineSource::Committed, "  fn foo()".into(), '+', Some(1)),
-        ];
-        let mut lines2 = vec![
-            DiffLine::new(LineSource::Committed, "    fn foo()".into(), '+', Some(1)),
-        ];
+        let mut lines1 =
+            vec![DiffLine::new(LineSource::Committed, "  fn foo()".into(), '+', Some(1))];
+        let mut lines2 =
+            vec![DiffLine::new(LineSource::Committed, "    fn foo()".into(), '+', Some(1))];
         let blocks1 = extract_blocks(&mut lines1);
         let blocks2 = extract_blocks(&mut lines2);
         assert_eq!(blocks1[0].content_hash, blocks2[0].content_hash);
@@ -401,11 +374,7 @@ mod tests {
 
     #[test]
     fn test_multiple_separate_blocks() {
-        let mut lines = vec![
-            add(1), add(2),
-            base(3), base(4), base(5), base(6),
-            del(7), del(8),
-        ];
+        let mut lines = vec![add(1), add(2), base(3), base(4), base(5), base(6), del(7), del(8)];
         let blocks = extract_blocks(&mut lines);
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].kind, BlockKind::Addition);
@@ -440,20 +409,26 @@ mod tests {
 
     #[test]
     fn test_match_no_blocks() {
-        let mut files = vec![
-            make_file("a.rs", vec![base(1), base(2)]),
-        ];
+        let mut files = vec![make_file("a.rs", vec![base(1), base(2)])];
         let matches = match_blocks(&mut files);
         assert!(matches.is_empty());
     }
 
     #[test]
     fn test_match_within_file() {
-        let mut files = vec![make_file("a.rs", vec![
-            del_content("fn foo() {}", 1), del_content("  return 42;", 2),
-            base(10), base(11), base(12), base(13),
-            add_content("fn foo() {}", 20), add_content("  return 42;", 21),
-        ])];
+        let mut files = vec![make_file(
+            "a.rs",
+            vec![
+                del_content("fn foo() {}", 1),
+                del_content("  return 42;", 2),
+                base(10),
+                base(11),
+                base(12),
+                base(13),
+                add_content("fn foo() {}", 20),
+                add_content("  return 42;", 21),
+            ],
+        )];
         let matches = match_blocks(&mut files);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].deletion.0, 0, "same file");
@@ -539,12 +514,14 @@ mod tests {
     #[test]
     fn test_match_indentation_tolerant() {
         let mut files = vec![
-            make_file("a.rs", vec![
-                DiffLine::new(LineSource::DeletedBase, "  fn foo()".into(), '-', Some(1)),
-            ]),
-            make_file("b.rs", vec![
-                DiffLine::new(LineSource::Committed, "    fn foo()".into(), '+', Some(1)),
-            ]),
+            make_file(
+                "a.rs",
+                vec![DiffLine::new(LineSource::DeletedBase, "  fn foo()".into(), '-', Some(1))],
+            ),
+            make_file(
+                "b.rs",
+                vec![DiffLine::new(LineSource::Committed, "    fn foo()".into(), '+', Some(1))],
+            ),
         ];
         let matches = match_blocks(&mut files);
         assert_eq!(matches.len(), 1, "indentation difference should still match");
@@ -558,43 +535,63 @@ mod tests {
         // block edges that don't appear on the other side should NOT
         // be marked as moved.
         let mut files = vec![
-            make_file("a.rs", vec![
-                del_content("fn process_data() {", 1),
-                del_content("    let x = 1;", 2),
-                del_content("}", 3),
-                // trailing blank line — only on deletion side
-                DiffLine::new(LineSource::DeletedBase, "".into(), '-', None),
-            ]),
-            make_file("b.rs", vec![
-                // leading blank line — only on addition side
-                DiffLine::new(LineSource::Committed, "".into(), '+', None),
-                add_content("fn process_data() {", 5),
-                add_content("    let x = 1;", 6),
-                add_content("}", 7),
-            ]),
+            make_file(
+                "a.rs",
+                vec![
+                    del_content("fn process_data() {", 1),
+                    del_content("    let x = 1;", 2),
+                    del_content("}", 3),
+                    // trailing blank line — only on deletion side
+                    DiffLine::new(LineSource::DeletedBase, "".into(), '-', None),
+                ],
+            ),
+            make_file(
+                "b.rs",
+                vec![
+                    // leading blank line — only on addition side
+                    DiffLine::new(LineSource::Committed, "".into(), '+', None),
+                    add_content("fn process_data() {", 5),
+                    add_content("    let x = 1;", 6),
+                    add_content("}", 7),
+                ],
+            ),
         ];
         let matches = match_blocks(&mut files);
         assert_eq!(matches.len(), 1, "should detect the move");
 
         // Count moved lines on each side
-        let del_moved: Vec<&str> = files[0].lines.iter()
+        let del_moved: Vec<&str> = files[0]
+            .lines
+            .iter()
             .filter(|l| l.move_target.is_some())
             .map(|l| l.content.as_str())
             .collect();
-        let add_moved: Vec<&str> = files[1].lines.iter()
+        let add_moved: Vec<&str> = files[1]
+            .lines
+            .iter()
             .filter(|l| l.move_target.is_some())
             .map(|l| l.content.as_str())
             .collect();
 
-        assert_eq!(del_moved.len(), add_moved.len(),
-            "both sides should have the same number of moved lines\n  del: {del_moved:?}\n  add: {add_moved:?}");
+        assert_eq!(
+            del_moved.len(),
+            add_moved.len(),
+            "both sides should have the same number of moved lines\n  del: {del_moved:?}\n  add: {add_moved:?}"
+        );
 
         // Only the 3 content lines should be moved, not the blank lines
-        assert_eq!(del_moved.len(), 3,
-            "should mark 3 content lines, not blank edges: {del_moved:?}");
-        assert!(!del_moved.contains(&""),
-            "blank lines should not be marked as moved: {del_moved:?}");
-        assert!(!add_moved.contains(&""),
-            "blank lines should not be marked as moved: {add_moved:?}");
+        assert_eq!(
+            del_moved.len(),
+            3,
+            "should mark 3 content lines, not blank edges: {del_moved:?}"
+        );
+        assert!(
+            !del_moved.contains(&""),
+            "blank lines should not be marked as moved: {del_moved:?}"
+        );
+        assert!(
+            !add_moved.contains(&""),
+            "blank lines should not be marked as moved: {add_moved:?}"
+        );
     }
 }

@@ -79,10 +79,7 @@ pub fn check_watch_warning(metrics: &WatcherMetrics, limit: Option<usize>) -> Op
     let limit = limit?;
 
     if metrics.skipped_count > 0 || metrics.directory_count > limit {
-        Some(format!(
-            "Large repo: refreshing every {}s",
-            FALLBACK_REFRESH_SECS
-        ))
+        Some(format!("Large repo: refreshing every {}s", FALLBACK_REFRESH_SECS))
     } else {
         None
     }
@@ -103,10 +100,7 @@ pub struct DiffThresholds {
 
 impl Default for DiffThresholds {
     fn default() -> Self {
-        Self {
-            warn_line_count: 50_000,
-            warn_file_count: 500,
-        }
+        Self { warn_line_count: 50_000, warn_file_count: 500 }
     }
 }
 
@@ -180,29 +174,20 @@ mod tests {
 
     #[test]
     fn test_check_watch_warning_no_limit_returns_none() {
-        let metrics = WatcherMetrics {
-            directory_count: 10000,
-            skipped_count: 5000,
-        };
+        let metrics = WatcherMetrics { directory_count: 10000, skipped_count: 5000 };
         // When limit is None (macOS/Windows), no warning
         assert!(check_watch_warning(&metrics, None).is_none());
     }
 
     #[test]
     fn test_check_watch_warning_below_limit() {
-        let metrics = WatcherMetrics {
-            directory_count: 50,
-            skipped_count: 0,
-        };
+        let metrics = WatcherMetrics { directory_count: 50, skipped_count: 0 };
         assert!(check_watch_warning(&metrics, Some(100)).is_none());
     }
 
     #[test]
     fn test_check_watch_warning_above_limit() {
-        let metrics = WatcherMetrics {
-            directory_count: 200,
-            skipped_count: 0,
-        };
+        let metrics = WatcherMetrics { directory_count: 200, skipped_count: 0 };
         let warning = check_watch_warning(&metrics, Some(100));
         assert!(warning.is_some());
         assert!(warning.unwrap().contains("refreshing every"));
@@ -210,10 +195,7 @@ mod tests {
 
     #[test]
     fn test_check_watch_warning_with_skipped() {
-        let metrics = WatcherMetrics {
-            directory_count: 50,
-            skipped_count: 10,
-        };
+        let metrics = WatcherMetrics { directory_count: 50, skipped_count: 10 };
         let warning = check_watch_warning(&metrics, Some(100));
         assert!(warning.is_some());
     }
@@ -232,20 +214,14 @@ mod tests {
     #[test]
     fn test_diff_warning_small_diff() {
         let thresholds = DiffThresholds::default();
-        let metrics = DiffMetrics {
-            total_lines: 100,
-            file_count: 5,
-        };
+        let metrics = DiffMetrics { total_lines: 100, file_count: 5 };
         assert!(thresholds.check_diff_warning(&metrics).is_none());
     }
 
     #[test]
     fn test_diff_warning_large_line_count() {
         let thresholds = DiffThresholds::default();
-        let metrics = DiffMetrics {
-            total_lines: 60_000,
-            file_count: 10,
-        };
+        let metrics = DiffMetrics { total_lines: 60_000, file_count: 10 };
         let warning = thresholds.check_diff_warning(&metrics);
         assert!(warning.is_some());
         let msg = warning.unwrap();
@@ -256,10 +232,7 @@ mod tests {
     #[test]
     fn test_diff_warning_many_files() {
         let thresholds = DiffThresholds::default();
-        let metrics = DiffMetrics {
-            total_lines: 1000,
-            file_count: 600,
-        };
+        let metrics = DiffMetrics { total_lines: 1000, file_count: 600 };
         let warning = thresholds.check_diff_warning(&metrics);
         assert!(warning.is_some());
         let msg = warning.unwrap();
@@ -270,10 +243,7 @@ mod tests {
     #[test]
     fn test_diff_warning_line_count_takes_precedence() {
         let thresholds = DiffThresholds::default();
-        let metrics = DiffMetrics {
-            total_lines: 60_000,
-            file_count: 600,
-        };
+        let metrics = DiffMetrics { total_lines: 60_000, file_count: 600 };
         let warning = thresholds.check_diff_warning(&metrics);
         assert!(warning.is_some());
         assert!(warning.unwrap().contains("lines"));

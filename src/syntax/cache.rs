@@ -31,7 +31,7 @@ use std::sync::Arc;
 use syntect::highlighting::{HighlightIterator, HighlightState, Highlighter};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference};
 
-use super::{SyntaxHighlighter, SyntaxSegment, MAX_HIGHLIGHT_LINE_LEN};
+use super::{MAX_HIGHLIGHT_LINE_LEN, SyntaxHighlighter, SyntaxSegment};
 use crate::diff::{DiffLine, LineSource};
 use crate::ui::colors::DEFAULT_FG;
 
@@ -99,10 +99,7 @@ fn plain_segments(content: &str) -> Vec<SyntaxSegment> {
     if content.is_empty() {
         return Vec::new();
     }
-    vec![SyntaxSegment {
-        text: content.to_string(),
-        fg_color: DEFAULT_FG,
-    }]
+    vec![SyntaxSegment { text: content.to_string(), fg_color: DEFAULT_FG }]
 }
 
 /// The file whose syntax chain a line belongs to. Lines with no path (blank
@@ -245,14 +242,13 @@ impl HighlightCache {
         self.segments(lines, idx);
         let mut state = self.entry_state(lines, idx);
 
-        let segments: Arc<[SyntaxSegment]> = Arc::from(
-            if content.is_empty() || content.len() > MAX_HIGHLIGHT_LINE_LEN {
+        let segments: Arc<[SyntaxSegment]> =
+            Arc::from(if content.is_empty() || content.len() > MAX_HIGHLIGHT_LINE_LEN {
                 plain_segments(content)
             } else {
                 self.parses += 1;
                 state.advance(content)
-            },
-        );
+            });
         self.alt.insert(idx, Arc::clone(&segments));
         segments
     }
@@ -414,10 +410,8 @@ mod tests {
             let lines: Vec<DiffLine> = AWKWARD.iter().map(|s| line(s, path)).collect();
 
             crate::syntax::reset_highlight_state();
-            let expected: Vec<Vec<SyntaxSegment>> = AWKWARD
-                .iter()
-                .map(|s| crate::syntax::highlight_line(s, Some(path)))
-                .collect();
+            let expected: Vec<Vec<SyntaxSegment>> =
+                AWKWARD.iter().map(|s| crate::syntax::highlight_line(s, Some(path))).collect();
 
             let mut cache = HighlightCache::new();
             for (i, want) in expected.iter().enumerate() {
@@ -494,10 +488,8 @@ mod tests {
     /// test written in those languages passes either way and pins nothing.
     #[test]
     fn a_line_terminated_construct_does_not_bleed_into_the_lines_below() {
-        let lines = vec![
-            line("const s = \"unterminated", "test.js"),
-            line("const AFTER = [];", "test.js"),
-        ];
+        let lines =
+            vec![line("const s = \"unterminated", "test.js"), line("const AFTER = [];", "test.js")];
 
         let mut cache = HighlightCache::new();
         let opener = cache.segments(&lines, 0);
@@ -537,7 +529,8 @@ mod tests {
 
     #[test]
     fn scrolling_forward_parses_only_the_newly_exposed_line() {
-        let lines: Vec<DiffLine> = (0..50).map(|i| line(&format!("let x{i} = {i};"), "a.rs")).collect();
+        let lines: Vec<DiffLine> =
+            (0..50).map(|i| line(&format!("let x{i} = {i};"), "a.rs")).collect();
         let mut cache = HighlightCache::new();
 
         // Prime a window, as a first frame would.
@@ -589,18 +582,13 @@ mod tests {
     /// cache existed.
     #[test]
     fn a_cold_jump_parses_only_the_line_it_landed_on() {
-        let lines: Vec<DiffLine> = (0..500)
-            .map(|i| line(&format!("let x{i} = {i};"), "a.rs"))
-            .collect();
+        let lines: Vec<DiffLine> =
+            (0..500).map(|i| line(&format!("let x{i} = {i};"), "a.rs")).collect();
 
         let mut cache = HighlightCache::new();
         cache.segments(&lines, 400);
 
-        assert_eq!(
-            cache.parse_count(),
-            1,
-            "the jump parsed lines behind the one it landed on"
-        );
+        assert_eq!(cache.parse_count(), 1, "the jump parsed lines behind the one it landed on");
     }
 
     /// Once the earlier lines have been visited, their context is picked up for
@@ -631,10 +619,7 @@ mod tests {
 
     #[test]
     fn a_files_chain_does_not_leak_into_the_next() {
-        let lines = vec![
-            line("let s = \"unterminated", "a.rs"),
-            line("fn main() {}", "b.rs"),
-        ];
+        let lines = vec![line("let s = \"unterminated", "a.rs"), line("fn main() {}", "b.rs")];
         let mut cache = HighlightCache::new();
         let second = cache.segments(&lines, 1);
 
@@ -693,17 +678,9 @@ mod tests {
 
         let mut cache = HighlightCache::new();
         cache.segments(&lines, 0);
-        assert_eq!(
-            cache.parse_count(),
-            1,
-            "a line exactly at the threshold was skipped"
-        );
+        assert_eq!(cache.parse_count(), 1, "a line exactly at the threshold was skipped");
         cache.segments(&lines, 1);
-        assert_eq!(
-            cache.parse_count(),
-            1,
-            "a line one byte past the threshold was parsed"
-        );
+        assert_eq!(cache.parse_count(), 1, "a line one byte past the threshold was parsed");
     }
 
     /// Chrome — file headers, elision markers, image placeholders — carries
@@ -763,11 +740,7 @@ mod tests {
             cache.segments(&lines, i);
         }
 
-        assert_eq!(
-            cache.parse_count(),
-            3,
-            "the two blank lines were handed to the parser"
-        );
+        assert_eq!(cache.parse_count(), 3, "the two blank lines were handed to the parser");
     }
 
     #[test]
@@ -782,9 +755,8 @@ mod tests {
     /// `the_longest_possible_context_walk_still_reaches_a_checkpoint`.)
     #[test]
     fn revisiting_cached_lines_parses_nothing() {
-        let lines: Vec<DiffLine> = (0..400)
-            .map(|i| line(&format!("let x{i} = {i};"), "a.rs"))
-            .collect();
+        let lines: Vec<DiffLine> =
+            (0..400).map(|i| line(&format!("let x{i} = {i};"), "a.rs")).collect();
 
         let mut cache = HighlightCache::new();
         for i in 0..400 {
@@ -806,9 +778,8 @@ mod tests {
     /// the common path, not a rare one.
     #[test]
     fn scrolling_over_modified_lines_stays_at_a_constant_cost() {
-        let lines: Vec<DiffLine> = (0..120)
-            .map(|i| line(&format!("let x{i} = new_value_{i};"), "a.rs"))
-            .collect();
+        let lines: Vec<DiffLine> =
+            (0..120).map(|i| line(&format!("let x{i} = new_value_{i};"), "a.rs")).collect();
 
         let mut cache = HighlightCache::new();
         // Prime a viewport's worth.
@@ -833,7 +804,8 @@ mod tests {
 
     #[test]
     fn exit_states_are_kept_sparsely() {
-        let lines: Vec<DiffLine> = (0..200).map(|i| line(&format!("let x{i} = {i};"), "a.rs")).collect();
+        let lines: Vec<DiffLine> =
+            (0..200).map(|i| line(&format!("let x{i} = {i};"), "a.rs")).collect();
         let mut cache = HighlightCache::new();
         for i in 0..200 {
             cache.segments(&lines, i);
@@ -844,20 +816,14 @@ mod tests {
         // frontier window. Written flat rather than derived from
         // `CHECKPOINT_EVERY`, so widening the grid cannot move the bound and
         // the expectation together.
-        assert_eq!(
-            kept, 15,
-            "expected 15 stored exit states across 200 lines, found {kept}"
-        );
+        assert_eq!(kept, 15, "expected 15 stored exit states across 200 lines, found {kept}");
     }
 
     #[test]
     fn deletion_side_is_coloured_in_the_context_its_line_was_entered_in() {
         // The deleted text sat inside a string that opens on the line above,
         // so it must be coloured as string contents — not as fresh code.
-        let lines = vec![
-            line("let s = \"open", "a.rs"),
-            line("let x = 1;", "a.rs"),
-        ];
+        let lines = vec![line("let s = \"open", "a.rs"), line("let x = 1;", "a.rs")];
         let mut cache = HighlightCache::new();
         cache.segments(&lines, 0);
         let inside_string = cache.alt_segments(&lines, 1, "let y = 2;");
@@ -956,11 +922,7 @@ mod tests {
 
         let del = cache.alt_segments(&lines, 0, &huge);
         assert_eq!(del.len(), 1);
-        assert_eq!(
-            cache.parse_count(),
-            before,
-            "over-long deletion text was parsed"
-        );
+        assert_eq!(cache.parse_count(), before, "over-long deletion text was parsed");
     }
 
     /// The same threshold as the content side, pinned on the deletion side too
@@ -984,11 +946,7 @@ mod tests {
         );
 
         cache.alt_segments(&lines, 1, &over);
-        assert_eq!(
-            cache.parse_count(),
-            before + 1,
-            "deletion text past the threshold was parsed"
-        );
+        assert_eq!(cache.parse_count(), before + 1, "deletion text past the threshold was parsed");
     }
 
     /// The worst case for re-deriving context: landing one line short of a
@@ -1001,9 +959,8 @@ mod tests {
     /// line from a fresh parser instead of its real context.
     #[test]
     fn the_longest_possible_context_walk_still_reaches_a_checkpoint() {
-        let lines: Vec<DiffLine> = (0..400)
-            .map(|i| line(&format!("let x{i} = {i};"), "a.rs"))
-            .collect();
+        let lines: Vec<DiffLine> =
+            (0..400).map(|i| line(&format!("let x{i} = {i};"), "a.rs")).collect();
 
         let mut cache = HighlightCache::new();
         for i in 0..400 {
@@ -1031,9 +988,8 @@ mod tests {
     /// that stops counting satisfies just as well.
     #[test]
     fn the_deletion_side_counts_its_own_parse_and_the_context_it_re_derives() {
-        let lines: Vec<DiffLine> = (0..40)
-            .map(|i| line(&format!("let x{i} = {i};"), "a.rs"))
-            .collect();
+        let lines: Vec<DiffLine> =
+            (0..40).map(|i| line(&format!("let x{i} = {i};"), "a.rs")).collect();
 
         let mut cache = HighlightCache::new();
         for i in 0..40 {

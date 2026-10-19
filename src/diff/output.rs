@@ -16,7 +16,7 @@ pub(super) fn determine_deletion_source(
     let in_head = head_from_base.contains(&Some(base_idx));
 
     if !in_head {
-        return LineSource::DeletedBase;  // Deleted in commit
+        return LineSource::DeletedBase; // Deleted in commit
     }
 
     // Find which head line came from this base line
@@ -26,11 +26,11 @@ pub(super) fn determine_deletion_source(
         let in_index = index_from_head.contains(&Some(head_idx));
 
         if !in_index {
-            return LineSource::DeletedCommitted;  // Deleted in staging
+            return LineSource::DeletedCommitted; // Deleted in staging
         }
     }
 
-    LineSource::DeletedStaged  // Deleted in working tree
+    LineSource::DeletedStaged // Deleted in working tree
 }
 
 /// Build the output line for a working line, handling modifications
@@ -132,11 +132,7 @@ mod tests {
 
         let source = determine_deletion_source(
             1, // base_idx for "line1"
-            base_lines,
-            head_lines,
-            index_lines,
-            &head_from_base,
-            &index_from_head,
+            base_lines, head_lines, index_lines, &head_from_base, &index_from_head,
         );
 
         assert_eq!(source, LineSource::DeletedBase);
@@ -156,11 +152,7 @@ mod tests {
 
         let source = determine_deletion_source(
             1, // base_idx for "line1"
-            base_lines,
-            head_lines,
-            index_lines,
-            &head_from_base,
-            &index_from_head,
+            base_lines, head_lines, index_lines, &head_from_base, &index_from_head,
         );
 
         assert_eq!(source, LineSource::DeletedCommitted);
@@ -179,11 +171,7 @@ mod tests {
 
         let source = determine_deletion_source(
             1, // base_idx for "line1" - exists in head and index
-            base_lines,
-            head_lines,
-            index_lines,
-            &head_from_base,
-            &index_from_head,
+            base_lines, head_lines, index_lines, &head_from_base, &index_from_head,
         );
 
         assert_eq!(source, LineSource::DeletedStaged);

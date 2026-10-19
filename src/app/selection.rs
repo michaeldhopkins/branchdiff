@@ -7,7 +7,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use super::{App, DisplayableItem};
 use crate::diff::LineSource;
 use crate::patch;
-use crate::ui::{ScreenRowInfo, PREFIX_CHAR_WIDTH};
+use crate::ui::{PREFIX_CHAR_WIDTH, ScreenRowInfo};
 
 /// Multi-click detection window in milliseconds.
 /// Shared between click detection and deferred copy timeout.
@@ -63,10 +63,7 @@ fn display_col_to_char_idx(chars: &[char], col: usize) -> usize {
 
 /// Convert a character index to its display-width column.
 fn char_idx_to_display_col(chars: &[char], idx: usize) -> usize {
-    chars[..idx]
-        .iter()
-        .map(|c| UnicodeWidthChar::width(*c).unwrap_or(0))
-        .sum()
+    chars[..idx].iter().map(|c| UnicodeWidthChar::width(*c).unwrap_or(0)).sum()
 }
 
 /// Check if a character is a word character (alphanumeric or underscore)
@@ -117,10 +114,7 @@ fn find_selection_boundaries(s: &str, col: usize) -> Option<(usize, usize)> {
         }
     };
 
-    Some((
-        char_idx_to_display_col(&chars, start_char),
-        char_idx_to_display_col(&chars, end_char),
-    ))
+    Some((char_idx_to_display_col(&chars, start_char), char_idx_to_display_col(&chars, end_char)))
 }
 
 fn find_word_boundaries_impl(chars: &[char], col: usize) -> Option<(usize, usize)> {
@@ -202,11 +196,7 @@ impl App {
         self.view.word_selection_anchor = None;
         self.view.line_selection_anchor = None;
         if let Some(pos) = self.screen_to_content_position(screen_x, screen_y) {
-            self.view.selection = Some(Selection {
-                start: pos,
-                end: pos,
-                active: true,
-            });
+            self.view.selection = Some(Selection { start: pos, end: pos, active: true });
         }
     }
 
@@ -233,7 +223,10 @@ impl App {
             // Extend selection to encompass both anchor line and current line
             let (new_start, new_end) = if pos.row < anchor_start_row {
                 // Dragging before anchor
-                let end_content_len = self.view.row_map.get(anchor_end_row)
+                let end_content_len = self
+                    .view
+                    .row_map
+                    .get(anchor_end_row)
                     .map(|r| display_width(&r.content))
                     .unwrap_or(0);
                 (
@@ -242,7 +235,10 @@ impl App {
                 )
             } else {
                 // Dragging after or at anchor
-                let end_content_len = self.view.row_map.get(drag_end_row)
+                let end_content_len = self
+                    .view
+                    .row_map
+                    .get(drag_end_row)
                     .map(|r| display_width(&r.content))
                     .unwrap_or(0);
                 (
@@ -353,9 +349,10 @@ impl App {
 
     /// Check if there's a selection with actual content (not just a point click).
     pub fn has_non_empty_selection(&self) -> bool {
-        self.view.selection.as_ref().is_some_and(|sel| {
-            sel.start.row != sel.end.row || sel.start.col != sel.end.col
-        })
+        self.view
+            .selection
+            .as_ref()
+            .is_some_and(|sel| sel.start.row != sel.end.row || sel.start.col != sel.end.col)
     }
 
     /// Select the word at the given screen coordinates (for double-click)
@@ -393,14 +390,8 @@ impl App {
             self.view.word_selection_anchor = Some((pos.row, sel_start, sel_end));
 
             self.view.selection = Some(Selection {
-                start: Position {
-                    row: pos.row,
-                    col: sel_start,
-                },
-                end: Position {
-                    row: pos.row,
-                    col: sel_end,
-                },
+                start: Position { row: pos.row, col: sel_start },
+                end: Position { row: pos.row, col: sel_end },
                 active: true, // Allow dragging to extend
             });
         }
@@ -468,7 +459,9 @@ impl App {
 
         // Find the end of the logical line (go forward while next row is_continuation)
         let mut end_row = screen_row;
-        while end_row + 1 < self.view.row_map.len() && self.view.row_map[end_row + 1].is_continuation {
+        while end_row + 1 < self.view.row_map.len()
+            && self.view.row_map[end_row + 1].is_continuation
+        {
             end_row += 1;
         }
 
@@ -485,7 +478,9 @@ impl App {
 
         // Find the end of the logical line (go forward while next row is_continuation)
         let mut end_row = screen_row;
-        while end_row + 1 < self.view.row_map.len() && self.view.row_map[end_row + 1].is_continuation {
+        while end_row + 1 < self.view.row_map.len()
+            && self.view.row_map[end_row + 1].is_continuation
+        {
             end_row += 1;
         }
 
@@ -498,14 +493,8 @@ impl App {
         self.view.word_selection_anchor = Some((start_row, sel_start, sel_end));
 
         self.view.selection = Some(Selection {
-            start: Position {
-                row: start_row,
-                col: sel_start,
-            },
-            end: Position {
-                row: end_row,
-                col: sel_end,
-            },
+            start: Position { row: start_row, col: sel_start },
+            end: Position { row: end_row, col: sel_end },
             active: true,
         });
     }
@@ -536,10 +525,7 @@ impl App {
             && (screen_y - sb_y) < sb_lines.len() as u16
         {
             let virtual_row = self.view.row_map.len() + (screen_y - sb_y) as usize;
-            return Some(Position {
-                row: virtual_row,
-                col: screen_x as usize,
-            });
+            return Some(Position { row: virtual_row, col: screen_x as usize });
         }
 
         // Check if within diff content area
@@ -554,10 +540,7 @@ impl App {
                 0 => content_y,
                 len => content_y.min(len - 1),
             };
-            return Some(Position {
-                row,
-                col: content_x,
-            });
+            return Some(Position { row, col: content_x });
         }
 
         None
@@ -578,8 +561,7 @@ impl App {
     /// Check if the next row is a continuation of a wrapped line.
     fn is_next_row_continuation(&self, screen_row: usize) -> bool {
         let next = screen_row + 1;
-        next < self.view.row_map.len()
-            && self.view.row_map[next].is_continuation
+        next < self.view.row_map.len() && self.view.row_map[next].is_continuation
     }
 
     /// Get selected text (content only, without line numbers or prefixes).
@@ -639,11 +621,7 @@ impl App {
             }
         }
 
-        if result.is_empty() {
-            None
-        } else {
-            Some(result)
-        }
+        if result.is_empty() { None } else { Some(result) }
     }
 
     /// Write text to the system clipboard and trigger the "Copied" title flash.
@@ -652,8 +630,8 @@ impl App {
         if text.is_empty() {
             return Ok(false);
         }
-        let mut clipboard = Clipboard::new()
-            .map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
+        let mut clipboard =
+            Clipboard::new().map_err(|e| anyhow::anyhow!("Failed to access clipboard: {}", e))?;
         clipboard
             .set_text(text)
             .map_err(|e| anyhow::anyhow!("Failed to copy to clipboard: {}", e))?;
@@ -712,11 +690,7 @@ impl App {
             })
             .max()
             .unwrap_or(0);
-        let line_num_width = if max_line_num > 0 {
-            max_line_num.to_string().len()
-        } else {
-            0
-        };
+        let line_num_width = if max_line_num > 0 { max_line_num.to_string().len() } else { 0 };
 
         let mut result = String::new();
 
@@ -823,10 +797,7 @@ mod tests {
         // With line_num_width=3, prefix_len = 3 + 1 + 4 = 8
         let mut app = TestAppBuilder::new().build();
         app.view.line_num_width = 3;
-        app.view.row_map = vec![
-            make_row("line one", false),
-            make_row("line two", false),
-        ];
+        app.view.row_map = vec![make_row("line one", false), make_row("line two", false)];
         app.view.selection = Some(Selection {
             start: Position { row: 0, col: 8 }, // prefix_len = 8
             end: Position { row: 1, col: 16 },  // "line two" is 8 chars, so 8 + 8 = 16
@@ -842,11 +813,8 @@ mod tests {
         // All rows are continuations (logical start scrolled off): the backward
         // scan must clamp at row 0 rather than underflow.
         let mut app = TestAppBuilder::new().build();
-        app.view.row_map = vec![
-            make_row("mid a", true),
-            make_row("mid b", true),
-            make_row("mid c", true),
-        ];
+        app.view.row_map =
+            vec![make_row("mid a", true), make_row("mid b", true), make_row("mid c", true)];
         assert_eq!(app.find_logical_line_bounds(2), (0, 2));
     }
 
@@ -862,7 +830,7 @@ mod tests {
         ];
         app.view.selection = Some(Selection {
             start: Position { row: 0, col: 8 },
-            end: Position { row: 1, col: 19 },  // 8 + 11 = 19
+            end: Position { row: 1, col: 19 }, // 8 + 11 = 19
             active: false,
         });
 
@@ -884,7 +852,7 @@ mod tests {
         ];
         app.view.selection = Some(Selection {
             start: Position { row: 0, col: 8 },
-            end: Position { row: 2, col: 19 },  // 8 + 11 = 19
+            end: Position { row: 2, col: 19 }, // 8 + 11 = 19
             active: false,
         });
 
@@ -900,14 +868,14 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         app.view.line_num_width = 3;
         app.view.row_map = vec![
-            make_row("first ", false),       // Line 1, part 1
-            make_row("second", true),        // Line 1, part 2 (6 chars)
-            make_row("next line", false),    // Line 2 (9 chars)
+            make_row("first ", false),    // Line 1, part 1
+            make_row("second", true),     // Line 1, part 2 (6 chars)
+            make_row("next line", false), // Line 2 (9 chars)
         ];
         // Start selection on the continuation row
         app.view.selection = Some(Selection {
             start: Position { row: 1, col: 8 },
-            end: Position { row: 2, col: 17 },  // 8 + 9 = 17
+            end: Position { row: 2, col: 17 }, // 8 + 9 = 17
             active: false,
         });
 
@@ -1181,7 +1149,7 @@ mod tests {
         assert!(app.view.word_selection_anchor.is_some());
 
         // Normal click should clear word anchor
-        app.start_selection(9, 1);  // 0 + 8 + 1 = 9
+        app.start_selection(9, 1); // 0 + 8 + 1 = 9
         assert!(app.view.word_selection_anchor.is_none());
     }
 
@@ -1208,10 +1176,7 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         app.view.line_num_width = 3;
         app.view.content_offset = (1, 1);
-        app.view.row_map = vec![
-            make_row("first line", false),
-            make_row("second line", false),
-        ];
+        app.view.row_map = vec![make_row("first line", false), make_row("second line", false)];
 
         // Double-click on "first" (content col 0-5)
         app.select_word_at(9, 1); // screen_x = 0 + 8 + 1 = 9
@@ -1262,7 +1227,7 @@ mod tests {
         app.view.row_map = vec![make_row("word   ", false)]; // Trailing spaces
 
         // Double-click on "word"
-        app.select_word_at(9, 1);  // 0 + 8 + 1 = 9
+        app.select_word_at(9, 1); // 0 + 8 + 1 = 9
 
         // Drag to trailing whitespace (col 5)
         // screen_x = 5 + 8 + 1 = 14
@@ -1282,9 +1247,9 @@ mod tests {
         app.view.content_offset = (1, 1);
         // Simulate a wrapped line: first row is start, second is continuation
         app.view.row_map = vec![
-            make_row("first part ", false),      // Start of logical line (11 chars)
-            make_row("second part", true),       // Continuation (wrapped) (11 chars)
-            make_row("next line", false),        // Different logical line
+            make_row("first part ", false), // Start of logical line (11 chars)
+            make_row("second part", true),  // Continuation (wrapped) (11 chars)
+            make_row("next line", false),   // Different logical line
         ];
 
         // Click past end of the wrapped segment (row 1)
@@ -1308,9 +1273,9 @@ mod tests {
         app.view.content_offset = (1, 1);
         // Simulate a wrapped line spanning 3 rows
         app.view.row_map = vec![
-            make_row("part one ", false),   // Start (9 chars)
-            make_row("part two ", true),    // Continuation (9 chars)
-            make_row("part three", true),   // Continuation (10 chars)
+            make_row("part one ", false), // Start (9 chars)
+            make_row("part two ", true),  // Continuation (9 chars)
+            make_row("part three", true), // Continuation (10 chars)
         ];
 
         // Click past end of the first segment (row 0)
@@ -1355,8 +1320,8 @@ mod tests {
         app.view.line_num_width = 3;
         app.view.content_offset = (1, 1);
         app.view.row_map = vec![
-            make_row("first part ", false),  // 11 chars
-            make_row("second part", true),   // 11 chars (continuation)
+            make_row("first part ", false), // 11 chars
+            make_row("second part", true),  // 11 chars (continuation)
         ];
 
         // Triple-click on the continuation row
@@ -1636,7 +1601,7 @@ mod tests {
         let sel = app.view.selection.as_ref().expect("Should have selection");
         assert_eq!(sel.start.row, 1); // virtual row (row_map.len() + 0)
         assert_eq!(sel.start.col, 7); // "feature" starts at col 7 (no prefix)
-        assert_eq!(sel.end.col, 14);  // "feature" ends at col 14
+        assert_eq!(sel.end.col, 14); // "feature" ends at col 14
 
         let text = app.get_selected_text();
         assert_eq!(text, Some("feature".to_string()));
@@ -1656,7 +1621,7 @@ mod tests {
         let sel = app.view.selection.as_ref().expect("Should have selection");
         assert_eq!(sel.start.row, 1); // virtual row
         assert_eq!(sel.start.col, 0); // line select starts at 0 (no prefix)
-        assert_eq!(sel.end.col, 19);  // "repo | feat vs main" = 19 chars
+        assert_eq!(sel.end.col, 19); // "repo | feat vs main" = 19 chars
 
         let text = app.get_selected_text();
         assert_eq!(text, Some("repo | feat vs main".to_string()));
@@ -1713,7 +1678,7 @@ mod tests {
         // Select first 4 display columns = "你好"
         app.view.selection = Some(Selection {
             start: Position { row: 0, col: 8 },
-            end: Position { row: 0, col: 12 },  // 8 + 4
+            end: Position { row: 0, col: 12 }, // 8 + 4
             active: false,
         });
 
@@ -1727,8 +1692,8 @@ mod tests {
         let mut app = TestAppBuilder::new().build();
         app.view.line_num_width = 3;
         app.view.row_map = vec![
-            make_row("你好world", false),   // 9 display cols
-            make_row("hello", false),        // 5 display cols
+            make_row("你好world", false), // 9 display cols
+            make_row("hello", false),     // 5 display cols
         ];
 
         // Select from CJK row (display col 4 = after "你好") to end of second row
@@ -1765,7 +1730,7 @@ mod tests {
         app.view.line_num_width = 3;
         app.view.content_offset = (1, 1);
         app.view.row_map = vec![
-            make_row("你好世界", false),  // 8 display columns
+            make_row("你好世界", false), // 8 display columns
         ];
 
         // Triple-click to select the line

@@ -15,7 +15,10 @@ pub fn fetch_and_compare(vcs: &dyn Vcs) -> Option<FetchResult> {
     vcs.fetch().ok()?;
     let has_conflicts = vcs.has_conflicts().unwrap_or(false);
     let after = vcs.base_identifier().ok();
-    Some(FetchResult { has_conflicts, new_merge_base: after.filter(|a| before.as_ref() != Some(a)) })
+    Some(FetchResult {
+        has_conflicts,
+        new_merge_base: after.filter(|a| before.as_ref() != Some(a)),
+    })
 }
 
 #[cfg(test)]
@@ -43,34 +46,62 @@ mod tests {
     }
 
     impl Vcs for ScriptedBase {
-        fn repo_path(&self) -> &Path { Path::new("/repo") }
-        fn comparison_context(&self) -> Result<ComparisonContext> { unimplemented!() }
-        fn refresh(&self, _: &Arc<AtomicBool>) -> Result<RefreshResult> { unimplemented!() }
-        fn single_file_diff(&self, _: &str) -> Option<FileDiff> { unimplemented!() }
+        fn repo_path(&self) -> &Path {
+            Path::new("/repo")
+        }
+        fn comparison_context(&self) -> Result<ComparisonContext> {
+            unimplemented!()
+        }
+        fn refresh(&self, _: &Arc<AtomicBool>) -> Result<RefreshResult> {
+            unimplemented!()
+        }
+        fn single_file_diff(&self, _: &str) -> Option<FileDiff> {
+            unimplemented!()
+        }
         fn base_identifier(&self) -> Result<String> {
             let next = self.reads.lock().unwrap().pop().expect("more base reads than scripted");
             next.map(str::to_string).ok_or_else(|| anyhow!("unreadable"))
         }
-        fn base_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { unimplemented!() }
-        fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> { unimplemented!() }
-        fn fetch(&self) -> Result<()> { if self.fetch_works { Ok(()) } else { Err(anyhow!("offline")) } }
-        fn has_conflicts(&self) -> Result<bool> { Ok(false) }
-        fn is_locked(&self) -> bool { false }
-        fn watch_paths(&self) -> VcsWatchPaths { VcsWatchPaths { files: vec![], recursive_dirs: vec![PathBuf::new()] } }
-        fn classify_event(&self, _: &Path) -> VcsEventType { VcsEventType::Source }
-        fn backend(&self) -> VcsBackend { VcsBackend::Jj }
-        fn current_revision_id(&self) -> Result<String> { unimplemented!() }
+        fn base_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> {
+            unimplemented!()
+        }
+        fn working_file_bytes(&self, _: &str) -> Result<Option<Vec<u8>>> {
+            unimplemented!()
+        }
+        fn fetch(&self) -> Result<()> {
+            if self.fetch_works { Ok(()) } else { Err(anyhow!("offline")) }
+        }
+        fn has_conflicts(&self) -> Result<bool> {
+            Ok(false)
+        }
+        fn is_locked(&self) -> bool {
+            false
+        }
+        fn watch_paths(&self) -> VcsWatchPaths {
+            VcsWatchPaths { files: vec![], recursive_dirs: vec![PathBuf::new()] }
+        }
+        fn classify_event(&self, _: &Path) -> VcsEventType {
+            VcsEventType::Source
+        }
+        fn backend(&self) -> VcsBackend {
+            VcsBackend::Jj
+        }
+        fn current_revision_id(&self) -> Result<String> {
+            unimplemented!()
+        }
     }
 
     #[test]
     fn a_fetch_that_brings_nothing_reports_no_new_base() {
-        let result = fetch_and_compare(&ScriptedBase::new(&[Some("trunk1"), Some("trunk1")], true)).unwrap();
+        let result =
+            fetch_and_compare(&ScriptedBase::new(&[Some("trunk1"), Some("trunk1")], true)).unwrap();
         assert_eq!(result.new_merge_base, None, "an unmoved base must not force a refresh");
     }
 
     #[test]
     fn a_fetch_that_moves_the_base_reports_where_it_went() {
-        let result = fetch_and_compare(&ScriptedBase::new(&[Some("trunk1"), Some("trunk2")], true)).unwrap();
+        let result =
+            fetch_and_compare(&ScriptedBase::new(&[Some("trunk1"), Some("trunk2")], true)).unwrap();
         assert_eq!(result.new_merge_base.as_deref(), Some("trunk2"));
     }
 
@@ -82,7 +113,11 @@ mod tests {
     #[test]
     fn a_base_unreadable_before_the_fetch_counts_as_moved() {
         let result = fetch_and_compare(&ScriptedBase::new(&[None, Some("trunk1")], true)).unwrap();
-        assert_eq!(result.new_merge_base.as_deref(), Some("trunk1"), "unknown before, so refresh once to be safe");
+        assert_eq!(
+            result.new_merge_base.as_deref(),
+            Some("trunk1"),
+            "unknown before, so refresh once to be safe"
+        );
         let result = fetch_and_compare(&ScriptedBase::new(&[Some("trunk1"), None], true)).unwrap();
         assert_eq!(result.new_merge_base, None, "nothing to report when it cannot be read after");
     }

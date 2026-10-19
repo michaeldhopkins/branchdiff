@@ -7,7 +7,7 @@
 use std::cell::OnceCell;
 
 use crate::diff::{DiffLine, LineSource};
-use crate::ui::wrapping::{wrapped_line_height, ImageDimensions};
+use crate::ui::wrapping::{ImageDimensions, wrapped_line_height};
 
 use super::App;
 
@@ -199,7 +199,10 @@ impl FrameContext {
     }
 
     /// Iterate over visible items (Lines and Elided markers)
-    pub fn iter_visible_items<'a>(&'a self, app: &App) -> impl Iterator<Item = &'a DisplayableItem> {
+    pub fn iter_visible_items<'a>(
+        &'a self,
+        app: &App,
+    ) -> impl Iterator<Item = &'a DisplayableItem> {
         let (start, end) = self.visible_range(app);
         self.items[start..end].iter()
     }
@@ -228,11 +231,7 @@ impl FrameContext {
             Some(DisplayableItem::Line(idx)) if app.lines[*idx].source == LineSource::FileHeader
         );
 
-        let search_start = if current_is_header {
-            current.saturating_sub(1)
-        } else {
-            current
-        };
+        let search_start = if current_is_header { current.saturating_sub(1) } else { current };
 
         for i in (0..=search_start).rev() {
             if let DisplayableItem::Line(idx) = self.items[i]
@@ -265,11 +264,7 @@ impl FrameContext {
             if rows_used >= self.viewport_height && end > start {
                 break;
             }
-            let effective = if i == start {
-                height.saturating_sub(self.sub_row)
-            } else {
-                height
-            };
+            let effective = if i == start { height.saturating_sub(self.sub_row) } else { height };
             rows_used += effective;
             end += 1;
         }
@@ -284,15 +279,16 @@ impl FrameContext {
 
     /// Compute the screen height for each item (accounting for line wrapping)
     fn compute_wrap_heights(&self, app: &App) -> Vec<usize> {
-        self.items.iter().map(|item| {
-            match item {
+        self.items
+            .iter()
+            .map(|item| match item {
                 DisplayableItem::Line(idx) => {
                     let line = &app.lines[*idx];
                     self.wrapped_line_height(line, app)
                 }
                 DisplayableItem::Elided(_) | DisplayableItem::Message(_) => 1,
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     /// Calculate how many screen rows a line will take when wrapped.
@@ -302,14 +298,10 @@ impl FrameContext {
         let image_dims: Option<ImageDimensions> = if line.is_image_marker() {
             line.file_path.as_ref().and_then(|path| {
                 app.image_cache.peek(path).map(|state| {
-                    let before = state
-                        .before
-                        .as_ref()
-                        .map(|img| (img.original_width, img.original_height));
-                    let after = state
-                        .after
-                        .as_ref()
-                        .map(|img| (img.original_width, img.original_height));
+                    let before =
+                        state.before.as_ref().map(|img| (img.original_width, img.original_height));
+                    let after =
+                        state.after.as_ref().map(|img| (img.original_width, img.original_height));
                     (before, after)
                 })
             })
@@ -318,11 +310,7 @@ impl FrameContext {
         };
 
         wrapped_line_height(
-            line,
-            self.content_width,
-            image_dims,
-            app.view.panel_width,
-            app.font_size,
+            line, self.content_width, image_dims, app.view.panel_width, app.font_size,
         )
     }
 }
@@ -330,7 +318,7 @@ impl FrameContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{base_line, change_line, TestAppBuilder};
+    use crate::test_support::{TestAppBuilder, base_line, change_line};
 
     #[test]
     fn test_displayable_item_as_line_index() {
@@ -531,8 +519,12 @@ mod tests {
         // This allows partial rendering of tall items at the viewport bottom.
         let wrap_heights = ctx.get_wrap_heights(&app);
         let rows_before_last: usize = wrap_heights[start..end.saturating_sub(1)].iter().sum();
-        assert!(rows_before_last < app.view.viewport_height,
-            "rows before last item ({}) should start within viewport ({})", rows_before_last, app.view.viewport_height);
+        assert!(
+            rows_before_last < app.view.viewport_height,
+            "rows before last item ({}) should start within viewport ({})",
+            rows_before_last,
+            app.view.viewport_height
+        );
     }
 
     #[test]
@@ -573,9 +565,12 @@ mod tests {
         // The total rows exceed viewport, proving we include a partial item
         let wrap_heights = ctx.get_wrap_heights(&app);
         let total_rows: usize = wrap_heights[start..end].iter().sum();
-        assert!(total_rows > app.view.viewport_height,
+        assert!(
+            total_rows > app.view.viewport_height,
             "total rows ({}) should exceed viewport ({}) due to partial item",
-            total_rows, app.view.viewport_height);
+            total_rows,
+            app.view.viewport_height
+        );
     }
 
     #[test]
@@ -606,10 +601,7 @@ mod tests {
         };
         app.image_cache.insert(
             "test.png".to_string(),
-            ImageDiffState {
-                before: Some(cached_image),
-                after: None,
-            },
+            ImageDiffState { before: Some(cached_image), after: None },
         );
 
         let ctx = FrameContext::new(&app);
@@ -620,7 +612,8 @@ mod tests {
         assert!(
             image_height > app.view.viewport_height,
             "image height ({}) should exceed viewport ({}) for this test to be meaningful",
-            image_height, app.view.viewport_height
+            image_height,
+            app.view.viewport_height
         );
 
         let (start, end) = ctx.visible_range(&app);
@@ -635,7 +628,8 @@ mod tests {
         assert!(
             total_rows > app.view.viewport_height,
             "total rows ({}) should exceed viewport ({}) due to partial image",
-            total_rows, app.view.viewport_height
+            total_rows,
+            app.view.viewport_height
         );
     }
 
@@ -646,8 +640,16 @@ mod tests {
         let mut line = base_line(&"x".repeat(100));
         line.old_content = Some("y".repeat(80));
         line.inline_spans = vec![
-            InlineSpan { text: "deleted".to_string(), source: Some(LineSource::Unstaged), is_deletion: true },
-            InlineSpan { text: "inserted".to_string(), source: Some(LineSource::Unstaged), is_deletion: false },
+            InlineSpan {
+                text: "deleted".to_string(),
+                source: Some(LineSource::Unstaged),
+                is_deletion: true,
+            },
+            InlineSpan {
+                text: "inserted".to_string(),
+                source: Some(LineSource::Unstaged),
+                is_deletion: false,
+            },
         ];
 
         let mut app = TestAppBuilder::new().with_lines(vec![line]).build();
@@ -656,7 +658,10 @@ mod tests {
         let ctx = FrameContext::new(&app);
         let wrap_heights = ctx.get_wrap_heights(&app);
 
-        assert_eq!(wrap_heights[0], 4, "mixed change: 80/50=2 del rows + 100/50=2 ins rows = 4 total");
+        assert_eq!(
+            wrap_heights[0], 4,
+            "mixed change: 80/50=2 del rows + 100/50=2 ins rows = 4 total"
+        );
     }
 
     #[test]
@@ -704,7 +709,8 @@ mod tests {
         assert!(
             visible_narrow < visible_wide,
             "Narrow content_width ({} visible) should show fewer lines than wide ({} visible) due to wrapping",
-            visible_narrow, visible_wide
+            visible_narrow,
+            visible_wide
         );
         assert!(
             visible_narrow <= 10,
@@ -762,7 +768,10 @@ mod tests {
         assert!(
             visible_with_default < visible_with_actual,
             "Bug: default content_width ({}) should show fewer items ({}) than actual width ({}) which shows {}",
-            default_width, visible_with_default, 150, visible_with_actual
+            default_width,
+            visible_with_default,
+            150,
+            visible_with_actual
         );
 
         // With actual width, should fill viewport with 20 lines (1 row each)
@@ -795,7 +804,7 @@ mod tests {
         ];
 
         let mut app = TestAppBuilder::new().with_lines(lines).build();
-        app.view.viewport_height = 60;  // Large enough for all items
+        app.view.viewport_height = 60; // Large enough for all items
         app.view.content_width = 80;
         app.view.panel_width = 100;
 
@@ -811,10 +820,7 @@ mod tests {
             };
             app.image_cache.insert(
                 format!("image{}.png", i),
-                ImageDiffState {
-                    before: Some(cached_image),
-                    after: None,
-                },
+                ImageDiffState { before: Some(cached_image), after: None },
             );
         }
 

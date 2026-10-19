@@ -17,9 +17,7 @@ pub(super) fn index_line_in_working(
     if survives_in(working_from_index, index_idx) {
         return true;
     }
-    index_working_mods
-        .values()
-        .any(|(src_idx, _)| *src_idx == index_idx)
+    index_working_mods.values().any(|(src_idx, _)| *src_idx == index_idx)
 }
 
 /// Collect canceled lines for the simple case (base == working).
@@ -91,8 +89,9 @@ pub(super) fn collect_canceled_committed(
         }
 
         // Check via direct provenance
-        let in_working_via_provenance = find_sources(index_from_head, head_idx)
-            .any(|index_idx| index_line_in_working(index_idx, working_from_index, index_working_mods));
+        let in_working_via_provenance = find_sources(index_from_head, head_idx).any(|index_idx| {
+            index_line_in_working(index_idx, working_from_index, index_working_mods)
+        });
 
         // Check via modification maps
         let in_working_via_mods = head_index_mods.iter().any(|(index_idx, (src_head_idx, _))| {
@@ -257,11 +256,7 @@ mod tests {
         let working_from_index = vec![Some(0), Some(1)];
 
         let result = collect_canceled_simple(
-            &head_lines,
-            &index_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
+            &head_lines, &index_lines, &head_from_base, &index_from_head, &working_from_index,
             "test.txt",
         );
 
@@ -278,11 +273,7 @@ mod tests {
         let working_from_index = vec![Some(0)];
 
         let result = collect_canceled_simple(
-            &head_lines,
-            &index_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
+            &head_lines, &index_lines, &head_from_base, &index_from_head, &working_from_index,
             "test.txt",
         );
 
@@ -301,11 +292,7 @@ mod tests {
         let working_from_index = vec![Some(0)]; // staged line removed
 
         let result = collect_canceled_simple(
-            &head_lines,
-            &index_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
+            &head_lines, &index_lines, &head_from_base, &index_from_head, &working_from_index,
             "test.txt",
         );
 
@@ -324,11 +311,7 @@ mod tests {
         let working_from_index = vec![Some(0)]; // staged_add also removed
 
         let result = collect_canceled_simple(
-            &head_lines,
-            &index_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
+            &head_lines, &index_lines, &head_from_base, &index_from_head, &working_from_index,
             "test.txt",
         );
 
@@ -351,11 +334,7 @@ mod tests {
         let index_working_mods = HashMap::new();
 
         let result = collect_canceled_committed(
-            &head_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
-            &head_index_mods,
+            &head_lines, &head_from_base, &index_from_head, &working_from_index, &head_index_mods,
             &index_working_mods,
         );
 
@@ -373,11 +352,7 @@ mod tests {
         let index_working_mods = HashMap::new();
 
         let result = collect_canceled_committed(
-            &head_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
-            &head_index_mods,
+            &head_lines, &head_from_base, &index_from_head, &working_from_index, &head_index_mods,
             &index_working_mods,
         );
 
@@ -395,11 +370,7 @@ mod tests {
         let index_working_mods = HashMap::new();
 
         let result = collect_canceled_committed(
-            &head_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
-            &head_index_mods,
+            &head_lines, &head_from_base, &index_from_head, &working_from_index, &head_index_mods,
             &index_working_mods,
         );
 
@@ -421,11 +392,7 @@ mod tests {
         index_working_mods.insert(0, (0, "modified"));
 
         let result = collect_canceled_committed(
-            &head_lines,
-            &head_from_base,
-            &index_from_head,
-            &working_from_index,
-            &head_index_mods,
+            &head_lines, &head_from_base, &index_from_head, &working_from_index, &head_index_mods,
             &index_working_mods,
         );
 
@@ -443,10 +410,7 @@ mod tests {
         let index_working_mods = HashMap::new();
 
         let result = collect_canceled_staged(
-            &index_lines,
-            &index_from_head,
-            &working_from_index,
-            &index_working_mods,
+            &index_lines, &index_from_head, &working_from_index, &index_working_mods,
         );
 
         assert!(result.is_empty());
@@ -461,10 +425,7 @@ mod tests {
         let index_working_mods = HashMap::new();
 
         let result = collect_canceled_staged(
-            &index_lines,
-            &index_from_head,
-            &working_from_index,
-            &index_working_mods,
+            &index_lines, &index_from_head, &working_from_index, &index_working_mods,
         );
 
         assert_eq!(result.len(), 1);
@@ -482,10 +443,7 @@ mod tests {
         index_working_mods.insert(0, (0, "modified")); // but via modification
 
         let result = collect_canceled_staged(
-            &index_lines,
-            &index_from_head,
-            &working_from_index,
-            &index_working_mods,
+            &index_lines, &index_from_head, &working_from_index, &index_working_mods,
         );
 
         assert!(result.is_empty()); // Not canceled - survived via modification
@@ -495,9 +453,7 @@ mod tests {
 
     #[test]
     fn test_insert_canceled_lines_empty() {
-        let mut lines = vec![
-            DiffLine::new(LineSource::Base, "line1".to_string(), ' ', Some(1)),
-        ];
+        let mut lines = vec![DiffLine::new(LineSource::Base, "line1".to_string(), ' ', Some(1))];
         let canceled: Vec<(usize, String)> = vec![];
         let mut positions = vec![Some(0)];
 
@@ -544,10 +500,7 @@ mod tests {
             DiffLine::new(LineSource::Base, "line5".to_string(), ' ', Some(2)),
         ];
         // Insert canceled lines at positions 2 and 3 (in that order)
-        let canceled = vec![
-            (2, "canceled2".to_string()),
-            (3, "canceled3".to_string()),
-        ];
+        let canceled = vec![(2, "canceled2".to_string()), (3, "canceled3".to_string())];
         let mut positions = vec![Some(0), Some(5)];
 
         insert_canceled_lines(

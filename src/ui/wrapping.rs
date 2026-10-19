@@ -38,10 +38,7 @@ pub fn wrapped_line_height(
             && (before.is_some() || after.is_some())
         {
             return crate::ui::image_view::calculate_image_height_for_images(
-                before,
-                after,
-                panel_width,
-                font_size,
+                before, after, panel_width, font_size,
             ) as usize;
         }
         // Fallback: minimal height for images not yet loaded
@@ -50,45 +47,25 @@ pub fn wrapped_line_height(
 
     // Pure deletions always render as split del/ins lines to show removed text
     if has_pure_deletion_inline(line) {
-        let del_width = line
-            .old_content
-            .as_ref()
-            .map(|s| content_display_width(s))
-            .unwrap_or(0);
+        let del_width = line.old_content.as_ref().map(|s| content_display_width(s)).unwrap_or(0);
         let ins_width = line.display_width();
-        let del_height = if del_width == 0 {
-            0
-        } else {
-            del_width.div_ceil(content_width).max(1)
-        };
+        let del_height = if del_width == 0 { 0 } else { del_width.div_ceil(content_width).max(1) };
         let ins_height = ins_width.div_ceil(content_width).max(1);
         return del_height + ins_height;
     }
 
     // Mixed inline changes (deletions + insertions) may render on separate rows
     if has_mixed_inline_changes(line) && line.display_width() > content_width {
-        let del_width = line
-            .old_content
-            .as_ref()
-            .map(|s| content_display_width(s))
-            .unwrap_or(0);
+        let del_width = line.old_content.as_ref().map(|s| content_display_width(s)).unwrap_or(0);
         let ins_width = line.display_width();
-        let del_height = if del_width == 0 {
-            0
-        } else {
-            del_width.div_ceil(content_width)
-        };
+        let del_height = if del_width == 0 { 0 } else { del_width.div_ceil(content_width) };
         let ins_height = ins_width.div_ceil(content_width);
         return del_height + ins_height;
     }
 
     // Standard text wrapping
     let width = line.display_width();
-    if width <= content_width {
-        1
-    } else {
-        width.div_ceil(content_width)
-    }
+    if width <= content_width { 1 } else { width.div_ceil(content_width) }
 }
 
 /// Check if a line has both deletions and insertions in its inline spans.
@@ -97,10 +74,7 @@ fn has_mixed_inline_changes(line: &DiffLine) -> bool {
         return false;
     }
     let has_deletions = line.inline_spans.iter().any(|s| s.is_deletion);
-    let has_insertions = line
-        .inline_spans
-        .iter()
-        .any(|s| !s.is_deletion && s.source.is_some());
+    let has_insertions = line.inline_spans.iter().any(|s| !s.is_deletion && s.source.is_some());
     has_deletions && has_insertions
 }
 
@@ -110,10 +84,7 @@ fn has_pure_deletion_inline(line: &DiffLine) -> bool {
         return false;
     }
     let has_deletions = line.inline_spans.iter().any(|s| s.is_deletion);
-    let has_insertions = line
-        .inline_spans
-        .iter()
-        .any(|s| !s.is_deletion && s.source.is_some());
+    let has_insertions = line.inline_spans.iter().any(|s| !s.is_deletion && s.source.is_some());
     has_deletions && !has_insertions
 }
 
@@ -124,10 +95,7 @@ pub use crate::diff::content_display_width;
 /// become spaces so they have predictable 1-column display width.
 fn sanitize_for_display(s: &str) -> Option<String> {
     use unicode_width::UnicodeWidthChar;
-    if !s
-        .chars()
-        .any(|ch| ch == '\t' || UnicodeWidthChar::width(ch).is_none())
-    {
+    if !s.chars().any(|ch| ch == '\t' || UnicodeWidthChar::width(ch).is_none()) {
         return None;
     }
     let mut result = String::with_capacity(s.len());
@@ -186,8 +154,7 @@ pub fn wrap_content(
             None => span,
         })
         .collect();
-    let content = sanitize_for_display(content)
-        .unwrap_or_else(|| content.to_string());
+    let content = sanitize_for_display(content).unwrap_or_else(|| content.to_string());
 
     let total_width: usize = content_spans.iter().map(|s| content_display_width(&s.content)).sum();
 
@@ -228,10 +195,10 @@ pub fn wrap_content(
     // Helper closure to emit the current row (or discard it if still in the
     // skipped region) and reset the accumulator.
     let emit_line = |row_index: usize,
-                         current_line_spans: &mut Vec<Span<'static>>,
-                         current_content: &mut String,
-                         row_infos: &mut Vec<ScreenRowInfo>,
-                         result_lines: &mut Vec<Line<'static>>| {
+                     current_line_spans: &mut Vec<Span<'static>>,
+                     current_content: &mut String,
+                     row_infos: &mut Vec<ScreenRowInfo>,
+                     result_lines: &mut Vec<Line<'static>>| {
         if row_index < skip_rows {
             current_line_spans.clear();
             current_content.clear();
@@ -242,7 +209,10 @@ pub fn wrap_content(
             line_spans.push(Span::styled(prefix_str.clone(), Style::default().fg(Color::DarkGray)));
             line_spans.push(Span::styled(prefix_char.clone(), style));
         } else {
-            line_spans.push(Span::styled(continuation_indent.clone(), Style::default().fg(Color::DarkGray)));
+            line_spans.push(Span::styled(
+                continuation_indent.clone(),
+                Style::default().fg(Color::DarkGray),
+            ));
         }
         line_spans.append(current_line_spans);
         result_lines.push(Line::from(line_spans));
@@ -265,10 +235,7 @@ pub fn wrap_content(
 
             if space_available == 0 {
                 emit_line(
-                    row_index,
-                    &mut current_line_spans,
-                    &mut current_content,
-                    &mut row_infos,
+                    row_index, &mut current_line_spans, &mut current_content, &mut row_infos,
                     &mut result_lines,
                 );
                 current_width = 0;
@@ -306,10 +273,7 @@ pub fn wrap_content(
                 remaining = rest;
 
                 emit_line(
-                    row_index,
-                    &mut current_line_spans,
-                    &mut current_content,
-                    &mut row_infos,
+                    row_index, &mut current_line_spans, &mut current_content, &mut row_infos,
                     &mut result_lines,
                 );
                 current_width = 0;
@@ -324,10 +288,7 @@ pub fn wrap_content(
     // Emit any remaining content (the final partial row).
     if !current_line_spans.is_empty() {
         emit_line(
-            row_index,
-            &mut current_line_spans,
-            &mut current_content,
-            &mut row_infos,
+            row_index, &mut current_line_spans, &mut current_content, &mut row_infos,
             &mut result_lines,
         );
     }
@@ -366,11 +327,8 @@ mod tests {
         assert!(lines.len() > 1, "Content should wrap");
 
         for (i, line) in lines.iter().enumerate() {
-            let display_width: usize = line
-                .spans
-                .iter()
-                .map(|s| content_display_width(&s.content))
-                .sum();
+            let display_width: usize =
+                line.spans.iter().map(|s| content_display_width(&s.content)).sum();
             assert!(
                 display_width <= prefix_width + content_width,
                 "Line {} has display width {} but max is {} (prefix {} + content {})",
@@ -428,9 +386,8 @@ mod tests {
     #[test]
     fn test_wrap_content_skips_leading_rows() {
         // 9 rows, each filled with its own row digit so positions are checkable.
-        let content: String = (0..9)
-            .map(|d| char::from_digit(d, 10).unwrap().to_string().repeat(10))
-            .collect();
+        let content: String =
+            (0..9).map(|d| char::from_digit(d, 10).unwrap().to_string().repeat(10)).collect();
         let content_spans = vec![Span::styled(content.clone(), Style::default())];
 
         let (lines, row_infos) = wrap_content(
@@ -556,11 +513,8 @@ mod tests {
         );
 
         for (i, line) in lines.iter().enumerate() {
-            let display_width: usize = line
-                .spans
-                .iter()
-                .map(|s| content_display_width(&s.content))
-                .sum();
+            let display_width: usize =
+                line.spans.iter().map(|s| content_display_width(&s.content)).sum();
             assert!(
                 display_width <= prefix_width + content_width,
                 "Line {} display width {} exceeds max {}",
@@ -646,11 +600,8 @@ mod tests {
         );
 
         for (i, line) in lines.iter().enumerate() {
-            let display_width: usize = line
-                .spans
-                .iter()
-                .map(|s| content_display_width(&s.content))
-                .sum();
+            let display_width: usize =
+                line.spans.iter().map(|s| content_display_width(&s.content)).sum();
             assert!(
                 display_width <= prefix_width + content_width,
                 "Line {} display width {} exceeds max {}",
@@ -685,7 +636,10 @@ mod tests {
 
         // Content after tab expansion: "        some_long_identifier = value;" = 38 chars
         // This exceeds content_width (30), so wrapping should occur
-        assert!(lines.len() > 1, "Tab-containing content should wrap when expanded width exceeds limit");
+        assert!(
+            lines.len() > 1,
+            "Tab-containing content should wrap when expanded width exceeds limit"
+        );
 
         // Verify no tabs remain in rendered spans
         for line in &lines {
@@ -699,19 +653,13 @@ mod tests {
 
         // Verify no tabs in ScreenRowInfo content
         for info in &row_infos {
-            assert!(
-                !info.content.contains('\t'),
-                "ScreenRowInfo content should not contain tabs"
-            );
+            assert!(!info.content.contains('\t'), "ScreenRowInfo content should not contain tabs");
         }
 
         // Verify display widths don't exceed limits
         for (i, line) in lines.iter().enumerate() {
-            let display_width: usize = line
-                .spans
-                .iter()
-                .map(|s| content_display_width(&s.content))
-                .sum();
+            let display_width: usize =
+                line.spans.iter().map(|s| content_display_width(&s.content)).sum();
             assert!(
                 display_width <= prefix_width + content_width,
                 "Line {} display width {} exceeds max {}",
@@ -779,7 +727,11 @@ mod tests {
 
         // Control chars replaced with spaces in rendered spans
         let rendered: String = lines[0].spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(rendered.contains("hello world !"), "Control chars should become spaces, got: {:?}", rendered);
+        assert!(
+            rendered.contains("hello world !"),
+            "Control chars should become spaces, got: {:?}",
+            rendered
+        );
 
         // Same in row info
         assert_eq!(row_infos[0].content, "hello world !");
@@ -801,8 +753,7 @@ mod tests {
 
         for input in &test_cases {
             let raw = content_display_width(input);
-            let sanitized = sanitize_for_display(input)
-                .unwrap_or_else(|| input.to_string());
+            let sanitized = sanitize_for_display(input).unwrap_or_else(|| input.to_string());
             let after = content_display_width(&sanitized);
             assert_eq!(
                 raw, after,
@@ -928,21 +879,13 @@ mod tests {
         let mut line = DiffLine::new(LineSource::Base, "hello wrld".to_string(), ' ', None);
         line.old_content = Some("hello world".to_string());
         line.inline_spans = vec![
-            InlineSpan {
-                text: "hello w".to_string(),
-                source: None,
-                is_deletion: false,
-            },
+            InlineSpan { text: "hello w".to_string(), source: None, is_deletion: false },
             InlineSpan {
                 text: "o".to_string(),
                 source: Some(LineSource::DeletedBase),
                 is_deletion: true,
             },
-            InlineSpan {
-                text: "rld".to_string(),
-                source: None,
-                is_deletion: false,
-            },
+            InlineSpan { text: "rld".to_string(), source: None, is_deletion: false },
         ];
 
         let height = wrapped_line_height(&line, 80, None, 100, (8, 16));
@@ -960,21 +903,13 @@ mod tests {
         let mut line = DiffLine::new(LineSource::Base, new, ' ', None);
         line.old_content = Some(old);
         line.inline_spans = vec![
-            InlineSpan {
-                text: prefix,
-                source: None,
-                is_deletion: false,
-            },
+            InlineSpan { text: prefix, source: None, is_deletion: false },
             InlineSpan {
                 text: "X".to_string(),
                 source: Some(LineSource::DeletedBase),
                 is_deletion: true,
             },
-            InlineSpan {
-                text: "end".to_string(),
-                source: None,
-                is_deletion: false,
-            },
+            InlineSpan { text: "end".to_string(), source: None, is_deletion: false },
         ];
 
         let height = wrapped_line_height(&line, 50, None, 100, (8, 16));
@@ -988,21 +923,13 @@ mod tests {
 
         let mut line = DiffLine::new(LineSource::Base, "test".to_string(), ' ', None);
         line.inline_spans = vec![
-            InlineSpan {
-                text: "tes".to_string(),
-                source: None,
-                is_deletion: false,
-            },
+            InlineSpan { text: "tes".to_string(), source: None, is_deletion: false },
             InlineSpan {
                 text: "x".to_string(),
                 source: Some(LineSource::DeletedBase),
                 is_deletion: true,
             },
-            InlineSpan {
-                text: "t".to_string(),
-                source: None,
-                is_deletion: false,
-            },
+            InlineSpan { text: "t".to_string(), source: None, is_deletion: false },
         ];
         assert!(has_pure_deletion_inline(&line));
     }

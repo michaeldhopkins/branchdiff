@@ -23,18 +23,13 @@ pub fn compute_file_links(paths: &[&str]) -> HashMap<String, String> {
         }
 
         let candidates = generate_candidates(path);
-        let matches: Vec<_> = candidates
-            .iter()
-            .filter(|c| path_set.contains(c.as_str()))
-            .collect();
+        let matches: Vec<_> = candidates.iter().filter(|c| path_set.contains(c.as_str())).collect();
 
         if matches.len() == 1 {
             // Also check reverse: the matched file should only have one candidate too
             let reverse_candidates = generate_candidates(matches[0]);
-            let reverse_matches: Vec<_> = reverse_candidates
-                .iter()
-                .filter(|c| path_set.contains(c.as_str()))
-                .collect();
+            let reverse_matches: Vec<_> =
+                reverse_candidates.iter().filter(|c| path_set.contains(c.as_str())).collect();
 
             if reverse_matches.len() == 1 {
                 links.insert((*path).to_string(), matches[0].clone());
@@ -99,11 +94,7 @@ fn split_extension(filename: &str) -> (&str, &str) {
 
 /// Join directory and filename, handling empty directory.
 fn join_path(dir: &str, filename: &str) -> String {
-    if dir.is_empty() {
-        filename.to_string()
-    } else {
-        format!("{}/{}", dir, filename)
-    }
+    if dir.is_empty() { filename.to_string() } else { format!("{}/{}", dir, filename) }
 }
 
 /// Generate test file candidates for an implementation file.
@@ -224,11 +215,7 @@ fn strip_prefix_segment<'a>(dir: &'a str, prefix: &str) -> Option<&'a str> {
 /// Prepend a segment to a directory path.
 /// e.g., prepend_segment("test", "foo/bar") => "test/foo/bar"
 fn prepend_segment(prefix: &str, rest: &str) -> String {
-    if rest.is_empty() {
-        prefix.to_string()
-    } else {
-        format!("{}/{}", prefix, rest)
-    }
+    if rest.is_empty() { prefix.to_string() } else { format!("{}/{}", prefix, rest) }
 }
 
 /// Strip test-related suffixes and prefixes from a filename stem.
@@ -346,14 +333,8 @@ mod tests {
         let paths = &["app/models/user.rb", "spec/models/user_spec.rb"];
         let links = compute_file_links(paths);
 
-        assert_eq!(
-            links.get("app/models/user.rb"),
-            Some(&"spec/models/user_spec.rb".to_string())
-        );
-        assert_eq!(
-            links.get("spec/models/user_spec.rb"),
-            Some(&"app/models/user.rb".to_string())
-        );
+        assert_eq!(links.get("app/models/user.rb"), Some(&"spec/models/user_spec.rb".to_string()));
+        assert_eq!(links.get("spec/models/user_spec.rb"), Some(&"app/models/user.rb".to_string()));
     }
 
     #[test]
@@ -361,14 +342,8 @@ mod tests {
         let paths = &["src/handler.go", "test/handler_test.go"];
         let links = compute_file_links(paths);
 
-        assert_eq!(
-            links.get("src/handler.go"),
-            Some(&"test/handler_test.go".to_string())
-        );
-        assert_eq!(
-            links.get("test/handler_test.go"),
-            Some(&"src/handler.go".to_string())
-        );
+        assert_eq!(links.get("src/handler.go"), Some(&"test/handler_test.go".to_string()));
+        assert_eq!(links.get("test/handler_test.go"), Some(&"src/handler.go".to_string()));
     }
 
     #[test]
@@ -376,10 +351,7 @@ mod tests {
         let paths = &["src/utils.py", "tests/utils_test.py"];
         let links = compute_file_links(paths);
 
-        assert_eq!(
-            links.get("src/utils.py"),
-            Some(&"tests/utils_test.py".to_string())
-        );
+        assert_eq!(links.get("src/utils.py"), Some(&"tests/utils_test.py".to_string()));
     }
 
     #[test]
@@ -387,10 +359,7 @@ mod tests {
         let paths = &["lib/user.rb", "spec/user_spec.rb"];
         let links = compute_file_links(paths);
 
-        assert_eq!(
-            links.get("lib/user.rb"),
-            Some(&"spec/user_spec.rb".to_string())
-        );
+        assert_eq!(links.get("lib/user.rb"), Some(&"spec/user_spec.rb".to_string()));
     }
 
     #[test]
@@ -446,12 +415,7 @@ mod tests {
 
     #[test]
     fn test_multiple_pairs() {
-        let paths = &[
-            "handler.go",
-            "handler_test.go",
-            "user.go",
-            "user_test.go",
-        ];
+        let paths = &["handler.go", "handler_test.go", "user.go", "user_test.go"];
         let links = compute_file_links(paths);
 
         assert_eq!(links.get("handler.go"), Some(&"handler_test.go".to_string()));
@@ -483,10 +447,7 @@ mod tests {
         let paths = &["src/handler.go", "test/handler.go"];
         let links = compute_file_links(paths);
 
-        assert_eq!(
-            links.get("src/handler.go"),
-            Some(&"test/handler.go".to_string())
-        );
+        assert_eq!(links.get("src/handler.go"), Some(&"test/handler.go".to_string()));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Uses portable-pty to spawn branchdiff in a real PTY, and vt100 to parse
 //! the terminal output into a screen state we can assert against.
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::io::Read;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -38,12 +38,7 @@ impl TuiSession {
         let pty_system = native_pty_system();
 
         let pair = pty_system
-            .openpty(PtySize {
-                rows: TERM_ROWS,
-                cols: TERM_COLS,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
+            .openpty(PtySize { rows: TERM_ROWS, cols: TERM_COLS, pixel_width: 0, pixel_height: 0 })
             .expect("failed to open pty");
 
         let mut cmd = CommandBuilder::new("branchdiff");
@@ -77,13 +72,8 @@ impl TuiSession {
 
         let parser = Parser::new(TERM_ROWS, TERM_COLS, 0);
 
-        let mut session = Self {
-            parser,
-            output_rx: rx,
-            writer,
-            raw_output: Vec::new(),
-            _child: child,
-        };
+        let mut session =
+            Self { parser, output_rx: rx, writer, raw_output: Vec::new(), _child: child };
 
         // Wait for initial render
         session
@@ -110,9 +100,7 @@ impl TuiSession {
     /// Whether the app has written the given byte sequence to the terminal.
     pub fn emitted(&mut self, bytes: &[u8]) -> bool {
         self.poll();
-        self.raw_output
-            .windows(bytes.len())
-            .any(|w| w == bytes)
+        self.raw_output.windows(bytes.len()).any(|w| w == bytes)
     }
 
     /// How many bytes the app has written so far. Lets a test tell "the app
@@ -155,9 +143,7 @@ impl TuiSession {
 
     /// Send a key press (single character).
     pub fn press(&mut self, key: &str) {
-        self.writer
-            .write_all(key.as_bytes())
-            .expect("failed to send key");
+        self.writer.write_all(key.as_bytes()).expect("failed to send key");
         self.writer.flush().expect("failed to flush");
         // Give the app time to process
         thread::sleep(Duration::from_millis(50));
@@ -176,10 +162,7 @@ impl TuiSession {
                 return Ok(());
             }
             if start.elapsed() > timeout {
-                return Err(format!(
-                    "Timeout after {:?}. Screen contents:\n{}",
-                    timeout, contents
-                ));
+                return Err(format!("Timeout after {:?}. Screen contents:\n{}", timeout, contents));
             }
             thread::sleep(POLL_INTERVAL);
         }
@@ -195,22 +178,13 @@ impl TuiSession {
     /// Assert that the screen contains the given text.
     pub fn assert_contains(&mut self, text: &str) {
         let screen = self.text();
-        assert!(
-            screen.contains(text),
-            "Expected screen to contain '{}', got:\n{}",
-            text,
-            screen
-        );
+        assert!(screen.contains(text), "Expected screen to contain '{}', got:\n{}", text, screen);
     }
 
     /// Assert that the status bar (last non-empty line) contains the given text.
     pub fn assert_status_bar_contains(&mut self, pattern: &str) {
         let screen = self.text();
-        let last_line = screen
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("");
+        let last_line = screen.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
         assert!(
             last_line.contains(pattern),
             "Expected status bar to contain '{}', got: {}",

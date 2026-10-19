@@ -5,10 +5,7 @@ use crate::message::{Repaint, UpdateResult};
 
 /// Handle raw input events when the search bar is active.
 pub(super) fn handle_search_input(event: Event, app: &mut App) -> UpdateResult {
-    let mut result = UpdateResult {
-        needs_redraw: true,
-        ..Default::default()
-    };
+    let mut result = UpdateResult { needs_redraw: true, ..Default::default() };
 
     match event {
         // A repaint request is orthogonal to search: the screen is stale
@@ -57,7 +54,7 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
 
-    use crate::test_support::{base_line, TestAppBuilder};
+    use crate::test_support::{TestAppBuilder, base_line};
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
         Event::Key(KeyEvent {
@@ -69,15 +66,8 @@ mod tests {
     }
 
     fn build_app_with_search() -> App {
-        let lines = vec![
-            base_line("hello world"),
-            base_line("foo bar"),
-            base_line("hello again"),
-        ];
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_viewport_height(20)
-            .build();
+        let lines = vec![base_line("hello world"), base_line("foo bar"), base_line("hello again")];
+        let mut app = TestAppBuilder::new().with_lines(lines).with_viewport_height(20).build();
         app.open_search();
         app
     }
@@ -89,8 +79,11 @@ mod tests {
     fn test_search_focus_gained_forces_a_repaint() {
         let mut app = build_app_with_search();
         let result = handle_search_input(Event::FocusGained, &mut app);
-        assert_eq!(result.repaint, Repaint::Full,
-            "FocusGained must repaint even while the search box is open");
+        assert_eq!(
+            result.repaint,
+            Repaint::Full,
+            "FocusGained must repaint even while the search box is open"
+        );
         assert!(result.needs_redraw);
     }
 
@@ -100,8 +93,11 @@ mod tests {
     fn test_search_ctrl_l_forces_a_repaint() {
         let mut app = build_app_with_search();
         let result = handle_search_input(key(KeyCode::Char('l'), KeyModifiers::CONTROL), &mut app);
-        assert_eq!(result.repaint, Repaint::Full,
-            "Ctrl+L must repaint even while the search box is open");
+        assert_eq!(
+            result.repaint,
+            Repaint::Full,
+            "Ctrl+L must repaint even while the search box is open"
+        );
     }
 
     /// ...and it must not be mistaken for typing the letter 'l' into the query.
@@ -196,10 +192,7 @@ mod tests {
     #[test]
     fn arrow_keys_scroll_passthrough() {
         let lines: Vec<_> = (0..30).map(|i| base_line(&format!("line {i}"))).collect();
-        let mut app = TestAppBuilder::new()
-            .with_lines(lines)
-            .with_viewport_height(10)
-            .build();
+        let mut app = TestAppBuilder::new().with_lines(lines).with_viewport_height(10).build();
         app.open_search();
 
         handle_search_input(key(KeyCode::Down, KeyModifiers::NONE), &mut app);

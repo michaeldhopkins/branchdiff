@@ -53,9 +53,7 @@ impl App {
             }
         }
         // Fallback: first file
-        self.files.first()
-            .and_then(|f| f.lines.first())
-            .and_then(|l| l.file_path.clone())
+        self.files.first().and_then(|f| f.lines.first()).and_then(|l| l.file_path.clone())
     }
 
     pub fn next_file(&mut self) {
@@ -217,7 +215,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::diff::DiffLine;
-    use crate::test_support::{base_line, TestAppBuilder};
+    use crate::test_support::{TestAppBuilder, base_line};
 
     #[test]
     fn test_next_file_jumps_to_header() {
@@ -255,10 +253,7 @@ mod tests {
 
     #[test]
     fn test_next_file_no_more_files() {
-        let lines = vec![
-            DiffLine::file_header("file1.rs"),
-            base_line("line1"),
-        ];
+        let lines = vec![DiffLine::file_header("file1.rs"), base_line("line1")];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.scroll_offset = 0;
 
@@ -303,10 +298,7 @@ mod tests {
 
     #[test]
     fn test_prev_file_at_first_file() {
-        let lines = vec![
-            DiffLine::file_header("file1.rs"),
-            base_line("line1"),
-        ];
+        let lines = vec![DiffLine::file_header("file1.rs"), base_line("line1")];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.scroll_offset = 0;
 
@@ -377,9 +369,7 @@ mod tests {
 
     #[test]
     fn test_max_scroll_for_items() {
-        let lines: Vec<DiffLine> = (0..20)
-            .map(|i| base_line(&format!("line {}", i)))
-            .collect();
+        let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line {}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.viewport_height = 10;
 
@@ -389,9 +379,7 @@ mod tests {
 
     #[test]
     fn test_clamp_scroll() {
-        let lines: Vec<DiffLine> = (0..20)
-            .map(|i| base_line(&format!("line {}", i)))
-            .collect();
+        let lines: Vec<DiffLine> = (0..20).map(|i| base_line(&format!("line {}", i))).collect();
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.viewport_height = 10;
         app.view.scroll_offset = 100; // Way past end
@@ -406,10 +394,7 @@ mod tests {
         use crate::image_diff::{CachedImage, ImageDiffState};
         use image::DynamicImage;
 
-        let lines = vec![
-            DiffLine::file_header("test.png"),
-            DiffLine::image_marker("test.png"),
-        ];
+        let lines = vec![DiffLine::file_header("test.png"), DiffLine::image_marker("test.png")];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.viewport_height = 40;
         app.view.content_width = 80;
@@ -426,10 +411,7 @@ mod tests {
         };
         app.image_cache.insert(
             "test.png".to_string(),
-            ImageDiffState {
-                before: Some(cached_image),
-                after: None,
-            },
+            ImageDiffState { before: Some(cached_image), after: None },
         );
 
         // total_rows = header (1 row) + image height
@@ -440,7 +422,7 @@ mod tests {
         let expected = crate::ui::image_view::calculate_image_height_for_images(
             Some((192, 192)),
             None,
-            100, // panel_width
+            100,     // panel_width
             (8, 16), // default font size
         ) as usize;
         assert_eq!(height, expected);
@@ -450,21 +432,14 @@ mod tests {
     #[test]
     fn test_wrapped_line_height_for_image_marker_no_cache() {
         // When image is not in cache, height should be 1 (fallback)
-        let lines = vec![
-            DiffLine::file_header("test.png"),
-            DiffLine::image_marker("test.png"),
-        ];
+        let lines = vec![DiffLine::file_header("test.png"), DiffLine::image_marker("test.png")];
         let mut app = TestAppBuilder::new().with_lines(lines).build();
         app.view.content_width = 80;
         app.view.panel_width = 100;
 
         // header (1 row) + image fallback (1 row)
         let ctx = FrameContext::new(&app);
-        assert_eq!(
-            ctx.total_rows(&app),
-            2,
-            "Image marker without cache data should be 1 row"
-        );
+        assert_eq!(ctx.total_rows(&app), 2, "Image marker without cache data should be 1 row");
     }
 
     #[test]
@@ -497,18 +472,12 @@ mod tests {
             };
             app.image_cache.insert(
                 format!("image{}.png", i),
-                ImageDiffState {
-                    before: Some(cached_image),
-                    after: None,
-                },
+                ImageDiffState { before: Some(cached_image), after: None },
             );
         }
 
         let ctx = FrameContext::new(&app);
-        assert!(
-            ctx.max_scroll(&app) > (0, 0),
-            "max_scroll should account for tall image markers"
-        );
+        assert!(ctx.max_scroll(&app) > (0, 0), "max_scroll should account for tall image markers");
     }
 
     /// Build an app whose items wrap to the given row heights (content width 10).

@@ -5,7 +5,10 @@ mod jj_revset;
 pub(crate) mod shared;
 pub mod types;
 
-pub use types::{ComparisonContext, DiffBase, RefreshResult, StackPosition, UpstreamDivergence, VcsBackend, VcsEventType, VcsWatchPaths};
+pub use types::{
+    ComparisonContext, DiffBase, RefreshResult, StackPosition, UpstreamDivergence, VcsBackend,
+    VcsEventType, VcsWatchPaths,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -25,9 +28,8 @@ static VCS_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 /// Only one backend is active at a time, so a single pool suffices.
 pub(crate) fn vcs_thread_pool() -> &'static rayon::ThreadPool {
     VCS_POOL.get_or_init(|| {
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get().min(MAX_VCS_THREADS))
-            .unwrap_or(4);
+        let num_threads =
+            std::thread::available_parallelism().map(|n| n.get().min(MAX_VCS_THREADS)).unwrap_or(4);
         ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()

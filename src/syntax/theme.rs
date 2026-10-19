@@ -12,12 +12,7 @@ pub fn branchdiff_theme() -> Theme {
         name: Some("branchdiff".to_string()),
         author: None,
         settings: ThemeSettings {
-            foreground: Some(Color {
-                r: 200,
-                g: 200,
-                b: 200,
-                a: 255,
-            }),
+            foreground: Some(Color { r: 200, g: 200, b: 200, a: 255 }),
             background: None, // We use diff backgrounds
             ..Default::default()
         },
@@ -57,13 +52,10 @@ pub fn branchdiff_theme() -> Theme {
 fn theme_item(scope: &str, r: u8, g: u8, b: u8) -> ThemeItem {
     // Use expect() for programmer error - these are hardcoded scope selectors that
     // should always be valid. If one fails, it's a bug in the theme definition.
-    let scope_selectors = ScopeSelectors::from_str(scope)
-        .expect("hardcoded scope selector should be valid");
+    let scope_selectors =
+        ScopeSelectors::from_str(scope).expect("hardcoded scope selector should be valid");
     ThemeItem {
         scope: scope_selectors,
-        style: StyleModifier {
-            foreground: Some(Color { r, g, b, a: 255 }),
-            ..Default::default()
-        },
+        style: StyleModifier { foreground: Some(Color { r, g, b, a: 255 }), ..Default::default() },
     }
 }

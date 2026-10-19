@@ -24,10 +24,7 @@ pub struct ExternalCommand {
 }
 
 fn stem(program: &str) -> &str {
-    Path::new(program)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(program)
+    Path::new(program).file_stem().and_then(|s| s.to_str()).unwrap_or(program)
 }
 
 /// GUI editors that treat a folder as a project. Shared by [`classify_mode`]
@@ -72,10 +69,7 @@ pub fn opens_directory(program: &str) -> bool {
     // Terminal editors with a directory browser. (nvim-remote is excluded:
     // opening a directory through `nvr` is not meaningful.)
     is_gui_workspace_editor(name)
-        || matches!(
-            name,
-            "vim" | "nvim" | "vi" | "view" | "emacs" | "emacsclient" | "hx" | "helix"
-        )
+        || matches!(name, "vim" | "nvim" | "vi" | "view" | "emacs" | "emacsclient" | "hx" | "helix")
 }
 
 /// First non-empty of `$VISUAL`, `$EDITOR`, then the VCS-configured editor
@@ -137,18 +131,12 @@ pub fn os_open_command(file: &Path) -> ExternalCommand {
     let (program, args) = ("open".to_string(), vec![f]);
     #[cfg(target_os = "windows")]
     // `start`'s first quoted arg is the window title, hence the empty string.
-    let (program, args) = (
-        "cmd".to_string(),
-        vec!["/C".to_string(), "start".to_string(), String::new(), f],
-    );
+    let (program, args) =
+        ("cmd".to_string(), vec!["/C".to_string(), "start".to_string(), String::new(), f]);
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let (program, args) = ("xdg-open".to_string(), vec![f]);
 
-    ExternalCommand {
-        program,
-        args,
-        mode: LaunchMode::Detached,
-    }
+    ExternalCommand { program, args, mode: LaunchMode::Detached }
 }
 
 /// The VCS-configured editor, looked up only when neither `$VISUAL` nor
@@ -158,9 +146,8 @@ pub fn vcs_editor_if_unset(
     env_get: impl Fn(&str) -> Option<String>,
     lookup: impl FnOnce() -> Option<String>,
 ) -> Option<String> {
-    let env_set = ["VISUAL", "EDITOR"]
-        .iter()
-        .any(|k| env_get(k).is_some_and(|v| !v.trim().is_empty()));
+    let env_set =
+        ["VISUAL", "EDITOR"].iter().any(|k| env_get(k).is_some_and(|v| !v.trim().is_empty()));
     if env_set { None } else { lookup() }
 }
 
@@ -173,10 +160,9 @@ pub fn vcs_configured_editor(backend: VcsBackend, repo_path: &Path) -> Option<St
             .args(["config", "--get", "core.editor"])
             .current_dir(repo_path)
             .output(),
-        VcsBackend::Jj => Command::new("jj")
-            .args(["config", "get", "ui.editor"])
-            .current_dir(repo_path)
-            .output(),
+        VcsBackend::Jj => {
+            Command::new("jj").args(["config", "get", "ui.editor"]).current_dir(repo_path).output()
+        }
     }
     .ok()?;
     if !output.status.success() {
@@ -229,12 +215,8 @@ mod tests {
 
     #[test]
     fn resolve_splits_args_and_classifies_gui() {
-        let cmd = resolve_editor(
-            &file(),
-            |k| (k == "EDITOR").then(|| "code --wait".into()),
-            None,
-        )
-        .unwrap();
+        let cmd = resolve_editor(&file(), |k| (k == "EDITOR").then(|| "code --wait".into()), None)
+            .unwrap();
         assert_eq!(cmd.program, "code");
         assert_eq!(cmd.args, vec!["--wait".to_string(), path_arg()]);
         assert_eq!(cmd.mode, LaunchMode::Detached);
@@ -298,11 +280,8 @@ mod tests {
 
     #[test]
     fn dir_opener_uses_dir_capable_editor() {
-        let cmd = resolve_dir_opener(
-            &dir(),
-            |k| (k == "EDITOR").then(|| "code --wait".into()),
-            None,
-        );
+        let cmd =
+            resolve_dir_opener(&dir(), |k| (k == "EDITOR").then(|| "code --wait".into()), None);
         assert_eq!(cmd.program, "code");
         assert_eq!(cmd.args, vec!["--wait".to_string(), dir_arg()]);
         assert_eq!(cmd.mode, LaunchMode::Detached);
@@ -344,7 +323,10 @@ mod tests {
     #[test]
     fn a_blank_env_editor_counts_as_unset() {
         let vcs = || Some("hx".to_string());
-        assert_eq!(vcs_editor_if_unset(env(&[("VISUAL", "  "), ("EDITOR", "")]), vcs), Some("hx".into()));
+        assert_eq!(
+            vcs_editor_if_unset(env(&[("VISUAL", "  "), ("EDITOR", "")]), vcs),
+            Some("hx".into())
+        );
     }
 
     #[test]
@@ -372,11 +354,8 @@ mod tests {
     #[test]
     fn a_configured_git_editor_is_returned_trimmed() {
         let dir = tempfile::TempDir::new().unwrap();
-        let status = std::process::Command::new("git")
-            .arg("init")
-            .current_dir(dir.path())
-            .status()
-            .unwrap();
+        let status =
+            std::process::Command::new("git").arg("init").current_dir(dir.path()).status().unwrap();
         assert!(status.success(), "git init failed");
         let status = std::process::Command::new("git")
             .args(["config", "core.editor", "  my-editor --wait  "])
@@ -393,11 +372,8 @@ mod tests {
     #[test]
     fn a_blank_git_editor_reads_as_none() {
         let dir = tempfile::TempDir::new().unwrap();
-        let status = std::process::Command::new("git")
-            .arg("init")
-            .current_dir(dir.path())
-            .status()
-            .unwrap();
+        let status =
+            std::process::Command::new("git").arg("init").current_dir(dir.path()).status().unwrap();
         assert!(status.success(), "git init failed");
         let status = std::process::Command::new("git")
             .args(["config", "core.editor", "   "])
@@ -405,9 +381,6 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "git config failed");
-        assert_eq!(
-            vcs_configured_editor(crate::vcs::VcsBackend::Git, dir.path()),
-            None
-        );
+        assert_eq!(vcs_configured_editor(crate::vcs::VcsBackend::Git, dir.path()), None);
     }
 }

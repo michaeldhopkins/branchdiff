@@ -9,10 +9,10 @@ pub mod file_events;
 pub mod file_links;
 pub mod file_list;
 pub mod fingerprint;
-pub mod image_diff;
 pub mod gitignore;
 pub mod html_page;
 pub mod html_style;
+pub mod image_diff;
 pub mod listing;
 pub mod vcs;
 
@@ -26,8 +26,8 @@ pub mod output;
 pub mod patch;
 pub mod startup;
 pub mod syntax;
-pub mod update;
 pub mod ui;
+pub mod update;
 
 #[cfg(test)]
 pub mod test_support;

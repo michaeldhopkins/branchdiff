@@ -6,7 +6,10 @@ pub const SELECTION_BG_COLOR: ratatui::style::Color = ratatui::style::Color::Rgb
 
 /// Get the selection range for a specific line (start_col, end_col)
 /// Returns None if the line is not selected
-pub fn get_line_selection_range(selection: &Option<Selection>, line_idx: usize) -> Option<(usize, usize)> {
+pub fn get_line_selection_range(
+    selection: &Option<Selection>,
+    line_idx: usize,
+) -> Option<(usize, usize)> {
     let sel = selection.as_ref()?;
 
     // Normalize selection (start should be before end)
@@ -89,11 +92,7 @@ pub fn apply_selection_to_span(
         result.push(Span::styled(text[byte_sel_end..].to_string(), base_style));
     }
 
-    if result.is_empty() {
-        vec![span]
-    } else {
-        result
-    }
+    if result.is_empty() { vec![span] } else { result }
 }
 
 #[cfg(test)]

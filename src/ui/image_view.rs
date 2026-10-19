@@ -8,16 +8,16 @@
 //! layout logic.
 
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 use ratatui_image::{Resize, StatefulImage};
 
 use crate::image_diff::{
-    center_in_area, fit_dimensions, CachedImage, ImageDiffState, MAX_IMAGE_HEIGHT_ROWS,
-    IMAGE_BOTTOM_MARGIN, IMAGE_TOP_MARGIN, METADATA_HEIGHT,
+    CachedImage, IMAGE_BOTTOM_MARGIN, IMAGE_TOP_MARGIN, ImageDiffState, MAX_IMAGE_HEIGHT_ROWS,
+    METADATA_HEIGHT, center_in_area, fit_dimensions,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,9 +49,7 @@ impl ImagePanelLayout {
 
     /// Calculate right margin (space between image right edge and inner right edge)
     pub fn right_margin(&self) -> u16 {
-        self.inner_area
-            .right()
-            .saturating_sub(self.image_rect.right())
+        self.inner_area.right().saturating_sub(self.image_rect.right())
     }
 
     /// Check if image is horizontally centered (within 1 cell tolerance for odd widths)
@@ -75,9 +73,7 @@ impl ImagePanelLayout {
             meta.y.saturating_sub(self.image_rect.bottom())
         } else {
             // Space between image and panel bottom
-            self.inner_area
-                .bottom()
-                .saturating_sub(self.image_rect.bottom())
+            self.inner_area.bottom().saturating_sub(self.image_rect.bottom())
         }
     }
 }
@@ -107,20 +103,14 @@ pub fn calculate_image_panel_layout(
     // fit_dimensions handles both width-constrained and height-constrained cases,
     // calculating the exact cell dimensions that StatefulImage will use for rendering.
     // Using display_w directly ensures our centering matches the actual render size.
-    let (display_w, display_h) = fit_dimensions(
-        img_w,
-        img_h,
-        panel_inner.width,
-        expected_available_height,
-        font_size,
-    );
+    let (display_w, display_h) =
+        fit_dimensions(img_w, img_h, panel_inner.width, expected_available_height, font_size);
 
     let container_w = display_w;
     let container_h = display_h;
 
     // Determine if we have room for metadata (within actual visible area)
-    let content_needed =
-        IMAGE_TOP_MARGIN + container_h + IMAGE_BOTTOM_MARGIN + METADATA_HEIGHT;
+    let content_needed = IMAGE_TOP_MARGIN + container_h + IMAGE_BOTTOM_MARGIN + METADATA_HEIGHT;
     let has_metadata_space = panel_inner.height >= content_needed;
 
     // Position at top with margin
@@ -128,9 +118,7 @@ pub fn calculate_image_panel_layout(
 
     // Clamp container height to visible area to prevent border overlap on partial views.
     // Leave 1 row for bottom border visibility.
-    let max_visible_h = panel_inner
-        .height
-        .saturating_sub(IMAGE_TOP_MARGIN + 1);
+    let max_visible_h = panel_inner.height.saturating_sub(IMAGE_TOP_MARGIN + 1);
     let clamped_h = container_h.min(max_visible_h);
 
     // When height is clamped, StatefulImage will recalculate width based on the smaller height.
@@ -150,12 +138,7 @@ pub fn calculate_image_panel_layout(
     // Calculate metadata rect if there's space
     let metadata_rect = if has_metadata_space {
         let metadata_y = container_y + container_h + IMAGE_BOTTOM_MARGIN;
-        Some(Rect::new(
-            panel_inner.x,
-            metadata_y,
-            panel_inner.width,
-            METADATA_HEIGHT,
-        ))
+        Some(Rect::new(panel_inner.x, metadata_y, panel_inner.width, METADATA_HEIGHT))
     } else {
         None
     };
@@ -250,11 +233,7 @@ fn render_image_panel(
     expected_available_height: u16,
     font_size: (u16, u16),
 ) {
-    let border_color = if is_before {
-        Color::Red
-    } else {
-        Color::Green
-    };
+    let border_color = if is_before { Color::Red } else { Color::Green };
 
     let block = Block::default()
         .title(label)
@@ -303,11 +282,7 @@ fn render_image_panel(
         }
         None => {
             // No image - show placeholder
-            let msg = if is_before {
-                "(new file)"
-            } else {
-                "(deleted)"
-            };
+            let msg = if is_before { "(new file)" } else { "(deleted)" };
             let para = Paragraph::new(msg)
                 .style(Style::default().fg(Color::DarkGray))
                 .alignment(Alignment::Center);
@@ -324,23 +299,16 @@ fn render_image_placeholder_box(
     font_size: (u16, u16),
 ) {
     let (display_w, display_h) = fit_dimensions(
-        cached.original_width,
-        cached.original_height,
-        area.width,
-        area.height,
-        font_size,
+        cached.original_width, cached.original_height, area.width, area.height, font_size,
     );
 
     let centered = center_in_area(display_w, display_h, area);
 
-    let placeholder = format!(
-        "{}x{} {}",
-        cached.original_width, cached.original_height, cached.format_name
-    );
+    let placeholder =
+        format!("{}x{} {}", cached.original_width, cached.original_height, cached.format_name);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+    let block =
+        Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray));
 
     let inner = block.inner(centered);
     frame.render_widget(block, centered);
@@ -356,9 +324,8 @@ fn render_image_placeholder_box(
 /// Render a compact placeholder when there's not enough vertical space
 fn render_compact_placeholder(frame: &mut Frame, area: Rect, file_path: &str) {
     let text = format!("[image: {}]", file_path);
-    let para = Paragraph::new(text)
-        .style(Style::default().fg(Color::Cyan))
-        .alignment(Alignment::Left);
+    let para =
+        Paragraph::new(text).style(Style::default().fg(Color::Cyan)).alignment(Alignment::Left);
     frame.render_widget(para, area);
 }
 
@@ -478,7 +445,8 @@ mod tests {
         // Image in cells: 1024/8 = 128 cells wide, 1024/16 = 64 cells tall
         // Scale to fit width: 58/128 = 0.453
         // Scaled height: 64 * 0.453 = 29 cells
-        let height = calculate_image_height_for_images(Some((1024, 1024)), None, 120, TEST_FONT_SIZE);
+        let height =
+            calculate_image_height_for_images(Some((1024, 1024)), None, 120, TEST_FONT_SIZE);
         // Height should be 29 (image) + 4 (borders) = 33
         assert!(height >= 30); // At least 30 rows for a large scaled image
         assert!(height <= 40); // But not excessive
@@ -487,8 +455,14 @@ mod tests {
     #[test]
     fn test_calculate_image_height_for_images_uses_larger_dimension() {
         // Before is 100x100, After is 200x200 - should use 200x200
-        let height_both = calculate_image_height_for_images(Some((100, 100)), Some((200, 200)), 100, TEST_FONT_SIZE);
-        let height_large_only = calculate_image_height_for_images(None, Some((200, 200)), 100, TEST_FONT_SIZE);
+        let height_both = calculate_image_height_for_images(
+            Some((100, 100)),
+            Some((200, 200)),
+            100,
+            TEST_FONT_SIZE,
+        );
+        let height_large_only =
+            calculate_image_height_for_images(None, Some((200, 200)), 100, TEST_FONT_SIZE);
         assert_eq!(height_both, height_large_only);
     }
 
@@ -542,10 +516,7 @@ mod tests {
 
     #[test]
     fn test_image_diff_state_creation() {
-        let state = ImageDiffState {
-            before: None,
-            after: None,
-        };
+        let state = ImageDiffState { before: None, after: None };
         assert!(state.before.is_none());
         assert!(state.after.is_none());
     }
@@ -574,7 +545,12 @@ mod tests {
             let available_w = (panel_width - 4) / 2;
 
             // Get height from calculate_image_height_for_images (subtract 4 for borders/metadata)
-            let calc_total = calculate_image_height_for_images(Some((img_w, img_h)), None, panel_width, TEST_FONT_SIZE);
+            let calc_total = calculate_image_height_for_images(
+                Some((img_w, img_h)),
+                None,
+                panel_width,
+                TEST_FONT_SIZE,
+            );
             let calc_image_h = calc_total.saturating_sub(4);
 
             // Get height from fit_dimensions with unconstrained height
@@ -730,7 +706,8 @@ mod tests {
         // When panel is partially visible, image height should be clamped
         let inner = Rect::new(0, 0, 80, 8); // Very short visible area
         let expected_height = 20; // Full image would be taller
-        let layout = calculate_image_panel_layout((400, 600), inner, expected_height, HIFI_FONT_SIZE);
+        let layout =
+            calculate_image_panel_layout((400, 600), inner, expected_height, HIFI_FONT_SIZE);
 
         // Image height should be clamped to fit
         // max_visible_h = 8 - IMAGE_TOP_MARGIN(1) - 1 = 6
@@ -818,17 +795,11 @@ mod tests {
         let layout = calculate_image_panel_layout((16, 16), inner, 18, HIFI_FONT_SIZE);
 
         // Image should be centered even when small
-        assert!(
-            layout.is_horizontally_centered(),
-            "Tiny image should be centered"
-        );
+        assert!(layout.is_horizontally_centered(), "Tiny image should be centered");
 
         // Should not upscale beyond natural size
         // 16x16 pixels with 8x16 font = 2x1 cells
-        assert!(
-            layout.image_rect.width <= 80,
-            "Tiny image should not upscale to fill width"
-        );
+        assert!(layout.image_rect.width <= 80, "Tiny image should not upscale to fill width");
     }
 
     #[test]
@@ -838,14 +809,8 @@ mod tests {
         let layout = calculate_image_panel_layout((200, 200), inner, 18, HIFI_FONT_SIZE);
 
         // Image should be positioned relative to panel, not screen origin
-        assert!(
-            layout.image_rect.x >= inner.x,
-            "Image x should be >= panel x"
-        );
-        assert!(
-            layout.image_rect.y >= inner.y,
-            "Image y should be >= panel y"
-        );
+        assert!(layout.image_rect.x >= inner.x, "Image x should be >= panel x");
+        assert!(layout.image_rect.y >= inner.y, "Image y should be >= panel y");
         assert!(layout.is_within_bounds());
     }
 
@@ -918,8 +883,7 @@ mod tests {
         let inner = Rect::new(0, 0, 77, 18); // Typical half-panel after borders
 
         // Horizontal logo (landscape)
-        let h_layout =
-            calculate_image_panel_layout((1500, 650), inner, 16, HIFI_FONT_SIZE);
+        let h_layout = calculate_image_panel_layout((1500, 650), inner, 16, HIFI_FONT_SIZE);
         assert!(
             h_layout.is_horizontally_centered(),
             "Horizontal logo should be centered. Left: {}, Right: {}",
@@ -928,8 +892,7 @@ mod tests {
         );
 
         // Vertical logo (portrait-ish, but still wider than tall in cells due to font ratio)
-        let v_layout =
-            calculate_image_panel_layout((1500, 1392), inner, 16, HIFI_FONT_SIZE);
+        let v_layout = calculate_image_panel_layout((1500, 1392), inner, 16, HIFI_FONT_SIZE);
         assert!(
             v_layout.is_horizontally_centered(),
             "Vertical logo should be centered. Left: {}, Right: {}",
@@ -1010,8 +973,8 @@ mod tests {
     #[test]
     fn test_fit_dimensions_matches_ratatui_image_size_for() {
         use image::{DynamicImage, RgbaImage};
-        use ratatui_image::picker::Picker;
         use ratatui_image::Resize;
+        use ratatui_image::picker::Picker;
 
         // Create a picker (halfblocks for simplicity)
         let picker = Picker::halfblocks();
@@ -1046,8 +1009,16 @@ mod tests {
                 (ratatui_size.width, ratatui_size.height),
                 "{}: Our fit_dimensions ({}, {}) doesn't match ratatui-image's size_for ({}, {}). \
                  Image: {}x{}, Panel: {}x{}, Font: {:?}",
-                desc, our_w, our_h, ratatui_size.width, ratatui_size.height,
-                img_w, img_h, panel_w, panel_h, font_size
+                desc,
+                our_w,
+                our_h,
+                ratatui_size.width,
+                ratatui_size.height,
+                img_w,
+                img_h,
+                panel_w,
+                panel_h,
+                font_size
             );
         }
     }
@@ -1057,8 +1028,8 @@ mod tests {
     #[test]
     fn test_ratatui_image_with_oversized_rect() {
         use image::{DynamicImage, RgbaImage};
-        use ratatui_image::picker::Picker;
         use ratatui_image::Resize;
+        use ratatui_image::picker::Picker;
 
         let picker = Picker::halfblocks();
         let font_size = picker.font_size();
@@ -1111,7 +1082,8 @@ mod tests {
 
         // Step 1: fit_dimensions
         let (display_w, display_h) = fit_dimensions(
-            img_dims.0, img_dims.1,
+            img_dims.0,
+            img_dims.1,
             panel_inner.width,
             expected_available_height,
             font_size,
@@ -1133,9 +1105,9 @@ mod tests {
 
         // Step 3: What ratatui-image will calculate when we pass layout.image_rect
         use image::{DynamicImage, RgbaImage};
-        use ratatui_image::protocol::{ImageSource, StatefulProtocol, StatefulProtocolType};
-        use ratatui_image::protocol::kitty::StatefulKitty;
         use ratatui_image::Resize;
+        use ratatui_image::protocol::kitty::StatefulKitty;
+        use ratatui_image::protocol::{ImageSource, StatefulProtocol, StatefulProtocolType};
 
         let img = DynamicImage::ImageRgba8(RgbaImage::new(img_dims.0, img_dims.1));
         let source = ImageSource::new(img, font_size, image::Rgba([0, 0, 0, 0]));
@@ -1167,9 +1139,9 @@ mod tests {
     #[test]
     fn test_fit_dimensions_various_font_sizes() {
         use image::{DynamicImage, RgbaImage};
-        use ratatui_image::protocol::{ImageSource, StatefulProtocol, StatefulProtocolType};
-        use ratatui_image::protocol::kitty::StatefulKitty;
         use ratatui_image::Resize;
+        use ratatui_image::protocol::kitty::StatefulKitty;
+        use ratatui_image::protocol::{ImageSource, StatefulProtocol, StatefulProtocolType};
 
         // Test with different realistic font sizes
         let font_sizes = [
@@ -1180,10 +1152,7 @@ mod tests {
             (12, 24, "larger 12x24"),
         ];
 
-        let img_dims = [
-            (1500u32, 650u32, "horizontal logo"),
-            (1500, 1392, "vertical logo"),
-        ];
+        let img_dims = [(1500u32, 650u32, "horizontal logo"), (1500, 1392, "vertical logo")];
 
         let panel = (77u16, 16u16); // Typical half-panel
 
@@ -1211,15 +1180,26 @@ mod tests {
 
                 eprintln!(
                     "Font {:?} ({}), Image {}x{} ({}): ratatui=({}, {}), ours=({}, {})",
-                    font_size, font_desc, img_w, img_h, img_desc,
-                    ratatui_size.width, ratatui_size.height, our_w, our_h
+                    font_size,
+                    font_desc,
+                    img_w,
+                    img_h,
+                    img_desc,
+                    ratatui_size.width,
+                    ratatui_size.height,
+                    our_w,
+                    our_h
                 );
 
                 assert_eq!(
                     (our_w, our_h),
                     (ratatui_size.width, ratatui_size.height),
                     "Font {:?} ({}), Image {} ({}x{}): mismatch",
-                    font_size, font_desc, img_desc, img_w, img_h
+                    font_size,
+                    font_desc,
+                    img_desc,
+                    img_w,
+                    img_h
                 );
             }
         }
@@ -1240,9 +1220,9 @@ mod tests {
     fn test_layout_must_use_display_dimensions_not_original() {
         use crate::image_diff::MAX_CACHE_DIMENSION;
         use image::{DynamicImage, RgbaImage};
-        use ratatui_image::protocol::{ImageSource, StatefulProtocol, StatefulProtocolType};
-        use ratatui_image::protocol::kitty::StatefulKitty;
         use ratatui_image::Resize;
+        use ratatui_image::protocol::kitty::StatefulKitty;
+        use ratatui_image::protocol::{ImageSource, StatefulProtocol, StatefulProtocolType};
 
         // Use high-fidelity font size (16, 35) which exposed the bug
         let font_size = (16u16, 35u16);
@@ -1252,23 +1232,22 @@ mod tests {
         let original_h = 650u32;
 
         // Calculate downscaled dimensions (mirrors CachedImage logic)
-        let (display_w, display_h) = if original_w > MAX_CACHE_DIMENSION
-            || original_h > MAX_CACHE_DIMENSION
-        {
-            let scale = MAX_CACHE_DIMENSION as f64 / original_w.max(original_h) as f64;
-            (
-                (original_w as f64 * scale) as u32,
-                (original_h as f64 * scale) as u32,
-            )
-        } else {
-            (original_w, original_h)
-        };
+        let (display_w, display_h) =
+            if original_w > MAX_CACHE_DIMENSION || original_h > MAX_CACHE_DIMENSION {
+                let scale = MAX_CACHE_DIMENSION as f64 / original_w.max(original_h) as f64;
+                ((original_w as f64 * scale) as u32, (original_h as f64 * scale) as u32)
+            } else {
+                (original_w, original_h)
+            };
 
         // Verify downscaling happened
         assert!(
             display_w < original_w || display_h < original_h,
             "Test requires image to be downscaled. Original: {}x{}, Display: {}x{}",
-            original_w, original_h, display_w, display_h
+            original_w,
+            original_h,
+            display_w,
+            display_h
         );
 
         // Create protocol from downscaled image (like production code does)
@@ -1305,12 +1284,10 @@ mod tests {
 
         // Correct layout width should match what ratatui-image renders
         assert_eq!(
-            correct_layout.image_rect.width,
-            ratatui_size.width,
+            correct_layout.image_rect.width, ratatui_size.width,
             "Layout with display dimensions ({}, {}) should match ratatui-image render width. \
              Got layout_w={}, ratatui_w={}",
-            display_w, display_h,
-            correct_layout.image_rect.width, ratatui_size.width
+            display_w, display_h, correct_layout.image_rect.width, ratatui_size.width
         );
 
         // Buggy layout width should NOT match (demonstrating the bug)
@@ -1321,7 +1298,8 @@ mod tests {
             width_difference != 0,
             "Layout with original dimensions ({}, {}) should differ from display dimensions. \
              Both gave width={}, which means downscaling had no effect on layout (unexpected).",
-            original_w, original_h,
+            original_w,
+            original_h,
             buggy_layout.image_rect.width
         );
 

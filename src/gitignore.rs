@@ -2,8 +2,8 @@
 //!
 //! Supports nested .gitignore files with correct directory scoping.
 
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::WalkBuilder;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -39,12 +39,7 @@ impl GitignoreFilter {
         let exclude_matcher = Self::build_exclude_matcher(repo_root);
         let global_matcher = Self::build_global_matcher();
 
-        Self {
-            matchers,
-            global_matcher,
-            exclude_matcher,
-            repo_root: repo_root.into(),
-        }
+        Self { matchers, global_matcher, exclude_matcher, repo_root: repo_root.into() }
     }
 
     /// Rebuild all matchers (call when any .gitignore changes).
@@ -93,10 +88,7 @@ impl GitignoreFilter {
         }
 
         // Check .git/info/exclude (lower precedence than .gitignore files)
-        match self
-            .exclude_matcher
-            .matched_path_or_any_parents(relative, is_dir)
-        {
+        match self.exclude_matcher.matched_path_or_any_parents(relative, is_dir) {
             ignore::Match::Ignore(_) => return true,
             ignore::Match::Whitelist(_) => return false,
             ignore::Match::None => {}
@@ -104,8 +96,7 @@ impl GitignoreFilter {
 
         // Check global gitignore (lowest precedence)
         matches!(
-            self.global_matcher
-                .matched_path_or_any_parents(relative, is_dir),
+            self.global_matcher.matched_path_or_any_parents(relative, is_dir),
             ignore::Match::Ignore(_)
         )
     }
@@ -265,19 +256,11 @@ mod tests {
     #[test]
     fn test_is_gitignore_file() {
         assert!(GitignoreFilter::is_gitignore_file(Path::new(".gitignore")));
-        assert!(GitignoreFilter::is_gitignore_file(Path::new(
-            "subdir/.gitignore"
-        )));
-        assert!(GitignoreFilter::is_gitignore_file(Path::new(
-            ".git/info/exclude"
-        )));
-        assert!(GitignoreFilter::is_gitignore_file(Path::new(
-            "/repo/.git/info/exclude"
-        )));
+        assert!(GitignoreFilter::is_gitignore_file(Path::new("subdir/.gitignore")));
+        assert!(GitignoreFilter::is_gitignore_file(Path::new(".git/info/exclude")));
+        assert!(GitignoreFilter::is_gitignore_file(Path::new("/repo/.git/info/exclude")));
         assert!(!GitignoreFilter::is_gitignore_file(Path::new("src/main.rs")));
-        assert!(!GitignoreFilter::is_gitignore_file(Path::new(
-            ".gitignore.bak"
-        )));
+        assert!(!GitignoreFilter::is_gitignore_file(Path::new(".gitignore.bak")));
     }
 
     #[test]
@@ -326,14 +309,8 @@ mod tests {
         assert!(filter.is_ignored(&path.join("subdir/test.log")));
 
         // Subdir patterns only apply to subdir
-        assert!(
-            !filter.is_ignored(&path.join("test.txt")),
-            "Root .txt should NOT be ignored"
-        );
-        assert!(
-            filter.is_ignored(&path.join("subdir/test.txt")),
-            "subdir .txt SHOULD be ignored"
-        );
+        assert!(!filter.is_ignored(&path.join("test.txt")), "Root .txt should NOT be ignored");
+        assert!(filter.is_ignored(&path.join("subdir/test.txt")), "subdir .txt SHOULD be ignored");
     }
 
     #[test]

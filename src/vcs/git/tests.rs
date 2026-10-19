@@ -118,50 +118,65 @@ fn test_get_git_version_succeeds() {
 fn test_parse_diff_line_added() {
     let line = "A\tpath/to/new_file.rs";
     let result = changed_files::parse_diff_line(line);
-    assert_eq!(result, Some(changed_files::FileTransition {
-        from: None,
-        to: Some("path/to/new_file.rs".to_string()),
-    }));
+    assert_eq!(
+        result,
+        Some(changed_files::FileTransition {
+            from: None,
+            to: Some("path/to/new_file.rs".to_string()),
+        })
+    );
 }
 
 #[test]
 fn test_parse_diff_line_deleted() {
     let line = "D\tpath/to/deleted_file.rs";
     let result = changed_files::parse_diff_line(line);
-    assert_eq!(result, Some(changed_files::FileTransition {
-        from: Some("path/to/deleted_file.rs".to_string()),
-        to: None,
-    }));
+    assert_eq!(
+        result,
+        Some(changed_files::FileTransition {
+            from: Some("path/to/deleted_file.rs".to_string()),
+            to: None,
+        })
+    );
 }
 
 #[test]
 fn test_parse_diff_line_modified() {
     let line = "M\tpath/to/modified_file.rs";
     let result = changed_files::parse_diff_line(line);
-    assert_eq!(result, Some(changed_files::FileTransition {
-        from: Some("path/to/modified_file.rs".to_string()),
-        to: Some("path/to/modified_file.rs".to_string()),
-    }));
+    assert_eq!(
+        result,
+        Some(changed_files::FileTransition {
+            from: Some("path/to/modified_file.rs".to_string()),
+            to: Some("path/to/modified_file.rs".to_string()),
+        })
+    );
 }
 
 #[test]
 fn test_parse_diff_line_renamed() {
     let line = "R100\told/path.rs\tnew/path.rs";
     let result = changed_files::parse_diff_line(line);
-    assert_eq!(result, Some(changed_files::FileTransition {
-        from: Some("old/path.rs".to_string()),
-        to: Some("new/path.rs".to_string()),
-    }));
+    assert_eq!(
+        result,
+        Some(changed_files::FileTransition {
+            from: Some("old/path.rs".to_string()),
+            to: Some("new/path.rs".to_string()),
+        })
+    );
 }
 
 #[test]
 fn test_parse_diff_line_renamed_partial_similarity() {
     let line = "R075\told/path.rs\tnew/path.rs";
     let result = changed_files::parse_diff_line(line);
-    assert_eq!(result, Some(changed_files::FileTransition {
-        from: Some("old/path.rs".to_string()),
-        to: Some("new/path.rs".to_string()),
-    }));
+    assert_eq!(
+        result,
+        Some(changed_files::FileTransition {
+            from: Some("old/path.rs".to_string()),
+            to: Some("new/path.rs".to_string()),
+        })
+    );
 }
 
 #[test]
@@ -182,19 +197,13 @@ fn test_parse_diff_line_unrecognized_status() {
 
 #[test]
 fn test_file_transition_current_path_added() {
-    let t = changed_files::FileTransition {
-        from: None,
-        to: Some("new_file.rs".to_string()),
-    };
+    let t = changed_files::FileTransition { from: None, to: Some("new_file.rs".to_string()) };
     assert_eq!(t.current_path(), Some("new_file.rs"));
 }
 
 #[test]
 fn test_file_transition_current_path_deleted() {
-    let t = changed_files::FileTransition {
-        from: Some("deleted_file.rs".to_string()),
-        to: None,
-    };
+    let t = changed_files::FileTransition { from: Some("deleted_file.rs".to_string()), to: None };
     assert_eq!(t.current_path(), Some("deleted_file.rs"));
 }
 
@@ -386,11 +395,8 @@ fn test_fetch_updates_local_branch_when_not_checked_out() {
 
     git_cmd(clone.path(), &["checkout", "-b", "feature"]);
 
-    let local_before = Command::new("git")
-        .args(["rev-parse", "main"])
-        .current_dir(clone.path())
-        .output()
-        .unwrap();
+    let local_before =
+        Command::new("git").args(["rev-parse", "main"]).current_dir(clone.path()).output().unwrap();
     let before_sha = String::from_utf8_lossy(&local_before.stdout).trim().to_string();
 
     fs::write(origin.path().join("new.txt"), "origin update\n").unwrap();
@@ -399,11 +405,8 @@ fn test_fetch_updates_local_branch_when_not_checked_out() {
 
     fetch_base_branch(clone.path(), "main").unwrap();
 
-    let local_after = Command::new("git")
-        .args(["rev-parse", "main"])
-        .current_dir(clone.path())
-        .output()
-        .unwrap();
+    let local_after =
+        Command::new("git").args(["rev-parse", "main"]).current_dir(clone.path()).output().unwrap();
     let after_sha = String::from_utf8_lossy(&local_after.stdout).trim().to_string();
 
     assert_ne!(before_sha, after_sha, "local main should update after fetch when not checked out");
@@ -520,11 +523,7 @@ fn test_get_binary_files_handles_renamed_binary() {
     let merge_base = commands::get_merge_base(temp.path(), "main").unwrap();
 
     // Rename the binary file
-    fs::rename(
-        temp.path().join("original.bin"),
-        temp.path().join("renamed.bin"),
-    )
-    .unwrap();
+    fs::rename(temp.path().join("original.bin"), temp.path().join("renamed.bin")).unwrap();
     git_cmd(temp.path(), &["add", "."]);
 
     let binaries = get_binary_files(temp.path(), &merge_base);
@@ -556,11 +555,7 @@ fn test_detect_unstaged_rename() {
     let merge_base = commands::get_merge_base(temp.path(), "main").unwrap();
 
     // Rename file using filesystem mv (not git mv)
-    fs::rename(
-        temp.path().join("file.txt"),
-        temp.path().join("renamed.txt"),
-    )
-    .unwrap();
+    fs::rename(temp.path().join("file.txt"), temp.path().join("renamed.txt")).unwrap();
 
     let changed = changed_files::get_all_changed_files(temp.path(), &merge_base).unwrap();
 
@@ -591,11 +586,7 @@ fn test_detect_unstaged_rename_with_content_change() {
 
     // Rename file and modify content slightly (add one line)
     fs::remove_file(path.join("file.txt")).unwrap();
-    fs::write(
-        path.join("renamed.txt"),
-        format!("{}line 9\n", original_content),
-    )
-    .unwrap();
+    fs::write(path.join("renamed.txt"), format!("{}line 9\n", original_content)).unwrap();
 
     let changed = changed_files::get_all_changed_files(path, &merge_base).unwrap();
 
@@ -676,11 +667,7 @@ fn test_unstaged_rename_in_subdirectory() {
     let merge_base = commands::get_merge_base(path, "main").unwrap();
 
     // Rename within subdirectory using filesystem mv
-    fs::rename(
-        path.join("subdir/file.txt"),
-        path.join("subdir/renamed.txt"),
-    )
-    .unwrap();
+    fs::rename(path.join("subdir/file.txt"), path.join("subdir/renamed.txt")).unwrap();
 
     let changed = changed_files::get_all_changed_files(path, &merge_base).unwrap();
 
@@ -743,11 +730,8 @@ fn test_git_vcs_comparison_context() {
 #[test]
 fn test_git_vcs_comparison_context_detached_head() {
     let temp = create_test_repo();
-    let sha = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
+    let sha =
+        Command::new("git").args(["rev-parse", "HEAD"]).current_dir(temp.path()).output().unwrap();
     let sha = String::from_utf8_lossy(&sha.stdout).trim().to_string();
     git_cmd(temp.path(), &["checkout", "--detach", &sha]);
 
@@ -811,7 +795,6 @@ fn test_git_vcs_through_dyn_trait() {
 
     let working_bytes = vcs.working_file_bytes("file.txt").unwrap();
     assert_eq!(working_bytes.unwrap(), b"changed\n");
-
 }
 
 // === rename support tests ===
@@ -1054,7 +1037,8 @@ fn test_batch_file_contents_handles_missing_files() {
     let temp = create_test_repo();
     let repo = temp.path();
 
-    let result = commands::batch_file_contents(repo, &["nonexistent.txt", "also_missing.txt"], "HEAD");
+    let result =
+        commands::batch_file_contents(repo, &["nonexistent.txt", "also_missing.txt"], "HEAD");
     assert!(result.is_empty());
 }
 
@@ -1139,12 +1123,10 @@ fn test_collect_fetch_paths_excludes_binary() {
 #[test]
 fn test_collect_fetch_paths_includes_old_path_for_renames() {
     use std::collections::HashSet;
-    let files = vec![
-        changed_files::ChangedFile {
-            path: "new_name.rs".to_string(),
-            old_path: Some("old_name.rs".to_string()),
-        },
-    ];
+    let files = vec![changed_files::ChangedFile {
+        path: "new_name.rs".to_string(),
+        old_path: Some("old_name.rs".to_string()),
+    }];
     let binary = HashSet::new();
     let paths = refresh::collect_fetch_paths(&files, &binary);
     assert_eq!(paths, vec!["new_name.rs", "old_name.rs"]);
@@ -1178,16 +1160,14 @@ fn test_get_file_at_ref_missing_ref_returns_none() {
     // Our code maps that to Ok(None), not Err.
     let temp = create_test_repo();
     let result = commands::get_file_at_ref(temp.path(), "file.txt", "nonexistent-ref-xyz");
-    assert!(matches!(result, Ok(None)),
-        "missing ref should yield Ok(None), got {:?}", result);
+    assert!(matches!(result, Ok(None)), "missing ref should yield Ok(None), got {:?}", result);
 }
 
 #[test]
 fn test_get_file_bytes_at_ref_missing_ref_returns_none() {
     let temp = create_test_repo();
     let result = commands::get_file_bytes_at_ref(temp.path(), "file.txt", "nonexistent-ref-xyz");
-    assert!(matches!(result, Ok(None)),
-        "missing ref should yield Ok(None), got {:?}", result);
+    assert!(matches!(result, Ok(None)), "missing ref should yield Ok(None), got {:?}", result);
 }
 
 #[test]
@@ -1209,8 +1189,7 @@ fn test_has_merge_conflicts_distinguishes_conflict_from_error() {
 
     let version = get_git_version().unwrap();
     let result = has_merge_conflicts(clone.path(), "main", &version);
-    assert_eq!(result.ok(), Some(true),
-        "conflicting local vs origin should report conflicts");
+    assert_eq!(result.ok(), Some(true), "conflicting local vs origin should report conflicts");
 }
 
 // === --base override tests ===
@@ -1225,15 +1204,21 @@ fn test_git_explicit_base_overrides_detection() {
     git_cmd(temp.path(), &["commit", "-m", "develop work"]);
     git_cmd(temp.path(), &["checkout", "-b", "feature"]);
 
-    assert_eq!(GitVcs::new(temp.path().to_path_buf()).unwrap().base_branch(), "main",
-        "precondition: detection would pick main");
+    assert_eq!(
+        GitVcs::new(temp.path().to_path_buf()).unwrap().base_branch(),
+        "main",
+        "precondition: detection would pick main"
+    );
 
     // The stored ref is fully qualified (that is how the local-vs-origin
     // ambiguity is settled once, up front); the user-facing label stays plain.
     let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
     assert_eq!(vcs.base_branch(), "refs/heads/develop", "an explicit base must win over detection");
-    assert_eq!(vcs.comparison_context().unwrap().from_label, "develop",
-        "an unambiguous base needs no qualifier on screen");
+    assert_eq!(
+        vcs.comparison_context().unwrap().from_label,
+        "develop",
+        "an unambiguous base needs no qualifier on screen"
+    );
 }
 
 /// A base git can't resolve must fail at startup rather than diff against
@@ -1256,8 +1241,11 @@ fn test_git_explicit_base_that_does_not_resolve_is_rejected() {
 fn test_git_explicit_base_accepts_a_raw_commit_sha() {
     let temp = create_test_repo();
     let sha = {
-        let out = Command::new("git").args(["rev-parse", "HEAD"])
-            .current_dir(temp.path()).output().unwrap();
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     git_cmd(temp.path(), &["checkout", "-b", "feature"]);
@@ -1334,7 +1322,8 @@ fn test_repo_with_non_main_default_branch_reports_changes() {
 
     let vcs = GitVcs::new(repo.clone()).unwrap();
     assert_eq!(vcs.base_branch(), "release");
-    let result = vcs.refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).unwrap();
+    let result =
+        vcs.refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).unwrap();
     assert!(
         result.lines.iter().any(|l| l.content.contains("my work")),
         "a repo whose default branch is not main/master must still show its changes"
@@ -1387,7 +1376,11 @@ fn repo_with_diverging_local_and_remote_develop() -> TempDir {
 fn test_git_explicit_base_prefers_the_local_ref_over_origin() {
     let temp = repo_with_diverging_local_and_remote_develop();
     let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
-    assert_eq!(vcs.base_branch(), "refs/heads/develop", "git resolves a bare name to the local branch");
+    assert_eq!(
+        vcs.base_branch(),
+        "refs/heads/develop",
+        "git resolves a bare name to the local branch"
+    );
 }
 
 /// ...and when both exist and disagree, the status bar has to admit which was used.
@@ -1396,8 +1389,7 @@ fn test_git_ambiguous_base_is_labelled_local() {
     let temp = repo_with_diverging_local_and_remote_develop();
     let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
     let ctx = vcs.comparison_context().unwrap();
-    assert_eq!(ctx.from_label, "develop (local)",
-        "an ambiguous base must say which side it took");
+    assert_eq!(ctx.from_label, "develop (local)", "an ambiguous base must say which side it took");
 }
 
 /// `origin/develop` still selects the remote one explicitly.
@@ -1447,9 +1439,8 @@ fn test_git_local_only_base_is_not_labelled() {
 fn test_git_ambiguous_base_label_survives_refresh() {
     let temp = repo_with_diverging_local_and_remote_develop();
     let vcs = GitVcs::with_base(temp.path().to_path_buf(), Some("develop")).unwrap();
-    let result = vcs
-        .refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
-        .unwrap();
+    let result =
+        vcs.refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).unwrap();
     assert_eq!(
         result.base_label.as_deref(),
         Some("develop (local)"),

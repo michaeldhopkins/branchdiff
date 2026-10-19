@@ -59,11 +59,7 @@ fn run(case: &Case) -> Run {
     )
     .expect("write stub");
     std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let mut cmd = Command::new("/bin/bash");
     cmd.arg(script())
         .current_dir(dir.path())
@@ -146,10 +142,7 @@ fn a_budget_that_is_not_a_number_is_refused() {
 fn running_out_of_budget_is_not_a_pass_unless_the_caller_says_so() {
     let started = std::time::Instant::now();
     let r = run(&Case::new(0, "").hanging("1"));
-    assert!(
-        started.elapsed().as_secs() < 25,
-        "the budget did not stop the run"
-    );
+    assert!(started.elapsed().as_secs() < 25, "the budget did not stop the run");
     assert_eq!((r.code, r.status.as_deref()), (124, Some("budget")));
 }
 
@@ -176,9 +169,6 @@ fn a_process_that_ignores_term_is_killed() {
     case.ignore_term = true;
     case.passes = true;
     let r = run(&case);
-    assert!(
-        started.elapsed().as_secs() < 25,
-        "TERM was never escalated to KILL"
-    );
+    assert!(started.elapsed().as_secs() < 25, "TERM was never escalated to KILL");
     assert_eq!((r.code, r.status.as_deref()), (0, Some("budget")));
 }
