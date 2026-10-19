@@ -65,4 +65,7 @@ exclude_re = [
     # `oh * scale` only loosens one side of the box and the other side still binds to the same
     # result; and `>` against `>=` at exactly MAX_CACHE_DIMENSION resizes to its own size.
     '^src/image_diff\.rs:\d+:\d+: replace (>|\*) with (>=|/|\+) in load_and_cache$',
+    # Equivalent off WSL: `/proc/version` is missing or has no Microsoft marker,
+    # so the read already returns false. The decision is proc_version_is_wsl.
+    '^src/limits\.rs:.*replace is_wsl -> bool with false$',
 ]

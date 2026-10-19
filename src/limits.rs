@@ -5,19 +5,17 @@
 
 use crate::message::FALLBACK_REFRESH_SECS;
 
+/// WSL writes `Microsoft` or `microsoft-standard` into `/proc/version`.
+fn proc_version_is_wsl(version: &str) -> bool {
+    version.to_lowercase().contains("microsoft")
+}
+
 /// Detect if running under Windows Subsystem for Linux.
 /// WSL's inotify implementation is unreliable, so we use polling instead.
+///
+/// A missing `/proc/version` is not WSL.
 pub fn is_wsl() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        std::fs::read_to_string("/proc/version")
-            .map(|v| v.to_lowercase().contains("microsoft"))
-            .unwrap_or(false)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        false
-    }
+    std::fs::read_to_string("/proc/version").is_ok_and(|version| proc_version_is_wsl(&version))
 }
 
 // =============================================================================
@@ -151,6 +149,17 @@ mod tests {
         assert_eq!(parse_inotify_value("12abc"), None);
     }
 
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn inotify_max_watches_is_what_the_sysctl_file_says() {
+        let text = std::fs::read_to_string("/proc/sys/fs/inotify/max_user_watches");
+        let expected = text.ok().and_then(|text| parse_inotify_value(&text));
+        assert_eq!(read_inotify_max_watches(), expected);
+        if let Some(limit) = expected {
+            assert!(limit > 1, "a real inotify limit is never 0 or 1");
+        }
+    }
+
     // =========================================================================
     // Watch limit tests
     // =========================================================================
@@ -163,9 +172,59 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "linux"))]
-    fn test_is_wsl_returns_false_on_non_linux() {
-        assert!(!is_wsl());
+    fn is_wsl_matches_proc_version_text() {
+        let version = std::fs::read_to_string("/proc/version").unwrap_or_default();
+        assert_eq!(is_wsl(), proc_version_is_wsl(&version));
+    }
+
+    #[test]
+    fn wsl_proc_version_names_microsoft() {
+        assert!(proc_version_is_wsl(
+            "Linux version 5.15.153.1-microsoft-standard-WSL2 (root@439be0d2e4d0)"
+        ));
+        assert!(proc_version_is_wsl(
+            "Linux version 4.4.0-22000-Microsoft (Microsoft@Microsoft.com)"
+        ));
+        assert!(proc_version_is_wsl("MICROSOFT"));
+    }
+
+    #[test]
+    fn other_proc_versions_are_not_wsl() {
+        assert!(!proc_version_is_wsl(""));
+        assert!(!proc_version_is_wsl("micro"));
+        assert!(!proc_version_is_wsl("soft"));
+        assert!(!proc_version_is_wsl(
+            "Linux version 6.8.0-1018-azure (buildd@lcy02-amd64-078) (x86_64-linux-gnu-gcc-13)"
+        ));
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn any_ascii_casing_of_microsoft_is_wsl(
+            prefix in "[ -~]{0,20}",
+            suffix in "[ -~]{0,20}",
+            mask in 0u16..512u16,
+        ) {
+            let needle: String = "microsoft"
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if mask & (1u16 << i) == 0 { c } else { c.to_ascii_uppercase() }
+                })
+                .collect();
+            let version = [prefix, needle, suffix].concat();
+            prop_assert!(proc_version_is_wsl(&version));
+        }
+
+        #[test]
+        fn ascii_without_microsoft_is_not_wsl(version in "[ -~]{0,40}") {
+            prop_assume!(!version.to_ascii_lowercase().contains("microsoft"));
+            prop_assert!(!proc_version_is_wsl(&version));
+        }
     }
 
     // =========================================================================
