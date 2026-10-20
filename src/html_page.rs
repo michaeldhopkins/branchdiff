@@ -40,9 +40,13 @@ const LIVE_START_JS: &str = "let prev=document.body.innerHTML.trimEnd();\n";
 
 /// Each file section sits in `content-visibility: auto`, which remembers the height a
 /// section had once rendered, per element. Swapping the body in makes every element
-/// new, so the reader's place is kept by anchoring on the first section still on
-/// screen: its measured heights go onto the new sections as their intrinsic size, and
-/// the anchor is scrolled back to the offset it had.
+/// new, so each new section is given its old section's measured height (matched by file
+/// path, which survives files being added or removed) as its intrinsic size. A reader who
+/// has scrolled is then anchored on the first section still on screen and scrolled back
+/// to the offset it had; one at the top, or whose first section lies below the window,
+/// keeps the plain scroll position. A section the page has not seen before renders for
+/// the first time once it nears the window and changes height, so the anchor is put back
+/// each frame until it holds still.
 const LIVE_JS: &str = "\
 if(location.protocol!=='file:'){let last='';setInterval(()=>{
   fetch(location.href,{cache:'no-store'}).then(r=>r.text()).then(h=>{
@@ -53,19 +57,35 @@ if(location.protocol!=='file:'){let last='';setInterval(()=>{
     const key=newBody.trimEnd();
     if(key===prev||!newBody)return;
     prev=key;
-    const sections=()=>[...document.querySelectorAll('details[id^=\"file-\"]')];
+    const sections=()=>[...document.querySelectorAll('details[data-path]')];
+    const contentHeight=e=>{
+      const box=getComputedStyle(e),rect=e.getBoundingClientRect();
+      return rect.height-['borderTopWidth','borderBottomWidth','paddingTop','paddingBottom']
+        .reduce((sum,side)=>sum+parseFloat(box[side]),0);
+    };
     const old=sections();
-    const anchor=old.find(e=>e.getBoundingClientRect().bottom>0);
-    const keep=anchor&&{id:anchor.id,top:anchor.getBoundingClientRect().top};
-    const heights=new Map(old.map(e=>[e.id,e.offsetHeight]));
     const s=[window.scrollX,window.scrollY];
+    const first=s[1]>0&&old.find(e=>e.getBoundingClientRect().bottom>0);
+    const keep=first&&first.getBoundingClientRect().top<window.innerHeight&&{path:first.dataset.path,top:first.getBoundingClientRect().top};
+    const heights=new Map(old.map(e=>[e.dataset.path,contentHeight(e)]));
     document.body.innerHTML=newBody;
-    for(const e of sections()){
-      const height=heights.get(e.id);
+    const fresh=sections();
+    for(const e of fresh){
+      const height=heights.get(e.dataset.path);
       if(height)e.style.containIntrinsicSize='auto '+height+'px';
     }
-    const now=keep&&document.getElementById(keep.id);
-    if(now){now.scrollIntoView({block:'start',inline:'nearest'});window.scrollBy(0,-keep.top)}
+    const now=keep&&fresh.find(e=>e.dataset.path===keep.path);
+    if(now){
+      now.scrollIntoView({block:'start',inline:'nearest'});
+      window.scrollTo(s[0],window.scrollY-keep.top);
+      let held=0,frames=0;
+      const hold=()=>{
+        const off=now.getBoundingClientRect().top-keep.top;
+        if(Math.abs(off)>0.5){window.scrollBy(0,off);held=0}else held++;
+        if(held<2&&++frames<12)requestAnimationFrame(hold);
+      };
+      requestAnimationFrame(hold);
+    }
     else window.scrollTo(...s);
     applyTheme();
     bindToggle();
@@ -147,6 +167,21 @@ mod tests {
         let s = script(Refresh::Live);
         let skip = s.find("if(h===last)return;").expect("compares the response text");
         assert!(skip < s.find("DOMParser").unwrap());
+    }
+
+    #[test]
+    fn the_reader_is_anchored_by_path_and_only_when_scrolled_into_the_page() {
+        let s = script(Refresh::Live);
+        assert!(s.contains("e.dataset.path"), "sections are matched by path, not position");
+        assert!(!s.contains("keep.id") && !s.contains("heights.get(e.id)"), "{s}");
+        assert!(s.contains("s[1]>0"), "a reader at the top is never anchored");
+        assert!(s.contains("innerHeight"), "an anchor below the window is not a place");
+    }
+
+    #[test]
+    fn the_anchor_branch_restores_the_horizontal_scroll() {
+        let s = script(Refresh::Live);
+        assert!(s.contains("scrollTo(s[0],window.scrollY-keep.top)"), "{s}");
     }
 
     #[test]

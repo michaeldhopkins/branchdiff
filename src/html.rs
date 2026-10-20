@@ -295,7 +295,7 @@ fn write_file(
     let open = if file.collapsed { "" } else { " open" };
     write!(
         out,
-        "<details{open} id=\"file-{file_index}\"><summary>{path}",
+        "<details{open} id=\"file-{file_index}\" data-path=\"{path}\"><summary>{path}",
         open = open,
         file_index = file_index,
         path = html_escape(&file.path),
@@ -612,6 +612,17 @@ mod tests {
         assert!(html.contains("</html>"), "should close html");
         assert!(html.contains("+1"), "should show addition count");
         assert!(html.contains("-1"), "should show deletion count");
+    }
+
+    #[test]
+    fn each_section_names_its_file_by_path_beside_its_position_id() {
+        let mut buf = Vec::new();
+        write_file(&mut buf, 7, &rust_file("a\"b&c.rs", &["x"]), &ImageCache::new(), 1).unwrap();
+        let html = String::from_utf8(buf).unwrap();
+        assert!(
+            html.contains("<details open id=\"file-7\" data-path=\"a&quot;b&amp;c.rs\">"),
+            "{html}"
+        );
     }
 
     fn rust_file(path: &str, body: &[&str]) -> OutputFile {
