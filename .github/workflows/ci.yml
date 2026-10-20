@@ -52,7 +52,7 @@ jobs:
         run: cargo test --locked --features browser-tests --test html_live_page
 
       - name: cargo clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: cargo bench (allocation pins)
         run: cargo bench --locked --bench alloc
