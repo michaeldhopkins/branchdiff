@@ -40,15 +40,32 @@ pub fn candidates(
     found
 }
 
+/// The first candidate that exists, or why there is none.
+pub fn locate(
+    override_path: Option<OsString>,
+    path_var: Option<OsString>,
+    env: impl Fn(&str) -> Option<OsString>,
+) -> Result<PathBuf, String> {
+    if let Some(named) = &override_path {
+        let named = PathBuf::from(named);
+        return if named.is_file() {
+            Ok(named)
+        } else {
+            Err(format!("BRANCHDIFF_CHROME names {}, which is not a file", named.display()))
+        };
+    }
+    candidates(None, path_var, env).into_iter().find(|p| p.is_file()).ok_or_else(|| {
+        "no Chrome found: install Chrome or Chromium, or set BRANCHDIFF_CHROME".to_string()
+    })
+}
+
 /// The first candidate that exists. A missing browser is a failure of the test that
 /// asked, never a skip.
 pub fn find_chrome() -> PathBuf {
-    candidates(std::env::var_os("BRANCHDIFF_CHROME"), std::env::var_os("PATH"), |name| {
+    locate(std::env::var_os("BRANCHDIFF_CHROME"), std::env::var_os("PATH"), |name| {
         std::env::var_os(name)
     })
-    .into_iter()
-    .find(|p| p.is_file())
-    .expect("no Chrome found: install Chrome or Chromium, or set BRANCHDIFF_CHROME")
+    .unwrap_or_else(|reason| panic!("{reason}"))
 }
 
 #[cfg(test)]
@@ -70,6 +87,24 @@ mod tests {
             list.iter().position(|p| p == &PathBuf::from(r"C:\Program Files").join(WINDOWS_SUFFIX));
         assert!(on_path.unwrap() < snap.unwrap());
         assert!(snap < mac && mac < windows, "{list:?}");
+    }
+
+    #[test]
+    fn an_override_that_names_nothing_is_an_error_naming_it_not_a_fallback() {
+        let here = std::env::current_exe().unwrap();
+        let found =
+            locate(Some("/no/such/chrome".into()), Some(here.parent().unwrap().into()), lookup);
+        let reason = found.expect_err("a bad override must not fall through to another browser");
+        assert!(
+            reason.contains("BRANCHDIFF_CHROME") && reason.contains("/no/such/chrome"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn an_override_that_exists_is_used() {
+        let here = std::env::current_exe().unwrap();
+        assert_eq!(locate(Some(here.clone().into_os_string()), None, lookup), Ok(here));
     }
 
     #[test]
