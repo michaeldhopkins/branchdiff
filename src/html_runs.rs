@@ -65,6 +65,12 @@ impl RunStyle {
         }
     }
 
+    /// Whether neighbours of this style join into one span. Highlight spans do not:
+    /// each keeps its own box, so the seams between changed words stay visible.
+    fn merges(self) -> bool {
+        !matches!(self, Self::Highlight(..))
+    }
+
     fn write_open(self, out: &mut impl Write) -> std::io::Result<()> {
         match self {
             Self::Bare => Ok(()),
@@ -79,8 +85,8 @@ impl RunStyle {
     }
 }
 
-/// Write `items` as markup, joining neighbours that share a style into one
-/// `<span>` so a long line is not a chain of identical wrappers.
+/// Write `items` as markup, joining neighbours that share a token or colour style
+/// into one `<span>` so a long line is not a chain of identical wrappers.
 pub(crate) fn write_runs<T>(
     out: &mut impl Write,
     items: &[T],
@@ -92,7 +98,9 @@ pub(crate) fn write_runs<T>(
         let run_style = style(&items[start]);
         run_style.write_open(out)?;
         let mut end = start;
-        while end < items.len() && style(&items[end]) == run_style {
+        write_escaped(out, text(&items[end]))?;
+        end += 1;
+        while run_style.merges() && end < items.len() && style(&items[end]) == run_style {
             write_escaped(out, text(&items[end]))?;
             end += 1;
         }
@@ -165,13 +173,25 @@ mod tests {
             let mut runs = 0;
             let mut previous = None;
             for (_, style) in &styled {
-                if *style != RunStyle::Bare && previous != Some(*style) {
+                if *style != RunStyle::Bare && (!style.merges() || previous != Some(*style)) {
                     runs += 1;
                 }
                 previous = Some(*style);
             }
             proptest::prop_assert_eq!(merged.matches("<span").count(), runs, "{}", merged);
         }
+    }
+
+    #[test]
+    fn neighbouring_highlight_spans_keep_their_own_boxes() {
+        let style = RunStyle::Highlight("hl-committed", false);
+        let items = ["ab", "cd"];
+        let mut buf = Vec::new();
+        write_runs(&mut buf, &items, |_| style, |s| s).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "<span class=\"hl-committed\">ab</span><span class=\"hl-committed\">cd</span>"
+        );
     }
 
     #[test]
