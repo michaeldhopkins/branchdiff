@@ -183,6 +183,18 @@ mod tests {
     }
 
     #[test]
+    fn only_an_unclassed_kept_span_is_bare() {
+        assert!(RunStyle::of_highlight("", false) == RunStyle::Bare);
+        assert!(RunStyle::of_highlight("", true) == RunStyle::Highlight("", true));
+        assert!(
+            RunStyle::of_highlight("hl-staged", false) == RunStyle::Highlight("hl-staged", false)
+        );
+        assert!(
+            RunStyle::of_highlight("hl-staged", true) == RunStyle::Highlight("hl-staged", true)
+        );
+    }
+
+    #[test]
     fn neighbouring_highlight_spans_keep_their_own_boxes() {
         let style = RunStyle::Highlight("hl-committed", false);
         let items = ["ab", "cd"];
