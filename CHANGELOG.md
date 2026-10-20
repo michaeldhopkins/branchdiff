@@ -6,10 +6,20 @@
 - *(ci)* Bound the alloc job and pin its toolchain
 - *(docs)* Make the rustdoc build pass with warnings denied
 - *(jj)* Resolve the bookmark boundary after the tips are known
+- *(ci)* Add the target to the pinned toolchain before the release build
+- *(html)* Keep each changed-word highlight in its own span so box seams stay
+- *(html)* Keep the reader's place across a live refresh, and bind the theme toggle when localStorage throws
+- *(tui)* Query a Windows console with no TERM, drop the unreachable failure memory, keep the public API additive, pool seam for the alloc bench
+- *(html)* Anchor a live refresh by file path, leave a reader at the top alone, and keep the sideways scroll
+- *(html)* Stop a stale or interrupted settle chain, and budget the settle loop's frames
+- *(html)* End the settle only on keys that scroll, and on a pointer press
+- *(html)* A scroll key ends the live-page settle whatever modifiers are held
 
 ### Other
 
 - *(html)* Pin the HTML page's render time and allocations
+- *(html)* Render the allocation bench on a one-thread pool
+- *(html)* Pin allocated bytes per CPU architecture
 
 ### Refactor
 
@@ -30,6 +40,11 @@
 - *(html)* The live page skips work when the page has not changed
 - *(jj)* Build the one-shot comparison from the refresh's own labels
 - *(jj)* Read a file's base and parent on a scoped thread
+- *(html)* Apply the stored theme from the page head before first paint
+- *(html)* Let off-screen open file sections skip layout with content-visibility, and build the stylesheet once
+- *(html)* Join neighbouring highlighted spans of the same style into one
+- *(tui)* Do not query a dumb terminal for its image protocol
+- *(html)* Build each page script once, and pin the html alloc blocks at the idle measurement
 
 ### Styling
 
@@ -48,6 +63,12 @@
 - *(limits)* Pin the warning thresholds at their boundaries
 - *(integration)* Answer the app's terminal status query
 - *(integration)* Answer a split status query once and before keys go out
+- *(html)* Pin the highlight span style choice
+- *(tui)* Run the dumb-terminal PTY tests with a cleared environment, and cover an unset TERM
+- *(html)* Drive the live page in headless Chrome in real time, behind a browser-tests feature
+- *(browser)* Fail clearly when the Chrome override names no file
+- *(html)* Scan the whole file and parse timer calls in the per-frame guard
+- *(html)* Join Rust line continuations before reading a timer call and its delay
 
 ### Miscellaneous
 
@@ -56,6 +77,8 @@
 - Add rustfmt.toml at the default width, matched to the code's compact style
 - Record in rustfmt.toml why its style was chosen and what the reformat still grows
 - *(release)* 0.77.4
+- Lint the browser-test code too, with clippy on all features
+- *(release)* 0.77.5
 ## [0.77.3] - 2026-10-12
 
 ### Testing
@@ -719,6 +742,7 @@
 
 ### Miscellaneous
 
+- Initial commit (branchdiff v0.1.0)
 - Add .DS_Store to .gitignore
 - Mark as unlicensed (all rights reserved)
 - Remove redundant comments
