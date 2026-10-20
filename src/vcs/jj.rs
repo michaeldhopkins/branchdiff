@@ -16,12 +16,15 @@ use super::jj_revset::{
     revset_committer_epoch, revset_resolves,
 };
 mod fingerprint;
+mod refresh;
 mod stack;
 
 use super::shared::{FileProcessResult, assemble_results, process_files_parallel};
+#[cfg(test)]
+use stack::resolve_orphaned_tip;
 use stack::{
     Anchors, compute_stack_position, get_change_id_static, joined, resolve_anchors,
-    resolve_fork_point, resolve_orphaned_tip, resolve_stack_tip,
+    resolve_fork_and_tips, resolve_fork_point, resolve_stack_tip,
 };
 
 /// Prepend `--ignore-working-copy` to skip jj's auto-snapshot.
@@ -177,18 +180,24 @@ fn preferred_trunk_revset(repo_path: &Path) -> Option<String> {
 /// `trunk()` falls back to `root()` when no remote exists, which would diff the
 /// entire repo history — so only use it when it resolves to an actual branch.
 fn resolve_base_rev(repo_path: &Path) -> String {
-    if !revset_resolves(repo_path, "trunk() ~ root()") {
-        return local_trunk_bookmark(repo_path).unwrap_or_else(|| PARENT_BASE.to_string());
-    }
-
     // Asks which remotes hold a bookmark at trunk's *commit*, not which remote
     // the alias names. So a trunk() pinned to a deploy remote still reads as
     // "on origin" while the two agree — which is the point: the diff is then
     // identical either way, and the narrower we intervene the better. Once the
     // deploy remote falls behind, origin drops out and the override kicks in.
+    //
+    // Both lookups are read-only and independent, so they run together; the
+    // remote is ignored when trunk() resolves to nothing but the root.
     let cancel = Arc::new(AtomicBool::new(false));
-    let on_preferred_remote = trunk_remote(repo_path, &cancel)
-        .is_some_and(|r| TRUNK_REMOTE_PREFERENCE.contains(&r.as_str()));
+    let (resolves, remote) = std::thread::scope(|scope| {
+        let remote = scope.spawn(|| trunk_remote(repo_path, &cancel));
+        let resolves = revset_resolves(repo_path, "trunk() ~ root()");
+        (resolves, joined(remote))
+    });
+    if !resolves {
+        return local_trunk_bookmark(repo_path).unwrap_or_else(|| PARENT_BASE.to_string());
+    }
+    let on_preferred_remote = remote.is_some_and(|r| TRUNK_REMOTE_PREFERENCE.contains(&r.as_str()));
     if on_preferred_remote {
         return "trunk()".to_string();
     }
@@ -925,150 +934,18 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
-        let template =
-            r#"bookmarks ++ "\0" ++ change_id.short(12) ++ "\0" ++ change_id.shortest(4)"#;
-        // No snapshot: the working side is read from disk (see `get_changed_files_with_from` for the exception).
-        let from_label = match run_jj_with_retry(
-            &self.repo_path,
-            &no_snapshot(&[
-                "log", "-r", &self.from_rev, "-T", template, "--no-graph", "--limit", "1",
-            ]),
-            is_transient_error,
-        ) {
-            Ok(output) => parse_rev_metadata(&output.stdout_lossy()).1,
-            Err(_) => self.from_rev.clone(),
-        };
-
-        // Second call skips snapshot (already fresh)
-        let to_args =
-            no_snapshot(&["log", "-r", "@", "-T", template, "--no-graph", "--limit", "1"]);
-        let to_label = match run_jj_with_retry(&self.repo_path, &to_args, is_transient_error) {
-            Ok(output) => parse_rev_metadata(&output.stdout_lossy()).1,
-            Err(_) => "@".to_string(),
-        };
-
-        // stack_position is computed by refresh() and applied via
-        // apply_refresh_result — no need to resolve it here too.
-        Ok(ComparisonContext {
-            from_label,
-            to_label,
-            stack_position: None,
-            vcs_backend: VcsBackend::Jj,
-            bookmark_name: None,
-            divergence: None,
-        })
+        Ok(self.comparison_with(self.label_of(&self.from_rev), self.label_of("@")))
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
-        // The fork point (for divergence and fork-point mode), the stack tip (is
-        // @ mid-stack? if not, an orphaned empty @ left by an abandon?) and the
-        // bookmark boundary (for BookmarkOnly view mode).
-        let Anchors { fork_point, divergence, stack_tip, orphaned, bookmark_boundary } =
-            resolve_anchors(&self.repo_path, &self.from_rev, cancel_flag, || {
-                resolve_bookmark_boundary(&self.repo_path, &self.from_rev, cancel_flag)
-            });
-        let effective_from = match self.load_diff_base() {
-            DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(&self.from_rev),
-            DiffBase::TrunkTip => &self.from_rev,
-        };
-        let orphaned_tip = orphaned.is_some();
+        Ok(self.refresh_anchored(cancel_flag)?.result)
+    }
 
-        // The commit treated as the current commit (`@`). Normally literally `@`;
-        // for an orphaned empty `@` it's the sibling tip, so that tip's changes
-        // color as the current commit and show in the [commit] view.
-        let at_rev = orphaned.as_ref().map(|t| t.change_id.as_str()).unwrap_or("@");
-        // Visible tip to enumerate and diff against.
-        let effective_to =
-            stack_tip.as_ref().or(orphaned.as_ref()).map(|t| t.change_id.as_str()).unwrap_or("@");
-        // The "above @" (Unstaged) layer only exists for a real stack tip above a
-        // mid-stack @; an orphaned tip *is* the anchor, so nothing sits above it.
-        let tip_rev = stack_tip.as_ref().map(|t| t.change_id.as_str());
-
-        let bookmark_changed_files = bookmark_boundary.as_ref().map(|b| &b.changed_files);
-
-        // Discover changed files. When the working copy is the diff target (the
-        // common case), do it from disk/git without snapshotting. The stack /
-        // orphaned-tip cases target a committed rev and still use the jj summary.
-        let changed_files = if effective_to == "@" {
-            self.discover_working_changes(effective_from, cancel_flag)?
-        } else {
-            self.get_changed_files_with_from(effective_from, effective_to, cancel_flag)?
-        };
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            anyhow::bail!("refresh cancelled");
-        }
-
-        // Binary detection: from disk for the working target (no snapshot), else
-        // the committed-diff stat for the stack/orphaned cases.
-        let binary_files = if effective_to == "@" {
-            self.working_binary_files(&changed_files)
-        } else {
-            self.get_binary_files_set(effective_from, effective_to, cancel_flag)
-        };
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            anyhow::bail!("refresh cancelled");
-        }
-
-        // Normally the "to" label is @ (where the working copy sits). When we
-        // re-anchored to an orphaned sibling tip, @ is an empty throwaway commit,
-        // so label the tip we actually diffed against instead.
-        let to_rev = if orphaned_tip { effective_to } else { "@" };
-        // The labels and stack position need only the revisions, so their jj
-        // calls run while the files are read.
-        let (results, ((base_identifier, base_label_str), (_, current_branch_str), stack_position)) =
-            std::thread::scope(|scope| {
-                let base = scope.spawn(|| self.rev_metadata_no_snapshot(effective_from));
-                let to = scope.spawn(|| self.rev_metadata_no_snapshot(to_rev));
-                let position = scope.spawn(|| {
-                    stack_tip.as_ref().and_then(|tip| {
-                        let (current, total) = compute_stack_position(
-                            &self.repo_path, &tip.change_id, &self.from_rev,
-                        )?;
-                        Some(StackPosition { current, total, head_count: tip.head_count })
-                    })
-                });
-                let results = process_files_parallel(&changed_files, cancel_flag, |changed| {
-                    process_jj_file(
-                        &self.repo_path, effective_from, changed, &binary_files, tip_rev, at_rev,
-                        bookmark_changed_files, cancel_flag,
-                    )
-                });
-                (results, (joined(base), joined(to), joined(position)))
-            });
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            anyhow::bail!("refresh cancelled");
-        }
-
-        let assembled = assemble_results(results);
-        let files = assembled.files;
-        let all_lines = assembled.lines;
-
-        let metrics = DiffMetrics { total_lines: all_lines.len(), file_count: files.len() };
-
-        let file_paths: Vec<&str> = files
-            .iter()
-            .filter_map(|f| f.lines.first())
-            .filter_map(|l| l.file_path.as_deref())
-            .collect();
-        let file_links = crate::file_links::compute_file_links(&file_paths);
-
-        Ok(RefreshResult {
-            files,
-            lines: all_lines,
-            base_identifier,
-            base_label: Some(base_label_str),
-            current_branch: Some(current_branch_str),
-            metrics,
-            file_links,
-            stack_position,
-            bookmark_name: bookmark_boundary.map(|b| b.bookmark_name),
-            revision_id: None,
-            divergence,
-            // Populated by the worker thread / initial-load path, not the backend.
-        })
+    fn comparison_and_refresh(
+        &self,
+        cancel_flag: &Arc<AtomicBool>,
+    ) -> Result<(ComparisonContext, RefreshResult)> {
+        refresh::comparison_and_refresh(self, cancel_flag)
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
@@ -1077,19 +954,13 @@ impl crate::vcs::Vcs for JjVcs {
         // cancel flag so the subprocess calls compile against the cancellable
         // helpers. A future change can plumb a real cancel through if needed.
         let cancel = Arc::new(AtomicBool::new(false));
-        let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev, &cancel);
+        // Mirror refresh()'s anchoring so an incremental update stays consistent
+        // with a full refresh, including the orphaned-empty-@ re-anchor.
+        let (fork_point, stack_tip, orphaned) =
+            resolve_fork_and_tips(&self.repo_path, &self.from_rev, &cancel);
         let effective_from = match self.load_diff_base() {
             DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(&self.from_rev),
             DiffBase::TrunkTip => &self.from_rev,
-        };
-
-        // Mirror refresh()'s anchoring so an incremental update stays consistent
-        // with a full refresh, including the orphaned-empty-@ re-anchor.
-        let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev, &cancel);
-        let orphaned = if stack_tip.is_none() {
-            resolve_orphaned_tip(&self.repo_path, &self.from_rev, &cancel)
-        } else {
-            None
         };
         let at_rev = orphaned.as_ref().map(|t| t.change_id.as_str()).unwrap_or("@");
         let effective_to =
@@ -1716,7 +1587,7 @@ mod tests {
 
     // === Integration tests (require jj installed) ===
 
-    fn jj_available() -> bool {
+    pub(super) fn jj_available() -> bool {
         Command::new("jj").arg("--version").output().is_ok_and(|o| o.status.success())
     }
 
@@ -2686,7 +2557,7 @@ mod tests {
 
     /// Helper: create a jj repo with a remote "origin" and push main.
     /// Returns (repo_tempdir, remote_tempdir) — keep both alive.
-    fn setup_repo_with_remote() -> (tempfile::TempDir, tempfile::TempDir) {
+    pub(super) fn setup_repo_with_remote() -> (tempfile::TempDir, tempfile::TempDir) {
         let remote_dir = tempfile::TempDir::new().unwrap();
         Command::new("git")
             .args(["init", "--bare"])
@@ -2872,14 +2743,14 @@ mod tests {
 
     // === Orphaned tip resolution tests (empty @ left by abandoning the edited commit) ===
 
-    fn jj_out(repo: &Path, args: &[&str]) -> String {
+    pub(super) fn jj_out(repo: &Path, args: &[&str]) -> String {
         let o = Command::new("jj").args(args).current_dir(repo).output().unwrap();
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
     /// Build trunk → a → b → c, put @ on b, then abandon b. jj moves @ to a fresh
     /// empty commit on a and rebases c as a sibling. Returns (repo dir, c's change id).
-    fn setup_orphaned_after_abandon() -> (tempfile::TempDir, tempfile::TempDir, String) {
+    pub(super) fn setup_orphaned_after_abandon() -> (tempfile::TempDir, tempfile::TempDir, String) {
         let (temp, remote) = setup_repo_with_remote();
         let repo = temp.path();
         std::fs::write(repo.join("a.txt"), "a\n").unwrap();

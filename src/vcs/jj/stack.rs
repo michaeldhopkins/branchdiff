@@ -20,25 +20,24 @@ pub(super) fn resolve_fork_point(
     if !is_trunk_base(from_rev) {
         return None;
     }
-
     let fork_revset = format!("heads(::({from_rev}) & ::@)");
-    let args = no_snapshot(&[
+    let fork_args = no_snapshot(&[
         "log", "-r", &fork_revset, "--no-graph", "--limit", "1", "-T", "commit_id.short(12)",
     ]);
-    let fork_id = run_jj_cancellable(repo_path, &args, Arc::clone(cancel))
-        .ok()
-        .map(|o| o.stdout_lossy().trim().to_string())
-        .filter(|s| !s.is_empty())?;
+    let trunk_args = no_snapshot(&[
+        "log", "-r", from_rev, "--no-graph", "--limit", "1", "-T", "commit_id.short(12)",
+    ]);
+    // Independent lookups, so they run together.
+    let (fork_output, trunk_output) = std::thread::scope(|scope| {
+        let trunk = scope.spawn(|| run_jj_cancellable(repo_path, &trunk_args, Arc::clone(cancel)));
+        let fork = run_jj_cancellable(repo_path, &fork_args, Arc::clone(cancel));
+        (fork, joined(trunk))
+    });
+    let fork_id =
+        fork_output.ok().map(|o| o.stdout_lossy().trim().to_string()).filter(|s| !s.is_empty())?;
 
     // Check if fork point equals trunk tip — if so, no divergence
-    let trunk_commit = {
-        let args = no_snapshot(&[
-            "log", "-r", from_rev, "--no-graph", "--limit", "1", "-T", "commit_id.short(12)",
-        ]);
-        run_jj_cancellable(repo_path, &args, Arc::clone(cancel))
-            .ok()
-            .map(|o| o.stdout_lossy().trim().to_string())?
-    };
+    let trunk_commit = trunk_output.ok().map(|o| o.stdout_lossy().trim().to_string())?;
 
     if fork_id == trunk_commit {
         // @ is already on top of trunk — no divergence
@@ -56,10 +55,18 @@ pub(super) fn compute_jj_divergence(
     from_rev: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Option<UpstreamDivergence> {
-    // Count commits between fork point and trunk
+    // Count commits between fork point and trunk, and list the files changed
+    // between them; the file list is only kept when there are commits, and the
+    // two calls do not depend on each other.
     let revset = format!("\"{fork_point}\"..({from_rev})");
     let count_args = no_snapshot(&["log", "-r", &revset, "--no-graph", "-T", r#""\n""#]);
-    let behind_count = run_jj_cancellable(repo_path, &count_args, Arc::clone(cancel))
+    let diff_args = no_snapshot(&["diff", "--from", fork_point, "--to", from_rev, "--summary"]);
+    let (count_output, diff_output) = std::thread::scope(|scope| {
+        let diff = scope.spawn(|| run_jj_cancellable(repo_path, &diff_args, Arc::clone(cancel)));
+        let count = run_jj_cancellable(repo_path, &count_args, Arc::clone(cancel));
+        (count, joined(diff))
+    });
+    let behind_count = count_output
         .map(|o| o.stdout_lossy().lines().filter(|l| !l.is_empty()).count())
         .unwrap_or(0);
 
@@ -67,9 +74,7 @@ pub(super) fn compute_jj_divergence(
         return None;
     }
 
-    // Get files changed between fork point and trunk
-    let diff_args = no_snapshot(&["diff", "--from", fork_point, "--to", from_rev, "--summary"]);
-    let upstream_files = run_jj_cancellable(repo_path, &diff_args, Arc::clone(cancel))
+    let upstream_files = diff_output
         .map(|o| parse_jj_summary(&o.stdout_lossy()).into_iter().map(|f| f.path).collect())
         .unwrap_or_default();
 
@@ -105,7 +110,13 @@ pub(super) fn resolve_stack_tip(
         "-T",
         r#"change_id.short(12) ++ "\n""#,
     ]);
-    let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
+    // `@`'s own id is compared with the heads below, and needs no head to be
+    // looked up, so the two calls run together.
+    let (output, at_id) = std::thread::scope(|scope| {
+        let at_id = scope.spawn(|| get_change_id_static(repo_path, "@", cancel));
+        (run_jj_cancellable(repo_path, &args, Arc::clone(cancel)), joined(at_id))
+    });
+    let output = output.ok()?;
     let stdout = output.stdout_lossy();
     let heads: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
 
@@ -114,7 +125,7 @@ pub(super) fn resolve_stack_tip(
     }
 
     // Check if the only head IS @ (meaning @ is already at the tip)
-    let at_id = get_change_id_static(repo_path, "@", cancel)?;
+    let at_id = at_id?;
     if heads.len() == 1 && heads[0].trim() == at_id.trim() {
         return None;
     }
@@ -133,6 +144,7 @@ pub(super) fn resolve_stack_tip(
 /// its parent has another child": a normal working copy — whether on a linear
 /// stack or one of several independent stacks — is its parent's only child, so
 /// there is no sibling and we never navigate away from a deliberate `@`.
+#[cfg(test)]
 pub(super) fn resolve_orphaned_tip(
     repo_path: &Path,
     from_rev: &str,
@@ -141,17 +153,50 @@ pub(super) fn resolve_orphaned_tip(
     if !is_trunk_base(from_rev) {
         return None;
     }
+    orphaned_tip_given(has_siblings(repo_path, cancel), repo_path, cancel)
+}
 
+/// Whether `@` shares its parent with another commit. Read-only, so it can
+/// be asked before it is known that the answer is needed.
+fn has_siblings(repo_path: &Path, cancel: &Arc<AtomicBool>) -> bool {
     // Cheap bail for the common case: `(@-)+ ~ @` is the set of `@`'s siblings,
     // which is empty for any ordinary working copy. This keeps the extra jj
-    // calls below off the hot path.
-    let siblings = run_jj_cancellable(
+    // calls of `orphaned_tip_given` off the hot path.
+    run_jj_cancellable(
         repo_path,
         &no_snapshot(&["log", "-r", "(@-)+ ~ @", "--no-graph", "--limit", "1", "-T", r#""x""#]),
         Arc::clone(cancel),
     )
-    .ok()?;
-    if siblings.stdout_lossy().trim().is_empty() {
+    .is_ok_and(|siblings| !siblings.stdout_lossy().trim().is_empty())
+}
+
+/// The stack tip above `@` and, when there is none, the orphaned sibling tip.
+///
+/// The sibling check runs with the stack tip lookup; the calls that follow it
+/// (one snapshots the working copy) still run only when there is no stack tip
+/// and a sibling exists.
+pub(super) fn resolve_tips(
+    repo_path: &Path,
+    from_rev: &str,
+    cancel: &Arc<AtomicBool>,
+) -> (Option<StackTip>, Option<StackTip>) {
+    let (stack_tip, siblings) = std::thread::scope(|scope| {
+        let siblings = scope.spawn(|| is_trunk_base(from_rev) && has_siblings(repo_path, cancel));
+        (resolve_stack_tip(repo_path, from_rev, cancel), joined(siblings))
+    });
+    let orphaned = match stack_tip {
+        None => orphaned_tip_given(siblings, repo_path, cancel),
+        Some(_) => None,
+    };
+    (stack_tip, orphaned)
+}
+
+fn orphaned_tip_given(
+    siblings: bool,
+    repo_path: &Path,
+    cancel: &Arc<AtomicBool>,
+) -> Option<StackTip> {
+    if !siblings {
         return None;
     }
 
@@ -274,18 +319,25 @@ pub(super) fn resolve_anchors<B: Send>(
                 .and_then(|fp| compute_jj_divergence(repo_path, fp, from_rev, cancel));
             (fork_point, divergence)
         });
-        let stack = scope.spawn(|| {
-            let stack_tip = resolve_stack_tip(repo_path, from_rev, cancel);
-            let orphaned = match stack_tip {
-                None => resolve_orphaned_tip(repo_path, from_rev, cancel),
-                Some(_) => None,
-            };
-            (stack_tip, orphaned)
-        });
+        let stack = scope.spawn(|| resolve_tips(repo_path, from_rev, cancel));
         let bookmark_boundary = bookmark_boundary();
         let (fork_point, divergence) = joined(fork);
         let (stack_tip, orphaned) = joined(stack);
         Anchors { fork_point, divergence, stack_tip, orphaned, bookmark_boundary }
+    })
+}
+
+/// The fork point and the tips, for a single-file update: the same anchoring
+/// as `resolve_anchors` without the divergence and bookmark boundary.
+pub(super) fn resolve_fork_and_tips(
+    repo_path: &Path,
+    from_rev: &str,
+    cancel: &Arc<AtomicBool>,
+) -> (Option<String>, Option<StackTip>, Option<StackTip>) {
+    std::thread::scope(|scope| {
+        let fork = scope.spawn(|| resolve_fork_point(repo_path, from_rev, cancel));
+        let (stack_tip, orphaned) = resolve_tips(repo_path, from_rev, cancel);
+        (joined(fork), stack_tip, orphaned)
     })
 }
 

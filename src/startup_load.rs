@@ -7,18 +7,12 @@ use anyhow::Result;
 
 use crate::vcs::{ComparisonContext, RefreshResult, Vcs};
 
-/// The labels and the full refresh a one-shot run needs.
-///
-/// They do not depend on each other, and each is mostly waiting on `git` or
-/// `jj`, so they run side by side. A failed comparison is reported before a
-/// failed refresh, as when they ran one after the other.
+/// The labels and the full refresh a one-shot run needs, loaded together.
 pub fn load_comparison_and_refresh(
     vcs: &dyn Vcs,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<(ComparisonContext, RefreshResult)> {
-    let (comparison, refresh) = crate::vcs::vcs_thread_pool()
-        .install(|| rayon::join(|| vcs.comparison_context(), || vcs.refresh(cancel_flag)));
-    Ok((comparison?, refresh?))
+    vcs.comparison_and_refresh(cancel_flag)
 }
 
 #[cfg(test)]

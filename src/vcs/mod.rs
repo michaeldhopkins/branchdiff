@@ -105,6 +105,20 @@ pub trait Vcs: Send + Sync {
     /// Compute a full refresh of all diffs.
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult>;
 
+    /// The comparison labels and a full refresh, as a one-shot run needs them.
+    ///
+    /// The two do not depend on each other, so by default they run side by
+    /// side; a backend that can share work between them overrides this. A
+    /// failed comparison is reported before a failed refresh.
+    fn comparison_and_refresh(
+        &self,
+        cancel_flag: &Arc<AtomicBool>,
+    ) -> Result<(ComparisonContext, RefreshResult)> {
+        let (comparison, refresh) = vcs_thread_pool()
+            .install(|| rayon::join(|| self.comparison_context(), || self.refresh(cancel_flag)));
+        Ok((comparison?, refresh?))
+    }
+
     /// Compute the diff for a single file (for incremental updates).
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff>;
 
