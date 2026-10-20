@@ -28,6 +28,26 @@ fn html_escape(s: &str) -> String {
     out
 }
 
+/// `html_escape` straight into the page, copying the runs between special
+/// characters rather than building a `String` per call.
+fn write_escaped(out: &mut impl Write, s: &str) -> std::io::Result<()> {
+    let mut start = 0;
+    for (i, byte) in s.bytes().enumerate() {
+        let entity = match byte {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' => "&quot;",
+            b'\'' => "&#39;",
+            _ => continue,
+        };
+        out.write_all(&s.as_bytes()[start..i])?;
+        out.write_all(entity.as_bytes())?;
+        start = i + 1;
+    }
+    out.write_all(&s.as_bytes()[start..])
+}
+
 fn color_to_css(color: Color) -> Option<String> {
     match color {
         Color::Rgb(r, g, b) => Some(format!("rgb({r},{g},{b})")),
@@ -164,11 +184,12 @@ fn write_inline_spans(out: &mut impl Write, line: &DiffLine) -> Result<()> {
             None => "",
         };
         let del_class = if span.is_deletion { " del" } else { "" };
-        let escaped = html_escape(&span.text);
         if class.is_empty() && del_class.is_empty() {
-            write!(out, "{escaped}")?;
+            write_escaped(out, &span.text)?;
         } else {
-            write!(out, "<span class=\"{class}{del_class}\">{escaped}</span>")?;
+            write!(out, "<span class=\"{class}{del_class}\">")?;
+            write_escaped(out, &span.text)?;
+            out.write_all(b"</span>")?;
         }
     }
     Ok(())
@@ -183,17 +204,33 @@ fn write_syntax_highlighted(
     if segments.is_empty()
         || (segments.len() == 1 && segments[0].fg_color == Color::Rgb(200, 200, 200))
     {
-        write!(out, "{}", html_escape(content))?;
+        write_escaped(out, content)?;
         return Ok(());
     }
     for seg in &segments {
-        write!(out, "{}", token_span(&seg.text, seg.fg_color))?;
+        write_token_span(out, &seg.text, seg.fg_color)?;
     }
     Ok(())
 }
 
 /// A theme token becomes a class; the theme's default foreground stays bare and
 /// any other colour keeps its inline style.
+fn write_token_span(out: &mut impl Write, text: &str, color: Color) -> std::io::Result<()> {
+    if let Some(class) = token_class(color) {
+        write!(out, "<span class=\"{class}\">")?;
+    } else if color == Color::Rgb(200, 200, 200) {
+        return write_escaped(out, text);
+    } else if let Some(css_color) = color_to_css(color) {
+        write!(out, "<span style=\"color:{css_color}\">")?;
+    } else {
+        return write_escaped(out, text);
+    }
+    write_escaped(out, text)?;
+    out.write_all(b"</span>")
+}
+
+/// The string form `write_token_span` must stay byte-identical to.
+#[cfg(test)]
 fn token_span(text: &str, color: Color) -> String {
     let escaped = html_escape(text);
     if let Some(class) = token_class(color) {
@@ -294,20 +331,13 @@ fn write_file(
             continue;
         }
 
-        let ln = if let Some(num) = line.line_number {
-            format!("{:>width$}", num, width = line_num_width)
-        } else {
-            " ".repeat(line_num_width)
-        };
-
+        write!(out, "<tr class=\"{class}\"><td class=\"ln\">")?;
+        match line.line_number {
+            Some(num) => write!(out, "{num:>line_num_width$}")?,
+            None => write!(out, "{:line_num_width$}", "")?,
+        }
         let prefix = if is_moved { 'M' } else { line.prefix };
-        write!(
-            out,
-            "<tr class=\"{class}\"><td class=\"ln\">{ln}</td><td class=\"gutter\">{prefix}</td><td class=\"content\">",
-            class = class,
-            ln = ln,
-            prefix = prefix,
-        )?;
+        write!(out, "</td><td class=\"gutter\">{prefix}</td><td class=\"content\">")?;
 
         if !line.inline_spans.is_empty() {
             write_inline_spans(out, line)?;
@@ -353,6 +383,31 @@ mod tests {
     #[test]
     fn test_html_escape_multiple_special() {
         assert_eq!(html_escape("<a href=\"x&y\">"), "&lt;a href=&quot;x&amp;y&quot;&gt;");
+    }
+
+    fn escaped_by_writer(s: &str) -> String {
+        let mut buf = Vec::new();
+        write_escaped(&mut buf, s).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn escaping_into_a_writer_matches_html_escape(s in "(?s)[&<>\"'a-z é你\\t\\n]{0,40}|.{0,40}") {
+            proptest::prop_assert_eq!(escaped_by_writer(&s), html_escape(&s));
+        }
+
+        #[test]
+        fn a_token_span_written_out_matches_the_string_form(
+            s in "[&<>\"'a-z ]{0,12}",
+            r in 0u8..=255, g in 0u8..=255, b in 0u8..=255,
+        ) {
+            for color in [Color::Rgb(r, g, b), Color::Rgb(200, 200, 200), Color::Reset] {
+                let mut buf = Vec::new();
+                write_token_span(&mut buf, &s, color).unwrap();
+                proptest::prop_assert_eq!(String::from_utf8(buf).unwrap(), token_span(&s, color));
+            }
+        }
     }
 
     #[test]
