@@ -27,6 +27,8 @@ pub struct TuiSession {
     /// Every byte the app has written, before parsing. Lets tests assert on the
     /// escape sequences branchdiff emits, not just the screen they produce.
     raw_output: Vec<u8>,
+    /// How much of `raw_output` has been searched for the status query.
+    scanned_to: usize,
     _child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
@@ -75,8 +77,14 @@ impl TuiSession {
 
         let parser = Parser::new(TERM_ROWS, TERM_COLS, 0);
 
-        let mut session =
-            Self { parser, output_rx: rx, writer, raw_output: Vec::new(), _child: child };
+        let mut session = Self {
+            parser,
+            output_rx: rx,
+            writer,
+            raw_output: Vec::new(),
+            scanned_to: 0,
+            _child: child,
+        };
 
         // Wait for initial render
         session
@@ -93,12 +101,12 @@ impl TuiSession {
                 Ok(data) => {
                     self.raw_output.extend_from_slice(&data);
                     self.parser.process(&data);
-                    self.answer_status_report(&data);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }
         }
+        self.answer_status_reports();
     }
 
     /// Answer the app's "are you there" terminal query, as every real terminal does.
@@ -109,10 +117,19 @@ impl TuiSession {
     /// stdin, and that thread then takes the first keys the test sends and
     /// switches raw mode off behind the app's back. Without the reply the
     /// keys of four tests were lost depending on timing.
-    fn answer_status_report(&mut self, output: &[u8]) {
-        if output.windows(DEVICE_STATUS_REPORT_QUERY.len()).any(|w| w == DEVICE_STATUS_REPORT_QUERY)
-        {
-            self.writer.write_all(DEVICE_STATUS_REPORT_OK).expect("failed to answer the query");
+    ///
+    /// The query is searched for in all output so far, starting a few bytes
+    /// before where the last search ended, so one split across two reads is
+    /// found and each occurrence is answered once.
+    fn answer_status_reports(&mut self) {
+        let query = DEVICE_STATUS_REPORT_QUERY;
+        let from = self.scanned_to.saturating_sub(query.len() - 1);
+        let queries = self.raw_output[from..].windows(query.len()).filter(|w| *w == query).count();
+        self.scanned_to = self.raw_output.len();
+        if queries > 0 {
+            for _ in 0..queries {
+                self.writer.write_all(DEVICE_STATUS_REPORT_OK).expect("failed to answer the query");
+            }
             self.writer.flush().expect("failed to flush");
         }
     }
@@ -156,6 +173,8 @@ impl TuiSession {
 
     /// Send a raw byte sequence, e.g. a terminal-generated event.
     pub fn send_raw(&mut self, bytes: &[u8]) {
+        // Answer any pending terminal query before the bytes go out.
+        self.poll();
         self.writer.write_all(bytes).expect("failed to send bytes");
         self.writer.flush().expect("failed to flush");
         thread::sleep(Duration::from_millis(50));
@@ -163,6 +182,8 @@ impl TuiSession {
 
     /// Send a key press (single character).
     pub fn press(&mut self, key: &str) {
+        // Answer any pending terminal query before the key goes out.
+        self.poll();
         self.writer.write_all(key.as_bytes()).expect("failed to send key");
         self.writer.flush().expect("failed to flush");
         // Give the app time to process
