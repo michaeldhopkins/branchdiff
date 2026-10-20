@@ -17,6 +17,8 @@ use crate::html_style::{stylesheet, token_class};
 /// A rendered row's usual size, so a file's section is allocated once rather
 /// than grown by doubling (pages measured at 280-300 bytes a row).
 const SECTION_BYTES_PER_LINE: usize = 320;
+/// Room for most of a page, so a typical one leaves in few writes.
+const OUTPUT_BUFFER_BYTES: usize = 64 * 1024;
 
 fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -96,7 +98,23 @@ fn encode_image_to_base64(img: &CachedImage) -> Option<String> {
 
 /// Write the `--html` page for `data` to stdout.
 pub fn print_html(data: &OutputData, images: &ImageCache, refresh: Refresh) -> Result<()> {
-    render_html(&mut std::io::stdout().lock(), data, images, refresh)
+    render_html_buffered(std::io::stdout().lock(), data, images, refresh)
+}
+
+/// Write the page to `out` through a buffer, flushed before returning.
+///
+/// Stdout is line-buffered, which turns every newline of the header and the
+/// footer into a write call.
+pub fn render_html_buffered(
+    out: impl Write,
+    data: &OutputData,
+    images: &ImageCache,
+    refresh: Refresh,
+) -> Result<()> {
+    let mut out = std::io::BufWriter::with_capacity(OUTPUT_BUFFER_BYTES, out);
+    render_html(&mut out, data, images, refresh)?;
+    out.flush()?;
+    Ok(())
 }
 
 /// Write the `--html` page for `data` to `out`.
@@ -674,5 +692,49 @@ mod tests {
             assert_eq!(page, expected);
         }
         assert_eq!(page.matches("<span class=\"tk-keyword\">fn</span>").count(), 12);
+    }
+
+    /// Counts the write calls it receives, as stdout would turn them into
+    /// system calls.
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        calls: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_buffered_page_is_the_same_bytes_in_far_fewer_writes() {
+        let data = OutputData {
+            repo_name: "r".into(),
+            to_label: "a".into(),
+            from_label: "b".into(),
+            files: vec![rust_file("src/a.rs", &["fn a() {}", "let x = 1;"])],
+            total_additions: 2,
+            total_deletions: 0,
+        };
+        let images = ImageCache::new();
+        let mut unbuffered = CountingWriter { bytes: Vec::new(), calls: 0 };
+        render_html(&mut unbuffered, &data, &images, Refresh::Off).unwrap();
+        let mut buffered = CountingWriter { bytes: Vec::new(), calls: 0 };
+        render_html_buffered(&mut buffered, &data, &images, Refresh::Off).unwrap();
+
+        assert_eq!(buffered.bytes, unbuffered.bytes);
+        assert!(!buffered.bytes.is_empty());
+        assert!(
+            buffered.calls < unbuffered.calls / 4,
+            "{} vs {}",
+            buffered.calls,
+            unbuffered.calls
+        );
     }
 }
