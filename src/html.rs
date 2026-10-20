@@ -1,17 +1,17 @@
-use std::io::{self, Write};
+use std::io::Write;
 
 use anyhow::Result;
 use base64::Engine;
 use ratatui::style::Color;
 
-use branchdiff::diff::{DiffLine, LineSource};
-use branchdiff::image_diff::{CachedImage, ImageCache};
-use branchdiff::output::{OutputData, OutputFile};
-use branchdiff::syntax;
-use branchdiff::ui::spans::coalesce_spans;
+use crate::diff::{DiffLine, LineSource};
+use crate::image_diff::{CachedImage, ImageCache};
+use crate::output::{OutputData, OutputFile};
+use crate::syntax;
+use crate::ui::spans::coalesce_spans;
 
-use branchdiff::html_page::{Refresh, noscript_style, script};
-use branchdiff::html_style::{stylesheet, token_class};
+use crate::html_page::{Refresh, noscript_style, script};
+use crate::html_style::{stylesheet, token_class};
 
 fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -69,15 +69,24 @@ fn encode_image_to_base64(img: &CachedImage) -> Option<String> {
     Some(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
 }
 
-pub fn render_html(data: &OutputData, images: &ImageCache, refresh: Refresh) -> Result<()> {
-    let mut stdout = io::stdout().lock();
+/// Write the `--html` page for `data` to stdout.
+pub fn print_html(data: &OutputData, images: &ImageCache, refresh: Refresh) -> Result<()> {
+    render_html(&mut std::io::stdout().lock(), data, images, refresh)
+}
 
+/// Write the `--html` page for `data` to `out`.
+pub fn render_html(
+    out: &mut impl Write,
+    data: &OutputData,
+    images: &ImageCache,
+    refresh: Refresh,
+) -> Result<()> {
     // This export streams through `syntax::highlight_line`, which carries
     // parser state across calls. Start from a known-clean state rather than
     // whatever the thread was last left in.
     syntax::reset_highlight_state();
 
-    write_header(&mut stdout, data)?;
+    write_header(out, data)?;
 
     let line_num_width = data
         .files
@@ -89,10 +98,10 @@ pub fn render_html(data: &OutputData, images: &ImageCache, refresh: Refresh) -> 
         .unwrap_or(0);
 
     for (i, file) in data.files.iter().enumerate() {
-        write_file(&mut stdout, i, file, images, line_num_width)?;
+        write_file(out, i, file, images, line_num_width)?;
     }
 
-    write_footer(&mut stdout, refresh)?;
+    write_footer(out, refresh)?;
     Ok(())
 }
 
@@ -327,9 +336,9 @@ fn write_footer(out: &mut impl Write, refresh: Refresh) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use branchdiff::diff::InlineSpan;
-    use branchdiff::html_page::Refresh;
-    use branchdiff::image_diff::ImageCache;
+    use crate::diff::InlineSpan;
+    use crate::html_page::Refresh;
+    use crate::image_diff::ImageCache;
 
     #[test]
     fn test_html_escape_special_chars() {
@@ -520,15 +529,12 @@ mod tests {
         let images = ImageCache::new();
 
         let mut buf = Vec::new();
-        write_header(&mut buf, &data).unwrap();
-        for (i, file) in data.files.iter().enumerate() {
-            write_file(&mut buf, i, file, &images, 1).unwrap();
-        }
-        write_footer(&mut buf, Refresh::Live).unwrap();
+        render_html(&mut buf, &data, &images, Refresh::Live).unwrap();
 
         let html = String::from_utf8(buf).unwrap();
 
-        assert!(html.contains("<!DOCTYPE html>"), "should have doctype");
+        assert!(html.starts_with("<!DOCTYPE html>"), "should start with the doctype");
+        assert!(html.ends_with("</body></html>\n"), "the whole page reaches the writer");
         assert!(html.contains("feature vs main"), "should have branch info");
         assert!(html.contains("<details open"), "should have collapsible files");
         assert!(html.contains("test.rs"), "should have file name");

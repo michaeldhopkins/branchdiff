@@ -141,7 +141,7 @@ behaviourally by `a_one_line_status_bar_always_shows_the_full_help`, so if the
 two thresholds ever diverge that arm goes live and the test fails.
 
 **The test command is `--lib --bins`**, the set CI's test step runs.
-`src/main.rs`, `src/html.rs` and `src/print.rs` belong to the binary and carry
+`src/main.rs` and `src/print.rs` belong to the binary and carry
 their own test modules, so `--lib` alone (the config until 2026-09-27) reported
 every mutant in them as missed. The PTY integration target stays out: it runs
 the installed binary, and four of its tests fail on this Mac regardless of the
@@ -299,9 +299,8 @@ this target checks.
   own fuzzing covers it. Only branchdiff's code is fuzzed here.
 - Image decoding (`image`, `resvg`) and syntax highlighting (`syntect`):
   third-party parsers that branchdiff only calls.
-- HTML output (`src/html.rs`) is in the binary, not the library, so the fuzz
-  crate cannot reach it; every text it writes goes through `html_escape`, which
-  is unit-tested.
+- HTML output (`src/html.rs`) parses nothing: every text it writes goes
+  through `html_escape`, which is unit-tested.
 - Terminal control sequences: branchdiff does not promise to strip them. `-p`
   writes file content through verbatim, so an escape sequence in a changed file
   reaches the terminal. There is no sanitising code to fuzz; adding it is a

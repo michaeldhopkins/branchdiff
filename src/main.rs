@@ -6,7 +6,6 @@
     clippy::excessive_nesting,  // Flag deeply nested code
 )]
 
-mod html;
 mod print;
 
 use branchdiff::app::{self, App, FrameContext};
@@ -15,6 +14,7 @@ use branchdiff::external::{self, ExternalCommand, LaunchMode};
 use branchdiff::file_events::VcsLockState;
 #[cfg(target_os = "linux")]
 use branchdiff::gitignore::GitignoreFilter;
+use branchdiff::html::print_html;
 use branchdiff::input::AppAction;
 use branchdiff::limits;
 #[cfg(target_os = "linux")]
@@ -285,9 +285,7 @@ fn main() -> Result<()> {
 
                     match mode {
                         OutputMode::Print => print::print_diff(&data)?,
-                        OutputMode::Html => {
-                            html::render_html(&data, &app.image_cache, cli.refresh())?
-                        }
+                        OutputMode::Html => print_html(&data, &app.image_cache, cli.refresh())?,
                         _ => unreachable!(),
                     }
                 }

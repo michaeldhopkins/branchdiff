@@ -5,7 +5,7 @@
 # they exercise the *installed* binary and cannot observe a mutation in the
 # copied tree — they add cost and, being PTY-timing-sensitive, can report a
 # mutant as caught (or flake the baseline) for reasons unrelated to the mutation.
-# `--bins` matters: src/main.rs, src/html.rs and src/print.rs belong to the
+# `--bins` matters: src/main.rs and src/print.rs belong to the
 # binary and carry their own test modules, so `--lib` alone reports every mutant
 # in them as MISSED.
 additional_cargo_test_args = ["--lib", "--bins"]
@@ -55,6 +55,8 @@ exclude_re = [
     # Reads the real terminal. What becomes of the event it returns is
     # message::collect_messages, tested there.
     '^src/main\.rs:.*poll_input',
+    # Binds the real stdout; the page it writes is render_html, tested there.
+    '^src/html\.rs:.*print_html',
     # The terminal app's entry point: it takes over the real TTY, queries it for
     # an image protocol, starts a real file watcher and restarts on a new VCS.
     # Only the PTY integration tests drive it, and they never see a mutation.

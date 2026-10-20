@@ -10,6 +10,7 @@ pub mod file_links;
 pub mod file_list;
 pub mod fingerprint;
 pub mod gitignore;
+pub mod html;
 pub mod html_page;
 pub mod html_style;
 pub mod image_diff;
