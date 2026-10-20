@@ -194,23 +194,31 @@ pub(super) fn git_compute_refresh(
 
     // Batch pre-fetch: 3 cat-file --batch calls instead of 3*N git show calls.
     let fetch_paths = collect_fetch_paths(&changed_files, &binary_files);
-    let (base_contents, head_contents, index_contents) = std::thread::scope(|s| {
-        let base_handle = s.spawn(|| {
-            if merge_base.is_empty() {
-                HashMap::new()
-            } else {
-                batch_file_contents(repo_path, &fetch_paths, &merge_base)
-            }
-        });
-        let head_handle = s.spawn(|| batch_file_contents(repo_path, &fetch_paths, "HEAD"));
-        let index_handle = s.spawn(|| batch_file_contents(repo_path, &fetch_paths, ""));
+    // The branch name and upstream divergence need only the repository, so
+    // their git calls run while the file contents are fetched.
+    let (base_contents, head_contents, index_contents, current_branch, divergence) =
+        std::thread::scope(|s| {
+            let branch_handle = s.spawn(|| get_current_branch(repo_path).unwrap_or(None));
+            let divergence_handle =
+                s.spawn(|| compute_upstream_divergence(repo_path, &merge_base, base_branch));
+            let base_handle = s.spawn(|| {
+                if merge_base.is_empty() {
+                    HashMap::new()
+                } else {
+                    batch_file_contents(repo_path, &fetch_paths, &merge_base)
+                }
+            });
+            let head_handle = s.spawn(|| batch_file_contents(repo_path, &fetch_paths, "HEAD"));
+            let index_handle = s.spawn(|| batch_file_contents(repo_path, &fetch_paths, ""));
 
-        (
-            base_handle.join().expect("base batch thread panicked"),
-            head_handle.join().expect("head batch thread panicked"),
-            index_handle.join().expect("index batch thread panicked"),
-        )
-    });
+            (
+                base_handle.join().expect("base batch thread panicked"),
+                head_handle.join().expect("head batch thread panicked"),
+                index_handle.join().expect("index batch thread panicked"),
+                branch_handle.join().expect("current branch thread panicked"),
+                divergence_handle.join().expect("divergence thread panicked"),
+            )
+        });
 
     let results = process_files_parallel(&changed_files, cancel_flag, |file| {
         process_single_file_batched(
@@ -232,9 +240,6 @@ pub(super) fn git_compute_refresh(
     let assembled = assemble_results(results);
     let files = assembled.files;
     let lines = assembled.lines;
-
-    let current_branch = get_current_branch(repo_path).unwrap_or(None);
-    let divergence = compute_upstream_divergence(repo_path, &merge_base, base_branch);
 
     let metrics = DiffMetrics { total_lines: lines.len(), file_count: files.len() };
 

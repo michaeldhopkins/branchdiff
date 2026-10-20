@@ -95,7 +95,10 @@ mod tests {
         }
     }
 
-    fn load(comparison_fails: bool, refresh_fails: bool) -> Result<(ComparisonContext, RefreshResult)> {
+    fn load(
+        comparison_fails: bool,
+        refresh_fails: bool,
+    ) -> Result<(ComparisonContext, RefreshResult)> {
         let vcs = Scripted { path: PathBuf::from("/repo"), comparison_fails, refresh_fails };
         load_comparison_and_refresh(&vcs, &Arc::new(AtomicBool::new(false)))
     }

@@ -110,9 +110,24 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
 
     // 1. Get committed changes (merge-base to HEAD) with rename detection
     // Skip if merge_base is empty (no commits yet)
-    if !merge_base.is_empty()
-        && let Ok(transitions) = get_diff_transitions(repo_path, merge_base, "HEAD")
-    {
+    // `git status` does not depend on the diff, so the two run together.
+    let (transitions, status_output) = std::thread::scope(|scope| {
+        let status = scope.spawn(|| {
+            run_git_with_retry(
+                repo_path,
+                &["status", "--porcelain=v1", "-uall"],
+                is_transient_error,
+            )
+        });
+        let transitions = if merge_base.is_empty() {
+            None
+        } else {
+            get_diff_transitions(repo_path, merge_base, "HEAD").ok()
+        };
+        (transitions, status.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+    });
+
+    if let Some(transitions) = transitions {
         for t in transitions {
             // Prefer t.to (destination path), fall back to t.from (for deletions)
             // Consume the Options directly to avoid cloning
@@ -135,8 +150,7 @@ pub fn get_all_changed_files(repo_path: &Path, merge_base: &str) -> Result<Vec<C
     // 2. Get staged changes (HEAD to index) and unstaged changes (index to working tree)
     // Use -uall to show individual files in untracked directories
     // Use retry logic to handle transient index.lock contention
-    let status_output =
-        run_git_with_retry(repo_path, &["status", "--porcelain=v1", "-uall"], is_transient_error)?;
+    let status_output = status_output?;
 
     for entry in parse_status_porcelain(&status_output.stdout_lossy()) {
         // Worktree-deleted and untracked files feed unstaged rename detection.

@@ -89,13 +89,27 @@ impl GitVcs {
     /// every refresh performs, so if it fails here it would fail on every
     /// refresh — but silently, rendering as "no changes" rather than an error.
     pub fn with_base(repo_path: PathBuf, base: Option<&str>) -> Result<Self> {
-        let (base_branch, base_label) = match base {
+        // `git --version` is independent of the base, so it runs alongside the
+        // lookups that resolve one.
+        let (resolved, git_version) = std::thread::scope(|scope| {
+            let version = scope.spawn(get_git_version);
+            let resolved = Self::resolve_base(&repo_path, base);
+            (resolved, version.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+        });
+        let (base_branch, base_label) = resolved?;
+        let git_version = git_version.context("Failed to detect git version")?;
+        Ok(Self { repo_path, base_branch, base_label, git_version })
+    }
+
+    /// The ref to compare against and its label, for `--base` or detected.
+    fn resolve_base(repo_path: &Path, base: Option<&str>) -> Result<(String, String)> {
+        Ok(match base {
             Some(base) => {
-                let resolved = resolve_explicit_base(&repo_path, base)?;
+                let resolved = resolve_explicit_base(repo_path, base)?;
                 // Prove it can actually produce a merge-base: that is the lookup
                 // every refresh performs, and a failure here would otherwise
                 // surface as a silent "0 files" rather than an error.
-                get_merge_base_preferring_origin(&repo_path, &resolved.0)
+                get_merge_base_preferring_origin(repo_path, &resolved.0)
                     .with_context(|| format!("--base {base:?} has no common ancestor with HEAD"))?;
                 resolved
             }
@@ -104,12 +118,10 @@ impl GitVcs {
             // repo with no discoverable trunk silently looked clean. Fail with
             // something actionable instead.
             None => {
-                let detected = detect_base_branch(&repo_path)?;
+                let detected = detect_base_branch(repo_path)?;
                 (detected.clone(), detected)
             }
-        };
-        let git_version = get_git_version().context("Failed to detect git version")?;
-        Ok(Self { repo_path, base_branch, base_label, git_version })
+        })
     }
 
     /// The base branch name (e.g., "main" or "master").
