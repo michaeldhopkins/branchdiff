@@ -244,3 +244,51 @@ pub(super) fn compute_stack_position(
 
     Some((current, total))
 }
+
+/// What a refresh needs to know about the commits around `@` before it can
+/// list changed files.
+pub(super) struct Anchors<B> {
+    pub(super) fork_point: Option<String>,
+    pub(super) divergence: Option<UpstreamDivergence>,
+    pub(super) stack_tip: Option<StackTip>,
+    /// The sibling tip standing in for an empty orphaned `@`; looked for only
+    /// when `@` has no stack above it.
+    pub(super) orphaned: Option<StackTip>,
+    pub(super) bookmark_boundary: Option<B>,
+}
+
+/// Resolves the fork point (then divergence), the stack tip (then the
+/// orphaned tip) and the bookmark boundary at once: the three chains are
+/// independent read-only jj calls, each about 15 ms, run serially before.
+pub(super) fn resolve_anchors<B: Send>(
+    repo_path: &Path,
+    from_rev: &str,
+    cancel: &Arc<AtomicBool>,
+    bookmark_boundary: impl FnOnce() -> Option<B> + Send,
+) -> Anchors<B> {
+    std::thread::scope(|scope| {
+        let fork = scope.spawn(|| {
+            let fork_point = resolve_fork_point(repo_path, from_rev, cancel);
+            let divergence = fork_point
+                .as_deref()
+                .and_then(|fp| compute_jj_divergence(repo_path, fp, from_rev, cancel));
+            (fork_point, divergence)
+        });
+        let stack = scope.spawn(|| {
+            let stack_tip = resolve_stack_tip(repo_path, from_rev, cancel);
+            let orphaned = match stack_tip {
+                None => resolve_orphaned_tip(repo_path, from_rev, cancel),
+                Some(_) => None,
+            };
+            (stack_tip, orphaned)
+        });
+        let bookmark_boundary = bookmark_boundary();
+        let (fork_point, divergence) = joined(fork);
+        let (stack_tip, orphaned) = joined(stack);
+        Anchors { fork_point, divergence, stack_tip, orphaned, bookmark_boundary }
+    })
+}
+
+pub(super) fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}

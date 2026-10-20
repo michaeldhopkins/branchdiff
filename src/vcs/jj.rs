@@ -20,8 +20,8 @@ mod stack;
 
 use super::shared::{FileProcessResult, assemble_results, process_files_parallel};
 use stack::{
-    compute_jj_divergence, compute_stack_position, get_change_id_static, resolve_fork_point,
-    resolve_orphaned_tip, resolve_stack_tip,
+    Anchors, compute_stack_position, get_change_id_static, joined, resolve_anchors,
+    resolve_fork_point, resolve_orphaned_tip, resolve_stack_tip,
 };
 
 /// Prepend `--ignore-working-copy` to skip jj's auto-snapshot.
@@ -844,24 +844,25 @@ fn process_jj_file(
     // large files. The cancel flag is plumbed into the subprocess itself
     // (via run_jj_cancellable inside file_content_no_snapshot), so a slow
     // file read gets killed mid-flight — not only between reads.
+    //
+    // The base read and the parent read are independent, so they run side by
+    // side. The parent of the current commit is for the committed/staged
+    // boundary — try current path first, fall back to old_path for files renamed
+    // in the current commit. `at_rev` is `@` normally, or the re-anchored
+    // sibling tip when `@` is an orphaned empty commit; its parent is `<at_rev>-`.
     let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
-    let base = file_content_no_snapshot(repo_path, base_path, from_rev, cancel);
-    if cancel.load(Ordering::Relaxed) {
-        return FileProcessResult::Cancelled;
-    }
-
-    // Parent of the current commit, for the committed/staged boundary — try
-    // current path first, fall back to old_path for files renamed in the current
-    // commit. `at_rev` is `@` normally, or the re-anchored sibling tip when `@`
-    // is an orphaned empty commit; its parent is `<at_rev>-`.
     let at_parent = format!("{at_rev}-");
-    let parent =
-        file_content_no_snapshot(repo_path, &changed.path, &at_parent, cancel).or_else(|| {
-            changed
-                .old_path
-                .as_deref()
-                .and_then(|old| file_content_no_snapshot(repo_path, old, &at_parent, cancel))
-        });
+    let (base, parent) = rayon::join(
+        || file_content_no_snapshot(repo_path, base_path, from_rev, cancel),
+        || {
+            file_content_no_snapshot(repo_path, &changed.path, &at_parent, cancel).or_else(|| {
+                changed
+                    .old_path
+                    .as_deref()
+                    .and_then(|old| file_content_no_snapshot(repo_path, old, &at_parent, cancel))
+            })
+        },
+    );
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
     }
@@ -959,25 +960,16 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
-        // Resolve fork point for divergence detection and fork-point mode
-        let fork_point = resolve_fork_point(&self.repo_path, &self.from_rev, cancel_flag);
-        let divergence = fork_point
-            .as_deref()
-            .and_then(|fp| compute_jj_divergence(&self.repo_path, fp, &self.from_rev, cancel_flag));
-
-        // Determine the effective --from rev based on diff_base mode
+        // The fork point (for divergence and fork-point mode), the stack tip (is
+        // @ mid-stack? if not, an orphaned empty @ left by an abandon?) and the
+        // bookmark boundary (for BookmarkOnly view mode).
+        let Anchors { fork_point, divergence, stack_tip, orphaned, bookmark_boundary } =
+            resolve_anchors(&self.repo_path, &self.from_rev, cancel_flag, || {
+                resolve_bookmark_boundary(&self.repo_path, &self.from_rev, cancel_flag)
+            });
         let effective_from = match self.load_diff_base() {
             DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(&self.from_rev),
             DiffBase::TrunkTip => &self.from_rev,
-        };
-
-        // Resolve stack tip — determines if @ is mid-stack. If @ is at its own
-        // tip, fall back to orphaned-tip recovery (empty @ left by an abandon).
-        let stack_tip = resolve_stack_tip(&self.repo_path, &self.from_rev, cancel_flag);
-        let orphaned = if stack_tip.is_none() {
-            resolve_orphaned_tip(&self.repo_path, &self.from_rev, cancel_flag)
-        } else {
-            None
         };
         let orphaned_tip = orphaned.is_some();
 
@@ -992,9 +984,6 @@ impl crate::vcs::Vcs for JjVcs {
         // mid-stack @; an orphaned tip *is* the anchor, so nothing sits above it.
         let tip_rev = stack_tip.as_ref().map(|t| t.change_id.as_str());
 
-        // Resolve bookmark boundary for BookmarkOnly view mode
-        let bookmark_boundary =
-            resolve_bookmark_boundary(&self.repo_path, &self.from_rev, cancel_flag);
         let bookmark_changed_files = bookmark_boundary.as_ref().map(|b| &b.changed_files);
 
         // Discover changed files. When the working copy is the diff target (the
@@ -1022,12 +1011,32 @@ impl crate::vcs::Vcs for JjVcs {
             anyhow::bail!("refresh cancelled");
         }
 
-        let results = process_files_parallel(&changed_files, cancel_flag, |changed| {
-            process_jj_file(
-                &self.repo_path, effective_from, changed, &binary_files, tip_rev, at_rev,
-                bookmark_changed_files, cancel_flag,
-            )
-        });
+        // Normally the "to" label is @ (where the working copy sits). When we
+        // re-anchored to an orphaned sibling tip, @ is an empty throwaway commit,
+        // so label the tip we actually diffed against instead.
+        let to_rev = if orphaned_tip { effective_to } else { "@" };
+        // The labels and stack position need only the revisions, so their jj
+        // calls run while the files are read.
+        let (results, ((base_identifier, base_label_str), (_, current_branch_str), stack_position)) =
+            std::thread::scope(|scope| {
+                let base = scope.spawn(|| self.rev_metadata_no_snapshot(effective_from));
+                let to = scope.spawn(|| self.rev_metadata_no_snapshot(to_rev));
+                let position = scope.spawn(|| {
+                    stack_tip.as_ref().and_then(|tip| {
+                        let (current, total) = compute_stack_position(
+                            &self.repo_path, &tip.change_id, &self.from_rev,
+                        )?;
+                        Some(StackPosition { current, total, head_count: tip.head_count })
+                    })
+                });
+                let results = process_files_parallel(&changed_files, cancel_flag, |changed| {
+                    process_jj_file(
+                        &self.repo_path, effective_from, changed, &binary_files, tip_rev, at_rev,
+                        bookmark_changed_files, cancel_flag,
+                    )
+                });
+                (results, (joined(base), joined(to), joined(position)))
+            });
 
         if cancel_flag.load(Ordering::Relaxed) {
             anyhow::bail!("refresh cancelled");
@@ -1037,19 +1046,7 @@ impl crate::vcs::Vcs for JjVcs {
         let files = assembled.files;
         let all_lines = assembled.lines;
 
-        let stack_position = stack_tip.as_ref().and_then(|tip| {
-            let (current, total) =
-                compute_stack_position(&self.repo_path, &tip.change_id, &self.from_rev)?;
-            Some(StackPosition { current, total, head_count: tip.head_count })
-        });
-
         let metrics = DiffMetrics { total_lines: all_lines.len(), file_count: files.len() };
-        let (base_identifier, base_label_str) = self.rev_metadata_no_snapshot(effective_from);
-        // Normally the "to" label is @ (where the working copy sits). When we
-        // re-anchored to an orphaned sibling tip, @ is an empty throwaway commit,
-        // so label the tip we actually diffed against instead.
-        let to_rev = if orphaned_tip { effective_to } else { "@" };
-        let (_, current_branch_str) = self.rev_metadata_no_snapshot(to_rev);
 
         let file_paths: Vec<&str> = files
             .iter()
