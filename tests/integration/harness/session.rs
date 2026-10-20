@@ -46,6 +46,9 @@ impl TuiSession {
     }
 
     /// A terminal that never answers the app's startup query (a dumb or broken one).
+    /// The app sees only `PATH`, `HOME` and the variables given, so a multiplexer or
+    /// `TERM` inherited from the developer's shell cannot decide the outcome; with no
+    /// `TERM` given, none is set.
     pub fn launch_unanswering(repo_path: &Path, env: &[(&str, &str)]) -> Self {
         Self::launch_configured(repo_path, env, false)
     }
@@ -59,7 +62,13 @@ impl TuiSession {
 
         let mut cmd = CommandBuilder::new("branchdiff");
         cmd.cwd(repo_path);
-        cmd.env("TERM", "xterm-256color");
+        if answers_queries {
+            cmd.env("TERM", "xterm-256color");
+        } else {
+            cmd.env_clear();
+            cmd.env("PATH", std::env::var_os("PATH").expect("PATH is set"));
+            cmd.env("HOME", repo_path);
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }
