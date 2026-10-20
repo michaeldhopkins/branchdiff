@@ -105,6 +105,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # rust-toolchain.toml pins a channel that cargo installs on first use in
+      # the repo, and the step above added the target to `stable` only. Adding it
+      # here, inside the checkout, puts the target's std on the pinned toolchain.
+      - name: Add target to the pinned toolchain
+        run: rustup target add ${{ matrix.target }}
+        shell: bash
+
       - name: Install cross
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         uses: taiki-e/install-action@cross
