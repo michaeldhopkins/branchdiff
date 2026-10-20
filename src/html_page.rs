@@ -59,7 +59,16 @@ pub fn script(refresh: Refresh) -> String {
         Refresh::Live => (LIVE_START_JS, LIVE_JS),
         Refresh::Off => ("", ""),
     };
-    format!("<script>\n{start}{THEME_JS}{live}</script>")
+    const OPEN: &str = "<script>\n";
+    const CLOSE: &str = "</script>";
+    let mut page =
+        String::with_capacity(OPEN.len() + start.len() + THEME_JS.len() + live.len() + CLOSE.len());
+    page.push_str(OPEN);
+    page.push_str(start);
+    page.push_str(THEME_JS);
+    page.push_str(live);
+    page.push_str(CLOSE);
+    page
 }
 
 /// For a reader with scripts off (a sandboxed iframe, a mail client): follow

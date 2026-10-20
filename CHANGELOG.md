@@ -1,10 +1,76 @@
 ## [unreleased]
 
+### Bug Fixes
+
+- *(tests)* Keep canonical ratchet templates invariant across rustfmt configs
+- *(ci)* Bound the alloc job and pin its toolchain
+- *(docs)* Make the rustdoc build pass with warnings denied
+- *(jj)* Resolve the bookmark boundary after the tips are known
+
+### Other
+
+- *(html)* Pin the HTML page's render time and allocations
+
+### Refactor
+
+- *(image_diff)* Drop fit_dimensions' redundant zero-box guard and test each zero side
+- *(tests)* Adopt canonical quality-ratchet templates and ratchets.toml
+- *(app)* Split modules back under the file-length pins
+- *(html)* Move the HTML renderer into the library
+
+### Performance
+
+- *(html)* Write rows without intermediate strings
+- *(html)* Highlight the page's files in parallel
+- *(jj)* Run a refresh's independent jj calls side by side
+- *(html)* Load the comparison labels while the refresh runs
+- *(git)* Overlap the independent git calls of a refresh
+- *(jj)* Share label lookups and overlap the anchor lookups
+- *(html)* Write the page to stdout through a buffer
+- *(html)* The live page skips work when the page has not changed
+- *(jj)* Build the one-shot comparison from the refresh's own labels
+- *(jj)* Read a file's base and parent on a scoped thread
+
+### Styling
+
+- Apply rustfmt to the existing tree
+
+### Testing
+
+- *(image_diff)* Kill the cache and downscale mutants a changed-code run missed
+- *(image_diff)* Cover svg rasterizing and exclude the downscale mutants that cannot differ
+- *(image_diff)* Pin format_file_size's KB upper bound and unit monotonicity
+- Cover listing::print and Vcs default trait methods against missed mutants
+- *(mutants)* Exclude cfg(fuzzing) fuzz_api.rs and cover bare G/Y/D key arms
+- *(bench)* Pin hot-path allocation counts
+- *(limits)* Cover the WSL check and the inotify limit read
+- *(limits)* Pin the watch limit calculation on every platform
+- *(limits)* Pin the warning thresholds at their boundaries
+- *(integration)* Answer the app's terminal status query
+- *(integration)* Answer a split status query once and before keys go out
+
+### Miscellaneous
+
+- *(mutants)* Read the verdict from missed.txt and bound the run with a time budget
+- Pin the Rust toolchain to 1.99.0 with clippy and rustfmt
+- Add rustfmt.toml at the default width, matched to the code's compact style
+- Record in rustfmt.toml why its style was chosen and what the reformat still grows
+- *(release)* 0.77.4
+## [0.77.3] - 2026-10-12
+
+### Testing
+
+- *(diff_view)* Time the fastest frame in the long-line perf test, so a busy machine cannot fail it
+## [0.77.2] - 2026-10-11
+
+### Testing
+
+- *(file_list)* A line added beside context is modified; skip the mutation slice on dependency-only pushes
+## [0.77.1] - 2026-10-11
+
 ### Testing
 
 - *(file_list)* Pin status_of's boundaries against the slice's missed mutants
-- *(file_list)* A line added beside context is modified; skip the mutation slice on dependency-only pushes
-- *(diff_view)* Time the fastest frame in the long-line perf test, so a busy machine cannot fail it
 ## [0.77.0] - 2026-10-10
 
 ### Features
@@ -653,7 +719,6 @@
 
 ### Miscellaneous
 
-- Initial commit (branchdiff v0.1.0)
 - Add .DS_Store to .gitignore
 - Mark as unlicensed (all rights reserved)
 - Remove redundant comments
