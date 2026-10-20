@@ -46,8 +46,9 @@ const LIVE_START_JS: &str = "let prev=document.body.innerHTML.trimEnd();\n";
 /// to the offset it had; one at the top, or whose first section lies below the window,
 /// keeps the plain scroll position. A section the page has not seen before renders for
 /// the first time once it nears the window and changes height, so the anchor is put back
-/// each frame until it holds still, or until the reader scrolls or presses a key, or a
-/// newer refresh replaces the section.
+/// each frame until it holds still, or until the reader scrolls, presses a key that
+/// scrolls (not a modifier or a chord) or presses a pointer button, or a newer refresh
+/// replaces the section.
 const LIVE_JS: &str = "\
 if(location.protocol!=='file:'){let last='',stopSettling=()=>{};setInterval(()=>{
   fetch(location.href,{cache:'no-store'}).then(r=>r.text()).then(h=>{
@@ -81,9 +82,12 @@ if(location.protocol!=='file:'){let last='',stopSettling=()=>{};setInterval(()=>
       window.scrollTo(s[0],window.scrollY-keep.top);
       stopSettling();
       let held=0,frames=0,settling=true;
-      const takeOver=['wheel','touchstart','keydown'];
-      const stop=()=>{settling=false;for(const type of takeOver)removeEventListener(type,stop)};
+      const takeOver=['wheel','touchstart','pointerdown'];
+      const scrollKeys=['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','PageUp','PageDown','Home','End',' '];
+      const stop=()=>{settling=false;for(const type of takeOver)removeEventListener(type,stop);removeEventListener('keydown',onKey)};
+      const onKey=e=>{if(!e.ctrlKey&&!e.metaKey&&!e.altKey&&(scrollKeys.includes(e.key)||(!e.shiftKey&&(e.key==='j'||e.key==='k'))))stop()};
       for(const type of takeOver)addEventListener(type,stop,{passive:true});
+      addEventListener('keydown',onKey,{passive:true});
       stopSettling=stop;
       const hold=()=>{
         if(!settling||!now.isConnected)return stop();

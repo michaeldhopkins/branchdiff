@@ -380,3 +380,46 @@ fn an_idle_settle_still_anchors_the_reader() {
     let now = number(&browser.eval("({y: scrollY})"), "y");
     assert!((now - scrolled).abs() > 50.0, "the frame did not re-anchor: {scrolled} -> {now}");
 }
+
+/// The reader scrolls 123 pixels and then `input` (a script) fires; returns whether
+/// the settle loop took over (`scrollY` left alone, nothing queued) after one frame.
+fn settle_yields_to(input: &str) -> bool {
+    let mut browser = refreshed_with_the_settle_frame_pending();
+    browser.eval(&format!("scrollBy(0, 123); {input}; true"));
+    let scrolled = number(&browser.eval("({y: scrollY})"), "y");
+    let left = browser.eval("bd.pump()");
+    let now = number(&browser.eval("({y: scrollY})"), "y");
+    let yielded = left == 0 && (now - scrolled).abs() < 1.0;
+    let fought = left != 0 && (now - scrolled).abs() > 50.0;
+    assert!(yielded || fought, "neither yielded nor re-anchored: {scrolled} -> {now}, {left}");
+    yielded
+}
+
+fn key(init: &str) -> String {
+    format!("dispatchEvent(new KeyboardEvent('keydown', {{{init}}}))")
+}
+
+#[test]
+fn a_key_that_scrolls_ends_the_settle() {
+    let _alone = exclusive();
+    for init in ["key: 'PageDown'", "key: ' '", "key: 'ArrowUp'", "key: 'End'", "key: 'j'"] {
+        assert!(settle_yields_to(&key(init)), "{init} did not end the settle");
+    }
+}
+
+#[test]
+fn a_modifier_key_or_a_chord_does_not_end_the_settle() {
+    let _alone = exclusive();
+    for init in
+        ["key: 'Shift', shiftKey: true", "key: 'c', metaKey: true", "key: 'Tab', altKey: true"]
+    {
+        assert!(!settle_yields_to(&key(init)), "{init} ended the settle");
+    }
+    assert!(!settle_yields_to(&key("key: 'j', ctrlKey: true")), "ctrl-j ended the settle");
+}
+
+#[test]
+fn a_pointer_press_ends_the_settle() {
+    let _alone = exclusive();
+    assert!(settle_yields_to("dispatchEvent(new PointerEvent('pointerdown'))"));
+}
