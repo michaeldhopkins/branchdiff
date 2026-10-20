@@ -861,17 +861,19 @@ fn process_jj_file(
     // sibling tip when `@` is an orphaned empty commit; its parent is `<at_rev>-`.
     let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
     let at_parent = format!("{at_rev}-");
-    let (base, parent) = rayon::join(
-        || file_content_no_snapshot(repo_path, base_path, from_rev, cancel),
-        || {
-            file_content_no_snapshot(repo_path, &changed.path, &at_parent, cancel).or_else(|| {
+    // A scoped thread, not rayon::join: serial runs (below PARALLEL_THRESHOLD)
+    // must not create rayon's global pool just for two subprocess waits.
+    let (base, parent) = std::thread::scope(|scope| {
+        let base = scope.spawn(|| file_content_no_snapshot(repo_path, base_path, from_rev, cancel));
+        let parent = file_content_no_snapshot(repo_path, &changed.path, &at_parent, cancel)
+            .or_else(|| {
                 changed
                     .old_path
                     .as_deref()
                     .and_then(|old| file_content_no_snapshot(repo_path, old, &at_parent, cancel))
-            })
-        },
-    );
+            });
+        (joined(base), parent)
+    });
     if cancel.load(Ordering::Relaxed) {
         return FileProcessResult::Cancelled;
     }
