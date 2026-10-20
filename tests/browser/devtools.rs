@@ -100,6 +100,24 @@ impl Browser {
         reply["result"]["value"].clone()
     }
 
+    /// Slows the page's CPU by `rate`, as a phone or tablet would be next to this Mac.
+    pub fn throttle_cpu(&mut self, rate: u32) {
+        self.call("Emulation.setCPUThrottlingRate", json!({ "rate": rate }));
+    }
+
+    /// Gives the page a `width` by `height` window at `scale` device pixels per CSS pixel.
+    pub fn set_screen(&mut self, width: u32, height: u32, scale: u32) {
+        self.call(
+            "Emulation.setDeviceMetricsOverride",
+            json!({
+                "width": width,
+                "height": height,
+                "deviceScaleFactor": scale,
+                "mobile": false,
+            }),
+        );
+    }
+
     /// Two animation frames, so layout and paint have really run.
     pub fn two_frames(&mut self) {
         self.eval("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");

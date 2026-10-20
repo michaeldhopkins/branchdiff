@@ -390,3 +390,7 @@ signature change buried in a refactor is easy to miss, and shipping one as a
 patch breaks `cargo build` for anyone who did depend on it.
 
 Commits prefixed with `feat:` should bump minor. Commits prefixed with `fix:` should bump patch. Commits prefixed with `chore:`, `refactor:`, `test:`, `docs:`, `perf:`, `build:` should bump patch (or nothing if purely internal).
+
+## Per-frame work
+
+The only code that runs on animation frames is the settle loop in `src/html_page.rs` (`hold`, at most 12 frames after a live refresh of the `--html` page). `tests/html_live_page/frame_budget.rs` times those callbacks from inside headless Chrome at iPad Pro 13" portrait and 2560x1440 (both 2x), CPU slowed 6x, on a 200-file diff with 8 long files, over two refreshes (same file count; a file inserted before the reader). Budget: 95th percentile 4 ms or less, all callbacks together 10% or less of the 1 s window measured per refresh. The rule's 10 callbacks a second does not fit a loop that ends, so each refresh must run at least 2 settle callbacks or the test fails. Never raise the limits. The same file fails when a file in `src/` has a `requestAnimationFrame`, a canvas or a timer under 100 ms that its `MEASURED_PAGES` list does not name: add the new page to that list and measure it. Run it with `cargo test --features browser-tests --test html_live_page`.

@@ -46,9 +46,10 @@ const LIVE_START_JS: &str = "let prev=document.body.innerHTML.trimEnd();\n";
 /// to the offset it had; one at the top, or whose first section lies below the window,
 /// keeps the plain scroll position. A section the page has not seen before renders for
 /// the first time once it nears the window and changes height, so the anchor is put back
-/// each frame until it holds still.
+/// each frame until it holds still, or until the reader scrolls or presses a key, or a
+/// newer refresh replaces the section.
 const LIVE_JS: &str = "\
-if(location.protocol!=='file:'){let last='';setInterval(()=>{
+if(location.protocol!=='file:'){let last='',stopSettling=()=>{};setInterval(()=>{
   fetch(location.href,{cache:'no-store'}).then(r=>r.text()).then(h=>{
     if(h===last)return;
     last=h;
@@ -78,11 +79,17 @@ if(location.protocol!=='file:'){let last='';setInterval(()=>{
     if(now){
       now.scrollIntoView({block:'start',inline:'nearest'});
       window.scrollTo(s[0],window.scrollY-keep.top);
-      let held=0,frames=0;
+      stopSettling();
+      let held=0,frames=0,settling=true;
+      const takeOver=['wheel','touchstart','keydown'];
+      const stop=()=>{settling=false;for(const type of takeOver)removeEventListener(type,stop)};
+      for(const type of takeOver)addEventListener(type,stop,{passive:true});
+      stopSettling=stop;
       const hold=()=>{
+        if(!settling||!now.isConnected)return stop();
         const off=now.getBoundingClientRect().top-keep.top;
         if(Math.abs(off)>0.5){window.scrollBy(0,off);held=0}else held++;
-        if(held<2&&++frames<12)requestAnimationFrame(hold);
+        if(held<2&&++frames<12)requestAnimationFrame(hold);else stop();
       };
       requestAnimationFrame(hold);
     }
@@ -178,6 +185,21 @@ mod tests {
         assert!(s.contains("innerHeight"), "an anchor below the window is not a place");
     }
 
+    #[test]
+    fn the_settle_loop_stops_for_a_replaced_section_and_for_a_reader_taking_over() {
+        let s = script(Refresh::Live);
+        let hold = s.find("const hold=()=>{").expect("the settle loop");
+        assert!(
+            s[hold..].starts_with(
+                "const hold=()=>{\n        if(!settling||!now.isConnected)return stop();"
+            ),
+            "{s}"
+        );
+        for event in ["wheel", "touchstart", "keydown"] {
+            assert!(s.contains(&format!("'{event}'")), "{event} does not end the settle");
+        }
+        assert!(s.contains("stopSettling();"), "a newer refresh ends the older chain");
+    }
     #[test]
     fn the_anchor_branch_restores_the_horizontal_scroll() {
         let s = script(Refresh::Live);
