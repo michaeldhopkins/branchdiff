@@ -302,8 +302,8 @@ pub(super) struct Anchors<B> {
     pub(super) bookmark_boundary: Option<B>,
 }
 
-/// Resolves the fork point (then divergence), the stack tip (then the
-/// orphaned tip) and the bookmark boundary at once: the three chains are
+/// Resolves the fork point (then divergence) alongside the stack tip (then
+/// the orphaned tip), then the bookmark boundary: the two chains are
 /// independent read-only jj calls, each about 15 ms, run serially before.
 pub(super) fn resolve_anchors<B: Send>(
     repo_path: &Path,
@@ -319,10 +319,11 @@ pub(super) fn resolve_anchors<B: Send>(
                 .and_then(|fp| compute_jj_divergence(repo_path, fp, from_rev, cancel));
             (fork_point, divergence)
         });
-        let stack = scope.spawn(|| resolve_tips(repo_path, from_rev, cancel));
+        // The orphaned-tip check snapshots the working copy; the boundary
+        // diff must read the tree after that, so it waits for the tips.
+        let (stack_tip, orphaned) = resolve_tips(repo_path, from_rev, cancel);
         let bookmark_boundary = bookmark_boundary();
         let (fork_point, divergence) = joined(fork);
-        let (stack_tip, orphaned) = joined(stack);
         Anchors { fork_point, divergence, stack_tip, orphaned, bookmark_boundary }
     })
 }
