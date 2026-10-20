@@ -13,7 +13,7 @@ use crate::ui::spans::coalesce_spans;
 
 use crate::html_page::{HEAD_THEME_SCRIPT, Refresh, noscript_style, script};
 use crate::html_runs::{RunStyle, write_escaped, write_runs};
-use crate::html_style::stylesheet;
+use crate::html_style::cached_stylesheet;
 #[cfg(test)]
 use crate::{html_runs::color_to_css, html_style::token_class};
 
@@ -100,6 +100,19 @@ pub fn render_html(
     images: &ImageCache,
     refresh: Refresh,
 ) -> Result<()> {
+    render_html_in(crate::vcs::vcs_thread_pool(), out, data, images, refresh)
+}
+
+/// `render_html` on a pool of the caller's choosing. The allocation bench renders
+/// on a one-thread pool, so its count does not depend on how files are scheduled.
+#[doc(hidden)]
+pub fn render_html_in(
+    pool: &rayon::ThreadPool,
+    out: &mut impl Write,
+    data: &OutputData,
+    images: &ImageCache,
+    refresh: Refresh,
+) -> Result<()> {
     write_header(out, data)?;
 
     let line_num_width = data
@@ -114,7 +127,7 @@ pub fn render_html(
     // Highlighting is nearly all of a page's cost, and every file is
     // highlighted from a clean parser state (the highlighter resets whenever the
     // path changes), so files render independently and are written in order.
-    let sections: Vec<Result<Vec<u8>>> = crate::vcs::vcs_thread_pool().install(|| {
+    let sections: Vec<Result<Vec<u8>>> = pool.install(|| {
         data.files
             .par_iter()
             .enumerate()
@@ -166,7 +179,7 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
         file_s = if file_count == 1 { "" } else { "s" },
         adds = data.total_additions,
         dels = data.total_deletions,
-        style = stylesheet(),
+        style = cached_stylesheet(),
         noscript = noscript_style(),
         head_theme = HEAD_THEME_SCRIPT,
     )?;

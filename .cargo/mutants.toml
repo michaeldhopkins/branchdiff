@@ -62,6 +62,9 @@ exclude_re = [
     # Only the PTY integration tests drive it, and they never see a mutation.
     # Its loop is run_app and its settings UpdateConfig::for_session, tested there.
     '^src/main\.rs:.*run_main_app',
+    # Reads the real environment and queries the real terminal. The decisions are
+    # terminal_query::should_query_terminal and in_multiplexer, tested there.
+    '^src/terminal_query\.rs:.*detect_image_picker',
     # Equivalent mutants in load_and_cache's downscale. `DynamicImage::resize` fits the image
     # inside the box it is given, keeping its aspect ratio, so a wrong `ow * scale` or
     # `oh * scale` only loosens one side of the box and the other side still binds to the same

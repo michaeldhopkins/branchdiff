@@ -438,16 +438,19 @@ fn parse_u64(value: &str, line_no: usize) -> Result<u64, String> {
 
 fn measure_html(samples: &mut Vec<Sample>) {
     let images = branchdiff::image_diff::ImageCache::new();
+    // One warmed thread, so the count does not depend on how files are scheduled.
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
     for (changed, files, label) in html_fixture::SIZES {
         let data = html_fixture::output_data(changed, files);
         // The first render compiles the syntax's regexes and builds any pool;
         // the pin is for a page rendered by a warm process.
         let mut warm = Vec::new();
-        branchdiff::html::render_html(&mut warm, &data, &images, Refresh::Live).unwrap();
+        branchdiff::html::render_html_in(&pool, &mut warm, &data, &images, Refresh::Live).unwrap();
         let mut page = Vec::with_capacity(warm.len());
         let id = format!("html/render/{label}");
         measure(samples, &id, || {
-            branchdiff::html::render_html(&mut page, &data, &images, Refresh::Live).unwrap();
+            branchdiff::html::render_html_in(&pool, &mut page, &data, &images, Refresh::Live)
+                .unwrap();
             black_box(page.len());
         });
     }

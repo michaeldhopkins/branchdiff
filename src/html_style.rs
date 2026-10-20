@@ -78,8 +78,13 @@ pub fn token_class(color: Color) -> Option<&'static str> {
     }
 }
 
-/// The page's `<style>` body, built once per process: every page carries the same text.
-pub fn stylesheet() -> &'static str {
+/// The page's `<style>` body.
+pub fn stylesheet() -> String {
+    cached_stylesheet().to_owned()
+}
+
+/// The same text, built once per process: every page carries it unchanged.
+pub(crate) fn cached_stylesheet() -> &'static str {
     static SHEET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SHEET.get_or_init(build_stylesheet)
 }

@@ -29,6 +29,7 @@ pub mod patch;
 pub mod startup;
 pub mod startup_load;
 pub mod syntax;
+#[doc(hidden)]
 pub mod terminal_query;
 pub mod ui;
 pub mod update;
