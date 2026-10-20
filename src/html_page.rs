@@ -30,13 +30,20 @@ applyTheme();
 bindToggle();
 ";
 
+/// Remembers the body as served, before the theme script touches the toggle,
+/// so the first poll can tell that nothing changed.
+const LIVE_START_JS: &str = "let prev=document.body.innerHTML.trimEnd();\n";
+
 const LIVE_JS: &str = "\
-if(location.protocol!=='file:'){let prev='';setInterval(()=>{
+if(location.protocol!=='file:'){let last='';setInterval(()=>{
   fetch(location.href,{cache:'no-store'}).then(r=>r.text()).then(h=>{
+    if(h===last)return;
+    last=h;
     const d=new DOMParser().parseFromString(h,'text/html');
     const newBody=d.body.innerHTML;
-    if(newBody===prev||!newBody)return;
-    prev=newBody;
+    const key=newBody.trimEnd();
+    if(key===prev||!newBody)return;
+    prev=key;
     const s=[window.scrollX,window.scrollY];
     document.body.innerHTML=newBody;
     window.scrollTo(...s);
@@ -48,11 +55,11 @@ if(location.protocol!=='file:'){let prev='';setInterval(()=>{
 
 /// The page's `<script>` element.
 pub fn script(refresh: Refresh) -> String {
-    let live = match refresh {
-        Refresh::Live => LIVE_JS,
-        Refresh::Off => "",
+    let (start, live) = match refresh {
+        Refresh::Live => (LIVE_START_JS, LIVE_JS),
+        Refresh::Off => ("", ""),
     };
-    format!("<script>\n{THEME_JS}{live}</script>")
+    format!("<script>\n{start}{THEME_JS}{live}</script>")
 }
 
 /// For a reader with scripts off (a sandboxed iframe, a mail client): follow
@@ -77,6 +84,22 @@ mod tests {
         let s = script(Refresh::Live);
         assert!(s.contains("setInterval"));
         assert!(s.contains("fetch(location.href"));
+    }
+
+    #[test]
+    fn the_served_body_is_remembered_before_the_theme_script_changes_it() {
+        let s = script(Refresh::Live);
+        let remembered =
+            s.find("let prev=document.body.innerHTML.trimEnd();").expect("prev is initialised");
+        assert!(remembered < s.find("applyTheme();").unwrap());
+        assert!(!script(Refresh::Off).contains("prev"));
+    }
+
+    #[test]
+    fn an_unchanged_response_is_not_parsed_again() {
+        let s = script(Refresh::Live);
+        let skip = s.find("if(h===last)return;").expect("compares the response text");
+        assert!(skip < s.find("DOMParser").unwrap());
     }
 
     #[test]
