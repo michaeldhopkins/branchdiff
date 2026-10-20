@@ -79,6 +79,20 @@ pub(crate) const HEAD_THEME_SCRIPT: &str = "<script>try{document.documentElement
 
 /// The page's `<script>` element.
 pub fn script(refresh: Refresh) -> String {
+    cached_script(refresh).to_owned()
+}
+
+/// The same text, built once per process for each mode.
+pub(crate) fn cached_script(refresh: Refresh) -> &'static str {
+    static LIVE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    static OFF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    match refresh {
+        Refresh::Live => LIVE.get_or_init(|| build_script(Refresh::Live)),
+        Refresh::Off => OFF.get_or_init(|| build_script(Refresh::Off)),
+    }
+}
+
+fn build_script(refresh: Refresh) -> String {
     let (start, live) = match refresh {
         Refresh::Live => (LIVE_START_JS, LIVE_JS),
         Refresh::Off => ("", ""),

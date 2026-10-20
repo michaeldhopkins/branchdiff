@@ -112,21 +112,21 @@ ref_median_ns = 43
 # in containers of each architecture.
 [[bench]]
 id = "html/render/50_lines"
-max_blocks = 16695
+max_blocks = 16693
 max_bytes = 3718400
 max_bytes_x86_64 = 3732740
 ref_median_ns = 1197400
 
 [[bench]]
 id = "html/render/200_lines"
-max_blocks = 75746
+max_blocks = 75745
 max_bytes = 16931915
 max_bytes_x86_64 = 16953065
 ref_median_ns = 2819700
 
 [[bench]]
 id = "html/render/500_lines"
-max_blocks = 166938
+max_blocks = 166937
 max_bytes = 37255910
 max_bytes_x86_64 = 37287108
 ref_median_ns = 5407800
