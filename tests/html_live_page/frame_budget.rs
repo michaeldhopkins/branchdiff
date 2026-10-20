@@ -7,17 +7,10 @@
 //! rule's floor of 10 callbacks a second becomes: each refresh must run at least
 //! `MIN_SETTLE_CALLBACKS` of them, and a refresh that ran none fails.
 
-use std::path::{Path, PathBuf};
+use super::{Browser, HELPERS, LAUNCH_BUDGET, exclusive, git, name, render_page, serve_steps};
 
 use serde_json::Value;
 use tempfile::TempDir;
-
-use super::{Browser, HELPERS, LAUNCH_BUDGET, exclusive, git, name, render_page, serve_steps};
-
-/// Every page whose code runs on animation frames, with what runs there. The guard fails
-/// when a file in `src/` runs per-frame code that is not named here.
-const MEASURED_PAGES: [(&str, &str); 1] =
-    [("src/html_page.rs", "the live --html page: the settle loop after a refresh")];
 
 const CPU_SLOWDOWN: u32 = 6;
 /// iPad Pro 13" in portrait, and a desktop window, both at 2x.
@@ -100,11 +93,16 @@ impl Frames {
         self.per_refresh.concat()
     }
 }
-
-/// Flips the site, then collects the duration of every animation-frame callback in the
-/// `WINDOW_MS` that follow the first one.
-fn settle_callbacks(browser: &mut Browser, marker: &str) -> Vec<f64> {
+/// Empties the log, runs `flip` (which makes the page swap its body in), then collects
+/// the duration of every animation-frame callback in the `WINDOW_MS` that follow the first one.
+/// every animation-frame callback in the `WINDOW_MS` that follow the first one.
+fn settle_callbacks(
+    browser: &mut Browser,
+    flip: impl FnOnce(&mut Browser),
+    marker: &str,
+) -> Vec<f64> {
     browser.eval("frameLog.length = 0; true");
+    flip(browser);
     assert_eq!(browser.eval(&format!("bd.waitFor('{marker}')")), true, "{marker} never arrived");
     let timings = browser.eval(&format!(
         "(async () => {{
@@ -131,8 +129,7 @@ fn measure_screen(pages: &[String], width: u32, height: u32) -> Frames {
 
     let mut per_refresh = Vec::new();
     for marker in ["SWAPPED", "INSERTED"] {
-        site.flip();
-        per_refresh.push(settle_callbacks(&mut browser, marker));
+        per_refresh.push(settle_callbacks(&mut browser, |_| site.flip(), marker));
     }
     Frames { per_refresh }
 }
@@ -190,8 +187,13 @@ fn the_budget_check_rejects_a_slow_frame_a_heavy_total_and_a_refresh_that_never_
     let frames = |per_refresh: Vec<Vec<f64>>| Frames { per_refresh };
     assert_eq!(over_budget(&frames(vec![vec![0.5, 0.5], vec![0.5, 0.5]])), None);
     assert!(over_budget(&frames(vec![vec![0.5, 4.5], vec![0.5, 0.5]])).is_some(), "slow frame");
-    let heavy = vec![3.9; 30];
-    assert!(over_budget(&frames(vec![heavy.clone(), heavy])).is_some(), "heavy total");
+    // At most 12 callbacks a refresh: the nearest-rank p95 of 24 skips the slowest one, so
+    // the total binds only through a single long callback, as here.
+    let mut outlier = vec![0.1; 11];
+    outlier.push(250.0);
+    let calm = vec![0.1; 12];
+    assert!(p95(&[outlier.clone(), calm.clone()].concat()) < P95_BUDGET_MS);
+    assert!(over_budget(&frames(vec![outlier, calm])).is_some(), "one long callback");
     assert!(over_budget(&frames(vec![vec![0.1, 0.1], vec![0.1]])).is_some(), "too few callbacks");
     assert!(over_budget(&frames(vec![vec![], vec![0.1, 0.1]])).is_some(), "none ran");
 }
@@ -204,132 +206,34 @@ fn the_95th_percentile_is_the_nearest_rank() {
     assert_eq!(p95(&[3.0, 1.0, 2.0]), 3.0);
 }
 
-// The guard.
-
-const FRAME_MARKERS: [&str; 6] =
-    ["requestAnimationFrame", "<canvas", "getContext(", "CADisplayLink", "TimelineView", "MTKView"];
-const TIMER_CALLS: [&str; 2] = ["setInterval(", "setTimeout("];
-const SHORTEST_PLAIN_TIMER_MS: u64 = 100;
-
-/// The text before the file's test module, which is what ships.
-fn production(text: &str) -> &str {
-    text.split("#[cfg(test)]").next().unwrap_or(text)
-}
-
-/// The first `, <digits>)` after `from`: the delay of a timer call.
-fn delay_after(text: &str, from: usize) -> Option<u64> {
-    let rest = &text.as_bytes()[from..];
-    (0..rest.len()).filter(|&i| rest[i] == b',').find_map(|comma| {
-        let mut at = comma + 1;
-        while rest.get(at).is_some_and(u8::is_ascii_whitespace) {
-            at += 1;
-        }
-        let digits = rest[at..].iter().take_while(|b| b.is_ascii_digit()).count();
-        let mut end = at + digits;
-        while rest.get(end).is_some_and(u8::is_ascii_whitespace) {
-            end += 1;
-        }
-        (digits > 0 && rest.get(end) == Some(&b')'))
-            .then(|| text[from + at..from + at + digits].parse().ok())?
-    })
-}
-
-/// Why a source file runs per-frame work, or `None`. A timer counts unless its delay can
-/// be read and is at least `SHORTEST_PLAIN_TIMER_MS`.
-fn per_frame_work(text: &str) -> Option<String> {
-    let shipped = production(text);
-    if let Some(marker) = FRAME_MARKERS.iter().find(|m| shipped.contains(**m)) {
-        return Some(format!("uses {marker}"));
-    }
-    for call in TIMER_CALLS {
-        for (at, _) in shipped.match_indices(call) {
-            match delay_after(shipped, at + call.len()) {
-                Some(ms) if ms >= SHORTEST_PLAIN_TIMER_MS => {}
-                Some(ms) => return Some(format!("runs a {call}) every {ms} ms")),
-                None => return Some(format!("has a {call}) whose delay cannot be read")),
-            }
-        }
-    }
-    None
-}
-
-/// Files that run per-frame work and are not named in `measured`, and entries of
-/// `measured` that no longer run any.
-fn unmeasured(files: &[(String, String)], measured: &[&str]) -> Vec<String> {
-    let mut problems = Vec::new();
-    for (path, text) in files {
-        if let Some(why) = per_frame_work(text)
-            && !measured.contains(&path.as_str())
-        {
-            problems.push(format!("{path} {why} but no measured page names it"));
-        }
-    }
-    for page in measured {
-        let runs = files.iter().any(|(p, t)| p == page && per_frame_work(t).is_some());
-        if !runs {
-            problems.push(format!("{page} is listed as measured but runs no per-frame work"));
-        }
-    }
-    problems
-}
-
-fn source_files(dir: &Path, found: &mut Vec<PathBuf>) {
-    for entry in std::fs::read_dir(dir).expect("read src").flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            source_files(&path, found);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            found.push(path);
-        }
-    }
-}
-
-#[test]
-fn every_source_file_with_per_frame_work_is_a_measured_page() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut paths = Vec::new();
-    source_files(&root.join("src"), &mut paths);
-    assert!(paths.len() > 20, "the walk found only {} files in src/", paths.len());
-    let files: Vec<(String, String)> = paths
-        .iter()
-        .map(|p| {
-            let relative = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
-            (relative, std::fs::read_to_string(p).expect("read source"))
-        })
-        .collect();
-    let measured: Vec<&str> = MEASURED_PAGES.iter().map(|(path, _)| *path).collect();
-    let problems = unmeasured(&files, &measured);
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
-}
-
-#[test]
-fn the_guard_sees_each_kind_of_per_frame_work_and_ignores_the_rest() {
-    let file = |text: &str| vec![("src/x.rs".to_string(), text.to_string())];
-    let flagged = |text: &str| !unmeasured(&file(text), &[]).is_empty();
-    assert!(flagged("const J: &str = \"requestAnimationFrame(f)\";"));
-    assert!(flagged("let c = \"<canvas id=a>\";"));
-    assert!(flagged("const J: &str = \"ctx = c.getContext('2d')\";"));
-    assert!(flagged("const J: &str = \"setInterval(() => {\\n step();\\n}, 16)\";"));
-    assert!(flagged("const J: &str = \"setTimeout(step, 50)\";"));
-    assert!(flagged("const J: &str = \"setInterval(step, delay)\";"), "unreadable delay");
-    assert!(!flagged("const J: &str = \"setInterval(() => poll(), 2000)\";"), "slow timer");
-    assert!(!flagged(
-        "fn a() {}\n#[cfg(test)]\nmod tests { const J: &str = \"requestAnimationFrame\"; }"
-    ));
-    assert!(!flagged("fn plain() {}"));
-    assert!(
-        unmeasured(&file("const J: &str = \"requestAnimationFrame(f)\";"), &["src/x.rs"])
-            .is_empty(),
-        "a named page passes"
-    );
-    assert!(!unmeasured(&file("fn plain() {}"), &["src/x.rs"]).is_empty(), "a stale entry fails");
-    assert!(!unmeasured(&[], &["src/gone.rs"]).is_empty(), "a missing file fails");
-}
-
 #[test]
 fn the_fixture_is_a_large_diff_with_long_files_among_it() {
     assert_eq!(FILES, 200);
     let long_files = (0..FILES).filter(|f| long(*f)).count();
     assert_eq!(long_files, 8);
     assert!(big_body(0, "").lines().count() > 1000 && big_body(1, "").lines().count() < 20);
+}
+
+#[test]
+fn the_log_is_emptied_before_the_page_is_flipped_not_after() {
+    let _alone = exclusive();
+    let site = serve_steps(vec!["<html><body>start</body></html>".to_string()]);
+    let mut browser = Browser::launch(LAUNCH_BUDGET);
+    browser.before_each_document(TIME_CALLBACKS);
+    browser.navigate(&site.address);
+    browser.two_frames();
+    browser.eval(HELPERS);
+    // A callback logged by an earlier refresh's chain, still in the log.
+    browser.eval("frameLog.push({ start: performance.now(), ms: 99 }); true");
+    let mut seen_at_flip = None;
+    let timings = settle_callbacks(
+        &mut browser,
+        |b| {
+            seen_at_flip = Some(b.eval("frameLog.length"));
+            b.eval("document.body.append('MARK'); requestAnimationFrame(() => {}); true");
+        },
+        "MARK",
+    );
+    assert_eq!(seen_at_flip, Some(Value::from(0)), "the log still held old callbacks at the flip");
+    assert!(!timings.contains(&99.0), "an old callback was counted: {timings:?}");
 }

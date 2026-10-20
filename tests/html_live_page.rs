@@ -28,6 +28,8 @@ const LAUNCH_BUDGET: Duration = Duration::from_secs(90);
 
 #[path = "html_live_page/frame_budget.rs"]
 mod frame_budget;
+#[path = "html_live_page/frame_guard.rs"]
+mod frame_guard;
 
 static ONE_BROWSER_AT_A_TIME: Mutex<()> = Mutex::new(());
 
