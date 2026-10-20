@@ -26,6 +26,7 @@ pub mod message;
 pub mod output;
 pub mod patch;
 pub mod startup;
+pub mod startup_load;
 pub mod syntax;
 pub mod ui;
 pub mod update;

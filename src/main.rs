@@ -264,9 +264,9 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             let repo_root = vcs.repo_path().to_path_buf();
-            let comparison = vcs.comparison_context()?;
             let cancel_flag = Arc::new(AtomicBool::new(false));
-            let initial = vcs.refresh(&cancel_flag)?;
+            let (comparison, initial) =
+                branchdiff::startup_load::load_comparison_and_refresh(vcs.as_ref(), &cancel_flag)?;
             let mut app = app::App::new(repo_root, comparison, initial);
 
             match mode {
