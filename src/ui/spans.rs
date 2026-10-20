@@ -26,7 +26,7 @@ pub fn classify_inline_change(spans: &[InlineSpan]) -> InlineChangeType {
 }
 
 /// Fragmented = multiple scattered change regions separated by some unchanged text.
-/// e.g., "c[b]ommercial_renewal[d]" has 2 change regions (fragmented)
+/// e.g., "c\[b\]ommercial_renewal\[d\]" has 2 change regions (fragmented)
 /// vs "do_thing(data[, params])" has 1 change region (not fragmented)
 pub fn is_fragmented(spans: &[InlineSpan]) -> bool {
     if spans.len() < 4 {

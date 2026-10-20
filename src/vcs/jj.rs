@@ -364,7 +364,7 @@ impl JjVcs {
     /// Create a backend, optionally overriding the base revset.
     ///
     /// `base` is any jj revset (`main@origin`, `develop`, a change id). It wins
-    /// over [`resolve_base_rev`]'s inference, which is the point: the inference
+    /// over `resolve_base_rev`'s inference, which is the point: the inference
     /// reads `trunk()`, and `trunk()` is whatever got pinned into repo config at
     /// `jj git init` time.
     ///
