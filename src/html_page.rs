@@ -53,6 +53,10 @@ if(location.protocol!=='file:'){let last='';setInterval(()=>{
 },2000)}
 ";
 
+/// Sets the stored theme from the head, so the first paint is already in it. The
+/// body script still syncs the toggle's glyph once the button exists.
+pub const HEAD_THEME_SCRIPT: &str = "<script>try{document.documentElement.dataset.theme=localStorage.getItem('bd-theme')||'dark'}catch(e){}</script>";
+
 /// The page's `<script>` element.
 pub fn script(refresh: Refresh) -> String {
     let (start, live) = match refresh {

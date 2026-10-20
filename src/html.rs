@@ -11,7 +11,7 @@ use crate::output::{OutputData, OutputFile};
 use crate::syntax;
 use crate::ui::spans::coalesce_spans;
 
-use crate::html_page::{Refresh, noscript_style, script};
+use crate::html_page::{HEAD_THEME_SCRIPT, Refresh, noscript_style, script};
 use crate::html_style::{stylesheet, token_class};
 
 /// A rendered row's usual size, so a file's section is allocated once rather
@@ -175,6 +175,7 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
 <style>
 {style}
 </style>
+{head_theme}
 {noscript}
 </head>
 <body>
@@ -191,6 +192,7 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
         dels = data.total_deletions,
         style = stylesheet(),
         noscript = noscript_style(),
+        head_theme = HEAD_THEME_SCRIPT,
     )?;
 
     // Table of contents
@@ -575,6 +577,18 @@ mod tests {
         let off = page(Refresh::Off);
         assert!(!off.contains("setInterval") && !off.contains("fetch("));
         assert!(off.contains("bd-theme"), "the toggle script stays");
+    }
+
+    #[test]
+    fn the_stored_theme_is_applied_in_the_head_before_the_body_paints() {
+        for refresh in [Refresh::Live, Refresh::Off] {
+            let html = page(refresh);
+            let head_end = html.find("</head>").expect("head closes");
+            let head = &html[..head_end];
+            let apply = head.find("dataset.theme=").expect("the head script sets the theme");
+            assert!(head[apply..].contains("localStorage.getItem('bd-theme')"), "{refresh:?}");
+            assert!(apply < html.find("<body>").unwrap());
+        }
     }
 
     #[test]
