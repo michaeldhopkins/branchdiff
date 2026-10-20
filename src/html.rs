@@ -124,6 +124,19 @@ pub fn render_html(
     images: &ImageCache,
     refresh: Refresh,
 ) -> Result<()> {
+    render_html_in(crate::vcs::vcs_thread_pool(), out, data, images, refresh)
+}
+
+/// [`render_html`] on a caller-chosen pool. The allocation bench passes a
+/// one-thread pool: allocated bytes grow with the thread count, so the shared
+/// pool, sized by the machine's cores, would make its pins machine-dependent.
+pub fn render_html_in(
+    pool: &rayon::ThreadPool,
+    out: &mut impl Write,
+    data: &OutputData,
+    images: &ImageCache,
+    refresh: Refresh,
+) -> Result<()> {
     write_header(out, data)?;
 
     let line_num_width = data
@@ -138,7 +151,7 @@ pub fn render_html(
     // Highlighting is nearly all of a page's cost, and every file is
     // highlighted from a clean parser state (the highlighter resets whenever the
     // path changes), so files render independently and are written in order.
-    let sections: Vec<Result<Vec<u8>>> = crate::vcs::vcs_thread_pool().install(|| {
+    let sections: Vec<Result<Vec<u8>>> = pool.install(|| {
         data.files
             .par_iter()
             .enumerate()
@@ -736,5 +749,29 @@ mod tests {
             buffered.calls,
             unbuffered.calls
         );
+    }
+
+    #[test]
+    fn the_page_is_the_same_bytes_whatever_pool_renders_it() {
+        let files = (0..6)
+            .map(|i| rust_file(&format!("src/f{i}.rs"), &["fn a() {}", "let x = 1;"]))
+            .collect();
+        let data = OutputData {
+            repo_name: "r".into(),
+            to_label: "a".into(),
+            from_label: "b".into(),
+            files,
+            total_additions: 12,
+            total_deletions: 0,
+        };
+        let images = ImageCache::new();
+        let mut shared = Vec::new();
+        render_html(&mut shared, &data, &images, Refresh::Off).unwrap();
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let mut page = Vec::new();
+            render_html_in(&pool, &mut page, &data, &images, Refresh::Off).unwrap();
+            assert_eq!(page, shared, "{threads} threads");
+        }
     }
 }
