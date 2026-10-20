@@ -13,17 +13,21 @@ pub enum Refresh {
 }
 
 const THEME_JS: &str = "\
-function applyTheme(){
-  const theme=localStorage.getItem('bd-theme')||'dark';
+function showTheme(theme){
   document.documentElement.dataset.theme=theme;
   const btn=document.querySelector('.theme-toggle');
   if(btn)btn.textContent=theme==='light'?'☾':'☀';
 }
+function applyTheme(){
+  let theme=document.documentElement.dataset.theme||'dark';
+  try{theme=localStorage.getItem('bd-theme')||theme}catch(e){}
+  showTheme(theme);
+}
 function bindToggle(){
   document.querySelector('.theme-toggle')?.addEventListener('click',()=>{
     const next=document.documentElement.dataset.theme==='light'?'dark':'light';
-    localStorage.setItem('bd-theme',next);
-    applyTheme();
+    try{localStorage.setItem('bd-theme',next)}catch(e){}
+    showTheme(next);
   });
 }
 applyTheme();
@@ -34,6 +38,11 @@ bindToggle();
 /// so the first poll can tell that nothing changed.
 const LIVE_START_JS: &str = "let prev=document.body.innerHTML.trimEnd();\n";
 
+/// Each file section sits in `content-visibility: auto`, which remembers the height a
+/// section had once rendered, per element. Swapping the body in makes every element
+/// new, so the reader's place is kept by anchoring on the first section still on
+/// screen: its measured heights go onto the new sections as their intrinsic size, and
+/// the anchor is scrolled back to the offset it had.
 const LIVE_JS: &str = "\
 if(location.protocol!=='file:'){let last='';setInterval(()=>{
   fetch(location.href,{cache:'no-store'}).then(r=>r.text()).then(h=>{
@@ -44,9 +53,20 @@ if(location.protocol!=='file:'){let last='';setInterval(()=>{
     const key=newBody.trimEnd();
     if(key===prev||!newBody)return;
     prev=key;
+    const sections=()=>[...document.querySelectorAll('details[id^=\"file-\"]')];
+    const old=sections();
+    const anchor=old.find(e=>e.getBoundingClientRect().bottom>0);
+    const keep=anchor&&{id:anchor.id,top:anchor.getBoundingClientRect().top};
+    const heights=new Map(old.map(e=>[e.id,e.offsetHeight]));
     const s=[window.scrollX,window.scrollY];
     document.body.innerHTML=newBody;
-    window.scrollTo(...s);
+    for(const e of sections()){
+      const height=heights.get(e.id);
+      if(height)e.style.containIntrinsicSize='auto '+height+'px';
+    }
+    const now=keep&&document.getElementById(keep.id);
+    if(now){now.scrollIntoView({block:'start',inline:'nearest'});window.scrollBy(0,-keep.top)}
+    else window.scrollTo(...s);
     applyTheme();
     bindToggle();
   }).catch(()=>{});
@@ -55,7 +75,7 @@ if(location.protocol!=='file:'){let last='';setInterval(()=>{
 
 /// Sets the stored theme from the head, so the first paint is already in it. The
 /// body script still syncs the toggle's glyph once the button exists.
-pub const HEAD_THEME_SCRIPT: &str = "<script>try{document.documentElement.dataset.theme=localStorage.getItem('bd-theme')||'dark'}catch(e){}</script>";
+pub(crate) const HEAD_THEME_SCRIPT: &str = "<script>try{document.documentElement.dataset.theme=localStorage.getItem('bd-theme')||'dark'}catch(e){}</script>";
 
 /// The page's `<script>` element.
 pub fn script(refresh: Refresh) -> String {
