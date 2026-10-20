@@ -12,7 +12,10 @@ use crate::syntax;
 use crate::ui::spans::coalesce_spans;
 
 use crate::html_page::{HEAD_THEME_SCRIPT, Refresh, noscript_style, script};
-use crate::html_style::{stylesheet, token_class};
+use crate::html_runs::{RunStyle, write_escaped, write_runs};
+use crate::html_style::stylesheet;
+#[cfg(test)]
+use crate::{html_runs::color_to_css, html_style::token_class};
 
 /// A rendered row's usual size, so a file's section is allocated once rather
 /// than grown by doubling (pages measured at 280-300 bytes a row).
@@ -33,33 +36,6 @@ fn html_escape(s: &str) -> String {
         }
     }
     out
-}
-
-/// `html_escape` straight into the page, copying the runs between special
-/// characters rather than building a `String` per call.
-fn write_escaped(out: &mut impl Write, s: &str) -> std::io::Result<()> {
-    let mut start = 0;
-    for (i, byte) in s.bytes().enumerate() {
-        let entity = match byte {
-            b'&' => "&amp;",
-            b'<' => "&lt;",
-            b'>' => "&gt;",
-            b'"' => "&quot;",
-            b'\'' => "&#39;",
-            _ => continue,
-        };
-        out.write_all(&s.as_bytes()[start..i])?;
-        out.write_all(entity.as_bytes())?;
-        start = i + 1;
-    }
-    out.write_all(&s.as_bytes()[start..])
-}
-
-fn color_to_css(color: Color) -> Option<String> {
-    match color {
-        Color::Rgb(r, g, b) => Some(format!("rgb({r},{g},{b})")),
-        _ => None,
-    }
 }
 
 fn source_line_class(source: LineSource) -> &'static str {
@@ -215,20 +191,14 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
 
 fn write_inline_spans(out: &mut impl Write, line: &DiffLine) -> Result<()> {
     let display_spans = coalesce_spans(&line.inline_spans);
-    for span in display_spans {
-        let class = match span.source {
-            Some(source) => source_highlight_class(source),
-            None => "",
-        };
-        let del_class = if span.is_deletion { " del" } else { "" };
-        if class.is_empty() && del_class.is_empty() {
-            write_escaped(out, &span.text)?;
-        } else {
-            write!(out, "<span class=\"{class}{del_class}\">")?;
-            write_escaped(out, &span.text)?;
-            out.write_all(b"</span>")?;
-        }
-    }
+    write_runs(
+        out,
+        &display_spans,
+        |span| {
+            RunStyle::of_highlight(span.source.map_or("", source_highlight_class), span.is_deletion)
+        },
+        |span| &span.text,
+    )?;
     Ok(())
 }
 
@@ -244,29 +214,11 @@ fn write_syntax_highlighted(
         write_escaped(out, content)?;
         return Ok(());
     }
-    for seg in &segments {
-        write_token_span(out, &seg.text, seg.fg_color)?;
-    }
+    write_runs(out, &segments, |seg| RunStyle::of_token(seg.fg_color), |seg| &seg.text)?;
     Ok(())
 }
 
-/// A theme token becomes a class; the theme's default foreground stays bare and
-/// any other colour keeps its inline style.
-fn write_token_span(out: &mut impl Write, text: &str, color: Color) -> std::io::Result<()> {
-    if let Some(class) = token_class(color) {
-        write!(out, "<span class=\"{class}\">")?;
-    } else if color == Color::Rgb(200, 200, 200) {
-        return write_escaped(out, text);
-    } else if let Some(css_color) = color_to_css(color) {
-        write!(out, "<span style=\"color:{css_color}\">")?;
-    } else {
-        return write_escaped(out, text);
-    }
-    write_escaped(out, text)?;
-    out.write_all(b"</span>")
-}
-
-/// The string form `write_token_span` must stay byte-identical to.
+/// The string form a single token run must stay byte-identical to.
 #[cfg(test)]
 fn token_span(text: &str, color: Color) -> String {
     let escaped = html_escape(text);
@@ -441,7 +393,7 @@ mod tests {
         ) {
             for color in [Color::Rgb(r, g, b), Color::Rgb(200, 200, 200), Color::Reset] {
                 let mut buf = Vec::new();
-                write_token_span(&mut buf, &s, color).unwrap();
+                write_runs(&mut buf, &[s.as_str()], |_| RunStyle::of_token(color), |t| t).unwrap();
                 proptest::prop_assert_eq!(String::from_utf8(buf).unwrap(), token_span(&s, color));
             }
         }
