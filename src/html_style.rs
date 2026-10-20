@@ -78,8 +78,16 @@ pub fn token_class(color: Color) -> Option<&'static str> {
     }
 }
 
-/// The page's `<style>` body.
-pub fn stylesheet() -> String {
+/// The page's `<style>` body, built once per process: every page carries the same text.
+pub fn stylesheet() -> &'static str {
+    static SHEET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SHEET.get_or_init(build_stylesheet)
+}
+
+// `details[open]` below: content-visibility lets a section scrolled out of view skip
+// layout and paint, and `auto` in contain-intrinsic-size remembers the height it had
+// once rendered. Anchors, find-in-page and focus still reach it.
+fn build_stylesheet() -> String {
     format!(
         r#":root {{
 {DARK_PALETTE}
@@ -137,6 +145,10 @@ details {{
   border-radius: 6px;
   overflow: hidden;
   background: var(--panel);
+}}
+details[open] {{
+  content-visibility: auto;
+  contain-intrinsic-size: auto 600px;
 }}
 summary {{
   padding: 8px 12px;
@@ -366,6 +378,15 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_open_file_section_skips_layout_until_it_nears_the_viewport() {
+        let css = stylesheet();
+        let rule = css.find("details[open] {").expect("a rule for open sections");
+        let body = &css[rule..rule + css[rule..].find('}').unwrap()];
+        assert!(body.contains("content-visibility: auto;"), "{body}");
+        assert!(body.contains("contain-intrinsic-size: auto "), "{body}");
     }
 
     #[test]
