@@ -106,22 +106,29 @@ max_bytes = 0
 ref_median_ns = 43
 
 # The html group was measured 2026-10-20, on the same channel.
+# max_bytes is the aarch64 figure (this Mac, and any arm64 Linux). x86_64 allocates
+# slightly more bytes for the same blocks (about 0.05%), so max_bytes_x86_64 pins
+# the figure measured on x86_64 Linux, which is what CI runs. Both were reproduced
+# in containers of each architecture.
 [[bench]]
 id = "html/render/50_lines"
 max_blocks = 16695
 max_bytes = 3730916
+max_bytes_x86_64 = 3732740
 ref_median_ns = 1197400
 
 [[bench]]
 id = "html/render/200_lines"
 max_blocks = 75747
 max_bytes = 16944745
+max_bytes_x86_64 = 16953065
 ref_median_ns = 2819700
 
 [[bench]]
 id = "html/render/500_lines"
 max_blocks = 166939
 max_bytes = 37268740
+max_bytes_x86_64 = 37287108
 ref_median_ns = 5407800
 
 [[bench]]

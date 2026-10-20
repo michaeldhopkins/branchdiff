@@ -854,15 +854,13 @@ fn process_jj_file(
     // (via run_jj_cancellable inside file_content_no_snapshot), so a slow
     // file read gets killed mid-flight — not only between reads.
     //
-    // The base read and the parent read are independent, so they run side by
-    // side. The parent of the current commit is for the committed/staged
-    // boundary — try current path first, fall back to old_path for files renamed
-    // in the current commit. `at_rev` is `@` normally, or the re-anchored
-    // sibling tip when `@` is an orphaned empty commit; its parent is `<at_rev>-`.
+    // The base and parent reads are independent, so they run side by side. The
+    // parent is for the committed/staged boundary: try the current path, fall back
+    // to old_path for files renamed in the current commit. `at_rev` is `@`, or the
+    // re-anchored sibling tip when `@` is an orphaned empty commit (parent `<at_rev>-`).
     let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
     let at_parent = format!("{at_rev}-");
-    // A scoped thread, not rayon::join: serial runs (below PARALLEL_THRESHOLD)
-    // must not create rayon's global pool just for two subprocess waits.
+    // Scoped thread, not rayon::join: a serial run must not create rayon's global pool.
     let (base, parent) = std::thread::scope(|scope| {
         let base = scope.spawn(|| file_content_no_snapshot(repo_path, base_path, from_rev, cancel));
         let parent = file_content_no_snapshot(repo_path, &changed.path, &at_parent, cancel)

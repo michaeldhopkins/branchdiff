@@ -342,6 +342,7 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
     let mut id: Option<String> = None;
     let mut max_blocks: Option<u64> = None;
     let mut max_bytes: Option<u64> = None;
+    let mut arch_bytes: Option<u64> = None;
     let mut in_record = false;
 
     let finish = |pins: &mut Vec<Pin>,
@@ -377,12 +378,14 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
         }
         if line == "[[bench]]" {
             if in_record {
+                max_bytes = arch_bytes.take().or(max_bytes);
                 finish(&mut pins, &mut id, &mut max_blocks, &mut max_bytes)?;
             }
             in_record = true;
             id = None;
             max_blocks = None;
             max_bytes = None;
+            arch_bytes = None;
             continue;
         }
         if !in_record {
@@ -399,6 +402,12 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
             }
             "max_blocks" => max_blocks = Some(parse_u64(value, line_no)?),
             "max_bytes" => max_bytes = Some(parse_u64(value, line_no)?),
+            "max_bytes_x86_64" => {
+                let bytes = parse_u64(value, line_no)?;
+                if cfg!(target_arch = "x86_64") {
+                    arch_bytes = Some(bytes);
+                }
+            }
             "ref_median_ns" => {
                 let _ = parse_u64(value, line_no)?;
             }
@@ -408,6 +417,7 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
         }
     }
     if in_record {
+        max_bytes = arch_bytes.take().or(max_bytes);
         finish(&mut pins, &mut id, &mut max_blocks, &mut max_bytes)?;
     }
     Ok(pins)
@@ -428,20 +438,16 @@ fn parse_u64(value: &str, line_no: usize) -> Result<u64, String> {
 
 fn measure_html(samples: &mut Vec<Sample>) {
     let images = branchdiff::image_diff::ImageCache::new();
-    // One thread: the page's allocated bytes depend on how many threads render
-    // it, and the shared pool is sized by the machine's cores.
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
     for (changed, files, label) in html_fixture::SIZES {
         let data = html_fixture::output_data(changed, files);
-        // The first render compiles the syntax's regexes; the pin is for a
-        // page rendered by a warm process.
+        // The first render compiles the syntax's regexes and builds any pool;
+        // the pin is for a page rendered by a warm process.
         let mut warm = Vec::new();
-        branchdiff::html::render_html_in(&pool, &mut warm, &data, &images, Refresh::Live).unwrap();
+        branchdiff::html::render_html(&mut warm, &data, &images, Refresh::Live).unwrap();
         let mut page = Vec::with_capacity(warm.len());
         let id = format!("html/render/{label}");
         measure(samples, &id, || {
-            branchdiff::html::render_html_in(&pool, &mut page, &data, &images, Refresh::Live)
-                .unwrap();
+            branchdiff::html::render_html(&mut page, &data, &images, Refresh::Live).unwrap();
             black_box(page.len());
         });
     }
