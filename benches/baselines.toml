@@ -105,6 +105,25 @@ max_blocks = 0
 max_bytes = 0
 ref_median_ns = 43
 
+# The html group was measured 2026-10-20, on the same channel.
+[[bench]]
+id = "html/render/50_lines"
+max_blocks = 21712
+max_bytes = 3758959
+ref_median_ns = 4319408
+
+[[bench]]
+id = "html/render/200_lines"
+max_blocks = 98044
+max_bytes = 17013121
+ref_median_ns = 18759198
+
+[[bench]]
+id = "html/render/500_lines"
+max_blocks = 217364
+max_bytes = 37506537
+ref_median_ns = 51819355
+
 [[bench]]
 id = "refresh/colocated/50f_10c"
 ref_median_ns = 89338647

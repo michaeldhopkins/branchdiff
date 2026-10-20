@@ -9,6 +9,10 @@ use std::time::Duration;
 
 use branchdiff::app::{App, FrameContext, ViewMode};
 use branchdiff::diff::{DiffLine, LineSource};
+use branchdiff::html_page::Refresh;
+
+#[path = "support/html_fixture.rs"]
+mod html_fixture;
 
 /// Create a synthetic diff with the given number of files and lines per file.
 /// If `with_inline_diffs` is true, adds old_content to trigger inline span computation.
@@ -422,8 +426,27 @@ fn bench_refresh(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark `--html` page generation (highlighting and markup) for the change
+/// sizes the page is usually opened for. The page is prepared outside the loop.
+fn bench_html(c: &mut Criterion) {
+    let mut group = c.benchmark_group("html");
+    group.measurement_time(Duration::from_secs(3));
+    for (changed, files, label) in html_fixture::SIZES {
+        let data = html_fixture::output_data(changed, files);
+        let images = branchdiff::image_diff::ImageCache::new();
+        group.bench_with_input(BenchmarkId::new("render", label), &(), |b, _| {
+            b.iter(|| {
+                let mut page = Vec::new();
+                branchdiff::html::render_html(&mut page, &data, &images, Refresh::Live).unwrap();
+                black_box(page.len())
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches, bench_frame_context, bench_inline_spans, bench_navigation, bench_view_mode,
-    bench_context_mode, bench_update, bench_refresh,
+    bench_context_mode, bench_update, bench_refresh, bench_html,
 );
 criterion_main!(benches);

@@ -16,9 +16,13 @@ use std::sync::atomic::AtomicBool;
 use branchdiff::app::{App, FrameContext, ViewMode};
 use branchdiff::diff::{DiffLine, LineSource};
 use branchdiff::file_events::VcsLockState;
+use branchdiff::html_page::Refresh;
 use branchdiff::input::AppAction;
 use branchdiff::message::Message;
 use branchdiff::update::{RefreshState, Timers, UpdateConfig, update};
+
+#[path = "support/html_fixture.rs"]
+mod html_fixture;
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -97,6 +101,7 @@ fn measure_all() -> Vec<Sample> {
     measure_view_mode(&mut samples);
     measure_context_mode(&mut samples);
     measure_update(&mut samples);
+    measure_html(&mut samples);
     samples
 }
 
@@ -419,4 +424,21 @@ fn unquote(value: &str, line_no: usize) -> Result<String, String> {
 
 fn parse_u64(value: &str, line_no: usize) -> Result<u64, String> {
     value.parse::<u64>().map_err(|_| format!("baselines.toml:{line_no}: expected a whole number"))
+}
+
+fn measure_html(samples: &mut Vec<Sample>) {
+    let images = branchdiff::image_diff::ImageCache::new();
+    for (changed, files, label) in html_fixture::SIZES {
+        let data = html_fixture::output_data(changed, files);
+        // The first render compiles the syntax's regexes and builds any pool;
+        // the pin is for a page rendered by a warm process.
+        let mut warm = Vec::new();
+        branchdiff::html::render_html(&mut warm, &data, &images, Refresh::Live).unwrap();
+        let mut page = Vec::with_capacity(warm.len());
+        let id = format!("html/render/{label}");
+        measure(samples, &id, || {
+            branchdiff::html::render_html(&mut page, &data, &images, Refresh::Live).unwrap();
+            black_box(page.len());
+        });
+    }
 }
