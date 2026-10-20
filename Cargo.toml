@@ -65,6 +65,7 @@ insta = "1.40"
 # Asset generation (man pages, shell completions)
 clap_mangen = "0.2"
 clap_complete = "4"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 [[bench]]
 name = "performance"
@@ -109,3 +110,12 @@ debug = true
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[features]
+# Tests that drive a real Chrome over the DevTools protocol. Off by default so a plain
+# `cargo test` needs no browser; with it on, a missing Chrome fails the test.
+browser-tests = []
+
+[[test]]
+name = "html_live_page"
+required-features = ["browser-tests"]

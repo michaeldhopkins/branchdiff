@@ -47,6 +47,10 @@ jobs:
       - name: cargo test
         run: cargo test --locked --lib --bins
 
+      # The runner image ships Chrome; a missing browser fails this step.
+      - name: cargo test (live page in headless Chrome)
+        run: cargo test --locked --features browser-tests --test html_live_page
+
       - name: cargo clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 

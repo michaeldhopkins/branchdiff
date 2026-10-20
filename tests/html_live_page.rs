@@ -1,40 +1,30 @@
-//! Drives the real `--html` page in headless Chrome: the live refresh must keep the
-//! reader's place, and the theme toggle must work when `localStorage` throws.
+//! Drives the real `--html` page in headless Chrome, in real time, over the DevTools
+//! protocol: the live refresh must keep the reader's place, and the theme toggle must
+//! work when `localStorage` throws.
 //!
-//! The page is served by a tiny in-process server; a script injected into its head
-//! plays the reader and writes what it measured into `#bd-result`, which
-//! `--dump-dom` prints. No browser found is a failure, never a skip.
+//! The page is served by a tiny in-process server whose body flips to a second page on
+//! request. Run with `--features browser-tests`; a missing Chrome is a failure, never a
+//! skip, and every launch is bounded by a deadline that kills the browser it started.
+
+mod browser;
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
+use browser::devtools::Browser;
+use serde_json::Value;
 use tempfile::TempDir;
 
 const FILES: usize = 40;
-const READER_AT: usize = 18;
-
-fn chrome() -> PathBuf {
-    let mut candidates: Vec<PathBuf> =
-        std::env::var_os("BRANCHDIFF_CHROME").map(PathBuf::from).into_iter().collect();
-    candidates.extend(
-        [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-        ]
-        .map(PathBuf::from),
-    );
-    candidates
-        .into_iter()
-        .find(|p| p.exists())
-        .expect("no Chrome found: install one or set BRANCHDIFF_CHROME")
-}
+const READER: &str = "f18.txt";
+/// The height a section that has not been laid out reports (`html_style.rs`).
+const PLACEHOLDER_HEIGHT: f64 = 600.0;
+const LAUNCH_BUDGET: Duration = Duration::from_secs(90);
 
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -67,142 +57,241 @@ fn render_page(dir: &Path) -> String {
     String::from_utf8(out.stdout).expect("utf-8 page")
 }
 
+fn name(file: usize) -> String {
+    format!("f{file:02}.txt")
+}
+
 fn body_of(file: usize, tweak: &str) -> String {
     (1..=10).map(|n| format!("line {n} of file {file}{tweak}\n")).collect()
 }
 
-/// A repository with `FILES` changed files, and the page for it before and after
-/// one line of file 3 changes.
-fn two_pages() -> (String, String) {
+/// A repository with `FILES` changed files, and the page for it before and after `edit`
+/// changes the working tree.
+fn two_pages(edit: impl FnOnce(&Path)) -> (String, String) {
+    pages(|_| {}, edit)
+}
+
+/// Like `two_pages`, with `before` shaping the tree for the first page too.
+fn pages(before: impl FnOnce(&Path), edit: impl FnOnce(&Path)) -> (String, String) {
     let dir = TempDir::new().expect("temp dir");
     git(dir.path(), &["init", "-q"]);
     for f in 0..FILES {
-        std::fs::write(dir.path().join(format!("f{f:02}.txt")), body_of(f, "")).unwrap();
+        std::fs::write(dir.path().join(name(f)), body_of(f, "")).unwrap();
     }
     git(dir.path(), &["add", "."]);
     git(dir.path(), &["commit", "-q", "-m", "base"]);
     for f in 0..FILES {
-        std::fs::write(dir.path().join(format!("f{f:02}.txt")), body_of(f, " edited")).unwrap();
+        std::fs::write(dir.path().join(name(f)), body_of(f, " edited")).unwrap();
     }
+    before(dir.path());
     let first = render_page(dir.path());
-    std::fs::write(dir.path().join("f03.txt"), body_of(3, " SWAPPED")).unwrap();
+    edit(dir.path());
     (first, render_page(dir.path()))
 }
 
-/// Serves `first` until `/flip` is requested, then `second`, with `script` in the
-/// head of the first page. Returns the address.
-fn serve(first: String, second: String, script: &str) -> String {
+fn swap_one_line(dir: &Path) {
+    std::fs::write(dir.join(name(3)), body_of(3, " SWAPPED")).unwrap();
+}
+
+/// A page that serves `first` until `flip`, then `second`.
+struct Site {
+    address: String,
+    flipped: Arc<AtomicBool>,
+}
+
+impl Site {
+    fn flip(&self) {
+        self.flipped.store(true, Ordering::SeqCst);
+    }
+}
+
+fn serve(first: String, second: String) -> Site {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let address = format!("http://{}/", listener.local_addr().unwrap());
     let flipped = Arc::new(AtomicBool::new(false));
-    let first = first.replacen("</head>", &format!("<script>{script}</script></head>"), 1);
+    let seen = Arc::clone(&flipped);
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            let mut buf = [0u8; 2048];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let body = if request.starts_with("GET /flip") {
-                flipped.store(true, Ordering::SeqCst);
-                "ok".to_string()
-            } else if request.starts_with("GET / ") && !flipped.load(Ordering::SeqCst) {
-                first.clone()
-            } else if request.starts_with("GET / ") {
-                second.clone()
-            } else {
-                String::new()
-            };
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = stream.write_all(head.as_bytes());
-            let _ = stream.write_all(body.as_bytes());
+        for stream in listener.incoming().flatten() {
+            let (first, second, seen) = (first.clone(), second.clone(), Arc::clone(&seen));
+            std::thread::spawn(move || answer(stream, &first, &second, &seen));
         }
     });
-    address
+    Site { address, flipped }
 }
 
-/// Loads `address` in headless Chrome and returns the text of `#bd-result`.
-fn result_of(address: &str) -> String {
-    let profile = TempDir::new().expect("profile dir");
-    let out = Command::new(chrome())
-        .args([
-            "--headless",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--no-first-run",
-            "--dump-dom",
-            "--virtual-time-budget=40000",
-            "--window-size=1000,800",
-        ])
-        .arg(format!("--user-data-dir={}", profile.path().display()))
-        .arg(address)
-        .output()
-        .expect("run Chrome");
-    let dom = String::from_utf8_lossy(&out.stdout).into_owned();
-    let start = dom
-        .find("<pre id=\"bd-result\">")
-        .unwrap_or_else(|| panic!("no result in:\n{}", &dom[..dom.len().min(600)]));
-    let rest = &dom[start + "<pre id=\"bd-result\">".len()..];
-    rest[..rest.find("</pre>").expect("closed result")].replace("&quot;", "\"")
+/// One connection a browser opened. A connection that never sends a request (Chrome
+/// opens spare ones) times out here instead of holding anything up.
+fn answer(mut stream: TcpStream, first: &str, second: &str, flipped: &AtomicBool) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut buf = [0u8; 2048];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    let request = String::from_utf8_lossy(&buf[..n]);
+    let body = if !request.starts_with("GET / ") {
+        ""
+    } else if flipped.load(Ordering::SeqCst) {
+        second
+    } else {
+        first
+    };
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
 }
 
-const READER: &str = "
-addEventListener('load',async()=>{
-  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-  const out=o=>{const p=document.createElement('pre');p.id='bd-result';
-    p.textContent=JSON.stringify(o);document.documentElement.appendChild(p)};
-  try{
-    const at=()=>document.getElementById('file-READER_AT');
-    while(at().getBoundingClientRect().top>200){scrollBy(0,250);await sleep(30)}
-    scrollBy(0,at().getBoundingClientRect().top+50);
-    await sleep(200);
-    const before=at().getBoundingClientRect().top;
-    await fetch('/flip');
-    for(let i=0;i<100&&!document.body.textContent.includes('SWAPPED');i++)await sleep(100);
-    await sleep(300);
-    out({before,after:at().getBoundingClientRect().top,swapped:document.body.textContent.includes('SWAPPED')});
-  }catch(e){out({error:String(e)})}
-});
-";
+/// Helpers installed in the page: sections are found by the path in their summary.
+const HELPERS: &str = r#"
+window.bd = {
+  sleep: ms => new Promise(r => setTimeout(r, ms)),
+  frames: () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))),
+  section: path => [...document.querySelectorAll('details[id^="file-"]')]
+    .find(e => e.querySelector('summary').firstChild.textContent.trim() === path),
+  measure(path) {
+    const s = bd.section(path);
+    return {
+      top: s.getBoundingClientRect().top,
+      height: s.getBoundingClientRect().height,
+      table: s.querySelector('table').getBoundingClientRect().height,
+    };
+  },
+  async scrollPast(path) {
+    for (let i = 0; i < 600 && bd.section(path).getBoundingClientRect().top > 200; i++) {
+      scrollBy(0, 250);
+      await bd.frames();
+    }
+    scrollBy(0, bd.section(path).getBoundingClientRect().top + 50);
+  },
+  async waitFor(text) {
+    for (let i = 0; i < 150 && !document.body.textContent.includes(text); i++) await bd.sleep(100);
+    return document.body.textContent.includes(text);
+  },
+};
+true"#;
 
-fn number(json: &str, key: &str) -> f64 {
-    let v: serde_json::Value = serde_json::from_str(json).unwrap_or_else(|e| panic!("{e}: {json}"));
-    v[key].as_f64().unwrap_or_else(|| panic!("no {key} in {json}"))
+fn number(value: &Value, key: &str) -> f64 {
+    value[key].as_f64().unwrap_or_else(|| panic!("no {key} in {value}"))
+}
+
+/// Opens the first page of `site` with the helpers installed.
+fn open(site: &Site) -> Browser {
+    let mut browser = Browser::launch(LAUNCH_BUDGET);
+    browser.navigate(&site.address);
+    browser.two_frames();
+    browser.eval(HELPERS);
+    browser
+}
+
+/// Scrolls to the reader's section, lets it render, and returns its measurements.
+fn settle_on_reader(browser: &mut Browser) -> Value {
+    browser.eval(&format!("bd.scrollPast('{READER}')"));
+    browser.two_frames();
+    browser.eval(&format!("bd.measure('{READER}')"))
+}
+
+/// Flips the site, waits for the poll to swap the body in and two frames to run.
+fn refresh(browser: &mut Browser, site: &Site, marker: &str) {
+    site.flip();
+    let swapped = browser.eval(&format!("bd.waitFor('{marker}')"));
+    assert_eq!(swapped, true, "the poll never swapped the body in");
+    browser.two_frames();
 }
 
 #[test]
 fn a_live_refresh_keeps_the_section_the_reader_is_in() {
-    let (first, second) = two_pages();
-    let script = READER.replace("READER_AT", &READER_AT.to_string());
-    let json = result_of(&serve(first, second, &script));
-    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["swapped"], true, "the poll never swapped the body in: {json}");
-    let (before, after) = (number(&json, "before"), number(&json, "after"));
+    let (first, second) = two_pages(swap_one_line);
+    let site = serve(first, second);
+    let mut browser = open(&site);
+    let before = settle_on_reader(&mut browser);
+    let (height, table) = (number(&before, "height"), number(&before, "table"));
     assert!(
-        (after - before).abs() <= 4.0,
-        "section {READER_AT} was {before}px from the top before the refresh and {after}px after"
+        table > 0.0 && (height - PLACEHOLDER_HEIGHT).abs() > 1.0,
+        "the reader's section is still a placeholder: {before}"
+    );
+
+    refresh(&mut browser, &site, "SWAPPED");
+
+    let after = browser.eval(&format!("bd.measure('{READER}')"));
+    let (was, now) = (number(&before, "top"), number(&after, "top"));
+    assert!(
+        (now - was).abs() <= 4.0,
+        "{READER} was {was}px from the top before the refresh and {now}px after"
     );
 }
 
 #[test]
+fn a_live_refresh_keeps_the_same_file_when_one_is_inserted_before_it() {
+    let (first, second) = two_pages(|dir| {
+        std::fs::write(dir.join("f17a.txt"), body_of(99, " INSERTED")).unwrap();
+    });
+    let site = serve(first, second);
+    let mut browser = open(&site);
+    let before = settle_on_reader(&mut browser);
+    assert!(number(&before, "table") > 0.0, "the reader's section is a placeholder: {before}");
+
+    refresh(&mut browser, &site, "INSERTED");
+
+    let after = browser.eval(&format!("bd.measure('{READER}')"));
+    let (was, now) = (number(&before, "top"), number(&after, "top"));
+    assert!(
+        (now - was).abs() <= 4.0,
+        "{READER} was {was}px from the top before a file was inserted above it and {now}px after"
+    );
+}
+
+#[test]
+fn a_reader_at_the_top_stays_at_the_top_when_the_file_list_grows() {
+    let (first, second) = two_pages(|dir| {
+        std::fs::write(dir.join("a00.txt"), body_of(98, " ADDED")).unwrap();
+    });
+    let site = serve(first, second);
+    let mut browser = open(&site);
+    assert_eq!(browser.eval("scrollY"), 0, "the page starts at the top");
+
+    refresh(&mut browser, &site, "ADDED");
+
+    assert_eq!(browser.eval("scrollY"), 0, "the refresh moved a reader who had not scrolled");
+}
+
+#[test]
+fn a_live_refresh_keeps_the_horizontal_scroll_too() {
+    // A file name with no break opportunity is wider than the window, so the page
+    // itself scrolls sideways.
+    let (first, second) = pages(
+        |dir| std::fs::write(dir.join(format!("{}.txt", "w".repeat(200))), "wide\n").unwrap(),
+        |dir| std::fs::write(dir.join(name(3)), body_of(3, " WIDE_SWAP")).unwrap(),
+    );
+    let site = serve(first, second);
+    let mut browser = open(&site);
+    settle_on_reader(&mut browser);
+    browser.eval("scrollTo(300, scrollY)");
+    browser.two_frames();
+    assert_eq!(browser.eval("scrollX"), 300, "precondition: the page scrolls sideways");
+
+    refresh(&mut browser, &site, "WIDE_SWAP");
+
+    assert_eq!(browser.eval("scrollX"), 300, "the refresh lost the horizontal scroll");
+}
+
+#[test]
 fn the_theme_toggle_works_when_local_storage_throws() {
-    let (first, second) = two_pages();
-    let script = "
-Object.defineProperty(window,'localStorage',{get(){throw new Error('blocked')}});
-addEventListener('load',()=>{
-  const before=document.documentElement.dataset.theme;
-  document.querySelector('.theme-toggle').click();
-  const p=document.createElement('pre');p.id='bd-result';
-  p.textContent=JSON.stringify({before,after:document.documentElement.dataset.theme});
-  document.documentElement.appendChild(p);
-});";
-    let json = result_of(&serve(first, second, script));
-    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let (first, second) = two_pages(swap_one_line);
+    let site = serve(first, second);
+    let mut browser = Browser::launch(LAUNCH_BUDGET);
+    browser.before_each_document(
+        "Object.defineProperty(window,'localStorage',{get(){throw new Error('blocked')}})",
+    );
+    browser.navigate(&site.address);
+    browser.two_frames();
+    let seen = browser.eval(
+        "(()=>{const before=document.documentElement.dataset.theme;
+           document.querySelector('.theme-toggle').click();
+           return {before, after: document.documentElement.dataset.theme}})()",
+    );
     assert_eq!(
-        (v["before"].as_str(), v["after"].as_str()),
+        (seen["before"].as_str(), seen["after"].as_str()),
         (Some("dark"), Some("light")),
-        "{json}"
+        "{seen}"
     );
 }
