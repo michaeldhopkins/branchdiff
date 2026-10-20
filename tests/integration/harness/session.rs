@@ -4,7 +4,7 @@
 //! the terminal output into a screen state we can assert against.
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -15,6 +15,9 @@ const TERM_ROWS: u16 = 40;
 const TERM_COLS: u16 = 120;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// The query every terminal answers, and the answer ("terminal OK").
+const DEVICE_STATUS_REPORT_QUERY: &[u8] = b"\x1b[5n";
+const DEVICE_STATUS_REPORT_OK: &[u8] = b"\x1b[0n";
 
 /// A TUI session running branchdiff.
 pub struct TuiSession {
@@ -90,10 +93,27 @@ impl TuiSession {
                 Ok(data) => {
                     self.raw_output.extend_from_slice(&data);
                     self.parser.process(&data);
+                    self.answer_status_report(&data);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }
+        }
+    }
+
+    /// Answer the app's "are you there" terminal query, as every real terminal does.
+    ///
+    /// At startup the image-protocol picker writes its capability queries
+    /// ending in a device status report (`ESC [ 5 n`) and waits for the reply.
+    /// A terminal that never answers leaves its reader thread blocked on
+    /// stdin, and that thread then takes the first keys the test sends and
+    /// switches raw mode off behind the app's back. Without the reply the
+    /// keys of four tests were lost depending on timing.
+    fn answer_status_report(&mut self, output: &[u8]) {
+        if output.windows(DEVICE_STATUS_REPORT_QUERY.len()).any(|w| w == DEVICE_STATUS_REPORT_QUERY)
+        {
+            self.writer.write_all(DEVICE_STATUS_REPORT_OK).expect("failed to answer the query");
+            self.writer.flush().expect("failed to flush");
         }
     }
 

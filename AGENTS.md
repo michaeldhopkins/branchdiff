@@ -144,8 +144,7 @@ two thresholds ever diverge that arm goes live and the test fails.
 `src/main.rs` and `src/print.rs` belong to the binary and carry
 their own test modules, so `--lib` alone (the config until 2026-09-27) reported
 every mutant in them as missed. The PTY integration target stays out: it runs
-the installed binary, and four of its tests fail on this Mac regardless of the
-code.
+the installed binary, so it tests whatever `cargo install` last put on `PATH`.
 
 **Per change** (`.github/workflows/mutants.yml`, not gating): every PR and push
 to `main` runs `--in-diff` over the changed code, skipped with a warning above
