@@ -37,6 +37,8 @@ pub struct SyntaxHighlighter {
 struct StreamState<'a> {
     file_path: String,
     highlighter: HighlightLines<'a>,
+    /// The line with its terminator, reused so each line costs no allocation.
+    line: String,
 }
 
 thread_local! {
@@ -104,6 +106,7 @@ impl SyntaxHighlighter {
                 *state = Some(StreamState {
                     file_path: path.to_string(),
                     highlighter: HighlightLines::new(syntax, &self.theme),
+                    line: String::new(),
                 });
             }
 
@@ -116,9 +119,11 @@ impl SyntaxHighlighter {
             // `test_unterminated_string_does_not_bleed`; note that the effect
             // is invisible in Rust and Markdown, so a test in those languages
             // would pass either way.
-            let content_with_newline = format!("{}\n", content);
+            hl_state.line.clear();
+            hl_state.line.push_str(content);
+            hl_state.line.push('\n');
 
-            match hl_state.highlighter.highlight_line(&content_with_newline, &self.syntax_set) {
+            match hl_state.highlighter.highlight_line(&hl_state.line, &self.syntax_set) {
                 Ok(ranges) => ranges
                     .into_iter()
                     .filter_map(|(style, text)| {

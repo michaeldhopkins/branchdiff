@@ -108,21 +108,21 @@ ref_median_ns = 43
 # The html group was measured 2026-10-20, on the same channel.
 [[bench]]
 id = "html/render/50_lines"
-max_blocks = 17100
-max_bytes = 3758959
-ref_median_ns = 4319408
+max_blocks = 16697
+max_bytes = 3731416
+ref_median_ns = 1197400
 
 [[bench]]
 id = "html/render/200_lines"
-max_blocks = 77508
-max_bytes = 17013121
-ref_median_ns = 18759198
+max_blocks = 75749
+max_bytes = 16945245
+ref_median_ns = 2819700
 
 [[bench]]
 id = "html/render/500_lines"
-max_blocks = 170988
-max_bytes = 37506537
-ref_median_ns = 51819355
+max_blocks = 166941
+max_bytes = 37269240
+ref_median_ns = 5407800
 
 [[bench]]
 id = "refresh/colocated/50f_10c"

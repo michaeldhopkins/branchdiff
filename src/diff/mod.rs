@@ -23,7 +23,7 @@ pub use inline::InlineSpan;
 
 pub(crate) use inline::compute_inline_diff_merged;
 
-use std::cell::OnceCell;
+use std::sync::OnceLock;
 
 /// Compute the column width of `s` when displayed in a terminal.
 ///
@@ -125,7 +125,7 @@ pub struct DiffLine {
     /// via `display_width()`. The cache lets `wrapped_line_height` skip the
     /// O(n) char walk on every frame — critical for diffs containing very
     /// long single lines (e.g. minified search indexes).
-    display_width: OnceCell<usize>,
+    display_width: OnceLock<usize>,
 }
 
 impl DiffLine {
@@ -135,8 +135,8 @@ impl DiffLine {
         prefix: char,
         line_number: Option<usize>,
     ) -> Self {
-        let display_width = OnceCell::new();
-        // OK to ignore — OnceCell::set only fails when already set, which can't
+        let display_width = OnceLock::new();
+        // OK to ignore — OnceLock::set only fails when already set, which can't
         // happen on a freshly constructed cell.
         let _ = display_width.set(content_display_width(&content));
         Self {

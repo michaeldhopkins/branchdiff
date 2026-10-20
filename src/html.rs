@@ -3,6 +3,7 @@ use std::io::Write;
 use anyhow::Result;
 use base64::Engine;
 use ratatui::style::Color;
+use rayon::prelude::*;
 
 use crate::diff::{DiffLine, LineSource};
 use crate::image_diff::{CachedImage, ImageCache};
@@ -12,6 +13,10 @@ use crate::ui::spans::coalesce_spans;
 
 use crate::html_page::{Refresh, noscript_style, script};
 use crate::html_style::{stylesheet, token_class};
+
+/// A rendered row's usual size, so a file's section is allocated once rather
+/// than grown by doubling (pages measured at 280-300 bytes a row).
+const SECTION_BYTES_PER_LINE: usize = 320;
 
 fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -101,11 +106,6 @@ pub fn render_html(
     images: &ImageCache,
     refresh: Refresh,
 ) -> Result<()> {
-    // This export streams through `syntax::highlight_line`, which carries
-    // parser state across calls. Start from a known-clean state rather than
-    // whatever the thread was last left in.
-    syntax::reset_highlight_state();
-
     write_header(out, data)?;
 
     let line_num_width = data
@@ -117,8 +117,25 @@ pub fn render_html(
         .map(|n| n.to_string().len())
         .unwrap_or(0);
 
-    for (i, file) in data.files.iter().enumerate() {
-        write_file(out, i, file, images, line_num_width)?;
+    // Highlighting is nearly all of a page's cost, and every file is
+    // highlighted from a clean parser state (the highlighter resets whenever the
+    // path changes), so files render independently and are written in order.
+    let sections: Vec<Result<Vec<u8>>> = crate::vcs::vcs_thread_pool().install(|| {
+        data.files
+            .par_iter()
+            .enumerate()
+            .map(|(i, file)| {
+                // `syntax::highlight_line` carries parser state across calls in a
+                // thread-local; a pool thread may hold whatever it last rendered.
+                syntax::reset_highlight_state();
+                let mut section = Vec::with_capacity(SECTION_BYTES_PER_LINE * file.lines.len());
+                write_file(&mut section, i, file, images, line_num_width)?;
+                Ok(section)
+            })
+            .collect()
+    });
+    for section in sections {
+        out.write_all(&section?)?;
     }
 
     write_footer(out, refresh)?;
@@ -598,5 +615,64 @@ mod tests {
         assert!(html.contains("</html>"), "should close html");
         assert!(html.contains("+1"), "should show addition count");
         assert!(html.contains("-1"), "should show deletion count");
+    }
+
+    fn rust_file(path: &str, body: &[&str]) -> OutputFile {
+        let mut lines = vec![DiffLine::file_header(path)];
+        for (n, text) in body.iter().enumerate() {
+            lines.push(DiffLine::new(LineSource::Committed, (*text).into(), '+', Some(n + 1)));
+        }
+        OutputFile {
+            path: path.into(),
+            lines,
+            additions: body.len(),
+            deletions: 0,
+            collapsed: false,
+        }
+    }
+
+    /// The page as one serial walk over the files wrote it, with a single reset
+    /// before the first file.
+    fn serial_page(data: &OutputData, width: usize) -> String {
+        let images = ImageCache::new();
+        let mut buf = Vec::new();
+        write_header(&mut buf, data).unwrap();
+        syntax::reset_highlight_state();
+        for (i, file) in data.files.iter().enumerate() {
+            write_file(&mut buf, i, file, &images, width).unwrap();
+        }
+        write_footer(&mut buf, Refresh::Off).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn files_rendered_in_parallel_match_one_serial_walk_byte_for_byte() {
+        // Each file opens a block comment it never closes, so parser state left
+        // over from an earlier render would colour the file as comment.
+        let files: Vec<OutputFile> = (0..12)
+            .map(|i| {
+                let path = format!("src/f{i}.rs");
+                rust_file(&path, &["fn a() { let x = \"s\"; }", "/* open", "still comment"])
+            })
+            .collect();
+        let data = OutputData {
+            repo_name: "r".into(),
+            to_label: "a".into(),
+            from_label: "b".into(),
+            files,
+            total_additions: 36,
+            total_deletions: 0,
+        };
+        let expected = serial_page(&data, 1);
+        // Every render leaves pool threads mid-comment in the file they did last,
+        // so later renders of the same page see that state unless it is reset.
+        let mut page = String::new();
+        for _ in 0..8 {
+            let mut buf = Vec::new();
+            render_html(&mut buf, &data, &ImageCache::new(), Refresh::Off).unwrap();
+            page = String::from_utf8(buf).unwrap();
+            assert_eq!(page, expected);
+        }
+        assert_eq!(page.matches("<span class=\"tk-keyword\">fn</span>").count(), 12);
     }
 }
