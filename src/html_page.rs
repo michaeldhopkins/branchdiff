@@ -85,7 +85,7 @@ if(location.protocol!=='file:'){let last='',stopSettling=()=>{};setInterval(()=>
       const takeOver=['wheel','touchstart','pointerdown'];
       const scrollKeys=['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','PageUp','PageDown','Home','End',' '];
       const stop=()=>{settling=false;for(const type of takeOver)removeEventListener(type,stop);removeEventListener('keydown',onKey)};
-      const onKey=e=>{if(!e.ctrlKey&&!e.metaKey&&!e.altKey&&(scrollKeys.includes(e.key)||(!e.shiftKey&&(e.key==='j'||e.key==='k'))))stop()};
+      const onKey=e=>{const bare=!e.ctrlKey&&!e.metaKey&&!e.altKey;if(e.key==='Tab'?bare:scrollKeys.includes(e.key)||(bare&&!e.shiftKey&&(e.key==='j'||e.key==='k')))stop()};
       for(const type of takeOver)addEventListener(type,stop,{passive:true});
       addEventListener('keydown',onKey,{passive:true});
       stopSettling=stop;
@@ -199,9 +199,10 @@ mod tests {
             ),
             "{s}"
         );
-        for event in ["wheel", "touchstart", "keydown"] {
+        for event in ["wheel", "touchstart", "pointerdown"] {
             assert!(s.contains(&format!("'{event}'")), "{event} does not end the settle");
         }
+        assert!(s.contains("'keydown'"), "a key press does not end the settle");
         assert!(s.contains("stopSettling();"), "a newer refresh ends the older chain");
     }
     #[test]

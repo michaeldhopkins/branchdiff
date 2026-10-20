@@ -410,6 +410,20 @@ fn a_key_that_scrolls_ends_the_settle() {
 }
 
 #[test]
+fn a_scroll_key_ends_the_settle_whatever_modifiers_are_held() {
+    let _alone = exclusive();
+    for init in [
+        "key: 'ArrowDown', metaKey: true",
+        "key: 'End', ctrlKey: true",
+        "key: 'ArrowUp', altKey: true",
+        "key: 'Tab'",
+        "key: 'Tab', shiftKey: true",
+    ] {
+        assert!(settle_yields_to(&key(init)), "{init} did not end the settle");
+    }
+}
+
+#[test]
 fn a_modifier_key_or_a_chord_does_not_end_the_settle() {
     let _alone = exclusive();
     for init in

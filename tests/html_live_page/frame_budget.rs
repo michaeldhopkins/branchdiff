@@ -95,7 +95,6 @@ impl Frames {
 }
 /// Empties the log, runs `flip` (which makes the page swap its body in), then collects
 /// the duration of every animation-frame callback in the `WINDOW_MS` that follow the first one.
-/// every animation-frame callback in the `WINDOW_MS` that follow the first one.
 fn settle_callbacks(
     browser: &mut Browser,
     flip: impl FnOnce(&mut Browser),

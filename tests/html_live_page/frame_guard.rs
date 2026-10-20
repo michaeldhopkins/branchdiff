@@ -22,7 +22,7 @@ const FRAME_MARKERS: [&str; 9] = [
     "TimelineView",
     "MTKView",
 ];
-const TIMER_CALLS: [&str; 2] = ["setInterval(", "setTimeout("];
+const TIMER_CALLS: [&str; 2] = ["setInterval", "setTimeout"];
 const SHORTEST_PLAIN_TIMER_MS: u64 = 100;
 const CFG_TEST: &str = "#[cfg(test)]";
 
@@ -163,18 +163,36 @@ fn timer_delays(text: &str) -> Vec<(String, Option<u64>)> {
     let mut found: Vec<(usize, String, Option<u64>)> = Vec::new();
     for call in TIMER_CALLS {
         for (at, _) in shipped.match_indices(call) {
-            found.push((at, call.to_string(), timer_delay(&shipped, at + call.len())));
+            let after = at + call.len();
+            let rest = shipped[after..].trim_start();
+            if rest.starts_with('(') {
+                let open = shipped.len() - rest.len() + 1;
+                found.push((at, format!("{call}("), timer_delay(&shipped, open)));
+            }
         }
     }
     found.sort();
     found.into_iter().map(|(_, call, delay)| (call, delay)).collect()
 }
 
+/// A Rust string's `\` before a newline joins the lines and drops the next line's
+/// leading whitespace; the markers are matched on the joined text.
+fn strip_line_continuations(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("\\\n") {
+        out.push_str(&rest[..at]);
+        rest = rest[at + 2..].trim_start();
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Why a source file runs per-frame work, or `None`. A timer counts unless its delay can
 /// be read and is at least `SHORTEST_PLAIN_TIMER_MS`.
 fn per_frame_work(text: &str) -> Option<String> {
-    let compact: String =
-        production(text).replace("\\\"", "\"").chars().filter(|c| !c.is_whitespace()).collect();
+    let joined = strip_line_continuations(&production(text)).replace("\\\"", "\"");
+    let compact: String = joined.chars().filter(|c| !c.is_whitespace()).collect();
     if let Some(marker) = FRAME_MARKERS.iter().find(|m| compact.contains(**m)) {
         return Some(format!("uses {marker}"));
     }
@@ -213,7 +231,7 @@ fn source_files(dir: &Path, found: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             source_files(&path, found);
-        } else if path.extension().is_some_and(|e| e == "rs") {
+        } else {
             found.push(path);
         }
     }
@@ -229,7 +247,10 @@ fn every_source_file_with_per_frame_work_is_a_measured_page() {
         .iter()
         .map(|p| {
             let relative = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
-            (relative, std::fs::read_to_string(p).expect("read source"))
+            (
+                relative,
+                String::from_utf8_lossy(&std::fs::read(p).expect("read source")).into_owned(),
+            )
         })
         .collect();
     let measured: Vec<&str> = MEASURED_PAGES.iter().map(|(path, _)| *path).collect();
@@ -289,6 +310,41 @@ fn a_timer_is_judged_by_its_own_last_argument() {
     assert!(flagged_text("\"setInterval(() => {\\n step();\\n}, 16)\""));
     assert!(!flagged_text("\"setInterval(() => xs.reduce((a,b)=>a+b,0), 2000)\""), "slow poll");
     assert!(!flagged_text("\"setTimeout(() => { go('a,)'); }, 100)\""), "exactly the floor");
+}
+
+#[test]
+fn a_timer_call_may_have_whitespace_before_its_paren() {
+    assert!(flagged_text("\"setTimeout (step, 16)\""));
+    assert!(flagged_text("\"setInterval\n(step, 16)\""));
+    assert!(!flagged_text("\"setInterval\n(step, 2000)\""));
+}
+
+#[test]
+fn a_rust_line_continuation_inside_a_marker_is_joined() {
+    assert!(flagged_text("const J: &str = \"requestAnimation\\\n      Frame(f)\";"));
+}
+
+#[test]
+fn plain_text_sources_are_scanned_like_rust_ones() {
+    let files = vec![
+        ("src/a.js".to_string(), "requestAnimationFrame(f)".to_string()),
+        ("src/b.html".to_string(), "<canvas id=a>".to_string()),
+        ("src/c.css".to_string(), "/* setInterval(f, 16) */".to_string()),
+    ];
+    assert_eq!(unmeasured(&files, &[]).len(), 3);
+}
+
+#[test]
+fn the_walk_reads_files_of_every_extension() {
+    let dir = std::env::temp_dir().join(format!("bd-guard-walk-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    for name in ["a.rs", "sub/b.js", "sub/c.html", "d.css", "e"] {
+        std::fs::write(dir.join(name), "x").unwrap();
+    }
+    let mut found = Vec::new();
+    source_files(&dir, &mut found);
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(found.len(), 5, "{found:?}");
 }
 
 #[test]
