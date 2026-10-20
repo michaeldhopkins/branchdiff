@@ -1,18 +1,9 @@
-//! A full refresh, and the one-shot load that reuses its labels.
+//! A full refresh, and the one-shot load built from its labels.
 
 use super::*;
 
-/// A refresh with the two revisions it labelled.
-pub(super) struct Refreshed {
-    pub(super) result: RefreshResult,
-    /// The revision the base label was read from.
-    pub(super) effective_from: String,
-    /// The revision the current label was read from (`@`, unless re-anchored).
-    pub(super) to_rev: String,
-}
-
 impl JjVcs {
-    pub(super) fn refresh_anchored(&self, cancel_flag: &Arc<AtomicBool>) -> Result<Refreshed> {
+    pub(super) fn refresh_anchored(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
         // The fork point (for divergence and fork-point mode), the stack tip (is
         // @ mid-stack? if not, an orphaned empty @ left by an abandon?) and the
         // bookmark boundary (for BookmarkOnly view mode).
@@ -108,7 +99,6 @@ impl JjVcs {
             .collect();
         let file_links = crate::file_links::compute_file_links(&file_paths);
 
-        let labelled_from = effective_from.to_string();
         let result = RefreshResult {
             files,
             lines: all_lines,
@@ -123,7 +113,7 @@ impl JjVcs {
             divergence,
             // Populated by the worker thread / initial-load path, not the backend.
         };
-        Ok(Refreshed { result, effective_from: labelled_from, to_rev: to_rev.to_string() })
+        Ok(result)
     }
 
     /// The display label of `rev`, or `rev` itself when jj cannot say.
@@ -158,27 +148,23 @@ impl JjVcs {
 
 /// The labels and the refresh a one-shot run needs.
 ///
-/// A refresh already read the label of the revision it diffed from and of
-/// the one it labelled as current, so those are reused when they are the
-/// revisions the comparison names (the trunk base, and `@` unless
-/// re-anchored). The base label is looked up while the refresh runs, for
-/// when the refresh diffed from a fork point instead.
+/// A refresh labels the revision it diffed from and the one it treated as
+/// current (the orphaned tip, when re-anchored). Those are the labels the
+/// app shows once the refresh is applied, so the comparison is built from
+/// them and no further jj process runs. A label the refresh could not read
+/// falls back to a lookup.
 pub(super) fn comparison_and_refresh(
     vcs: &JjVcs,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<(ComparisonContext, RefreshResult)> {
-    let (refreshed, from_label) = std::thread::scope(|scope| {
-        let from = scope.spawn(|| vcs.label_of(&vcs.from_rev));
-        (vcs.refresh_anchored(cancel_flag), joined(from))
-    });
-    let Refreshed { result, effective_from, to_rev } = refreshed?;
+    let result = vcs.refresh_anchored(cancel_flag)?;
     let from_label = match &result.base_label {
-        Some(label) if effective_from == vcs.from_rev => label.clone(),
-        _ => from_label,
+        Some(label) => label.clone(),
+        None => vcs.label_of(&vcs.from_rev),
     };
     let to_label = match &result.current_branch {
-        Some(label) if to_rev == "@" => label.clone(),
-        _ => vcs.label_of("@"),
+        Some(label) => label.clone(),
+        None => vcs.label_of("@"),
     };
     Ok((vcs.comparison_with(from_label, to_label), result))
 }
@@ -198,30 +184,33 @@ mod tests {
         assert!(output.status.success(), "jj {args:?} failed");
     }
 
-    /// The shared-label load must answer what the two separate calls answer.
-    fn assert_same_as_separate_calls(repo: &Path) {
+    /// The comparison a one-shot run starts with is what the app shows after
+    /// applying the refresh: the labels of the revisions the refresh diffed.
+    fn comparison_labels(repo: &Path) -> (ComparisonContext, RefreshResult) {
         let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
-        let expected = vcs.comparison_context().unwrap();
         let (comparison, refresh) = vcs.comparison_and_refresh(&cancel).unwrap();
-        assert_eq!(comparison.from_label, expected.from_label);
-        assert_eq!(comparison.to_label, expected.to_label);
-        assert_eq!(refresh.base_identifier, vcs.refresh(&cancel).unwrap().base_identifier);
+        assert_eq!(Some(&comparison.from_label), refresh.base_label.as_ref());
+        assert_eq!(Some(&comparison.to_label), refresh.current_branch.as_ref());
+        (comparison, refresh)
     }
 
     #[test]
-    fn labels_match_when_the_stack_sits_on_trunk() {
+    fn labels_are_the_refreshs_when_the_stack_sits_on_trunk() {
         if !jj_available() {
             return;
         }
         let (temp, _remote) = setup_repo_with_remote();
         std::fs::write(temp.path().join("s.txt"), "s\n").unwrap();
         jj(temp.path(), &["commit", "-m", "stack"]);
-        assert_same_as_separate_calls(temp.path());
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+        let (comparison, _) = comparison_labels(temp.path());
+        assert_eq!(comparison.from_label, vcs.label_of(&vcs.from_rev));
+        assert_eq!(comparison.to_label, vcs.label_of("@"));
     }
 
     #[test]
-    fn labels_match_when_trunk_moved_on_since_the_fork() {
+    fn labels_are_the_refreshs_when_trunk_moved_on_since_the_fork() {
         if !jj_available() {
             return;
         }
@@ -235,15 +224,19 @@ mod tests {
         jj(repo, &["bookmark", "set", "main", "-r", "@"]);
         jj(repo, &["git", "push", "--bookmark", "main"]);
         jj(repo, &["new", &stack]);
-        assert_same_as_separate_calls(repo);
+        let (comparison, _) = comparison_labels(repo);
+        assert_eq!(comparison.to_label, JjVcs::new(repo.to_path_buf()).unwrap().label_of("@"));
     }
 
     #[test]
-    fn labels_match_when_an_orphaned_tip_stands_in_for_at() {
+    fn to_label_names_the_orphaned_tip_not_the_empty_working_copy() {
         if !jj_available() {
             return;
         }
-        let (temp, _remote, _tip) = setup_orphaned_after_abandon();
-        assert_same_as_separate_calls(temp.path());
+        let (temp, _remote, tip) = setup_orphaned_after_abandon();
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+        let (comparison, _) = comparison_labels(temp.path());
+        assert_eq!(comparison.to_label, vcs.label_of(&tip));
+        assert_ne!(comparison.to_label, vcs.label_of("@"));
     }
 }

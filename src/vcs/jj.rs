@@ -938,7 +938,7 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
-        Ok(self.refresh_anchored(cancel_flag)?.result)
+        self.refresh_anchored(cancel_flag)
     }
 
     fn comparison_and_refresh(
