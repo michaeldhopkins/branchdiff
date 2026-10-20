@@ -159,7 +159,7 @@ fn timer_delay(text: &str, from: usize) -> Option<u64> {
 
 /// Every timer call that ships, with its delay when it can be read.
 fn timer_delays(text: &str) -> Vec<(String, Option<u64>)> {
-    let shipped = production(text);
+    let shipped = strip_line_continuations(&production(text));
     let mut found: Vec<(usize, String, Option<u64>)> = Vec::new();
     for call in TIMER_CALLS {
         for (at, _) in shipped.match_indices(call) {
@@ -322,6 +322,16 @@ fn a_timer_call_may_have_whitespace_before_its_paren() {
 #[test]
 fn a_rust_line_continuation_inside_a_marker_is_joined() {
     assert!(flagged_text("const J: &str = \"requestAnimation\\\n      Frame(f)\";"));
+}
+
+#[test]
+fn a_rust_line_continuation_inside_a_timer_call_is_joined() {
+    assert!(flagged_text("\"setTimeout\\\n    (step, 16)\""), "joined call, 16 ms");
+    assert!(!flagged_text("\"setTimeout(step, \\\n    500)\""), "joined delay is readable");
+    assert_eq!(
+        timer_delays("\"setTimeout(step, \\\n    500)\""),
+        vec![("setTimeout(".to_string(), Some(500))]
+    );
 }
 
 #[test]
