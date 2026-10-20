@@ -29,6 +29,8 @@ pub struct TuiSession {
     raw_output: Vec<u8>,
     /// How much of `raw_output` has been searched for the status query.
     scanned_to: usize,
+    /// Whether to reply to the app's status query, as every real terminal does.
+    answers_queries: bool,
     _child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
@@ -40,6 +42,15 @@ impl TuiSession {
     }
 
     pub fn launch_with_env(repo_path: &Path, env: &[(&str, &str)]) -> Self {
+        Self::launch_configured(repo_path, env, true)
+    }
+
+    /// A terminal that never answers the app's startup query (a dumb or broken one).
+    pub fn launch_unanswering(repo_path: &Path, env: &[(&str, &str)]) -> Self {
+        Self::launch_configured(repo_path, env, false)
+    }
+
+    fn launch_configured(repo_path: &Path, env: &[(&str, &str)], answers_queries: bool) -> Self {
         let pty_system = native_pty_system();
 
         let pair = pty_system
@@ -83,6 +94,7 @@ impl TuiSession {
             writer,
             raw_output: Vec::new(),
             scanned_to: 0,
+            answers_queries,
             _child: child,
         };
 
@@ -126,7 +138,7 @@ impl TuiSession {
         let from = self.scanned_to.saturating_sub(query.len() - 1);
         let queries = self.raw_output[from..].windows(query.len()).filter(|w| *w == query).count();
         self.scanned_to = self.raw_output.len();
-        if queries > 0 {
+        if self.answers_queries && queries > 0 {
             for _ in 0..queries {
                 self.writer.write_all(DEVICE_STATUS_REPORT_OK).expect("failed to answer the query");
             }

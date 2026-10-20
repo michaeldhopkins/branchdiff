@@ -390,3 +390,26 @@ fn test_repaint_still_works_while_the_search_box_is_open() {
         session.text()
     );
 }
+
+/// A dumb terminal (`TERM=dumb`, or unset) cannot answer the startup capability
+/// query, and waiting for it holds the first keypress and switches raw mode off
+/// under the app. The query must never be sent there. The session never answers
+/// it, so a query that went out would also stall the first render.
+#[test]
+#[cfg(unix)]
+fn test_a_dumb_terminal_is_never_sent_the_startup_query() {
+    let repo = TestRepo::new();
+    repo.add_file("test.rs", "content");
+    repo.commit("add test.rs");
+    repo.create_branch("feature");
+    repo.modify_file("test.rs", "modified");
+
+    let mut session = TuiSession::launch_unanswering(repo.path(), &[("TERM", "dumb")]);
+    session.assert_status_bar_contains("[context]");
+
+    assert!(!session.emitted(b"\x1b[5n"), "the status query was sent to TERM=dumb");
+
+    // The first key reaches the app rather than a reader waiting on the query.
+    session.press("c");
+    session.wait_for_text("[all lines]");
+}

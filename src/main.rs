@@ -428,16 +428,7 @@ fn run_main_app(
     base: Option<&str>,
 ) -> Result<()> {
     // Initialize image protocol picker (once — survives restarts)
-    let in_multiplexer = std::env::var("ZELLIJ").is_ok()
-        || std::env::var("TMUX").is_ok()
-        || std::env::var("STY").is_ok();
-
-    let mut image_picker = if in_multiplexer {
-        ratatui_image::picker::Picker::halfblocks()
-    } else {
-        ratatui_image::picker::Picker::from_query_stdio()
-            .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks())
-    };
+    let mut image_picker = branchdiff::terminal_query::detect_image_picker();
     image_picker.set_background_color(image::Rgba([30, 30, 30, 255]));
 
     // The guard lives across the restart loop, so the terminal survives restarts.
