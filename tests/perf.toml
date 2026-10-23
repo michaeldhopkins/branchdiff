@@ -1,0 +1,487 @@
+# Performance budgets. Counts are gated by tests/perf_rules.rs on this machine.
+# Wall floors are ceilings of the committed ref_median_ns in benches/baselines.toml
+# (2026-10-18, html rows 2026-10-20), or the class cap where no bench exists.
+# They are not a new timing run. A floor or a target may only tighten.
+# Class caps live in the checker: command is external_us + 50ms, keystroke 8ms,
+# page 100ms, frame 4ms, mcp 200ms.
+#
+# Command and page fixture: 500 files, 25 changed, 5 lines each. That is the
+# scale of refresh/colocated/500f_25c. Keystrokes render 30 files of 300 lines
+# (10k lines), the scale of the navigation and frame_context benches.
+
+[[op]]
+id = "command:branchdiff"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 63
+alloc = ["update/handle_tick", "refresh/colocated/500f_25c"]
+wall_floor_us = 131542
+external_us = 40000
+target_us = 50000
+derivation = "Startup loads the same diff as print; one jj log at 40 ms plus the first frames fits in the 50 ms margin. Measured as --benchmark 1 because the interactive loop does not exit."
+
+[[op]]
+id = "command:print"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 61
+alloc = ["refresh/colocated/500f_25c", "refresh/colocated/50f_10c"]
+wall_floor_us = 131542
+external_us = 40000
+target_us = 50000
+derivation = "One jj diff of the 500-file fixture is the unavoidable work (40 ms, the stated cost of one jj log) and writing the text fits in the 50 ms class margin."
+
+[[op]]
+id = "command:diff"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 61
+alloc = ["refresh/non_colocated/50f_10c"]
+wall_floor_us = 73176
+external_us = 40000
+target_us = 50000
+derivation = "A patch is the same diff, formatted unified; one jj log at 40 ms plus formatting fits in the 50 ms margin."
+
+[[op]]
+id = "command:files"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 62
+wall_floor_us = 90000
+external_us = 40000
+target_us = 50000
+derivation = "One diff's names and counts, not a rendered page; one jj log plus the listing fits in the 50 ms margin. No bench yet, so the wall floor is the class ceiling."
+
+[[op]]
+id = "command:json"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 62
+wall_floor_us = 90000
+external_us = 40000
+target_us = 50000
+derivation = "The file list encoded, same jj work as --files; one jj log plus encoding fits in the 50 ms margin. No bench yet, so the wall floor is the class ceiling."
+
+[[op]]
+id = "command:fingerprint"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 11
+wall_floor_us = 90000
+external_us = 40000
+target_us = 50000
+derivation = "The hash reads base, head and the working copy without a rendered diff; one jj log plus the hash fits in the 50 ms margin. No bench yet, so the wall floor is the class ceiling."
+
+[[op]]
+id = "command:base"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 64
+wall_floor_us = 90000
+external_us = 40000
+target_us = 50000
+derivation = "One named rev plus the same diff; one jj log plus that lookup fits in the 50 ms margin. No bench yet, so the wall floor is the class ceiling."
+
+[[op]]
+id = "command:no-auto-fetch"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 61
+wall_floor_us = 90000
+external_us = 40000
+target_us = 50000
+derivation = "One-shot commands do not fetch; the flag only drops the TUI background fetch, so the pinned path is print with the flag and the same 40 ms jj log plus the 50 ms margin. No separate bench, so the wall floor is the class ceiling."
+
+[[op]]
+id = "command:benchmark"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 63
+alloc = ["refresh/colocated/500f_25c"]
+wall_floor_us = 131542
+external_us = 40000
+target_us = 50000
+derivation = "The stress run loads the diff once, then renders in process; the load is one jj log at 40 ms and the frames fit in the 50 ms margin."
+
+[[op]]
+id = "command:version"
+class = "command"
+fixture = "no repository; clap exits before opening one"
+test = "command_process_counts_match_their_floors"
+processes = 0
+wall_floor_us = 1000
+external_us = 0
+target_us = 1000
+derivation = "Clap writes the version and exits before opening a repository; there is no external call, so the floor and the target are 1 ms."
+
+[[op]]
+id = "command:help"
+class = "command"
+fixture = "no repository; clap exits before opening one"
+test = "command_process_counts_match_their_floors"
+processes = 0
+wall_floor_us = 1000
+external_us = 0
+target_us = 1000
+derivation = "Clap writes the help and exits before opening a repository; there is no external call, so the floor and the target are 1 ms."
+
+[[op]]
+id = "page:html-live"
+class = "page"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 61
+alloc = ["html/render/500_lines", "html/render/200_lines", "refresh/colocated/500f_25c"]
+wall_floor_us = 136950
+external_us = 40000
+target_us = 50000
+derivation = "Main content is the diff; one jj log at 40 ms plus the 500-line render (5408 us, 2026-10-20) is the unavoidable work, and the target stays inside the 100 ms page cap."
+
+[[op]]
+id = "page:html-static"
+class = "page"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 61
+alloc = ["html/render/50_lines", "refresh/colocated/500f_25c"]
+wall_floor_us = 132740
+external_us = 40000
+target_us = 50000
+derivation = "The same diff as the live page without the poll script; one jj log at 40 ms plus markup stays under the 100 ms page cap."
+
+[[op]]
+id = "frame:html-page"
+class = "frame"
+fixture = "200 files, 8 of them 1200 lines; screens 1032x1376 and 2560x1440 at 2x with CPU throttle 6; tests/html_live_page/frame_budget.rs"
+test = "the_settle_loop_stays_in_its_frame_budget_on_the_largest_screens_with_the_cpu_slowed"
+processes = 0
+wall_floor_us = 4000
+target_us = 4000
+derivation = "The settle loop after a live refresh is the only per-frame work, and tests/html_live_page/frame_budget.rs already times it at a 4 ms p95, so this entry does not measure it again."
+
+[[op]]
+id = "key:quit"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "Quit sets a flag and the loop stops; no process, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:copy-or-quit"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 2000
+derivation = "With no selection this quits; a copy is clipboard work outside the paint, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:force-repaint"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 2000
+derivation = "A full repaint of the viewport, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:scroll-up"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+alloc = ["navigation/scroll_down_10", "update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines", "inline_spans/ensure_visible_1200_candidates"]
+wall_floor_us = 98
+target_us = 98
+derivation = "Same benches as scroll-down; the ceiling of navigation/scroll_down_10 (97505 ns on 2026-10-18) is 98 us, under the 8 ms cap."
+
+[[op]]
+id = "key:scroll-down"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+alloc = ["navigation/scroll_down_10", "update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines", "inline_spans/ensure_visible_1200_candidates"]
+wall_floor_us = 98
+target_us = 98
+derivation = "Ceiling of navigation/scroll_down_10 (97505 ns on 2026-10-18) is 98 us, and the keystroke cannot be cheaper than the frame it builds."
+
+[[op]]
+id = "key:next-file"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+alloc = ["navigation/next_file"]
+wall_floor_us = 4
+target_us = 4
+derivation = "Ceiling of navigation/next_file (3513 ns on 2026-10-18) is 4 us, under the 8 ms cap."
+
+[[op]]
+id = "key:prev-file"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+alloc = ["navigation/next_file"]
+wall_floor_us = 4
+target_us = 4
+derivation = "Same bench as next-file; the ceiling of navigation/next_file (3513 ns on 2026-10-18) is 4 us, under the 8 ms cap."
+
+[[op]]
+id = "key:page-up"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+alloc = ["navigation/page_down"]
+wall_floor_us = 97
+target_us = 97
+derivation = "Same bench as page-down; the ceiling of navigation/page_down (96007 ns on 2026-10-18) is 97 us, under the 8 ms cap."
+
+[[op]]
+id = "key:page-down"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+alloc = ["navigation/page_down"]
+wall_floor_us = 97
+target_us = 97
+derivation = "Ceiling of navigation/page_down (96007 ns on 2026-10-18) is 97 us, under the 8 ms cap."
+
+[[op]]
+id = "key:go-to-top"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "A jump to the first row, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:go-to-bottom"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+alloc = ["navigation/go_to_bottom"]
+wall_floor_us = 49
+target_us = 49
+derivation = "Ceiling of navigation/go_to_bottom (48649 ns on 2026-10-18) is 49 us, under the 8 ms cap."
+
+[[op]]
+id = "key:toggle-all-reviewed"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "Flips a set of flags, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:toggle-help"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 2000
+derivation = "Toggles the help pane, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:cycle-view-mode"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+alloc = ["view_mode/cycle_view_mode", "context_mode/build_context_lines/1k_lines", "context_mode/build_context_lines/10k_lines", "frame_context/context/1k_lines", "frame_context/commit_only/1k_lines", "frame_context/context/10k_lines", "frame_context/commit_only/10k_lines"]
+wall_floor_us = 391
+target_us = 391
+derivation = "Ceiling of view_mode/cycle_view_mode (390056 ns on 2026-10-18) is 391 us, under the 8 ms cap."
+
+[[op]]
+id = "key:copy-path"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 2000
+derivation = "The reducer would touch the clipboard, which this render does not; the paint is aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:copy-diff"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 4000
+derivation = "Copying the whole diff is clipboard work outside the paint; the paint is aimed at 4 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:copy-patch"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 4000
+derivation = "Copying the patch is clipboard work outside the paint; the paint is aimed at 4 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:open-search"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "Opens an empty query, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:toggle-diff-base"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "Flips the base and asks for a refresh; the refresh is a later command, and the key itself is aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:toggle-reviewed"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "Flips one file's flag, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:open-editor"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "The editor process is outside the 8 ms render; the key only records the path, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:open-repo"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "The editor process is outside the 8 ms render; the key only records the repo, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:run-recovery"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "With nothing pending this is a no-op; a real recovery is a later command. Aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:start-selection"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 2000
+derivation = "Records the click, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:update-selection"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 2000
+derivation = "Extends the drag, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:end-selection"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 2000
+derivation = "Ends the drag; a copy after a drag is clipboard work and this render skips it. Aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:search-type"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 2000
+derivation = "Inserts one character and recomputes matches, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:search-backspace"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 2000
+derivation = "Drops one character and recomputes matches, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:search-next"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 4000
+derivation = "Steps to the next match and scrolls it into view, aimed at 4 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:search-prev"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 4000
+derivation = "Steps to the previous match and scrolls it into view, aimed at 4 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "key:search-close"
+class = "keystroke"
+fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
+test = "keystrokes_render_without_spawning"
+processes = 0
+wall_floor_us = 8000
+target_us = 1000
+derivation = "Drops the query, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
