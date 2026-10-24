@@ -217,6 +217,13 @@ pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().bg(line_bg_color(LineSource::CanceledCommitted)),
             ),
         ]),
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled(
+                " ★/┃ Highlighted commit line / hunk  ",
+                Style::default().fg(Color::Yellow),
+            ),
+        ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "  Inline Highlights",

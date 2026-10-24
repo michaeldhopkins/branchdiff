@@ -1,5 +1,24 @@
 ## [unreleased]
 
+### Features
+
+- Add --head <REV> to diff a revision without checking it out
+- Add --highlight <REVSET> to mark lines and hunks from a commit range
+
+### Documentation
+
+- Document --head and --highlight and bump version to 0.79.0
+
+### Testing
+
+- *(syntax)* Prove reset_highlight_state clears open state
+
+### Miscellaneous
+
+- *(lints)* Lower clippy complexity and length thresholds toward defaults
+
+## [0.78.1] - 2026-10-24
+
 ### Bug Fixes
 
 - *(diff)* Place a cancelled committed line after the line it follows

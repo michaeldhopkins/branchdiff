@@ -66,9 +66,11 @@ If no repository is found, branchdiff waits and automatically starts when `git i
 | `-p`, `--print` | Print diff to stdout and exit (non-interactive mode) |
 | `-d`, `--diff` | Output unified patch format to stdout (for `git apply` / `patch`) |
 | `--html[=live\|static]` | Output self-contained styled HTML to stdout (great for iPad review); `--html=static` omits the script that re-fetches the page every 2 seconds |
-| `--files` | List the files in the diff with status and line counts, and the base and head ids; add `--json` for JSON |
+| `--files` | List the files in the diff with status and line counts, and the base and head ids; add `--json` for JSON (includes `"highlighted"` per file with `--highlight`) |
 | `--fingerprint` | Print a hash that changes when the diff does; never writes to jj's operation log, so it is safe to poll |
 | `--base REV` | Compare against `REV` instead of the detected base (jj: any revset, e.g. `main@origin`; git: a branch, `origin/`-qualified name, or commit) |
+| `--head REV` | Show the diff as of `REV` instead of the working copy, without checking it out (jj: a revset naming one commit; git: a branch, ref, or commit) |
+| `--highlight REVSET` | Mark the hunks (`┃`) and lines (`★`) introduced by `REVSET` (e.g. `feature@origin..feature` or a single commit) across the TUI, `--print`, and `--html`, with a per-file badge and legend |
 | `--comments PATH` | Read review comments from `PATH` (`-` for stdin); overrides the autodetected file (see [Review comments](#review-comments)) |
 | `--no-auto-fetch` | Disable automatic fetching of base branch |
 | `--benchmark N` | Run stress test rendering N frames (for profiling) |
