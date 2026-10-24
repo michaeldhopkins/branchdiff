@@ -39,17 +39,19 @@ pub struct Op {
     pub fixture: String,
     pub test: String,
     pub processes: u64,
+    pub owed: bool,
     pub wall_floor_us: u64,
     pub target_us: u64,
     pub derivation: String,
     pub proposal: String,
-    pub alloc: Vec<String>,
+    pub benches: Vec<String>,
 }
 
 #[derive(Debug)]
 enum Value {
     Text(String),
     Number(u64),
+    Bool(bool),
     List(Vec<String>),
 }
 
@@ -226,9 +228,15 @@ fn parse_value(raw: &str, line_no: usize) -> Result<Value, String> {
     if raw.starts_with('[') {
         return Ok(Value::List(parse_list(raw, line_no)?));
     }
-    raw.parse::<u64>()
-        .map(Value::Number)
-        .map_err(|_| format!("line {line_no}: expected a string, integer, or string array"))
+    if raw == "true" {
+        return Ok(Value::Bool(true));
+    }
+    if raw == "false" {
+        return Ok(Value::Bool(false));
+    }
+    raw.parse::<u64>().map(Value::Number).map_err(|_| {
+        format!("line {line_no}: expected a string, integer, boolean, or string array")
+    })
 }
 
 fn parse_list(raw: &str, line_no: usize) -> Result<Vec<String>, String> {
@@ -311,11 +319,12 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
     let fixture = require_one_line(&mut fields, "fixture", &mut local);
     let test = require_one_line(&mut fields, "test", &mut local);
     let processes = require_number(&mut fields, "processes", &mut local);
+    let owed = optional_bool(&mut fields, "owed", &mut local);
     let wall_floor_us = require_number(&mut fields, "wall_floor_us", &mut local);
     let target_us = require_number(&mut fields, "target_us", &mut local);
     let derivation = require_one_line(&mut fields, "derivation", &mut local);
     let proposal = optional_one_line(&mut fields, "proposal", &mut local);
-    let alloc = optional_list(&mut fields, "alloc", &mut local);
+    let benches = optional_list(&mut fields, "benches", &mut local);
     let label = id.clone().unwrap_or_else(|| "?".to_string());
     for key in fields.keys() {
         local.push(format!("unknown key `{key}`"));
@@ -332,11 +341,12 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
         fixture: fixture.unwrap_or_default(),
         test: test.unwrap_or_default(),
         processes: processes.unwrap_or_default(),
+        owed: owed.unwrap_or_default(),
         wall_floor_us: wall_floor_us.unwrap_or_default(),
         target_us: target_us.unwrap_or_default(),
         derivation: derivation.unwrap_or_default(),
         proposal: proposal.unwrap_or_default(),
-        alloc: alloc.unwrap_or_default(),
+        benches: benches.unwrap_or_default(),
     })
 }
 
@@ -417,6 +427,21 @@ fn optional_one_line(
     }
 }
 
+fn optional_bool(
+    fields: &mut BTreeMap<String, Value>,
+    key: &str,
+    errors: &mut Vec<String>,
+) -> Option<bool> {
+    match fields.remove(key) {
+        None => Some(false),
+        Some(Value::Bool(value)) => Some(value),
+        Some(_) => {
+            errors.push(format!("`{key}` must be a boolean"));
+            None
+        }
+    }
+}
+
 fn optional_list(
     fields: &mut BTreeMap<String, Value>,
     key: &str,
@@ -466,12 +491,24 @@ fn check_entry(op: &Op, tests: &BTreeSet<String>, errors: &mut Vec<String>) {
             op.id, op.target_us, op.wall_floor_us
         ));
     }
+    if op.owed && !op.benches.is_empty() {
+        errors.push(format!("operation `{}` is owed but names benches", op.id));
+    }
+    if !op.owed && op.benches.is_empty() {
+        errors.push(format!("operation `{}` is not owed and names no benches", op.id));
+    }
     match allowed_target_us(&op.class) {
         Ok(cap) => {
             if op.target_us > cap {
                 errors.push(format!(
                     "operation `{}` target_us {} exceeds the {} cap {cap}",
                     op.id, op.target_us, op.class
+                ));
+            }
+            if !op.owed && op.wall_floor_us == cap {
+                errors.push(format!(
+                    "operation `{}` wall_floor_us {cap} equals the {} cap without owed = true",
+                    op.id, op.class
                 ));
             }
             if op.wall_floor_us > cap && op.proposal.is_empty() {
@@ -488,7 +525,8 @@ fn check_entry(op: &Op, tests: &BTreeSet<String>, errors: &mut Vec<String>) {
 fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<String>) {
     let mut named = BTreeSet::new();
     for op in ops {
-        for bench in &op.alloc {
+        let mut all_known = !op.benches.is_empty();
+        for bench in &op.benches {
             match benches.get(bench) {
                 Some(&floor_us) => {
                     if op.wall_floor_us < floor_us {
@@ -499,10 +537,29 @@ fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<S
                     }
                 }
                 None => {
+                    all_known = false;
                     errors.push(format!("operation `{}` names unknown bench `{bench}`", op.id));
                 }
             }
             named.insert(bench.as_str());
+        }
+        if all_known {
+            let max_ceiling =
+                op.benches.iter().filter_map(|b| benches.get(b).copied()).max().unwrap_or(0);
+            let derived: Vec<u64> = op
+                .benches
+                .iter()
+                .filter(|b| op.derivation.contains(b.as_str()))
+                .filter_map(|b| benches.get(b).copied())
+                .collect();
+            let expected_floor =
+                if derived.len() >= 2 { derived.into_iter().sum() } else { max_ceiling };
+            if op.wall_floor_us != expected_floor {
+                errors.push(format!(
+                    "operation `{}` wall_floor_us {} does not match bench floor {expected_floor}",
+                    op.id, op.wall_floor_us
+                ));
+            }
         }
     }
     for bench in benches.keys() {
@@ -521,6 +578,9 @@ fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
         looser(&op.id, "processes", op.processes, before.processes, errors);
         looser(&op.id, "wall_floor_us", op.wall_floor_us, before.wall_floor_us, errors);
         looser(&op.id, "target_us", op.target_us, before.target_us, errors);
+        if !before.owed && op.owed {
+            errors.push(format!("operation `{}` is owed but was measured in the baseline", op.id));
+        }
     }
 }
 

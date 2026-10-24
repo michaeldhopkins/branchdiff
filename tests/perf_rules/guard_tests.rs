@@ -37,10 +37,10 @@ class = "command"
 fixture = "one file"
 test = "tests/counts.rs::counts"
 processes = 2
-wall_floor_us = 50000
-target_us = 50000
+wall_floor_us = 40000
+target_us = 40000
 derivation = "One external call plus the class margin."
-alloc = ["bench-a"]
+benches = ["bench-a"]
 "#;
 
 fn happy<'a>(baseline: Option<&'a str>) -> Case<'a> {
@@ -49,7 +49,7 @@ fn happy<'a>(baseline: Option<&'a str>) -> Case<'a> {
         surface: &["command:print"],
         tests: &["tests/counts.rs::counts"],
         baseline,
-        benches: &[("bench-a", 100)],
+        benches: &[("bench-a", 40_000)],
     }
 }
 
@@ -64,6 +64,7 @@ class = "{class}"
 fixture = "n"
 test = "tests/counts.rs::counts"
 processes = 1
+owed = true
 wall_floor_us = {wall_floor}
 target_us = {target}
 derivation = "Within the class."
@@ -179,18 +180,18 @@ fn collect_test_names_panics_when_read_dir_fails() {
 fn a_looser_floor_or_target_fails_and_a_tighter_one_passes() {
     let looser = HAPPY
         .replace("processes = 2", "processes = 3")
-        .replace("wall_floor_us = 50000", "wall_floor_us = 50001")
-        .replace("target_us = 50000", "target_us = 50001");
+        .replace("wall_floor_us = 40000", "wall_floor_us = 45000")
+        .replace("target_us = 40000", "target_us = 45000");
     let tighter = HAPPY
         .replace("processes = 2", "processes = 1")
-        .replace("wall_floor_us = 50000", "wall_floor_us = 40000")
-        .replace("target_us = 50000", "target_us = 40000");
+        .replace("wall_floor_us = 40000", "wall_floor_us = 30000")
+        .replace("target_us = 40000", "target_us = 30000");
     let errors = run(Case {
         manifest: &tighter,
         surface: &["command:print"],
         tests: &["tests/counts.rs::counts"],
         baseline: Some(HAPPY),
-        benches: &[("bench-a", 100)],
+        benches: &[("bench-a", 30_000)],
     });
     assert!(errors.is_empty(), "{errors:?}");
 
@@ -199,7 +200,7 @@ fn a_looser_floor_or_target_fails_and_a_tighter_one_passes() {
         surface: &["command:print"],
         tests: &["tests/counts.rs::counts"],
         baseline: Some(HAPPY),
-        benches: &[("bench-a", 100)],
+        benches: &[("bench-a", 45_000)],
     });
     for field in ["processes", "wall_floor_us", "target_us"] {
         assert!(
@@ -312,27 +313,27 @@ fn a_derivation_must_be_one_non_empty_line() {
 #[test]
 fn a_new_operation_absent_from_the_baseline_is_allowed() {
     let live = format!(
-        "{HAPPY}\n[[op]]\nid = \"command:help\"\nclass = \"command\"\nfixture = \"none\"\ntest = \"tests/counts.rs::counts\"\nprocesses = 0\nwall_floor_us = 1\ntarget_us = 1\nderivation = \"No external call.\"\n"
+        "{HAPPY}\n[[op]]\nid = \"command:help\"\nclass = \"command\"\nfixture = \"none\"\ntest = \"tests/counts.rs::counts\"\nprocesses = 0\nowed = true\nwall_floor_us = 1\ntarget_us = 1\nderivation = \"No external call.\"\n"
     );
     let errors = run(Case {
         manifest: &live,
         surface: &["command:print", "command:help"],
         tests: &["tests/counts.rs::counts"],
         baseline: Some(HAPPY),
-        benches: &[("bench-a", 100)],
+        benches: &[("bench-a", 40_000)],
     });
     assert!(errors.is_empty(), "{errors:?}");
 }
 
 #[test]
-fn every_named_bench_has_to_exist_and_wall_floor_must_cover_its_median() {
+fn every_named_bench_has_to_exist_and_wall_floor_must_equal_its_bench_or_derived_sum() {
     let unknown = HAPPY.replace("bench-a", "bench-missing");
     let errors = run(Case {
         manifest: &unknown,
         surface: &["command:print"],
         tests: &["tests/counts.rs::counts"],
         baseline: None,
-        benches: &[("bench-a", 100)],
+        benches: &[("bench-a", 40_000)],
     });
     assert!(
         errors.iter().any(|error| error.contains("unknown bench `bench-missing`")),
@@ -353,6 +354,132 @@ fn every_named_bench_has_to_exist_and_wall_floor_must_cover_its_median() {
     assert!(
         below_bench.iter().any(|error| error.contains("below bench `bench-a` ceiling 60000")),
         "{below_bench:?}"
+    );
+
+    // A 40 ms fingerprint bench with floor 40000 and no proposal passes.
+    let fp_40ms = r#"
+[[op]]
+id = "command:fingerprint"
+class = "command"
+fixture = "500 files, 25 changed"
+test = "tests/counts.rs::counts"
+processes = 11
+benches = ["refresh/fingerprint/500f_25c"]
+wall_floor_us = 40000
+target_us = 40000
+derivation = "Floor is refresh/fingerprint/500f_25c (40000 us)."
+"#;
+    let ok = run(Case {
+        manifest: fp_40ms,
+        surface: &["command:fingerprint"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("refresh/fingerprint/500f_25c", 40_000)],
+    });
+    assert!(ok.is_empty(), "40 ms fingerprint bench with floor 40000 must pass: {ok:?}");
+
+    // A floor 10% above its benches fails.
+    let fp_10pct_above = fp_40ms.replace("wall_floor_us = 40000", "wall_floor_us = 44000");
+    let floated = run(Case {
+        manifest: &fp_10pct_above,
+        surface: &["command:fingerprint"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("refresh/fingerprint/500f_25c", 40_000)],
+    });
+    assert!(
+        floated
+            .iter()
+            .any(|error| error.contains("wall_floor_us 44000") && error.contains("40000")),
+        "floor 10% above bench must fail: {floated:?}"
+    );
+
+    // When the derivation names multiple benches, wall_floor_us must equal their sum.
+    let summed = r#"
+[[op]]
+id = "command:files"
+class = "command"
+fixture = "500 files"
+test = "tests/counts.rs::counts"
+processes = 5
+benches = ["bench-a", "bench-b"]
+wall_floor_us = 40000
+target_us = 40000
+derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
+"#;
+    let sum_ok = run(Case {
+        manifest: summed,
+        surface: &["command:files"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 30_000), ("bench-b", 10_000)],
+    });
+    assert!(sum_ok.is_empty(), "derived sum must pass: {sum_ok:?}");
+
+    let sum_floated = summed.replace("wall_floor_us = 40000", "wall_floor_us = 44000");
+    let sum_err = run(Case {
+        manifest: &sum_floated,
+        surface: &["command:files"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 30_000), ("bench-b", 10_000)],
+    });
+    assert!(
+        sum_err
+            .iter()
+            .any(|error| error.contains("wall_floor_us 44000") && error.contains("40000")),
+        "floor 10% above derived sum must fail: {sum_err:?}"
+    );
+}
+
+#[test]
+fn a_non_owed_floor_at_its_class_cap_fails_while_an_owed_placeholder_passes() {
+    let non_owed_at_cap = HAPPY
+        .replace("wall_floor_us = 40000", "wall_floor_us = 50000")
+        .replace("target_us = 40000", "target_us = 50000");
+    let errors = run(Case {
+        manifest: &non_owed_at_cap,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 50_000)],
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("owed") && error.contains("50000")),
+        "non-owed floor at class cap must fail: {errors:?}"
+    );
+
+    let non_owed_no_benches = HAPPY.replace("benches = [\"bench-a\"]\n", "");
+    let errors = run(Case {
+        manifest: &non_owed_no_benches,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[],
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("not owed") && error.contains("benches")),
+        "non-owed operation without benches must fail: {errors:?}"
+    );
+
+    let owed_with_benches = format!("{HAPPY}owed = true\n");
+    let errors = run(happy_manifest(&owed_with_benches));
+    assert!(
+        errors.iter().any(|error| error.contains("owed") && error.contains("benches")),
+        "owed operation with benches must fail: {errors:?}"
+    );
+
+    let became_owed = format!("{}\nowed = true\n", HAPPY.replace("benches = [\"bench-a\"]\n", ""));
+    let errors = run(Case {
+        manifest: &became_owed,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(HAPPY),
+        benches: &[],
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("owed") && error.contains("baseline")),
+        "measured operation becoming owed must fail: {errors:?}"
     );
 }
 
@@ -381,7 +508,7 @@ fn happy_manifest<'a>(manifest: &'a str) -> Case<'a> {
         surface: &["command:print"],
         tests: &["tests/counts.rs::counts"],
         baseline: None,
-        benches: &[("bench-a", 100)],
+        benches: &[("bench-a", 40_000)],
     }
 }
 

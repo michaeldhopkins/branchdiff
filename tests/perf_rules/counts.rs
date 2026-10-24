@@ -1,12 +1,13 @@
-//! Process-count floors for the commands, and zero-spawn renders for keys.
+//! Process-count floors for the commands, and zero-spawn reducer+render for keys.
 //!
-//! The child PATH contains only the stub directory; each stub records one line
-//! per spawn and execs the real binary by absolute path, so any unexpected
-//! program fails to start. Nested spawns from `jj` are not counted. Wall clock
-//! is not measured here.
+//! The child PATH contains only the stub directory, which is inherited by every
+//! subprocess. `jj` and `git` stubs record one line per spawn and exec the real
+//! binary by absolute path; generic stubs for other programs record the spawn
+//! attempt and exit 127. Wall clock is not measured here.
 
+use std::collections::BTreeSet;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Instant;
@@ -21,7 +22,8 @@ use tempfile::TempDir;
 
 use branchdiff::app::{App, FrameContext};
 use branchdiff::diff::{DiffLine, FileDiff, LineSource};
-use branchdiff::input::handle_event;
+use branchdiff::input::{AppAction, handle_event};
+use branchdiff::message::{LoopAction, OpenTarget, RefreshTrigger, Repaint, UpdateResult};
 use branchdiff::ui::draw_with_frame;
 use branchdiff::update::RecoveryHint;
 
@@ -57,14 +59,18 @@ fn command_process_counts_match_their_floors() {
 }
 
 #[test]
-fn keystrokes_render_without_spawning() {
+fn keystrokes_reduce_and_render_without_spawning() {
     let Some(counts_os) = std::env::var_os("BRANCHDIFF_KEYSTROKE_COUNTS") else {
         let home = TempDir::new().expect("home");
         let stub = write_stub(home.path());
         let counts = home.path().join("keystroke-counts.txt");
         fs::write(&counts, "").expect("init keystroke counts");
         let output = Command::new(std::env::current_exe().expect("current_exe"))
-            .args(["--exact", "counts::keystrokes_render_without_spawning", "--nocapture"])
+            .args([
+                "--exact",
+                "counts::keystrokes_reduce_and_render_without_spawning",
+                "--nocapture",
+            ])
             .env_clear()
             .env("PATH", stub_env_path(&stub))
             .env("HOME", home.path())
@@ -72,11 +78,15 @@ fn keystrokes_render_without_spawning() {
             .env("BRANCHDIFF_KEYSTROKE_COUNTS", &counts)
             .output()
             .expect("spawn keystroke child");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             output.status.success(),
-            "keystrokes child failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            "keystrokes child failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains("1 passed; 0 failed"),
+            "keystrokes child must run exactly 1 test:\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
         assert_eq!(count_spawns(&counts), 0, "keystrokes must not spawn any process");
         return;
@@ -84,18 +94,24 @@ fn keystrokes_render_without_spawning() {
     let counts = PathBuf::from(counts_os);
     let files = render_files();
     let mut rendered = 0;
+    let mut recorded_effects = BTreeSet::new();
     for op in manifest_ops().iter().filter(|op| op.class == "keystroke") {
         assert_eq!(op.processes, 0, "{} is in-process and its process floor is 0", op.id);
         let drive = drive_for(&op.id).unwrap_or_else(|| panic!("{} has no key arm", op.id));
         let mut app = prepare(&files, &op.id);
         match drive {
             Drive::Action(event) => {
-                let action = handle_event(event);
+                let action = if matches!(event, Event::Resize(_, _)) {
+                    AppAction::Resize
+                } else {
+                    handle_event(event)
+                };
                 assert_eq!(action_name(action), Some(op.id.as_str()), "{}", op.id);
                 if skips_reducer(&op.id) {
                     exercise_clipboard_prep(&mut app, &op.id);
                 } else {
-                    apply_input(&mut app, action);
+                    let result = apply_input(&mut app, action);
+                    record_effect(&op.id, &result, &mut recorded_effects);
                 }
             }
             Drive::Search(event) => {
@@ -108,6 +124,50 @@ fn keystrokes_render_without_spawning() {
         rendered += 1;
     }
     assert!(rendered > 0, "the manifest has no keystrokes");
+    for expected in [
+        "key:quit", "key:copy-or-quit", "key:force-repaint", "key:resize", "key:toggle-diff-base",
+        "key:open-editor", "key:open-repo", "key:run-recovery",
+    ] {
+        assert!(
+            recorded_effects.contains(expected),
+            "effect runner did not observe expected effect for {expected}"
+        );
+    }
+}
+
+fn record_effect(id: &str, result: &UpdateResult, recorded: &mut BTreeSet<String>) {
+    match id {
+        "key:quit" | "key:copy-or-quit" => {
+            assert_eq!(result.loop_action, LoopAction::Quit, "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:force-repaint" => {
+            assert_eq!(result.repaint, Repaint::Full, "{id}");
+            assert!(result.needs_redraw, "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:resize" => {
+            assert!(result.needs_redraw, "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:toggle-diff-base" => {
+            assert_eq!(result.refresh, RefreshTrigger::Full, "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:open-editor" => {
+            assert!(matches!(result.open_editor, Some(OpenTarget::File(_))), "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:open-repo" => {
+            assert_eq!(result.open_editor, Some(OpenTarget::Repo), "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:run-recovery" => {
+            assert!(result.trigger_recovery.is_some(), "{id}");
+            recorded.insert(id.to_string());
+        }
+        _ => {}
+    }
 }
 
 fn manifest_ops() -> Vec<Op> {
@@ -162,6 +222,8 @@ fn run_counted(
     cmd.env("BRANCHDIFF_PERF_COUNTS", &counts);
     let output = cmd.output().unwrap_or_else(|err| panic!("{id} failed to start: {err}"));
     assert_output(id, &output);
+    let unexpected = unexpected_spawns(&counts);
+    assert!(unexpected.is_empty(), "{id} spawned unexpected program(s): {}", unexpected.join(", "));
     count_spawns(&counts)
 }
 
@@ -286,9 +348,24 @@ fn resolve_binary(name: &str) -> PathBuf {
     panic!("binary `{name}` not found on PATH");
 }
 
+const GENERIC_STUB_NAMES: &[&str] = &[
+    "sh", "bash", "zsh", "open", "xdg-open", "cmd", "pbcopy", "pbpaste", "xclip", "xsel",
+    "wl-copy", "wl-paste", "klipper", "vi", "vim", "nvim", "nvim-remote", "view", "emacs",
+    "emacsclient", "hx", "helix", "nano", "code", "code-insiders", "codium", "cursor", "subl",
+    "sublime_text", "zed", "xed", "bbedit", "acme", "uname",
+];
+
 fn write_stub(home: &Path) -> PathBuf {
     let dir = home.join("stub");
     fs::create_dir_all(&dir).expect("stub dir");
+    let record_only = dir.join(".record");
+    fs::write(
+        &record_only,
+        "#!/bin/sh\nprintf '%s\\n' \"${0##*/}\" >> \"$BRANCHDIFF_PERF_COUNTS\"\nexit 127\n",
+    )
+    .expect("write .record");
+    set_executable(&record_only);
+
     for name in ["jj", "git"] {
         let real = resolve_binary(name);
         let script = format!(
@@ -297,11 +374,41 @@ fn write_stub(home: &Path) -> PathBuf {
         );
         let path = dir.join(name);
         fs::write(&path, script).expect("stub");
-        let mut permissions = fs::metadata(&path).expect("stub metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&path, permissions).expect("stub mode");
+        set_executable(&path);
+    }
+
+    let mut names: BTreeSet<String> =
+        GENERIC_STUB_NAMES.iter().map(|name| (*name).to_string()).collect();
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for entry_dir in std::env::split_paths(&path_var) {
+            let Ok(entries) = fs::read_dir(entry_dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str()
+                    && !name.starts_with('.')
+                {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+    }
+    for name in names {
+        if matches!(name.as_str(), "jj" | "git") {
+            continue;
+        }
+        let dst = dir.join(&name);
+        if !dst.exists() {
+            let _ = symlink(".record", &dst);
+        }
     }
     dir
+}
+
+fn set_executable(path: &Path) {
+    let mut permissions = fs::metadata(path).expect("stub metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("stub mode");
 }
 
 fn real_path() -> String {
@@ -309,19 +416,17 @@ fn real_path() -> String {
 }
 
 fn count_spawns(path: &Path) -> usize {
-    let mut count = 0;
-    for line in fs::read_to_string(path).expect("counts").lines() {
-        if line.is_empty() {
-            continue;
-        }
-        assert!(
-            matches!(line, "jj" | "git"),
-            "unexpected program `{line}` recorded in {}",
-            path.display()
-        );
-        count += 1;
-    }
-    count
+    fs::read_to_string(path).expect("counts").lines().filter(|line| !line.trim().is_empty()).count()
+}
+
+fn unexpected_spawns(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .expect("counts")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !matches!(*line, "jj" | "git"))
+        .map(String::from)
+        .collect()
 }
 
 fn tail(text: &str) -> String {
@@ -418,6 +523,7 @@ fn drive_for(id: &str) -> Option<Drive> {
         "key:open-editor" => action(KeyCode::Char('e'), KeyModifiers::NONE),
         "key:open-repo" => action(KeyCode::Char('E'), KeyModifiers::SHIFT),
         "key:run-recovery" => action(KeyCode::Char('u'), KeyModifiers::NONE),
+        "key:resize" => Drive::Action(Event::Resize(120, 50)),
         "key:start-selection" => Drive::Action(mouse(MouseEventKind::Down(MouseButton::Left))),
         "key:update-selection" => Drive::Action(mouse(MouseEventKind::Drag(MouseButton::Left))),
         "key:end-selection" => Drive::Action(mouse(MouseEventKind::Up(MouseButton::Left))),
@@ -493,23 +599,31 @@ fn paint(app: &mut App) {
 }
 
 #[test]
-fn stub_path_is_stub_dir_only_and_stubs_exec_absolute_paths() {
+fn stub_path_is_stub_dir_only_and_counts_any_spawn_including_non_vcs_programs() {
     let home = TempDir::new().expect("home");
     let stub = write_stub(home.path());
+    let counts = home.path().join("counts.txt");
+    fs::write(&counts, "").expect("init counts");
     assert_eq!(stub_env_path(&stub), stub.display().to_string());
     for name in ["jj", "git"] {
         let body = fs::read_to_string(stub.join(name)).expect("read stub");
         assert!(body.contains("exec \"/"), "{name} stub must exec an absolute path:\n{body}");
     }
-    let unexpected = Command::new("uname").env_clear().env("PATH", stub_env_path(&stub)).output();
-    assert!(unexpected.is_err(), "unexpected program on stub PATH must fail to spawn");
-}
+    for name in ["uname", "open"] {
+        let out = Command::new(name)
+            .env_clear()
+            .env("PATH", stub_env_path(&stub))
+            .env("BRANCHDIFF_PERF_COUNTS", &counts)
+            .output()
+            .expect("generic recording stub must intercept spawn");
+        assert!(!out.status.success(), "{name} generic stub must exit non-zero");
+    }
+    assert_eq!(count_spawns(&counts), 2, "count_spawns must count non-jj/git spawns");
+    assert_eq!(unexpected_spawns(&counts), vec!["uname".to_string(), "open".to_string()]);
 
-#[test]
-#[should_panic(expected = "unexpected program")]
-fn count_spawns_panics_on_unexpected_program() {
-    let home = TempDir::new().expect("home");
-    let counts = home.path().join("counts.txt");
-    fs::write(&counts, "jj\nuname\n").expect("write counts");
-    let _ = count_spawns(&counts);
+    let unstubbed = Command::new("nonexistent-branchdiff-program")
+        .env_clear()
+        .env("PATH", stub_env_path(&stub))
+        .output();
+    assert!(unstubbed.is_err(), "program absent from stub dir must fail to start");
 }

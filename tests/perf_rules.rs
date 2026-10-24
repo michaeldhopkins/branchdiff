@@ -60,11 +60,10 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
         assert!(op.id.starts_with(prefix), "{} is class {}", op.id, op.class);
         if op.class == "command" && op.processes > 0 {
             assert!(
-                !op.alloc.is_empty() && op.wall_floor_us > guard::COMMAND_US,
-                "{} spawns {} processes and must have a measured bench floor, not the {} us cap",
+                !op.benches.is_empty() && !op.owed,
+                "{} spawns {} processes and must have a measured bench floor",
                 op.id,
                 op.processes,
-                guard::COMMAND_US
             );
         }
         if op.id == "command:branchdiff" {
@@ -83,4 +82,53 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
             );
         }
     }
+}
+
+#[test]
+fn fingerprint_speedup_to_40ms_without_proposal_passes_and_10_percent_above_bench_fails() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = fs::read_to_string(root.join("tests/perf.toml")).expect("read tests/perf.toml");
+    let surface = surface::operations();
+    let mut tests = BTreeSet::new();
+    guard::collect_test_names(&root.join("tests"), &mut tests);
+    guard::collect_test_names(&root.join("src"), &mut tests);
+    let bench_text =
+        fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
+    let mut benches = guard::recorded_benches(&bench_text);
+    benches.insert("refresh/fingerprint/500f_25c".to_string(), 40_000);
+
+    let sped_up: String = manifest
+        .lines()
+        .filter(|line| !line.starts_with("proposal = \"--fingerprint skips per-file blob reads"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(
+            "wall_floor_us = 55805\ntarget_us = 50000",
+            "wall_floor_us = 40000\ntarget_us = 40000",
+        );
+
+    let errors = guard::check(&guard::Input {
+        manifest: &sped_up,
+        surface: &surface,
+        tests: &tests,
+        baseline: Some(&manifest),
+        benches: &benches,
+    });
+    assert!(errors.is_empty(), "40 ms fingerprint with no proposal must pass: {errors:?}");
+
+    let floated = sped_up.replace(
+        "wall_floor_us = 40000\ntarget_us = 40000",
+        "wall_floor_us = 44000\ntarget_us = 40000",
+    );
+    let errors = guard::check(&guard::Input {
+        manifest: &floated,
+        surface: &surface,
+        tests: &tests,
+        baseline: Some(&manifest),
+        benches: &benches,
+    });
+    assert!(
+        errors.iter().any(|err| err.contains("command:fingerprint") && err.contains("44000")),
+        "floor 10% above bench must fail: {errors:?}"
+    );
 }
