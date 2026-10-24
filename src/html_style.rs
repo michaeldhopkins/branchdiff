@@ -218,6 +218,11 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
 .review-comment {{ border-left: 3px solid var(--cyan); background: var(--bg-hl); border-radius: 4px; padding: 6px 10px; }}
 .comment-header {{ color: var(--cyan); font-weight: 600; font-size: 12px; margin-bottom: 2px; }}
 .comment-body {{ color: var(--fg); white-space: pre-wrap; }}
+.comment-suggestion {{ margin-top: 6px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; font-size: 12px; }}
+.suggestion-label {{ color: var(--fg-sec); font-weight: 600; padding: 2px 8px; border-bottom: 1px solid var(--border); }}
+.sug-del, .sug-add {{ padding: 0 8px; white-space: pre-wrap; }}
+.sug-del {{ background: color-mix(in srgb, var(--c-deleted) 19%, transparent); }}
+.sug-add {{ background: color-mix(in srgb, var(--c-added) 19%, transparent); }}
 /* Word highlights outline rather than fill: the fill alternative — `background:
    <hue> at 0.35 alpha` — drops some token colours to 2.9-4.5:1 on the tint,
    while the outline and underline leave the tokens' own contrast intact. */

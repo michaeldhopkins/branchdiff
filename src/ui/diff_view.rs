@@ -3088,6 +3088,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "File-level review note".into(),
                 author: Some("alice".into()),
+                suggestion: None,
             },
             ReviewComment {
                 path: "src/lib.rs".into(),
@@ -3096,6 +3097,7 @@ mod tests {
                 side: CommentSide::Old,
                 body: "Old deleted line comment".into(),
                 author: None,
+                suggestion: None,
             },
             ReviewComment {
                 path: "src/lib.rs".into(),
@@ -3104,6 +3106,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "New added line comment".into(),
                 author: Some("bob".into()),
+                suggestion: None,
             },
             ReviewComment {
                 path: "src/lib.rs".into(),
@@ -3112,6 +3115,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "Outside diff fallback comment".into(),
                 author: None,
+                suggestion: None,
             },
         ]);
 
@@ -3218,5 +3222,31 @@ mod tests {
         let deleted = row_with(&rows, "deleted_old");
         assert!(!deleted[..deleted.find("deleted_old").unwrap()].contains('2'), "{rows:#?}");
         assert!(row_with(&rows, "added_new").contains("2 "), "{rows:#?}");
+    }
+
+    #[test]
+    fn the_tui_draws_a_suggestion_under_its_comment() {
+        use crate::comments::{CommentSide, ReviewComment};
+        let mut app = one_edit_app();
+        app.set_comments(vec![ReviewComment {
+            path: "src/lib.rs".into(),
+            start_line: Some(2),
+            end_line: Some(2),
+            side: CommentSide::New,
+            body: "Better name.\n```suggestion\nrenamed\n```".into(),
+            author: Some("bob".into()),
+            suggestion: None,
+        }]);
+        let rows = screen_of(&mut app, 90, 16);
+        let at = |needle: &str| {
+            rows.iter()
+                .position(|r| r.contains(needle))
+                .unwrap_or_else(|| panic!("{needle}: {rows:#?}"))
+        };
+        let label = at("Suggested change");
+        assert!(at("Better name.") < label);
+        assert!(rows[label + 1].contains("- added_new"), "{rows:#?}");
+        assert!(rows[label + 2].contains("+ renamed"), "{rows:#?}");
+        assert!(!rows.iter().any(|r| r.contains("```")), "{rows:#?}");
     }
 }

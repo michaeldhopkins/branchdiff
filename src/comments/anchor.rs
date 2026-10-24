@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::diff::{DiffLine, FileDiff, LineSource};
 
+use super::suggestion::has_suggestion;
 use super::{AnchoredComment, AnchoredComments, CommentSide, ReviewComment};
 
 const DIFF_CONTEXT_LINES: usize = 5;
@@ -160,6 +161,35 @@ fn effective_old_line(line: &DiffLine) -> Option<usize> {
     line.old_line().or_else(|| if line.source.is_deletion() { line.line_number } else { None })
 }
 
+/// The text of the lines `comment` covers on its side, for showing what a
+/// suggestion replaces. Empty unless the comment carries a suggestion.
+fn replaced_lines(lines: &[DiffLine], span: &FileSpan, comment: &ReviewComment) -> Vec<String> {
+    if !has_suggestion(&comment.body, comment.suggestion.as_deref()) {
+        return Vec::new();
+    }
+    let Some(last) = comment.end_line.or(comment.start_line) else {
+        return Vec::new();
+    };
+    let first = comment.start_line.unwrap_or(last).min(last);
+    let last = last.max(first);
+    span.line_indices
+        .iter()
+        .map(|&i| &lines[i])
+        .filter(|l| !matches!(l.source, LineSource::Elided | LineSource::FileHeader))
+        .filter(|l| match comment.side {
+            CommentSide::New => {
+                !l.source.is_deletion()
+                    && l.line_number.is_some_and(|n| (first..=last).contains(&n))
+            }
+            CommentSide::Old => effective_old_line(l).is_some_and(|n| (first..=last).contains(&n)),
+        })
+        .map(|l| match comment.side {
+            CommentSide::Old => l.old_content.clone().unwrap_or_else(|| l.content.clone()),
+            CommentSide::New => l.content.clone(),
+        })
+        .collect()
+}
+
 fn find_anchor_in_span(
     lines: &[DiffLine],
     span: &FileSpan,
@@ -237,33 +267,18 @@ pub fn anchor_comments(lines: &[DiffLine], comments: &[ReviewComment]) -> Anchor
         let matched_span = spans.iter().find(|s| s.matches(&comment.path));
         let is_file_level = comment.start_line.is_none() && comment.end_line.is_none();
 
-        match matched_span {
-            Some(span) if is_file_level => {
-                by_line
-                    .entry(span.header_idx)
-                    .or_default()
-                    .push(AnchoredComment { comment: comment.clone(), outdated: false });
-            }
-            Some(span) => {
-                if let Some(line_idx) = find_anchor_in_span(lines, span, comment) {
-                    by_line
-                        .entry(line_idx)
-                        .or_default()
-                        .push(AnchoredComment { comment: comment.clone(), outdated: false });
-                } else {
-                    by_line
-                        .entry(span.header_idx)
-                        .or_default()
-                        .push(AnchoredComment { comment: comment.clone(), outdated: true });
-                }
-            }
-            None => {
-                by_line
-                    .entry(0)
-                    .or_default()
-                    .push(AnchoredComment { comment: comment.clone(), outdated: true });
-            }
-        }
+        let (line_idx, outdated, replaced) = match matched_span {
+            Some(span) if is_file_level => (span.header_idx, false, Vec::new()),
+            Some(span) => match find_anchor_in_span(lines, span, comment) {
+                Some(idx) => (idx, false, replaced_lines(lines, span, comment)),
+                None => (span.header_idx, true, Vec::new()),
+            },
+            None => (0, true, Vec::new()),
+        };
+        by_line
+            .entry(line_idx)
+            .or_default()
+            .push(AnchoredComment::new(comment, outdated, replaced));
     }
 
     AnchoredComments { by_line }

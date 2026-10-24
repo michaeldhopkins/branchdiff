@@ -97,6 +97,8 @@ fn extract_from_object(
         }
     };
 
+    let suggestion = val.get("suggestion").and_then(JsonVal::as_str).map(str::to_string);
+
     let author = val
         .get("author")
         .and_then(JsonVal::as_str)
@@ -104,7 +106,7 @@ fn extract_from_object(
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    out.push(ReviewComment { path, start_line, end_line, side, body, author });
+    out.push(ReviewComment { path, start_line, end_line, side, body, author, suggestion });
     Ok(())
 }
 
@@ -153,5 +155,13 @@ fn extract_reviewdog_diagnostic(
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    Ok(ReviewComment { path, start_line, end_line, side: CommentSide::New, body, author })
+    Ok(ReviewComment {
+        path,
+        start_line,
+        end_line,
+        side: CommentSide::New,
+        body,
+        author,
+        suggestion: None,
+    })
 }

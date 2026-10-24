@@ -58,6 +58,7 @@ fn finish_record(spec: HeaderSpec, body_lines: &[&str]) -> ReviewComment {
         side: spec.side,
         body,
         author: None,
+        suggestion: None,
     }
 }
 

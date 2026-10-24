@@ -745,6 +745,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "<script>alert(\"xss\")</script> & <img onerror='boom'>".into(),
                 author: Some("evil<script>".into()),
+                suggestion: None,
             }],
         );
         let data = OutputData {

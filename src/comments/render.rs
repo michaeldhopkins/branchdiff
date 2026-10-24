@@ -10,20 +10,50 @@ use crate::html::html_escape;
 use crate::ui::ScreenRowInfo;
 use crate::ui::wrapping::{wrap_content, wrapped_line_height};
 
-use super::AnchoredComments;
 use super::sanitize::printable;
+use super::suggestion::SUGGESTION_LABEL;
+use super::{AnchoredComment, AnchoredComments};
 
 const COMMENT_HEADER_COLOR: Color = Color::Rgb(110, 200, 235);
 const COMMENT_BODY_COLOR: Color = Color::Rgb(225, 228, 234);
 const COMMENT_GUTTER_COLOR: Color = Color::Rgb(110, 200, 235);
+const SUGGESTION_REMOVED_COLOR: Color = Color::Rgb(255, 107, 102);
+const SUGGESTION_ADDED_COLOR: Color = Color::Rgb(63, 185, 80);
 
-pub(super) fn body_lines(body: &str) -> Vec<&str> {
-    if body.is_empty() { vec![""] } else { body.lines().collect() }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Header,
+    Body,
+    Label,
+    Removed,
+    Added,
+}
+
+/// Every row of text a comment shows, in order. Height and drawing both come
+/// from this list, so they cannot disagree.
+fn pieces(anchored: &AnchoredComment) -> Vec<(Role, String)> {
+    let parts = anchored.parts();
+    let mut out = vec![(Role::Header, printable(&anchored.header_label()).into_owned())];
+    out.extend(parts.text.iter().map(|t| (Role::Body, printable(t).into_owned())));
+    if parts.suggestion.is_some() {
+        out.push((Role::Label, SUGGESTION_LABEL.to_string()));
+        for (sign, text) in anchored.suggestion_rows() {
+            let role = if sign == '-' { Role::Removed } else { Role::Added };
+            out.push((role, printable(&format!("{sign} {text}")).into_owned()));
+        }
+    }
+    out
 }
 
 fn wrapped_rows_for_text(text: &str, content_width: usize) -> usize {
     let w = content_display_width(text);
     if content_width == 0 || w <= content_width { 1 } else { w.div_ceil(content_width) }
+}
+
+/// The comment's rows after its header, as plain sanitized text: prose, then the
+/// suggested change as a small diff.
+pub(super) fn body_rows(anchored: &AnchoredComment) -> Vec<String> {
+    pieces(anchored).into_iter().skip(1).map(|(_, text)| text).collect()
 }
 
 /// Number of screen rows required to render all comments attached to `line_idx`
@@ -38,10 +68,8 @@ pub fn tui_comment_rows_for_line(
     };
     let mut total = 0;
     for anchored in list {
-        let header_text = anchored.header_label();
-        total += wrapped_rows_for_text(&header_text, content_width);
-        for raw in body_lines(&anchored.comment.body) {
-            total += wrapped_rows_for_text(raw, content_width);
+        for (_, text) in pieces(anchored) {
+            total += wrapped_rows_for_text(&text, content_width);
         }
     }
     total
@@ -94,6 +122,9 @@ pub fn render_tui_comments(
     let gutter_style = Style::default().fg(COMMENT_GUTTER_COLOR);
     let header_style = Style::default().fg(COMMENT_HEADER_COLOR).add_modifier(Modifier::BOLD);
     let body_style = Style::default().fg(COMMENT_BODY_COLOR);
+    let label_style = Style::default().fg(COMMENT_BODY_COLOR).add_modifier(Modifier::BOLD);
+    let removed_style = Style::default().fg(SUGGESTION_REMOVED_COLOR);
+    let added_style = Style::default().fg(SUGGESTION_ADDED_COLOR);
 
     let mut remaining_skip = spec.skip_rows.saturating_sub(line_full_rows);
     let mut emitted = 0usize;
@@ -129,9 +160,15 @@ pub fn render_tui_comments(
     };
 
     for anchored in list {
-        emit_piece(anchored.header_label(), " 💬 ", header_style);
-        for raw in body_lines(&anchored.comment.body) {
-            emit_piece(raw.to_string(), "  │ ", body_style);
+        for (role, text) in pieces(anchored) {
+            let (gutter, style) = match role {
+                Role::Header => (" 💬 ", header_style),
+                Role::Body => ("  │ ", body_style),
+                Role::Label => ("  │ ", label_style),
+                Role::Removed => ("  │ ", removed_style),
+                Role::Added => ("  │ ", added_style),
+            };
+            emit_piece(text, gutter, style);
         }
     }
 
@@ -150,13 +187,35 @@ pub fn write_print_comments(
     };
     let indent = if line_num_width > 0 { " ".repeat(line_num_width + 1) } else { String::new() };
     for anchored in list {
-        let header = anchored.header_label();
-        writeln!(out, "{indent}\x1b[36m\x1b[1m  💬 {}\x1b[0m", printable(&header))?;
-        for raw in body_lines(&anchored.comment.body) {
-            writeln!(out, "{indent}\x1b[36m  │ \x1b[0m {}", printable(raw))?;
+        for (role, text) in pieces(anchored) {
+            match role {
+                Role::Header => writeln!(out, "{indent}\x1b[36m\x1b[1m  💬 {text}\x1b[0m")?,
+                Role::Body => writeln!(out, "{indent}\x1b[36m  │ \x1b[0m {text}")?,
+                Role::Label => writeln!(out, "{indent}\x1b[36m  │ \x1b[0m \x1b[1m{text}\x1b[0m")?,
+                Role::Removed => {
+                    writeln!(out, "{indent}\x1b[36m  │ \x1b[0m \x1b[31m{text}\x1b[0m")?
+                }
+                Role::Added => writeln!(out, "{indent}\x1b[36m  │ \x1b[0m \x1b[32m{text}\x1b[0m")?,
+            }
         }
     }
     Ok(())
+}
+
+/// The "Suggested change" block of a comment, or nothing.
+fn html_suggestion(anchored: &AnchoredComment) -> String {
+    if anchored.parts().suggestion.is_none() {
+        return String::new();
+    }
+    let mut out = format!(
+        "<div class=\"comment-suggestion\"><div class=\"suggestion-label\">{SUGGESTION_LABEL}</div>"
+    );
+    for (sign, text) in anchored.suggestion_rows() {
+        let class = if sign == '-' { "sug-del" } else { "sug-add" };
+        out.push_str(&format!("<div class=\"{class}\">{} {}</div>", sign, html_escape(&text)));
+    }
+    out.push_str("</div>");
+    out
 }
 
 /// Write HTML table rows for comments attached to `line_idx` in `--html` mode.
@@ -172,13 +231,15 @@ pub fn write_html_comments(
     let ln = "<td class=\"ln\"></td>".repeat(ln_cells);
     for anchored in list {
         let header = html_escape(&anchored.header_label());
-        let body = html_escape(&anchored.comment.body);
+        let parts = anchored.parts();
+        let body = html_escape(&parts.text.join("\n"));
+        let suggestion = html_suggestion(anchored);
         writeln!(
             out,
             "<tr class=\"comment-row\">{ln}<td class=\"gutter\"></td>\
              <td class=\"comment-cell\"><div class=\"review-comment\">\
              <div class=\"comment-header\">💬 {header}</div>\
-             <div class=\"comment-body\">{body}</div>\
+             <div class=\"comment-body\">{body}</div>{suggestion}\
              </div></td></tr>"
         )?;
     }
@@ -202,6 +263,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "note".into(),
                 author: None,
+                suggestion: None,
             }],
         );
         for (cells, expected) in [(1, 1), (2, 2)] {
@@ -227,6 +289,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "title \x1b]0;PWNED\x07 then \u{9b}2J".into(),
                 author: Some("eve\x1b[5m".into()),
+                suggestion: None,
             }],
         );
         let mut buf = Vec::new();
@@ -236,5 +299,112 @@ mod tests {
         assert!(ours.chars().all(|c| !c.is_control() || c == '\n'), "{out:?}");
         assert!(ours.contains("@eve [5m · new line 1"), "{out:?}");
         assert!(ours.contains("title  ]0;PWNED  then  2J"), "{out:?}");
+    }
+
+    fn suggestion_fixture(
+        side: CommentSide,
+        body: &str,
+        suggestion: Option<&str>,
+    ) -> (Vec<DiffLine>, AnchoredComments) {
+        use crate::diff::{DiffInput, compute_four_way_diff};
+        let base = "one\ntwo\nthree\nfour\n";
+        let working = "one\nTWO\nthree\nfour\n";
+        let diff = compute_four_way_diff(DiffInput {
+            path: "a.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+        let comment = ReviewComment {
+            path: "a.rs".into(),
+            start_line: Some(2),
+            end_line: Some(3),
+            side,
+            body: body.into(),
+            author: None,
+            suggestion: suggestion.map(str::to_string),
+        };
+        let anchored = anchor_comments(&diff.lines, &[comment]);
+        (diff.lines, anchored)
+    }
+
+    fn print_text(anchored: &AnchoredComments, idx: usize) -> String {
+        let mut buf = Vec::new();
+        write_print_comments(&mut buf, anchored, idx, 1).unwrap();
+        String::from_utf8(buf)
+            .unwrap()
+            .replace("\x1b[36m", "")
+            .replace("\x1b[1m", "")
+            .replace("\x1b[31m", "")
+            .replace("\x1b[32m", "")
+            .replace("\x1b[0m", "")
+    }
+
+    #[test]
+    fn a_suggestion_replaces_the_covered_new_lines_in_print() {
+        let (lines, anchored) = suggestion_fixture(
+            CommentSide::New,
+            "Rename it.\n```suggestion\nTwo\nthree!\n```",
+            None,
+        );
+        let idx = (0..lines.len()).find(|i| anchored.for_line(*i).is_some()).unwrap();
+        let out = print_text(&anchored, idx);
+        let rows: Vec<&str> = out.lines().map(str::trim_start).collect();
+        assert_eq!(
+            rows[1..],
+            [
+                "│  Rename it.", "│  Suggested change", "│  - TWO", "│  - three", "│  + Two",
+                "│  + three!"
+            ],
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_json_field_shows_the_same_as_a_fence_and_old_side_replaces_old_text() {
+        let (lines, fenced) = suggestion_fixture(CommentSide::New, "```suggestion\nX\n```", None);
+        let (_, field) = suggestion_fixture(CommentSide::New, "", Some("X"));
+        let idx = (0..lines.len()).find(|i| fenced.for_line(*i).is_some()).unwrap();
+        let rows = |a: &AnchoredComments| a.for_line(idx).unwrap()[0].suggestion_rows();
+        assert_eq!(rows(&fenced), rows(&field));
+        let (_, old) = suggestion_fixture(CommentSide::Old, "", Some("X"));
+        assert_eq!(old.for_line(idx).unwrap()[0].suggestion_rows()[0], ('-', "two".to_string()));
+    }
+
+    #[test]
+    fn a_comment_without_a_suggestion_has_no_label() {
+        let (lines, anchored) = suggestion_fixture(CommentSide::New, "plain ```text```", None);
+        let idx = (0..lines.len()).find(|i| anchored.for_line(*i).is_some()).unwrap();
+        assert!(!print_text(&anchored, idx).contains(SUGGESTION_LABEL));
+    }
+
+    #[test]
+    fn the_tui_height_counts_every_suggestion_row() {
+        let (lines, anchored) = suggestion_fixture(
+            CommentSide::New,
+            "Rename it.\n```suggestion\nTwo\nthree!\n```",
+            None,
+        );
+        let idx = (0..lines.len()).find(|i| anchored.for_line(*i).is_some()).unwrap();
+        // header, one prose line, label, two removed, two added
+        assert_eq!(tui_comment_rows_for_line(&anchored, idx, 80), 1 + 1 + 1 + 2 + 2);
+        // a narrow width wraps the longer rows
+        assert!(tui_comment_rows_for_line(&anchored, idx, 8) > 7);
+    }
+
+    #[test]
+    fn html_shows_the_suggestion_as_a_small_diff_and_escapes_it() {
+        let (lines, anchored) =
+            suggestion_fixture(CommentSide::New, "```suggestion\n<b>&\n```", None);
+        let idx = (0..lines.len()).find(|i| anchored.for_line(*i).is_some()).unwrap();
+        let mut buf = Vec::new();
+        write_html_comments(&mut buf, &anchored, idx, 1).unwrap();
+        let html = String::from_utf8(buf).unwrap();
+        assert!(html.contains("<div class=\"suggestion-label\">Suggested change</div>"), "{html}");
+        assert!(html.contains("<div class=\"sug-del\">- TWO</div>"), "{html}");
+        assert!(html.contains("<div class=\"sug-add\">+ &lt;b&gt;&amp;</div>"), "{html}");
+        assert!(!html.contains("```"), "{html}");
     }
 }

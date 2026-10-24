@@ -121,6 +121,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "on line 1".into(),
                 author: None,
+                suggestion: None,
             },
             ReviewComment {
                 path: "src/b.rs".into(),
@@ -129,6 +130,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "untouched file".into(),
                 author: None,
+                suggestion: None,
             },
         ]);
 

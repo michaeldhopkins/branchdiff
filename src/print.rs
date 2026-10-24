@@ -231,6 +231,7 @@ mod tests {
                     side: CommentSide::New,
                     body: "Header comment body".into(),
                     author: Some("alice".into()),
+                    suggestion: None,
                 },
                 ReviewComment {
                     path: "src/lib.rs".into(),
@@ -239,6 +240,7 @@ mod tests {
                     side: CommentSide::Old,
                     body: "Deleted line comment".into(),
                     author: None,
+                    suggestion: None,
                 },
                 ReviewComment {
                     path: "src/lib.rs".into(),
@@ -247,6 +249,7 @@ mod tests {
                     side: CommentSide::New,
                     body: "Added line comment".into(),
                     author: Some("bob".into()),
+                    suggestion: None,
                 },
             ],
         );

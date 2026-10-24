@@ -1,0 +1,2 @@
+{"path":"src/lib.rs","line":2,"body":"Try this\n```suggestion\nlet x = 2;\n```","suggestion":"let y = \u001b[2J3;"}
+{"path":"src/lib.rs","start_line":1,"end_line":2,"side":"old","body":"drop","suggestion":""}

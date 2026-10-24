@@ -12,7 +12,7 @@ use crate::diff::{DiffLine, LineSource};
 use crate::patch::generate_patch;
 
 use super::AnchoredComments;
-use super::render::body_lines;
+use super::render::body_rows;
 use super::sanitize::printable;
 
 /// The `--diff` patch for `lines`, with the comments anchored to each file
@@ -63,8 +63,8 @@ fn write_comment_block(
         for anchored in list {
             let _ =
                 writeln!(out, "# 💬 {} · {}", printable(path), printable(&anchored.header_label()));
-            for raw in body_lines(&anchored.comment.body) {
-                let _ = writeln!(out, "# │ {}", printable(raw));
+            for row in body_rows(anchored) {
+                let _ = writeln!(out, "# │ {row}");
             }
         }
     }
@@ -84,6 +84,7 @@ mod tests {
             side,
             body: body.into(),
             author: None,
+            suggestion: None,
         }
     }
 

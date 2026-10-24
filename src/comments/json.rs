@@ -320,6 +320,10 @@ pub fn comment_to_json_line(comment: &ReviewComment) -> String {
         out.push_str(",\"author\":");
         push_json_str(&mut out, author);
     }
+    if let Some(ref suggestion) = comment.suggestion {
+        out.push_str(",\"suggestion\":");
+        push_json_str(&mut out, suggestion);
+    }
     out.push('}');
     out
 }

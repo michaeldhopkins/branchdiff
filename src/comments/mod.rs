@@ -14,6 +14,7 @@ pub mod patch;
 pub mod render;
 mod revdiff;
 pub mod sanitize;
+pub mod suggestion;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -73,6 +74,9 @@ pub struct ReviewComment {
     pub side: CommentSide,
     pub body: String,
     pub author: Option<String>,
+    /// Replacement text for the lines this comment covers (the JSON `suggestion` field).
+    /// A GitHub suggestion fence in `body` means the same; see `suggestion::split_body`.
+    pub suggestion: Option<String>,
 }
 
 impl ReviewComment {
@@ -87,9 +91,29 @@ pub struct AnchoredComment {
     /// True when the comment's line anchor was not in the current diff, so it
     /// fell back to the file header with its original line number preserved.
     pub outdated: bool,
+    /// Text of the lines the comment covers, kept for a suggestion to replace;
+    /// empty when there is no suggestion or the lines are not in the diff.
+    pub replaced: Vec<String>,
 }
 
 impl AnchoredComment {
+    pub fn new(comment: &ReviewComment, outdated: bool, replaced: Vec<String>) -> Self {
+        Self { comment: comment.clone(), outdated, replaced }
+    }
+
+    /// The comment text split from its suggestion.
+    pub fn parts(&self) -> suggestion::BodyParts<'_> {
+        suggestion::split_body(&self.comment.body, self.comment.suggestion.as_deref())
+    }
+
+    /// Rows of the suggested change as a diff, or none without a suggestion.
+    pub fn suggestion_rows(&self) -> Vec<(char, String)> {
+        self.parts()
+            .suggestion
+            .map(|s| suggestion::diff_rows(&self.replaced, &s))
+            .unwrap_or_default()
+    }
+
     pub fn location_label(&self) -> String {
         self.location_label_in(label::label_style())
     }
@@ -302,15 +326,17 @@ mod tests {
         let side = prop_oneof![Just(CommentSide::New), Just(CommentSide::Old)];
         let body = "[a-zA-Z0-9 _.,!?:;'\"\\\\/\\n\\t<>&é你]{0,80}";
         let author = prop::option::of("[a-zA-Z0-9_-]{1,16}");
+        let suggestion = prop::option::of("[a-zA-Z0-9 \\n]{0,30}");
 
-        (path, line_spec, side, body, author).prop_map(
-            |(path, (start_line, end_line), side, body, author)| ReviewComment {
+        (path, line_spec, side, body, author, suggestion).prop_map(
+            |(path, (start_line, end_line), side, body, author, suggestion)| ReviewComment {
                 path,
                 start_line,
                 end_line,
                 side,
                 body,
                 author,
+                suggestion,
             },
         )
     }
@@ -343,6 +369,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "Consider returning a Result here".into(),
                 author: Some("alice".into()),
+                suggestion: None,
             }
         );
         assert_eq!(
@@ -354,6 +381,7 @@ mod tests {
                 side: CommentSide::Old,
                 body: "Why was this block removed?".into(),
                 author: None,
+                suggestion: None,
             }
         );
         assert_eq!(
@@ -365,6 +393,7 @@ mod tests {
                 side: CommentSide::New,
                 body: "Update example flags".into(),
                 author: None,
+                suggestion: None,
             }
         );
     }
@@ -530,6 +559,7 @@ File-level summary note.
                 side: CommentSide::New,
                 body: "On added line 2".into(),
                 author: None,
+                suggestion: None,
             },
             ReviewComment {
                 path: "src/demo.rs".into(),
@@ -538,6 +568,7 @@ File-level summary note.
                 side: CommentSide::Old,
                 body: "On deleted line 2".into(),
                 author: None,
+                suggestion: None,
             },
             ReviewComment {
                 path: "src/demo.rs".into(),
@@ -546,6 +577,7 @@ File-level summary note.
                 side: CommentSide::New,
                 body: "On added range 2-3".into(),
                 author: None,
+                suggestion: None,
             },
             ReviewComment {
                 path: "src/demo.rs".into(),
@@ -554,6 +586,7 @@ File-level summary note.
                 side: CommentSide::New,
                 body: "File-level note".into(),
                 author: None,
+                suggestion: None,
             },
             ReviewComment {
                 path: "src/demo.rs".into(),
@@ -562,6 +595,7 @@ File-level summary note.
                 side: CommentSide::New,
                 body: "Out-of-diff line 999".into(),
                 author: None,
+                suggestion: None,
             },
             ReviewComment {
                 path: "src/untouched.rs".into(),
@@ -570,6 +604,7 @@ File-level summary note.
                 side: CommentSide::New,
                 body: "Comment on file not in diff".into(),
                 author: None,
+                suggestion: None,
             },
         ];
 
@@ -671,5 +706,34 @@ File-level summary note.
         std::fs::write(&path, b"\xff").unwrap();
         let err = read_comments_file(&path).unwrap_err();
         assert!(err.to_string().ends_with("not valid UTF-8"), "{err}");
+    }
+
+    #[test]
+    fn the_json_suggestion_field_is_read_and_written_back() {
+        let input = r#"{"path":"a.rs","line":2,"body":"Use this","suggestion":"fn a() {\n}"}"#;
+        let comments = parse_comments(input).unwrap();
+        assert_eq!(comments[0].suggestion.as_deref(), Some("fn a() {\n}"));
+        let jsonl = to_jsonl(&comments);
+        assert!(jsonl.contains(r#""suggestion":"fn a() {\n}""#), "{jsonl}");
+        assert_eq!(parse_comments(&jsonl).unwrap(), comments);
+        let none = parse_comments(r#"{"path":"a.rs","line":2,"body":"x"}"#).unwrap();
+        assert_eq!(none[0].suggestion, None);
+        assert!(!to_jsonl(&none).contains("suggestion"));
+    }
+
+    #[test]
+    fn an_empty_json_suggestion_proposes_deleting_the_lines() {
+        let comments =
+            parse_comments(r#"{"path":"a.rs","line":2,"body":"drop it","suggestion":""}"#).unwrap();
+        assert_eq!(comments[0].suggestion.as_deref(), Some(""));
+        assert_eq!(parse_comments(&to_jsonl(&comments)).unwrap(), comments);
+    }
+
+    #[test]
+    fn a_github_comment_keeps_its_suggestion_fence_in_the_body() {
+        let input = r#"[{"path":"a.rs","line":3,"side":"RIGHT","body":"Try:\n```suggestion\nlet x = 2;\n```","user":{"login":"bob"}}]"#;
+        let comments = parse_comments(input).unwrap();
+        assert_eq!(comments[0].suggestion, None);
+        assert!(suggestion::has_suggestion(&comments[0].body, None));
     }
 }

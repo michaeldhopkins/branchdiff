@@ -73,6 +73,7 @@ mod tests {
             side,
             body: String::new(),
             author: None,
+            suggestion: None,
         }
     }
 
