@@ -5,6 +5,6 @@
 "src/app/selection.rs" = 772
 "src/app/view_mode.rs" = 447
 "src/diff/algorithm.rs" = 437
-"src/main.rs" = 1105
+"src/main.rs" = 1094
 "src/ui/diff_view.rs" = 1114
 "src/vcs/jj.rs" = 1194

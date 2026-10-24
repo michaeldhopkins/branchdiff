@@ -162,6 +162,23 @@ impl App {
         }
     }
 
+    /// The `--benchmark` run's input for frame `frame_num`: a fixed 20-frame
+    /// cycle of scrolling, file jumps, a view-mode change and paging.
+    pub fn bench_step(&mut self, frame_num: usize) {
+        match frame_num % 20 {
+            0..=4 => self.scroll_down(3),
+            5..=9 => self.scroll_up(2),
+            10 => self.next_file(),
+            11 => self.prev_file(),
+            12 => self.cycle_view_mode(),
+            13 => self.go_to_bottom(),
+            14 => self.go_to_top(),
+            15 => self.page_down(),
+            16 => self.page_up(),
+            _ => self.scroll_down(1),
+        }
+    }
+
     /// Set viewport height (called during rendering)
     pub fn set_viewport_height(&mut self, height: usize) {
         if self.view.viewport_height != height {
@@ -214,6 +231,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::ViewMode;
     use crate::diff::DiffLine;
     use crate::test_support::{TestAppBuilder, base_line};
 
@@ -559,6 +577,58 @@ mod tests {
         assert!(
             mid > near_top,
             "percentage advances while scrolling through one long wrapped line ({near_top} -> {mid})"
+        );
+    }
+
+    #[test]
+    fn bench_step_runs_its_twenty_frame_cycle() {
+        fn app() -> App {
+            let mut lines = Vec::new();
+            for file in ["a.rs", "b.rs", "c.rs"] {
+                lines.push(DiffLine::file_header(file));
+                lines.extend((0..100).map(|n| base_line(&format!("{file} {n}"))));
+            }
+            TestAppBuilder::new()
+                .with_lines(lines)
+                .with_viewport_height(20)
+                .with_scroll_offset(150)
+                .build()
+        }
+        fn state(app: &App) -> (usize, usize, ViewMode) {
+            (app.view.scroll_offset, app.view.sub_row, app.view.view_mode)
+        }
+        type Step = fn(&mut App);
+        let expected: [(usize, Step); 10] = [
+            (0, |a| a.scroll_down(3)),
+            (5, |a| a.scroll_up(2)),
+            (10, App::next_file),
+            (11, App::prev_file),
+            (12, App::cycle_view_mode),
+            (13, App::go_to_bottom),
+            (14, App::go_to_top),
+            (15, App::page_down),
+            (16, App::page_up),
+            (17, |a| a.scroll_down(1)),
+        ];
+        let mut seen = Vec::new();
+        for frame in 0..40 {
+            let class = expected.iter().rev().find(|(start, _)| *start <= frame % 20).unwrap();
+            let mut stepped = app();
+            stepped.bench_step(frame);
+            let mut direct = app();
+            (class.1)(&mut direct);
+            assert_eq!(state(&stepped), state(&direct), "frame {frame}");
+            if frame == class.0 {
+                seen.push(state(&stepped));
+            }
+        }
+        let mut distinct = seen.clone();
+        distinct.sort_by_key(|s| (s.0, s.1, format!("{:?}", s.2)));
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            seen.len(),
+            "each step must move the view differently: {seen:?}"
         );
     }
 }

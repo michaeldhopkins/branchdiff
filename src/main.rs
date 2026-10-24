@@ -548,18 +548,7 @@ fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> R
     let bench_start = Instant::now();
 
     for frame_num in 0..frames {
-        match frame_num % 20 {
-            0..=4 => app.scroll_down(3),
-            5..=9 => app.scroll_up(2),
-            10 => app.next_file(),
-            11 => app.prev_file(),
-            12 => app.cycle_view_mode(),
-            13 => app.go_to_bottom(),
-            14 => app.go_to_top(),
-            15 => app.page_down(),
-            16 => app.page_up(),
-            _ => app.scroll_down(1),
-        }
+        app.bench_step(frame_num);
 
         let items = if app.needs_inline_spans() {
             let items = app.ensure_inline_spans_for_visible(visible_height);
@@ -1611,6 +1600,13 @@ mod tests {
             config,
             None,
         )
+    }
+
+    #[test]
+    fn a_benchmark_that_cannot_load_the_diff_fails() {
+        let root = PathBuf::from("/bench");
+        let result = run_benchmark(Box::new(IdleVcs(root.clone())), root, 1);
+        assert!(result.is_err());
     }
 
     fn key(c: char) -> event::Event {
