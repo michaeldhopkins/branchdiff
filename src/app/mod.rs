@@ -604,14 +604,11 @@ impl App {
     /// from showing too few lines.
     pub fn estimate_content_width(&mut self, terminal_width: u16) {
         use crate::ui::PREFIX_CHAR_WIDTH;
-
-        // Find max line number to estimate line_num_width
-        let max_line_num = self.lines.iter().filter_map(|line| line.line_number).max().unwrap_or(0);
-
-        let line_num_width = if max_line_num > 0 { max_line_num.to_string().len() + 1 } else { 0 };
+        use crate::ui::gutter::Gutter;
 
         // Calculate available width (terminal - borders)
         let available_width = (terminal_width as usize).saturating_sub(2);
+        let line_num_width = Gutter::measure(self.lines.iter(), Some(available_width)).tui_width();
 
         // Calculate prefix width (line numbers + space + prefix char)
         let prefix_width =

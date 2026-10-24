@@ -164,16 +164,18 @@ pub fn write_html_comments(
     out: &mut impl Write,
     comments: &AnchoredComments,
     line_idx: usize,
+    ln_cells: usize,
 ) -> io::Result<()> {
     let Some(list) = comments.for_line(line_idx) else {
         return Ok(());
     };
+    let ln = "<td class=\"ln\"></td>".repeat(ln_cells);
     for anchored in list {
         let header = html_escape(&anchored.header_label());
         let body = html_escape(&anchored.comment.body);
         writeln!(
             out,
-            "<tr class=\"comment-row\"><td class=\"ln\"></td><td class=\"gutter\"></td>\
+            "<tr class=\"comment-row\">{ln}<td class=\"gutter\"></td>\
              <td class=\"comment-cell\"><div class=\"review-comment\">\
              <div class=\"comment-header\">💬 {header}</div>\
              <div class=\"comment-body\">{body}</div>\
@@ -187,6 +189,28 @@ pub fn write_html_comments(
 mod tests {
     use super::*;
     use crate::comments::{CommentSide, ReviewComment, anchor_comments};
+
+    #[test]
+    fn html_comment_rows_span_every_number_cell() {
+        let lines = vec![DiffLine::file_header("a.rs")];
+        let anchored = anchor_comments(
+            &lines,
+            &[ReviewComment {
+                path: "a.rs".into(),
+                start_line: None,
+                end_line: None,
+                side: CommentSide::New,
+                body: "note".into(),
+                author: None,
+            }],
+        );
+        for (cells, expected) in [(1, 1), (2, 2)] {
+            let mut buf = Vec::new();
+            write_html_comments(&mut buf, &anchored, 0, cells).unwrap();
+            let html = String::from_utf8(buf).unwrap();
+            assert_eq!(html.matches("<td class=\"ln\"></td>").count(), expected, "{html}");
+        }
+    }
 
     #[test]
     fn print_comments_strip_escape_sequences_from_body_and_author() {

@@ -26,6 +26,7 @@ use crate::vcs::VcsBackend;
 
 use super::colors::line_style_with_highlight;
 use super::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG, line_style, status_symbol};
+use super::gutter::Gutter;
 use super::selection::{apply_selection_to_span, get_line_selection_range};
 use super::spans::{
     InlineChangeType, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight,
@@ -162,10 +163,9 @@ impl<'a> DiffViewModel<'a> {
         // that shifted with the visible window would desync them and a deep
         // within-line scroll could render past the line's end. Matches
         // `App::estimate_content_width`.
-        let max_line_num = self.lines.iter().filter_map(|line| line.line_number).max().unwrap_or(0);
-        let line_num_width = if max_line_num > 0 { max_line_num.to_string().len() + 1 } else { 0 };
-
         let available_width = self.area.width.saturating_sub(2) as usize;
+        let gutter = Gutter::measure(self.lines.iter(), Some(available_width));
+        let line_num_width = gutter.tui_width();
         let prefix_width =
             if line_num_width > 0 { line_num_width + 1 } else { 0 } + PREFIX_CHAR_WIDTH;
         let content_width = available_width.saturating_sub(prefix_width);
@@ -195,7 +195,7 @@ impl<'a> DiffViewModel<'a> {
                 }
                 DisplayableItem::Line(idx) => {
                     let rows_added = self.render_diff_line(
-                        &self.lines[*idx], *idx, line_num_width, prefix_width, content_width,
+                        &self.lines[*idx], *idx, gutter, prefix_width, content_width,
                         screen_row_idx, max_content_rows, skip_rows, &mut all_lines,
                         &mut all_row_infos, &mut image_positions,
                     );
@@ -317,7 +317,7 @@ impl<'a> DiffViewModel<'a> {
         &self,
         diff_line: &DiffLine,
         line_idx: usize,
-        line_num_width: usize,
+        gutter: Gutter,
         prefix_width: usize,
         content_width: usize,
         screen_row_idx: usize,
@@ -334,13 +334,8 @@ impl<'a> DiffViewModel<'a> {
             line_style(diff_line.source)
         };
 
-        let prefix_str = if let Some(num) = diff_line.line_number {
-            format!("{:>width$} ", num, width = line_num_width)
-        } else if line_num_width > 0 {
-            " ".repeat(line_num_width + 1)
-        } else {
-            String::new()
-        };
+        let line_num_width = gutter.tui_width();
+        let prefix_str = gutter.tui_cell(diff_line);
 
         let line_rows = if diff_line.source == LineSource::FileHeader {
             self.render_file_header(diff_line, &prefix_str, style, all_lines, all_row_infos)
@@ -3151,5 +3146,77 @@ mod tests {
         assert!(screen_text.contains("Old deleted line comment"), "{screen_text}");
         assert!(screen_text.contains("@bob · line 2 (+)"), "{screen_text}");
         assert!(screen_text.contains("New added line comment"), "{screen_text}");
+    }
+
+    fn screen_of(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        app.set_viewport_height(height as usize - 2);
+        app.estimate_content_width(width);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(app);
+                crate::ui::draw_with_frame(f, app, &ctx);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (1..width - 1).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    fn one_edit_app() -> App {
+        use crate::diff::{DiffInput, compute_four_way_diff};
+        let base = "line1\ndeleted_old\nline3\n";
+        let working = "line1\nadded_new\nline3\n";
+        let diff = compute_four_way_diff(DiffInput {
+            path: "src/lib.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+        TestAppBuilder::new().with_files(vec![diff]).build()
+    }
+
+    fn row_with<'a>(rows: &'a [String], needle: &str) -> &'a str {
+        rows.iter()
+            .find(|r| r.contains(needle))
+            .unwrap_or_else(|| panic!("no row with {needle}"))
+            .as_str()
+    }
+
+    #[test]
+    fn the_gutter_shows_old_and_new_numbers_side_by_side() {
+        let mut app = one_edit_app();
+        let rows = screen_of(&mut app, 90, 12);
+        let numbers = |needle: &str| {
+            let row = row_with(&rows, needle);
+            row[..row.find(needle).unwrap()].to_string()
+        };
+        assert!(numbers("line1").trim_start().starts_with("1 1 "), "{rows:#?}");
+        assert!(numbers("deleted_old").trim_start().starts_with("2   "), "{rows:#?}");
+        assert!(numbers("added_new").trim_start().starts_with("2 "), "{rows:#?}");
+        assert!(numbers("added_new").trim_start().len() > 3, "new number is in the second column");
+        assert!(numbers("line3").trim_start().starts_with("3 3 "), "{rows:#?}");
+        assert_eq!(app.view.line_num_width, 4, "one digit each: old (padded), space, new");
+    }
+
+    #[test]
+    fn two_columns_need_forty_columns_of_code_and_one_column_is_the_fallback() {
+        let mut wide = one_edit_app();
+        screen_of(&mut wide, 51, 12);
+        assert_eq!(wide.view.line_num_width, 4);
+        assert_eq!(wide.view.content_width, 40);
+
+        let mut narrow = one_edit_app();
+        let rows = screen_of(&mut narrow, 50, 12);
+        assert_eq!(narrow.view.line_num_width, 2, "today's single column");
+        let deleted = row_with(&rows, "deleted_old");
+        assert!(!deleted[..deleted.find("deleted_old").unwrap()].contains('2'), "{rows:#?}");
+        assert!(row_with(&rows, "added_new").contains("2 "), "{rows:#?}");
     }
 }

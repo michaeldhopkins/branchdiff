@@ -73,7 +73,7 @@ fn verify_parsed_comments(comments: &[crate::comments::ReviewComment]) {
 
     let mut html_buf = Vec::new();
     for idx in 0..lines.len() {
-        write_html_comments(&mut html_buf, &anchored, idx).expect("write html to vec");
+        write_html_comments(&mut html_buf, &anchored, idx, 1).expect("write html to vec");
     }
     let html_str = std::str::from_utf8(&html_buf).expect("HTML comments must be valid UTF-8");
     assert!(!html_str.contains("<script"), "HTML comments must escape raw <script tags");

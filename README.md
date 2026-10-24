@@ -121,6 +121,8 @@ Four formats are detected from file content:
 3. **reviewdog** `rdjson` / `rdjsonl`: `diagnostics[].location.path` and `range.start.line`.
 4. **GitHub PR review comments JSON**: the array returned by `gh api repos/OWNER/REPO/pulls/N/comments`.
 
+The gutter shows two line-number columns, old then new, like GitHub and GitLab: a deleted line shows only its old number, an added line only its new one, and a context line both. In a terminal too narrow to leave 40 columns for code, the TUI shows the single new-number column instead. `--print` and `--html` always show both.
+
 Comments whose target line is outside the current diff are shown under the file header with their original line number and `outside diff`.
 
 In `--diff` output, each file's comments are written as `#` lines just before that file's patch. `git apply` and `patch` skip those lines, so the patch still applies.

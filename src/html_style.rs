@@ -183,6 +183,7 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
   min-width: 4em;
   white-space: nowrap;
 }}
+.ln-old, .ln-new {{ width: 3.5em; min-width: 3.5em; }}
 .gutter {{
   width: 1.5em;
   text-align: center;

@@ -1,10 +1,10 @@
 # Declarative quality ratchet manifest.
 
 [rust_pinned]
-"src/app/mod.rs" = 624
+"src/app/mod.rs" = 621
 "src/app/selection.rs" = 772
 "src/app/view_mode.rs" = 447
 "src/diff/algorithm.rs" = 437
 "src/main.rs" = 1105
-"src/ui/diff_view.rs" = 1119
+"src/ui/diff_view.rs" = 1114
 "src/vcs/jj.rs" = 1194

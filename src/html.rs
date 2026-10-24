@@ -10,6 +10,7 @@ use crate::diff::{DiffLine, LineSource};
 use crate::image_diff::{CachedImage, ImageCache};
 use crate::output::{OutputData, OutputFile};
 use crate::syntax;
+use crate::ui::gutter::{Gutter, two_column_numbers};
 use crate::ui::spans::coalesce_spans;
 
 use crate::html_page::{HEAD_THEME_SCRIPT, Refresh, cached_script, noscript_style};
@@ -116,14 +117,7 @@ pub fn render_html_in(
 ) -> Result<()> {
     write_header(out, data)?;
 
-    let line_num_width = data
-        .files
-        .iter()
-        .flat_map(|f| &f.lines)
-        .filter_map(|l| l.line_number)
-        .max()
-        .map(|n| n.to_string().len())
-        .unwrap_or(0);
+    let gutter = Gutter::measure(data.files.iter().flat_map(|f| &f.lines), None);
 
     // Highlighting is nearly all of a page's cost, and every file is
     // highlighted from a clean parser state (the highlighter resets whenever the
@@ -137,7 +131,7 @@ pub fn render_html_in(
                 // thread-local; a pool thread may hold whatever it last rendered.
                 syntax::reset_highlight_state();
                 let mut section = Vec::with_capacity(SECTION_BYTES_PER_LINE * file.lines.len());
-                write_file(&mut section, i, file, images, line_num_width)?;
+                write_file(&mut section, i, file, images, gutter)?;
                 Ok(section)
             })
             .collect()
@@ -247,7 +241,12 @@ fn token_span(text: &str, color: Color) -> String {
     }
 }
 
-fn write_image(out: &mut impl Write, line: &DiffLine, images: &ImageCache) -> Result<()> {
+fn write_image(
+    out: &mut impl Write,
+    line: &DiffLine,
+    images: &ImageCache,
+    columns: usize,
+) -> Result<()> {
     let path = match &line.file_path {
         Some(p) => p.as_str(),
         None => return Ok(()),
@@ -256,13 +255,13 @@ fn write_image(out: &mut impl Write, line: &DiffLine, images: &ImageCache) -> Re
     let Some(state) = images.peek(path) else {
         write!(
             out,
-            "<tr><td colspan=\"3\" class=\"content\">[image: {path}]</td></tr>",
+            "<tr><td colspan=\"{columns}\" class=\"content\">[image: {path}]</td></tr>",
             path = html_escape(path)
         )?;
         return Ok(());
     };
 
-    writeln!(out, "<tr><td colspan=\"3\"><div class=\"image-container\">")?;
+    writeln!(out, "<tr><td colspan=\"{columns}\"><div class=\"image-container\">")?;
 
     if let Some(ref before) = state.before {
         write_image_panel(out, before, "before")?;
@@ -291,8 +290,10 @@ fn write_file(
     file_index: usize,
     file: &OutputFile,
     images: &ImageCache,
-    line_num_width: usize,
+    gutter: Gutter,
 ) -> Result<()> {
+    let ln_cells = gutter.ln_cells();
+    let columns = ln_cells + 2;
     let open = if file.collapsed { "" } else { " open" };
     write!(
         out,
@@ -314,13 +315,13 @@ fn write_file(
 
     for (line_idx, line) in file.lines.iter().enumerate() {
         if line.source == LineSource::FileHeader {
-            write_html_comments(out, &file.comments, line_idx)?;
+            write_html_comments(out, &file.comments, line_idx, ln_cells)?;
             continue;
         }
 
         if line.is_image_marker() {
-            write_image(out, line, images)?;
-            write_html_comments(out, &file.comments, line_idx)?;
+            write_image(out, line, images, columns)?;
+            write_html_comments(out, &file.comments, line_idx, ln_cells)?;
             continue;
         }
 
@@ -330,19 +331,16 @@ fn write_file(
         if line.source == LineSource::Elided {
             writeln!(
                 out,
-                "<tr class=\"{class}\"><td colspan=\"3\">┈┈ ⋮ {} ⋮ ┈┈</td></tr>",
+                "<tr class=\"{class}\"><td colspan=\"{columns}\">┈┈ ⋮ {} ⋮ ┈┈</td></tr>",
                 html_escape(&line.content)
             )?;
             continue;
         }
 
-        write!(out, "<tr class=\"{class}\"><td class=\"ln\">")?;
-        match line.line_number {
-            Some(num) => write!(out, "{num:>line_num_width$}")?,
-            None => write!(out, "{:line_num_width$}", "")?,
-        }
+        write!(out, "<tr class=\"{class}\">")?;
+        write_html_line_numbers(out, line, gutter)?;
         let prefix = if is_moved { 'M' } else { line.prefix };
-        write!(out, "</td><td class=\"gutter\">{prefix}</td><td class=\"content\">")?;
+        write!(out, "<td class=\"gutter\">{prefix}</td><td class=\"content\">")?;
 
         if !line.inline_spans.is_empty() {
             write_inline_spans(out, line)?;
@@ -351,12 +349,37 @@ fn write_file(
         }
 
         writeln!(out, "</td></tr>")?;
-        write_html_comments(out, &file.comments, line_idx)?;
+        write_html_comments(out, &file.comments, line_idx, ln_cells)?;
     }
 
     writeln!(out, "</table>")?;
     writeln!(out, "</details>")?;
     Ok(())
+}
+
+/// The number cells of a row: old and new in two columns, else the one column.
+fn write_html_line_numbers(
+    out: &mut impl Write,
+    line: &DiffLine,
+    gutter: Gutter,
+) -> std::io::Result<()> {
+    if gutter.is_two_column() {
+        let (old, new) = two_column_numbers(line);
+        for (class, number) in [("ln ln-old", old), ("ln ln-new", new)] {
+            write!(out, "<td class=\"{class}\">")?;
+            if let Some(n) = number {
+                write!(out, "{n}")?;
+            }
+            write!(out, "</td>")?;
+        }
+        return Ok(());
+    }
+    write!(out, "<td class=\"ln\">")?;
+    match line.line_number {
+        Some(num) => write!(out, "{num:>width$}", width = gutter.print_width())?,
+        None => write!(out, "{:width$}", "", width = gutter.print_width())?,
+    }
+    write!(out, "</td>")
 }
 
 fn write_footer(out: &mut impl Write, refresh: Refresh) -> Result<()> {
@@ -622,12 +645,74 @@ mod tests {
     #[test]
     fn each_section_names_its_file_by_path_beside_its_position_id() {
         let mut buf = Vec::new();
-        write_file(&mut buf, 7, &rust_file("a\"b&c.rs", &["x"]), &ImageCache::new(), 1).unwrap();
+        write_file(
+            &mut buf,
+            7,
+            &rust_file("a\"b&c.rs", &["x"]),
+            &ImageCache::new(),
+            Gutter::default(),
+        )
+        .unwrap();
         let html = String::from_utf8(buf).unwrap();
         assert!(
             html.contains("<details open id=\"file-7\" data-path=\"a&quot;b&amp;c.rs\">"),
             "{html}"
         );
+    }
+
+    fn edited_file() -> OutputFile {
+        let lines = vec![
+            DiffLine::file_header("a.rs"),
+            DiffLine::new(LineSource::Base, "same".into(), ' ', Some(9)).with_old_line_number(8),
+            DiffLine::new(LineSource::DeletedBase, "gone".into(), '-', None)
+                .with_old_line_number(9),
+            DiffLine::new(LineSource::Committed, "fresh".into(), '+', Some(10)),
+        ];
+        OutputFile {
+            path: "a.rs".into(),
+            lines,
+            additions: 1,
+            deletions: 1,
+            collapsed: false,
+            comments: Default::default(),
+        }
+    }
+
+    #[test]
+    fn old_and_new_numbers_get_a_column_each() {
+        let file = edited_file();
+        let mut buf = Vec::new();
+        let gutter = Gutter::measure(&file.lines, None);
+        write_file(&mut buf, 0, &file, &ImageCache::new(), gutter).unwrap();
+        let html = String::from_utf8(buf).unwrap();
+        let cells = |text: &str| {
+            let at = html.find(&format!("<td class=\"content\">{text}")).unwrap();
+            let row = &html[html[..at].rfind("<tr").unwrap()..at];
+            row.replace("<td class=\"gutter\">", "|")
+        };
+        assert!(
+            cells("same").contains("<td class=\"ln ln-old\">8</td><td class=\"ln ln-new\">9</td>"),
+            "{html}"
+        );
+        assert!(
+            cells("gone").contains("<td class=\"ln ln-old\">9</td><td class=\"ln ln-new\"></td>"),
+            "{html}"
+        );
+        assert!(
+            cells("fresh").contains("<td class=\"ln ln-old\"></td><td class=\"ln ln-new\">10</td>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_diff_without_old_numbers_keeps_one_number_cell() {
+        let file = rust_file("a.rs", &["x"]);
+        let mut buf = Vec::new();
+        let gutter = Gutter::measure(&file.lines, None);
+        write_file(&mut buf, 0, &file, &ImageCache::new(), gutter).unwrap();
+        let html = String::from_utf8(buf).unwrap();
+        assert!(html.contains("<td class=\"ln\">1</td><td class=\"gutter\">+</td>"), "{html}");
+        assert!(!html.contains("ln-old"), "{html}");
     }
 
     fn rust_file(path: &str, body: &[&str]) -> OutputFile {
@@ -683,13 +768,20 @@ mod tests {
 
     /// The page as one serial walk over the files wrote it, with a single reset
     /// before the first file.
-    fn serial_page(data: &OutputData, width: usize) -> String {
+    fn serial_page(data: &OutputData) -> String {
         let images = ImageCache::new();
         let mut buf = Vec::new();
         write_header(&mut buf, data).unwrap();
         syntax::reset_highlight_state();
         for (i, file) in data.files.iter().enumerate() {
-            write_file(&mut buf, i, file, &images, width).unwrap();
+            write_file(
+                &mut buf,
+                i,
+                file,
+                &images,
+                Gutter::measure(data.files.iter().flat_map(|f| &f.lines), None),
+            )
+            .unwrap();
         }
         write_footer(&mut buf, Refresh::Off).unwrap();
         String::from_utf8(buf).unwrap()
@@ -713,7 +805,7 @@ mod tests {
             total_additions: 36,
             total_deletions: 0,
         };
-        let expected = serial_page(&data, 1);
+        let expected = serial_page(&data);
         // Every render leaves pool threads mid-comment in the file they did last,
         // so later renders of the same page see that state unless it is reset.
         let mut page = String::new();

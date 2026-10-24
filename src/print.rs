@@ -7,6 +7,7 @@ use branchdiff::comments::render::write_print_comments;
 use branchdiff::diff::LineSource;
 use branchdiff::output::{OutputData, OutputFile};
 use branchdiff::ui::colors::print_line_style as line_style;
+use branchdiff::ui::gutter::Gutter;
 use branchdiff::ui::spans::coalesce_spans;
 
 const RESET: &str = "\x1b[0m";
@@ -71,26 +72,17 @@ pub fn print_diff(data: &OutputData) -> Result<()> {
     writeln!(stdout, "\x1b[36m{}{}", status, RESET)?;
     writeln!(stdout)?;
 
-    let line_num_width = max_line_num_width(&data.files);
+    let gutter = Gutter::measure(data.files.iter().flat_map(|f| &f.lines), None);
 
     for file in &data.files {
-        print_file(&mut stdout, file, line_num_width)?;
+        print_file(&mut stdout, file, gutter)?;
     }
 
     Ok(())
 }
 
-fn max_line_num_width(files: &[OutputFile]) -> usize {
-    files
-        .iter()
-        .flat_map(|f| &f.lines)
-        .filter_map(|l| l.line_number)
-        .max()
-        .map(|n| n.to_string().len())
-        .unwrap_or(0)
-}
-
-fn print_file(stdout: &mut impl Write, file: &OutputFile, line_num_width: usize) -> Result<()> {
+fn print_file(stdout: &mut impl Write, file: &OutputFile, gutter: Gutter) -> Result<()> {
+    let line_num_width = gutter.print_width();
     for (line_idx, line) in file.lines.iter().enumerate() {
         let is_moved = line.move_target.is_some();
         let style = if is_moved {
@@ -101,13 +93,7 @@ fn print_file(stdout: &mut impl Write, file: &OutputFile, line_num_width: usize)
         };
         let ansi = style_to_ansi(style);
 
-        let line_num_str = if let Some(num) = line.line_number {
-            format!("{:>width$}", num, width = line_num_width)
-        } else if line_num_width > 0 {
-            " ".repeat(line_num_width)
-        } else {
-            String::new()
-        };
+        let line_num_str = gutter.print_cell(line);
 
         if line.source == LineSource::FileHeader {
             if !line_num_str.is_empty() {
@@ -274,7 +260,7 @@ mod tests {
         };
 
         let mut buf = Vec::new();
-        print_file(&mut buf, &file, 1).unwrap();
+        print_file(&mut buf, &file, Gutter::measure(&file.lines, None)).unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         let header_pos = out.find("── src/lib.rs ──").unwrap();
@@ -287,6 +273,65 @@ mod tests {
         assert!(header_pos < file_comment_pos && file_comment_pos < old_line_pos, "{out}");
         assert!(old_line_pos < old_comment_pos && old_comment_pos < new_line_pos, "{out}");
         assert!(new_line_pos < new_comment_pos, "{out}");
+    }
+
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for d in chars.by_ref() {
+                    if d == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn print_shows_old_and_new_numbers_in_two_columns() {
+        let lines = vec![
+            DiffLine::file_header("a.rs"),
+            DiffLine::new(LineSource::Base, "same".into(), ' ', Some(9)).with_old_line_number(8),
+            DiffLine::new(LineSource::DeletedBase, "gone".into(), '-', None)
+                .with_old_line_number(9),
+            DiffLine::new(LineSource::Committed, "fresh".into(), '+', Some(10)),
+        ];
+        let file = OutputFile {
+            path: "a.rs".into(),
+            lines,
+            additions: 1,
+            deletions: 1,
+            collapsed: false,
+            comments: Default::default(),
+        };
+        let mut buf = Vec::new();
+        print_file(&mut buf, &file, Gutter::measure(&file.lines, None)).unwrap();
+        let out = strip_ansi(&String::from_utf8(buf).unwrap());
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows[1], "8  9   same", "{out}");
+        assert_eq!(rows[2], "9    - gone", "{out}");
+        assert_eq!(rows[3], "  10 + fresh", "{out}");
+    }
+
+    #[test]
+    fn print_without_old_numbers_keeps_the_single_column() {
+        let lines = vec![DiffLine::new(LineSource::Committed, "fresh".into(), '+', Some(10))];
+        let file = OutputFile {
+            path: "a.rs".into(),
+            lines,
+            additions: 1,
+            deletions: 0,
+            collapsed: false,
+            comments: Default::default(),
+        };
+        let mut buf = Vec::new();
+        print_file(&mut buf, &file, Gutter::measure(&file.lines, None)).unwrap();
+        assert_eq!(strip_ansi(&String::from_utf8(buf).unwrap()), "10 + fresh\n");
     }
 
     #[test]
