@@ -212,7 +212,11 @@ fn html_suggestion(anchored: &AnchoredComment) -> String {
     );
     for (sign, text) in anchored.suggestion_rows() {
         let class = if sign == '-' { "sug-del" } else { "sug-add" };
-        out.push_str(&format!("<div class=\"{class}\">{} {}</div>", sign, html_escape(&text)));
+        out.push_str(&format!(
+            "<div class=\"{class}\">{} {}</div>",
+            sign,
+            html_escape(&printable(&text))
+        ));
     }
     out.push_str("</div>");
     out
@@ -230,9 +234,10 @@ pub fn write_html_comments(
     };
     let ln = "<td class=\"ln\"></td>".repeat(ln_cells);
     for anchored in list {
-        let header = html_escape(&anchored.header_label());
+        let header = html_escape(&printable(&anchored.header_label()));
         let parts = anchored.parts();
-        let body = html_escape(&parts.text.join("\n"));
+        let body: Vec<_> = parts.text.iter().map(|t| printable(t)).collect();
+        let body = html_escape(&body.join("\n"));
         let suggestion = html_suggestion(anchored);
         writeln!(
             out,
@@ -409,5 +414,63 @@ mod tests {
         assert!(html.contains("<div class=\"sug-del\">- TWO</div>"), "{html}");
         assert!(html.contains("<div class=\"sug-add\">+ &lt;b&gt;&amp;</div>"), "{html}");
         assert!(!html.contains("```"), "{html}");
+    }
+
+    /// Anchors one comment outside the diff of `suggestion_fixture`'s file and
+    /// returns its `--print` rows after the header.
+    fn rows_outside_the_diff(comment: ReviewComment) -> (Vec<String>, String) {
+        let (lines, _) = suggestion_fixture(CommentSide::New, "", None);
+        let anchored = anchor_comments(&lines, &[comment]);
+        let idx = (0..lines.len()).find(|i| anchored.for_line(*i).is_some()).unwrap();
+        assert_eq!(lines[idx].source, LineSource::FileHeader);
+        let mut html = Vec::new();
+        write_html_comments(&mut html, &anchored, idx, 2).unwrap();
+        let rows =
+            print_text(&anchored, idx).lines().skip(1).map(|l| l.trim().to_string()).collect();
+        (rows, String::from_utf8(html).unwrap())
+    }
+
+    fn comment_at(line: Option<usize>, body: &str, suggestion: Option<&str>) -> ReviewComment {
+        ReviewComment {
+            path: "a.rs".into(),
+            start_line: line,
+            end_line: line,
+            side: CommentSide::New,
+            body: body.into(),
+            author: None,
+            suggestion: suggestion.map(str::to_string),
+            outdated: false,
+        }
+    }
+
+    #[test]
+    fn an_outdated_suggestion_shows_its_fence_as_written_not_as_an_insertion() {
+        let comment = ReviewComment {
+            outdated: true,
+            ..comment_at(Some(2), "Rename.\n```suggestion\nnew\n```", None)
+        };
+        let (rows, html) = rows_outside_the_diff(comment);
+        assert_eq!(rows, ["│  Rename.", "│  ```suggestion", "│  new", "│  ```"]);
+        assert!(!html.contains(SUGGESTION_LABEL), "{html}");
+        assert!(html.contains("```suggestion\nnew\n```"), "{html}");
+    }
+
+    #[test]
+    fn a_suggestion_field_outside_the_diff_shows_as_a_fence_not_an_empty_change() {
+        let (rows, html) = rows_outside_the_diff(comment_at(Some(500), "", Some("")));
+        assert_eq!(rows, ["│  ```suggestion", "│  ```"]);
+        assert!(!html.contains(SUGGESTION_LABEL), "{html}");
+        let (rows, _) = rows_outside_the_diff(comment_at(None, "Why?", Some("x\ny")));
+        assert_eq!(rows, ["│  Why?", "│  ```suggestion", "│  x", "│  y", "│  ```"]);
+    }
+
+    #[test]
+    fn html_comments_show_control_characters_as_spaces() {
+        let (rows, html) =
+            rows_outside_the_diff(comment_at(None, "a\u{1b}[2Jb", Some("c\u{7}d<e>")));
+        assert_eq!(rows[0], "│  a [2Jb");
+        assert!(html.chars().all(|c| !c.is_control() || c == '\n'), "{html:?}");
+        assert!(html.contains("a [2Jb"), "{html}");
+        assert!(html.contains("c d&lt;e&gt;"), "{html}");
     }
 }

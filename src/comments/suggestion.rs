@@ -61,6 +61,25 @@ pub fn split_body<'a>(body: &'a str, explicit: Option<&'a str>) -> BodyParts<'a>
     BodyParts { text, suggestion }
 }
 
+/// `body` as written, for a comment whose lines are not in the diff: with
+/// nothing to show as replaced, a suggestion would read as an insertion (or,
+/// for a deletion, as an empty change), so its fence stays in the text, and an
+/// explicit `suggestion` is shown as the fence GitHub would have written.
+pub fn unsplit_body<'a>(body: &'a str, explicit: Option<&'a str>) -> BodyParts<'a> {
+    let mut text: Vec<&str> = body.lines().collect();
+    if let Some(s) = explicit {
+        while text.last().is_some_and(|l| l.trim().is_empty()) {
+            text.pop();
+        }
+        text.push("```suggestion");
+        text.extend(s.lines());
+        text.push("```");
+    } else if text.is_empty() {
+        text.push("");
+    }
+    BodyParts { text, suggestion: None }
+}
+
 /// Whether `body`/`explicit` carry a suggestion.
 pub fn has_suggestion(body: &str, explicit: Option<&str>) -> bool {
     split_body(body, explicit).suggestion.is_some()
@@ -143,5 +162,20 @@ mod tests {
     fn rows_list_removed_lines_then_added_lines() {
         let rows = diff_rows(&["old".to_string()], &["new1", "new2"]);
         assert_eq!(rows, vec![('-', "old".into()), ('+', "new1".into()), ('+', "new2".into())]);
+    }
+
+    #[test]
+    fn unsplit_keeps_the_body_as_written_and_writes_a_field_as_a_fence() {
+        let fenced = "Hm.\n```suggestion\nx\n```";
+        assert_eq!(
+            unsplit_body(fenced, None),
+            BodyParts { text: fenced.lines().collect(), suggestion: None }
+        );
+        assert_eq!(unsplit_body("", None).text, [""]);
+        assert_eq!(
+            unsplit_body("Hm.\n\n", Some("a\nb")).text,
+            ["Hm.", "```suggestion", "a", "b", "```"]
+        );
+        assert_eq!(unsplit_body("", Some("")).text, ["```suggestion", "```"]);
     }
 }

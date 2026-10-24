@@ -105,9 +105,16 @@ impl AnchoredComment {
         Self { comment: comment.clone(), outdated, replaced }
     }
 
-    /// The comment text split from its suggestion.
+    /// The comment text split from its suggestion. A comment that is not on
+    /// lines of the diff (file-level, outdated or outside it) has nothing a
+    /// suggestion could be shown replacing, so its body stays as written.
     pub fn parts(&self) -> suggestion::BodyParts<'_> {
-        suggestion::split_body(&self.comment.body, self.comment.suggestion.as_deref())
+        let explicit = self.comment.suggestion.as_deref();
+        let on_lines = self.comment.end_line.or(self.comment.start_line).is_some();
+        if self.outdated || !on_lines {
+            return suggestion::unsplit_body(&self.comment.body, explicit);
+        }
+        suggestion::split_body(&self.comment.body, explicit)
     }
 
     /// Rows of the suggested change as a diff, or none without a suggestion.
