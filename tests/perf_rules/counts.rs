@@ -1,8 +1,9 @@
-//! Process-count floors for the commands, and in-process renders for keys.
+//! Process-count floors for the commands, and zero-spawn renders for keys.
 //!
-//! The stub sits ahead of `jj` and `git` on the child PATH, records one line
-//! per spawn, then drops itself from PATH and execs the real binary. Nested
-//! spawns from `jj` are not counted. Wall clock is not measured here.
+//! The child PATH contains only the stub directory; each stub records one line
+//! per spawn and execs the real binary by absolute path, so any unexpected
+//! program fails to start. Nested spawns from `jj` are not counted. Wall clock
+//! is not measured here.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -57,6 +58,30 @@ fn command_process_counts_match_their_floors() {
 
 #[test]
 fn keystrokes_render_without_spawning() {
+    let Some(counts_os) = std::env::var_os("BRANCHDIFF_KEYSTROKE_COUNTS") else {
+        let home = TempDir::new().expect("home");
+        let stub = write_stub(home.path());
+        let counts = home.path().join("keystroke-counts.txt");
+        fs::write(&counts, "").expect("init keystroke counts");
+        let output = Command::new(std::env::current_exe().expect("current_exe"))
+            .args(["--exact", "counts::keystrokes_render_without_spawning", "--nocapture"])
+            .env_clear()
+            .env("PATH", stub_env_path(&stub))
+            .env("HOME", home.path())
+            .env("BRANCHDIFF_PERF_COUNTS", &counts)
+            .env("BRANCHDIFF_KEYSTROKE_COUNTS", &counts)
+            .output()
+            .expect("spawn keystroke child");
+        assert!(
+            output.status.success(),
+            "keystrokes child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(count_spawns(&counts), 0, "keystrokes must not spawn any process");
+        return;
+    };
+    let counts = PathBuf::from(counts_os);
     let files = render_files();
     let mut rendered = 0;
     for op in manifest_ops().iter().filter(|op| op.class == "keystroke") {
@@ -79,6 +104,7 @@ fn keystrokes_render_without_spawning() {
             }
         }
         paint(&mut app);
+        assert_eq!(count_spawns(&counts), 0, "{} spawned a process", op.id);
         rendered += 1;
     }
     assert!(rendered > 0, "the manifest has no keystrokes");
@@ -131,13 +157,16 @@ fn run_counted(
     if let Some(repo) = repo {
         cmd.current_dir(repo.path());
     }
-    let path = format!("{}:{}", stub.display(), real_path());
+    let path = stub_env_path(stub);
     isolated(&mut cmd, home, config, &path);
     cmd.env("BRANCHDIFF_PERF_COUNTS", &counts);
-    cmd.env("BRANCHDIFF_PERF_STUB", stub);
     let output = cmd.output().unwrap_or_else(|err| panic!("{id} failed to start: {err}"));
     assert_output(id, &output);
-    count_lines(&counts)
+    count_spawns(&counts)
+}
+
+fn stub_env_path(stub: &Path) -> String {
+    stub.display().to_string()
 }
 
 fn assert_output(id: &str, output: &Output) {
@@ -246,31 +275,26 @@ fn write_jj_config(home: &Path) -> PathBuf {
     path
 }
 
+fn resolve_binary(name: &str) -> PathBuf {
+    let path_var = std::env::var_os("PATH").expect("PATH");
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return candidate.canonicalize().unwrap_or(candidate);
+        }
+    }
+    panic!("binary `{name}` not found on PATH");
+}
+
 fn write_stub(home: &Path) -> PathBuf {
     let dir = home.join("stub");
     fs::create_dir_all(&dir).expect("stub dir");
-    let script = r#"#!/bin/sh
-name=$(basename "$0")
-printf '%s\n' "$name" >> "$BRANCHDIFF_PERF_COUNTS"
-dir=$BRANCHDIFF_PERF_STUB
-old_ifs=$IFS
-IFS=:
-new=
-for part in $PATH; do
-    if [ "$part" != "$dir" ]; then
-        if [ -z "$new" ]; then
-            new=$part
-        else
-            new=$new:$part
-        fi
-    fi
-done
-IFS=$old_ifs
-PATH=$new
-export PATH
-exec "$name" "$@"
-"#;
     for name in ["jj", "git"] {
+        let real = resolve_binary(name);
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"{name}\" >> \"$BRANCHDIFF_PERF_COUNTS\"\nexec \"{}\" \"$@\"\n",
+            real.display()
+        );
         let path = dir.join(name);
         fs::write(&path, script).expect("stub");
         let mut permissions = fs::metadata(&path).expect("stub metadata").permissions();
@@ -284,8 +308,20 @@ fn real_path() -> String {
     std::env::var("PATH").expect("PATH")
 }
 
-fn count_lines(path: &Path) -> usize {
-    fs::read_to_string(path).expect("counts").lines().filter(|line| !line.is_empty()).count()
+fn count_spawns(path: &Path) -> usize {
+    let mut count = 0;
+    for line in fs::read_to_string(path).expect("counts").lines() {
+        if line.is_empty() {
+            continue;
+        }
+        assert!(
+            matches!(line, "jj" | "git"),
+            "unexpected program `{line}` recorded in {}",
+            path.display()
+        );
+        count += 1;
+    }
+    count
 }
 
 fn tail(text: &str) -> String {
@@ -454,4 +490,26 @@ fn paint(app: &mut App) {
     let has_text =
         terminal.backend().buffer().content.iter().any(|cell| !cell.symbol().trim().is_empty());
     assert!(has_text, "rendered frame is blank");
+}
+
+#[test]
+fn stub_path_is_stub_dir_only_and_stubs_exec_absolute_paths() {
+    let home = TempDir::new().expect("home");
+    let stub = write_stub(home.path());
+    assert_eq!(stub_env_path(&stub), stub.display().to_string());
+    for name in ["jj", "git"] {
+        let body = fs::read_to_string(stub.join(name)).expect("read stub");
+        assert!(body.contains("exec \"/"), "{name} stub must exec an absolute path:\n{body}");
+    }
+    let unexpected = Command::new("uname").env_clear().env("PATH", stub_env_path(&stub)).output();
+    assert!(unexpected.is_err(), "unexpected program on stub PATH must fail to spawn");
+}
+
+#[test]
+#[should_panic(expected = "unexpected program")]
+fn count_spawns_panics_on_unexpected_program() {
+    let home = TempDir::new().expect("home");
+    let counts = home.path().join("counts.txt");
+    fs::write(&counts, "jj\nuname\n").expect("write counts");
+    let _ = count_spawns(&counts);
 }
