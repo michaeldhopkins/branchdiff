@@ -142,3 +142,24 @@ ref_median_ns = 131541021
 [[bench]]
 id = "refresh/non_colocated/50f_10c"
 ref_median_ns = 73175330
+
+# Command-specific refresh and extra-work pins measured 2026-10-24 on the 500f_25c fixture.
+[[bench]]
+id = "refresh/fingerprint/500f_25c"
+ref_median_ns = 55805000
+
+[[bench]]
+id = "refresh/files_head/500f_25c"
+ref_median_ns = 10499000
+
+[[bench]]
+id = "refresh/files_json/500f_25c"
+ref_median_ns = 10655000
+
+[[bench]]
+id = "refresh/detect_base/500f_25c"
+ref_median_ns = 28294000
+
+[[bench]]
+id = "refresh/comments_load/500f_25c"
+ref_median_ns = 99470

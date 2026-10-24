@@ -18,7 +18,8 @@ processes = 63
 alloc = ["update/handle_tick", "refresh/colocated/500f_25c"]
 wall_floor_us = 131542
 target_us = 50000
-derivation = "Startup loads the same diff as print; one batched jj log plus the first frame fits in the 50 ms command budget. Measured as --benchmark 1 because the interactive loop does not exit."
+derivation = "Startup loads the same diff as print; one batched jj log plus the first frame fits in the 50 ms command budget. Measured through --benchmark 1 because the interactive loop does not exit."
+proposal = "50 of the 63 subprocesses are per-file jj file show spawns in process_jj_file (2 per changed file for base and @-), 11 are serial revision/anchor/status lookups, and 2 are duplicate jj log label queries in build_initial_app before refresh(). Resolve base, parent, fork-point, stack-tip, and labels in one templated jj log via load_comparison_and_refresh and stream the 50 historical blobs from the backing Git store through two git cat-file --batch pipes (matching GitVcs::batch_file_contents), cutting 63 spawns to 6 and wall time from ~132 ms to ~25 ms (~107 ms saved) at the cost of mapping jj revisions to git commit OIDs with a jj file show fallback for non-Git backends."
 
 [[op]]
 id = "command:print"
@@ -30,6 +31,7 @@ alloc = ["refresh/colocated/500f_25c", "refresh/colocated/50f_10c", "refresh/non
 wall_floor_us = 131542
 target_us = 50000
 derivation = "One batched jj diff of the 500-file fixture (40 ms) plus writing the rendered text fits in the 50 ms command budget."
+proposal = "61 subprocesses run on 25 changed files (131.5 ms in refresh/colocated/500f_25c): 50 per-file jj file show --ignore-working-copy calls in process_jj_file (base and @- per file) plus 11 serial jj log and git status/diff metadata queries. Replace the 50 per-file jj file show calls with two git cat-file --batch streams keyed by the base and parent commit OIDs and fold resolve_base_rev, resolve_anchors, and rev_metadata_no_snapshot into one multi-revision jj log template call, cutting spawns from 61 to 6 and wall time from ~132 ms to ~22 ms (~110 ms saved) at the cost of ~80 lines of batch-pipe plumbing in src/vcs/jj/refresh.rs."
 
 [[op]]
 id = "command:diff"
@@ -41,6 +43,7 @@ alloc = ["refresh/colocated/500f_25c"]
 wall_floor_us = 131542
 target_us = 50000
 derivation = "A patch is the same 500-file diff formatted unified; one batched jj log (40 ms) plus formatting fits in the 50 ms command budget."
+proposal = "--diff runs the full load_comparison_and_refresh pipeline (131.5 ms, 61 spawns), spending 50 spawns on per-file jj file show calls in process_jj_file and 11 on serial revision and working-tree discovery before formatting unified hunks in memory. Batch the 50 base and parent blob reads into two git cat-file --batch processes using the commit OIDs from discovery and combine the revision metadata queries into a single jj log call, dropping spawns from 61 to 6 and wall time from ~132 ms to ~22 ms (~110 ms saved) with no change to patch formatting semantics."
 
 [[op]]
 id = "command:files"
@@ -48,9 +51,11 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 62
-wall_floor_us = 50000
+alloc = ["refresh/colocated/500f_25c", "refresh/files_head/500f_25c"]
+wall_floor_us = 142041
 target_us = 50000
-derivation = "One diff's names and line counts, not a rendered page; one batched jj log plus the listing fits in the 50 ms command budget. No bench yet, so the wall floor is the class ceiling."
+derivation = "One diff's names and line counts, not a rendered page; one batched jj log plus the listing fits in the 50 ms command budget. Floor is refresh/colocated/500f_25c (131542 us) plus refresh/files_head/500f_25c (10499 us)."
+proposal = "listing::render for --files runs a full 4-way vcs.refresh() (131.5 ms, 61 spawns including 50 per-file jj file show calls and full line diffs just to count added/deleted lines) and then spawns a 62nd jj log in current_revision_id() (10.5 ms in refresh/files_head/500f_25c). Add a dedicated Vcs::file_list path that reads changed paths, statuses, and line counts from git diff --numstat plus git status --porcelain while returning the head change ID from the initial jj log, cutting spawns from 62 to 5 and wall time from ~142 ms to ~18 ms (~124 ms saved) at the cost of a lightweight Vcs::file_list trait method."
 
 [[op]]
 id = "command:json"
@@ -58,9 +63,11 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 62
-wall_floor_us = 50000
+alloc = ["refresh/colocated/500f_25c", "refresh/files_json/500f_25c"]
+wall_floor_us = 142197
 target_us = 50000
-derivation = "The file list JSON-encoded, same jj work as --files; one batched jj log plus encoding fits in the 50 ms command budget. No bench yet, so the wall floor is the class ceiling."
+derivation = "The file list JSON-encoded, same jj work as --files; one batched jj log plus encoding fits in the 50 ms command budget. Floor is refresh/colocated/500f_25c (131542 us) plus refresh/files_json/500f_25c (10655 us)."
+proposal = "--files --json shares listing::render's full vcs.refresh() (131.5 ms, 61 spawns with 50 per-file jj file show calls) plus a separate vcs.current_revision_id() spawn (10.7 ms with JSON serialization in refresh/files_json/500f_25c), spending over 99% of its time in subprocesses rather than JSON encoding. Route OutputMode::Files through the batched Vcs::file_list numstat/status query and include the @ change ID in the discovery jj log template so neither refresh() nor a second head query runs, reducing spawns from 62 to 5 and wall time from ~142 ms to ~18 ms (~124 ms saved) while reusing the existing FileList JSON serializer."
 
 [[op]]
 id = "command:fingerprint"
@@ -68,9 +75,11 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 11
-wall_floor_us = 50000
+alloc = ["refresh/fingerprint/500f_25c"]
+wall_floor_us = 55805
 target_us = 50000
-derivation = "The hash reads base, head and the working copy without a rendered diff; one jj log plus hashing fits in the 50 ms command budget. No bench yet, so the wall floor is the class ceiling."
+derivation = "The hash reads base, head and the working copy without a rendered diff; one jj log plus hashing fits in the 50 ms command budget. Floor is refresh/fingerprint/500f_25c (55805 us)."
+proposal = "--fingerprint skips per-file blob reads but still spawns 11 serial subprocesses (55.8 ms in refresh/fingerprint/500f_25c): jj root, 3 trunk/base probes in resolve_base_rev, 2 in resolve_fork_point, duplicate commit_id_of(effective_from) calls across gather_fingerprint_inputs and discover_working_changes, commit_id_of(@), resolve_stack_tip, git --version, git status, and 2 git diff --name-status calls. Collapse the 7 jj log revision/commit-ID queries into a single templated jj log --ignore-working-copy call and pass the resolved effective_from OID into discover_working_changes, trimming spawns from 11 to 4 and wall time from ~56 ms to ~20 ms (~36 ms saved) at the cost of a combined fingerprint query helper in src/vcs/jj/fingerprint.rs."
 
 [[op]]
 id = "command:base"
@@ -78,9 +87,11 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 64
-wall_floor_us = 50000
+alloc = ["refresh/colocated/500f_25c", "refresh/detect_base/500f_25c"]
+wall_floor_us = 159836
 target_us = 50000
-derivation = "Resolving one named base rev plus the same diff; one batched jj log plus that lookup fits in the 50 ms command budget. No bench yet, so the wall floor is the class ceiling."
+derivation = "Resolving one named base rev plus the same diff; one batched jj log plus that lookup fits in the 50 ms command budget. Floor is refresh/colocated/500f_25c (131542 us) plus refresh/detect_base/500f_25c (28294 us)."
+proposal = "--base @- runs JjVcs::with_base (28.3 ms in refresh/detect_base/500f_25c, adding revset_commit_count and get_change_id_static spawns on top of detect) and then refresh() (131.5 ms, 61 spawns), where resolve_anchors still probes trunk/fork/stack anchors despite base_override being set, followed by 50 per-file jj file show calls. Validate --base and fetch its change and commit IDs in the single startup jj log, skip trunk/fork/stack anchor probes when base_override is present, and batch the 50 file-content reads through git cat-file --batch, cutting spawns from 64 to 5 and wall time from ~160 ms to ~22 ms (~138 ms saved)."
 
 [[op]]
 id = "command:comments"
@@ -88,9 +99,11 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each, 25 review comments; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 61
-wall_floor_us = 50000
+alloc = ["refresh/colocated/500f_25c", "refresh/comments_load/500f_25c"]
+wall_floor_us = 131642
 target_us = 50000
-derivation = "Reading and anchoring the JSONL review comments file is in-process over the same diff as --print; one batched jj log plus anchoring fits in the 50 ms command budget."
+derivation = "Reading and anchoring the JSONL review comments file is in-process over the same diff as --print; one batched jj log plus anchoring fits in the 50 ms command budget. Floor is refresh/colocated/500f_25c (131542 us) plus refresh/comments_load/500f_25c (100 us)."
+proposal = "Loading and anchoring 25 JSONL review comments takes 100 us in process (refresh/comments_load/500f_25c), while the preceding load_comparison_and_refresh takes 131.5 ms across 61 subprocesses (50 per-file jj file show calls plus 11 revision/status spawns). Batch the 50 historical file reads in process_jj_file into two git cat-file --batch streams and coalesce the 9 jj log revision/anchor/label queries into one templated jj log call, reducing spawns from 61 to 6 and total --comments wall time from ~132 ms to ~22 ms (~110 ms saved) without changing the comment parser or anchoring logic."
 
 [[op]]
 id = "command:no-auto-fetch"
@@ -98,9 +111,11 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 61
-wall_floor_us = 50000
+alloc = ["refresh/colocated/500f_25c"]
+wall_floor_us = 131542
 target_us = 50000
-derivation = "One-shot commands do not fetch; the flag only drops the TUI background fetch, so the pinned path is print with the flag inside the 50 ms command budget. No separate bench, so the wall floor is the class ceiling."
+derivation = "One-shot commands do not fetch; the flag only drops the TUI background fetch, so the pinned path is print with the flag inside the 50 ms command budget. Floor is refresh/colocated/500f_25c (131542 us)."
+proposal = "--no-auto-fetch in one-shot mode executes the same load_comparison_and_refresh path as --print (131.5 ms, 61 spawns), where 50 subprocesses are per-file jj file show calls in process_jj_file and 11 are serial jj log and git discovery calls. Replace the per-file jj file show spawns with two git cat-file --batch streams over the base and parent commit OIDs and merge the revision/anchor jj log queries into a single templated call, dropping spawns from 61 to 6 and wall time from ~132 ms to ~22 ms (~110 ms saved) via the shared JjVcs::refresh batching."
 
 [[op]]
 id = "command:benchmark"
@@ -112,6 +127,7 @@ alloc = ["refresh/colocated/500f_25c"]
 wall_floor_us = 131542
 target_us = 50000
 derivation = "The stress run loads the diff once, then renders in process; the load is one batched jj log and 1 frame fits in the 50 ms command budget."
+proposal = "run_benchmark calls detected.comparison_context() (2 jj log label spawns) and detected.refresh() (59 spawns, including 50 per-file jj file show calls) after vcs::detect (2 spawns), spending 131.5 ms in 63 subprocesses before rendering 1 frame (~100 us). Switch run_benchmark to load_comparison_and_refresh (eliminating the 2 extra label spawns), consolidate revision/anchor discovery into one jj log, and read base/parent blobs via two git cat-file --batch pipes, cutting spawns from 63 to 6 and wall time for --benchmark 1 from ~132 ms to ~22 ms (~110 ms saved)."
 
 [[op]]
 id = "command:version"
@@ -142,7 +158,8 @@ processes = 61
 alloc = ["html/render/500_lines", "html/render/200_lines", "refresh/colocated/500f_25c"]
 wall_floor_us = 136950
 target_us = 50000
-derivation = "Main content is the diff; one batched jj log at 40 ms plus the 500-line render (5408 us, 2026-10-20) is the unavoidable work, and the target stays inside the 100 ms page cap."
+derivation = "Main content is the diff; one batched jj log at 40 ms plus the 500-line render (5408 us, 2026-10-20) is the unavoidable work, and the target stays inside the 100 ms page cap. Measured as CLI output from --html."
+proposal = "Rendering the 500-line HTML document with syntax highlighting takes 5.4 ms (html/render/500_lines), while loading the 25 changed files via load_comparison_and_refresh takes 131.5 ms across 61 subprocesses (50 per-file jj file show calls plus 11 jj/git metadata calls), pushing total CLI output time to 137.0 ms (above the 100 ms page cap). Batch the 50 base and parent blob reads in process_jj_file into two git cat-file --batch streams and fold the 9 jj log revision/anchor/label queries into one templated call, reducing spawns from 61 to 6 and total --html generation time from ~137 ms to ~28 ms (~109 ms saved, inside the 100 ms page cap and 50 ms target)."
 
 [[op]]
 id = "page:html-static"
@@ -153,7 +170,8 @@ processes = 61
 alloc = ["html/render/50_lines", "refresh/colocated/500f_25c"]
 wall_floor_us = 132740
 target_us = 50000
-derivation = "The same diff as the live page without the poll script; one batched jj log at 40 ms plus markup stays under the 100 ms page cap."
+derivation = "The same diff as the live page without the poll script; one batched jj log at 40 ms plus markup stays under the 100 ms page cap. Measured as CLI output from --html --static."
+proposal = "Static HTML markup and highlighting take 1.2 ms (html/render/50_lines), whereas load_comparison_and_refresh spends 131.5 ms spawning 61 subprocesses (50 per-file jj file show calls and 11 revision/working-tree queries), putting total CLI output at 132.7 ms (above the 100 ms page cap). Stream the 50 historical file blobs through two git cat-file --batch processes in JjVcs::refresh and collapse the revision and label lookups into a single templated jj log call, dropping spawns from 61 to 6 and wall time from ~133 ms to ~23 ms (~110 ms saved, inside the 100 ms page cap and 50 ms target)."
 
 [[op]]
 id = "frame:html-page"

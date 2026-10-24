@@ -417,6 +417,68 @@ fn bench_refresh(c: &mut Criterion) {
         });
     }
 
+    let (tmp_500, _ext_500, vcs_500) = make_bench_repo(500, 25, false);
+    group.bench_function(BenchmarkId::new("fingerprint", "500f_25c"), |b| {
+        b.iter(|| {
+            black_box(
+                branchdiff::listing::render(
+                    vcs_500.as_ref(),
+                    branchdiff::cli::OutputMode::Fingerprint,
+                    false,
+                )
+                .expect("fingerprint"),
+            )
+        });
+    });
+
+    let refreshed_500 = vcs_500.refresh(&cancel).expect("refresh 500");
+    group.bench_function(BenchmarkId::new("files_head", "500f_25c"), |b| {
+        b.iter(|| {
+            let list = branchdiff::file_list::FileList {
+                base: refreshed_500.base_identifier.clone(),
+                head: vcs_500.current_revision_id().expect("head"),
+                files: branchdiff::file_list::entries(&refreshed_500.files),
+            };
+            black_box(branchdiff::file_list::render_text(&list))
+        });
+    });
+    group.bench_function(BenchmarkId::new("files_json", "500f_25c"), |b| {
+        b.iter(|| {
+            let list = branchdiff::file_list::FileList {
+                base: refreshed_500.base_identifier.clone(),
+                head: vcs_500.current_revision_id().expect("head"),
+                files: branchdiff::file_list::entries(&refreshed_500.files),
+            };
+            black_box(branchdiff::file_list::render_json(&list))
+        });
+    });
+    group.bench_function(BenchmarkId::new("detect_base", "500f_25c"), |b| {
+        b.iter(|| {
+            black_box(
+                branchdiff::vcs::detect_with_base(tmp_500.path(), Some("@-"))
+                    .expect("detect_with_base"),
+            )
+        });
+    });
+
+    let comments_dir = tempfile::tempdir().expect("comments tempdir");
+    let comments_path = comments_dir.path().join("comments.jsonl");
+    let mut jsonl = String::new();
+    for f in 0..25 {
+        jsonl.push_str(&format!(
+            "{{\"path\":\"file_{f}.txt\",\"line\":2,\"body\":\"review note {f}\"}}\n"
+        ));
+    }
+    std::fs::write(&comments_path, &jsonl).expect("write comments");
+    let comparison_500 = vcs_500.comparison_context().expect("comparison");
+    let mut app_500 = App::new(tmp_500.path().to_path_buf(), comparison_500, refreshed_500);
+    group.bench_function(BenchmarkId::new("comments_load", "500f_25c"), |b| {
+        b.iter(|| {
+            app_500.load_comments_from(Some(&comments_path)).expect("load comments");
+            black_box(app_500.view.comments.by_line.len())
+        });
+    });
+
     // The `!is_colocated()` external-store path (disk-walk fallback target).
     let (_tmp_ext, _ext_store, vcs_ext) = make_bench_repo(50, 10, true);
     group.bench_function(BenchmarkId::new("non_colocated", "50f_10c"), |b| {

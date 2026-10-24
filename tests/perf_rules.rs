@@ -51,5 +51,29 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
             other => panic!("operation `{}` has unknown class {other}", op.id),
         };
         assert!(op.id.starts_with(prefix), "{} is class {}", op.id, op.class);
+        if op.class == "command" && op.processes > 0 {
+            assert!(
+                !op.alloc.is_empty() && op.wall_floor_us > guard::COMMAND_US,
+                "{} spawns {} processes and must have a measured bench floor, not the {} us cap",
+                op.id,
+                op.processes,
+                guard::COMMAND_US
+            );
+        }
+        if op.id == "command:branchdiff" {
+            assert!(
+                op.derivation.contains("--benchmark 1"),
+                "command:branchdiff derivation must note --benchmark 1: {}",
+                op.derivation
+            );
+        }
+        if op.class == "page" {
+            assert!(
+                op.derivation.contains("CLI output"),
+                "{} derivation must note CLI output: {}",
+                op.id,
+                op.derivation
+            );
+        }
     }
 }
