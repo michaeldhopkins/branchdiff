@@ -759,4 +759,320 @@ mod tests {
         assert!(patch.contains("-= 3;3\n"), "{patch}");
         assert!(patch.contains("+ = 3;\n"), "{patch}");
     }
+
+    /// `@@ -a[,b] +c[,d] @@` -> `(old_start, old_count, new_start, new_count)`.
+    fn parse_hunk_header(line: &str) -> (usize, usize, usize, usize) {
+        let inner = line
+            .strip_prefix("@@ -")
+            .and_then(|s| s.strip_suffix(" @@"))
+            .unwrap_or_else(|| panic!("malformed hunk header: {line:?}"));
+        let (old, new) = inner.split_once(" +").expect("hunk header has +range");
+        let parse_range = |r: &str| -> (usize, usize) {
+            match r.split_once(',') {
+                Some((s, c)) => (s.parse().unwrap(), c.parse().unwrap()),
+                None => (r.parse().unwrap(), 1),
+            }
+        };
+        let (old_start, old_count) = parse_range(old);
+        let (new_start, new_count) = parse_range(new);
+        (old_start, old_count, new_start, new_count)
+    }
+
+    #[test]
+    fn modified_line_sets_both_old_and_new_hunk_starts() {
+        let patch = diff_to_patch("hello world\n", "hello world!\n");
+        assert_eq!(
+            patch,
+            concat!(
+                "diff --git a/f.rs b/f.rs\n",
+                "--- a/f.rs\n",
+                "+++ b/f.rs\n",
+                "@@ -1 +1 @@\n",
+                "-hello world\n",
+                "+hello world!\n",
+            )
+        );
+    }
+
+    #[test]
+    fn hunk_starts_and_counts_track_context_deletions_additions_and_modifications() {
+        let mut modified = make_diff_line(LineSource::Base, "mod new", "f.rs");
+        modified.old_content = Some("mod old\n".to_string());
+
+        let lines = vec![
+            make_diff_line(LineSource::FileHeader, "f.rs", "f.rs"),
+            make_diff_line(LineSource::Base, "ctx 1", "f.rs"),
+            make_diff_line(LineSource::DeletedBase, "del 1", "f.rs"),
+            make_diff_line(LineSource::DeletedCommitted, "del 2", "f.rs"),
+            make_diff_line(LineSource::Committed, "add 1", "f.rs"),
+            make_diff_line(LineSource::Staged, "add 2", "f.rs"),
+            make_diff_line(LineSource::Unstaged, "add 3", "f.rs"),
+            modified,
+            make_diff_line(LineSource::CanceledCommitted, "canceled", "f.rs"),
+            make_diff_line(LineSource::Base, "ctx 2", "f.rs"),
+            make_diff_line(LineSource::Base, "ctx 3", "f.rs"),
+            make_diff_line(LineSource::Base, "ctx 4", "f.rs"),
+            make_diff_line(LineSource::Base, "ctx 5", "f.rs"),
+            make_diff_line(LineSource::Base, "ctx 6", "f.rs"),
+            make_diff_line(LineSource::Base, "ctx 7", "f.rs"),
+            make_diff_line(LineSource::Base, "ctx 8", "f.rs"),
+            make_diff_line(LineSource::Base, "ctx 9", "f.rs"),
+            make_diff_line(LineSource::DeletedStaged, "tail del", "f.rs"),
+            make_diff_line(LineSource::Committed, "tail add 1", "f.rs"),
+            make_diff_line(LineSource::Committed, "tail add 2", "f.rs"),
+        ];
+
+        let patch_lines = diff_lines_to_patch_lines(&lines);
+        let summary: Vec<(char, &str, Option<usize>, Option<usize>)> = patch_lines
+            .iter()
+            .map(|l| (l.prefix, l.content.as_str(), l.old_line, l.new_line))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (' ', "ctx 1", Some(1), Some(1)),
+                ('-', "del 1", Some(2), None),
+                ('-', "del 2", Some(3), None),
+                ('+', "add 1", None, Some(2)),
+                ('+', "add 2", None, Some(3)),
+                ('+', "add 3", None, Some(4)),
+                ('-', "mod old", Some(4), None),
+                ('+', "mod new", None, Some(5)),
+                (' ', "ctx 2", Some(5), Some(6)),
+                (' ', "ctx 3", Some(6), Some(7)),
+                (' ', "ctx 4", Some(7), Some(8)),
+                (' ', "ctx 5", Some(8), Some(9)),
+                (' ', "ctx 6", Some(9), Some(10)),
+                (' ', "ctx 7", Some(10), Some(11)),
+                (' ', "ctx 8", Some(11), Some(12)),
+                (' ', "ctx 9", Some(12), Some(13)),
+                ('-', "tail del", Some(13), None),
+                ('+', "tail add 1", None, Some(14)),
+                ('+', "tail add 2", None, Some(15)),
+            ]
+        );
+
+        let patch = generate_patch(&lines);
+        assert_eq!(
+            patch,
+            concat!(
+                "diff --git a/f.rs b/f.rs\n",
+                "--- a/f.rs\n",
+                "+++ b/f.rs\n",
+                "@@ -1,7 +1,8 @@\n",
+                " ctx 1\n",
+                "-del 1\n",
+                "-del 2\n",
+                "+add 1\n",
+                "+add 2\n",
+                "+add 3\n",
+                "-mod old\n",
+                "+mod new\n",
+                " ctx 2\n",
+                " ctx 3\n",
+                " ctx 4\n",
+                "@@ -10,4 +11,5 @@\n",
+                " ctx 7\n",
+                " ctx 8\n",
+                " ctx 9\n",
+                "-tail del\n",
+                "+tail add 1\n",
+                "+tail add 2\n",
+            )
+        );
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum SpecOp {
+        Context,
+        ContextRun(usize),
+        Modified,
+        Removed(LineSource),
+        Added(LineSource),
+        Skipped(LineSource),
+    }
+
+    fn build_spec_lines(ops: &[SpecOp]) -> (Vec<DiffLine>, Vec<String>, Vec<String>) {
+        let mut lines = Vec::new();
+        let mut old_file = Vec::new();
+        let mut new_file = Vec::new();
+        let mut seq = 0usize;
+
+        for &op in ops {
+            match op {
+                SpecOp::Context => {
+                    seq += 1;
+                    let text = format!("ctx-{seq}");
+                    old_file.push(text.clone());
+                    new_file.push(text.clone());
+                    lines.push(make_diff_line(LineSource::Base, &text, "f.rs"));
+                }
+                SpecOp::ContextRun(n) => {
+                    for _ in 0..n {
+                        seq += 1;
+                        let text = format!("ctx-{seq}");
+                        old_file.push(text.clone());
+                        new_file.push(text.clone());
+                        lines.push(make_diff_line(LineSource::Base, &text, "f.rs"));
+                    }
+                }
+                SpecOp::Modified => {
+                    seq += 1;
+                    let old_text = format!("old-{seq}");
+                    let new_text = format!("new-{seq}");
+                    old_file.push(old_text.clone());
+                    new_file.push(new_text.clone());
+                    let mut dl = make_diff_line(LineSource::Base, &new_text, "f.rs");
+                    dl.old_content = Some(format!("{old_text}  \n"));
+                    lines.push(dl);
+                }
+                SpecOp::Removed(source) => {
+                    seq += 1;
+                    let text = format!("rem-{seq}");
+                    old_file.push(text.clone());
+                    lines.push(make_diff_line(source, &text, "f.rs"));
+                }
+                SpecOp::Added(source) => {
+                    seq += 1;
+                    let text = format!("add-{seq}");
+                    new_file.push(text.clone());
+                    lines.push(make_diff_line(source, &text, "f.rs"));
+                }
+                SpecOp::Skipped(source) => {
+                    seq += 1;
+                    let text = format!("skip-{seq}");
+                    lines.push(make_diff_line(source, &text, "f.rs"));
+                }
+            }
+        }
+
+        (lines, old_file, new_file)
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 64,
+            failure_persistence: None,
+            .. proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn patch_hunks_match_line_kinds_counts_and_starts(
+            ops in proptest::collection::vec(
+                proptest::sample::select(vec![
+                    SpecOp::Context,
+                    SpecOp::ContextRun(5),
+                    SpecOp::ContextRun(8),
+                    SpecOp::Modified,
+                    SpecOp::Removed(LineSource::DeletedBase),
+                    SpecOp::Removed(LineSource::DeletedCommitted),
+                    SpecOp::Removed(LineSource::DeletedStaged),
+                    SpecOp::Added(LineSource::Committed),
+                    SpecOp::Added(LineSource::Staged),
+                    SpecOp::Added(LineSource::Unstaged),
+                    SpecOp::Skipped(LineSource::CanceledCommitted),
+                    SpecOp::Skipped(LineSource::CanceledStaged),
+                    SpecOp::Skipped(LineSource::FileHeader),
+                    SpecOp::Skipped(LineSource::Elided),
+                ]),
+                1..24usize,
+            )
+        ) {
+            let (lines, old_file, new_file) = build_spec_lines(&ops);
+            let patch_lines = diff_lines_to_patch_lines(&lines);
+
+            let mut exp_old = 0usize;
+            let mut exp_new = 0usize;
+            for pl in &patch_lines {
+                match pl.prefix {
+                    ' ' => {
+                        exp_old += 1;
+                        exp_new += 1;
+                        proptest::prop_assert_eq!(pl.old_line, Some(exp_old));
+                        proptest::prop_assert_eq!(pl.new_line, Some(exp_new));
+                    }
+                    '-' => {
+                        exp_old += 1;
+                        proptest::prop_assert_eq!(pl.old_line, Some(exp_old));
+                        proptest::prop_assert_eq!(pl.new_line, None);
+                    }
+                    '+' => {
+                        exp_new += 1;
+                        proptest::prop_assert_eq!(pl.old_line, None);
+                        proptest::prop_assert_eq!(pl.new_line, Some(exp_new));
+                    }
+                    other => panic!("unexpected patch prefix {other:?}"),
+                }
+            }
+            proptest::prop_assert_eq!(exp_old, old_file.len());
+            proptest::prop_assert_eq!(exp_new, new_file.len());
+
+            let patch = generate_patch(&lines);
+            let has_changes = patch_lines.iter().any(|l| l.prefix == '-' || l.prefix == '+');
+            if !has_changes {
+                proptest::prop_assert!(patch.is_empty(), "unchanged file produced patch:\n{patch}");
+                return Ok(());
+            }
+
+            let mut old_pos = 0usize;
+            let mut rebuilt = Vec::new();
+            let mut raw_lines = patch.lines().peekable();
+            let mut saw_hunk = false;
+
+            while let Some(line) = raw_lines.next() {
+                if !line.starts_with("@@ ") {
+                    continue;
+                }
+                saw_hunk = true;
+                let (old_start, old_count, new_start, new_count) = parse_hunk_header(line);
+                let hunk_old_idx = if old_count == 0 {
+                    old_start
+                } else {
+                    old_start.checked_sub(1).expect("non-empty old range starts >= 1")
+                };
+                proptest::prop_assert!(hunk_old_idx >= old_pos && hunk_old_idx <= old_file.len());
+                rebuilt.extend_from_slice(&old_file[old_pos..hunk_old_idx]);
+                old_pos = hunk_old_idx;
+
+                let expected_new_start = if new_count == 0 { 0 } else { rebuilt.len() + 1 };
+                proptest::prop_assert_eq!(new_start, expected_new_start, "patch:\n{}", patch);
+
+                let mut ctx = 0usize;
+                let mut rem = 0usize;
+                let mut add = 0usize;
+                while let Some(&body) = raw_lines.peek() {
+                    let Some(prefix) = body.chars().next() else { break };
+                    if !matches!(prefix, ' ' | '-' | '+') {
+                        break;
+                    }
+                    let body = raw_lines.next().unwrap();
+                    let text = &body[1..];
+                    match prefix {
+                        ' ' => {
+                            ctx += 1;
+                            proptest::prop_assert_eq!(&old_file[old_pos], text);
+                            old_pos += 1;
+                            rebuilt.push(text.to_string());
+                        }
+                        '-' => {
+                            rem += 1;
+                            proptest::prop_assert_eq!(&old_file[old_pos], text);
+                            old_pos += 1;
+                        }
+                        '+' => {
+                            add += 1;
+                            rebuilt.push(text.to_string());
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                proptest::prop_assert_eq!(old_count, ctx + rem, "old_count != ctx + rem in:\n{}", patch);
+                proptest::prop_assert_eq!(new_count, ctx + add, "new_count != ctx + add in:\n{}", patch);
+            }
+
+            proptest::prop_assert!(saw_hunk);
+            rebuilt.extend_from_slice(&old_file[old_pos..]);
+            proptest::prop_assert_eq!(rebuilt, new_file);
+        }
+    }
 }
