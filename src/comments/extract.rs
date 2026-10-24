@@ -179,3 +179,50 @@ fn extract_reviewdog_diagnostic(
         outdated: false,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(input: &str) -> Result<Vec<ReviewComment>, CommentError> {
+        parse_json_comments(input)
+    }
+
+    #[test]
+    fn a_message_without_a_location_is_a_plain_comment_body() {
+        let comments = parse(r#"{"path":"a.rs","line":2,"message":"hi"}"#).unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].body, "hi");
+        assert_eq!(comments[0].start_line, Some(2));
+    }
+
+    #[test]
+    fn a_location_without_a_message_is_not_a_diagnostic() {
+        let comments = parse(r#"{"path":"a.rs","body":"hi","location":{"path":"b.rs"}}"#).unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].path, "a.rs");
+        assert_eq!(comments[0].body, "hi");
+    }
+
+    #[test]
+    fn a_location_with_a_message_is_a_reviewdog_diagnostic() {
+        let comments = parse(r#"{"message":"m","location":{"path":"b.rs"}}"#).unwrap();
+        assert_eq!(comments[0].path, "b.rs");
+        assert_eq!(comments[0].body, "m");
+    }
+
+    #[test]
+    fn sides_are_case_insensitive_names_and_anything_else_is_an_error() {
+        let side = |s: &str| {
+            parse(&format!(r#"{{"path":"a.rs","body":"x","side":"{s}"}}"#)).map(|c| c[0].side)
+        };
+        for name in ["new", "RIGHT"] {
+            assert_eq!(side(name).unwrap(), CommentSide::New, "{name}");
+        }
+        for name in ["old", "Left"] {
+            assert_eq!(side(name).unwrap(), CommentSide::Old, "{name}");
+        }
+        let err = side("middle").unwrap_err().to_string();
+        assert!(err.contains("unknown comment side 'middle'"), "{err}");
+    }
+}

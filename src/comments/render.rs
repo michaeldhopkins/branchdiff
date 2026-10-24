@@ -473,4 +473,160 @@ mod tests {
         assert!(html.contains("a [2Jb"), "{html}");
         assert!(html.contains("c d&lt;e&gt;"), "{html}");
     }
+
+    fn file_comment(body: &str) -> AnchoredComments {
+        let lines = vec![DiffLine::file_header("a.rs")];
+        anchor_comments(
+            &lines,
+            &[ReviewComment { body: body.into(), ..comment_at(None, "", None) }],
+        )
+    }
+
+    fn spec_for(diff_line: &DiffLine) -> TuiCommentRenderSpec<'_> {
+        TuiCommentRenderSpec {
+            diff_line,
+            line_rows: 1,
+            line_num_width: 0,
+            prefix_width: 0,
+            content_width: 20,
+            screen_row_idx: 0,
+            max_rows: 100,
+            skip_rows: 0,
+            area_width: 80,
+            font_size: (8, 16),
+        }
+    }
+
+    fn render(
+        comments: &AnchoredComments,
+        spec: &TuiCommentRenderSpec<'_>,
+    ) -> (usize, Vec<Line<'static>>) {
+        let (mut lines, mut infos) = (Vec::new(), Vec::new());
+        let emitted = render_tui_comments(comments, 0, spec, &mut lines, &mut infos);
+        assert_eq!(emitted, lines.len());
+        assert_eq!(infos.len(), lines.len());
+        (emitted, lines)
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn rows_count_an_empty_body_row_and_survive_a_zero_width() {
+        let empty = file_comment("");
+        assert_eq!(tui_comment_rows_for_line(&empty, 0, 80), 2);
+        let note = file_comment("note");
+        assert_eq!(tui_comment_rows_for_line(&note, 0, 0), 2);
+    }
+
+    #[test]
+    fn the_rows_scrolled_past_are_the_diff_lines_own_height_unless_it_is_a_header_or_elided() {
+        let comments = file_comment("note");
+        assert_eq!(tui_comment_rows_for_line(&comments, 0, 20), 2);
+        let long = "x".repeat(60);
+        let header = DiffLine::file_header(&long);
+        let elided = DiffLine::new(LineSource::Elided, long.clone(), ' ', None);
+        let committed = DiffLine::new(LineSource::Committed, long, '+', Some(1));
+        for line in [&header, &elided, &committed] {
+            assert!(wrapped_line_height(line, 20, None, 80, (8, 16)) > 1);
+        }
+        // Headers and elided markers take one row however long; others wrap.
+        for line in [&header, &elided] {
+            let spec = TuiCommentRenderSpec { skip_rows: 2, ..spec_for(line) };
+            let (emitted, lines) = render(&comments, &spec);
+            assert_eq!(emitted, 1);
+            assert!(line_text(&lines[0]).ends_with("note"), "{:?}", line_text(&lines[0]));
+        }
+        let height = wrapped_line_height(&committed, 20, None, 80, (8, 16));
+        assert_eq!(height, 3);
+        let spec = TuiCommentRenderSpec { skip_rows: height, ..spec_for(&committed) };
+        assert_eq!(render(&comments, &spec).0, 2);
+    }
+
+    #[test]
+    fn skipped_rows_are_taken_off_piece_by_piece() {
+        let comments = file_comment("a\nb");
+        let line = DiffLine::file_header("a.rs");
+        let spec = TuiCommentRenderSpec { skip_rows: 3, ..spec_for(&line) };
+        let (emitted, lines) = render(&comments, &spec);
+        assert_eq!(emitted, 1);
+        assert_eq!(line_text(&lines[0]), "  │ b");
+    }
+
+    #[test]
+    fn comments_start_below_the_diff_line_and_stop_at_the_row_limit() {
+        let comments = file_comment("note");
+        let line = DiffLine::file_header("a.rs");
+        let spec = TuiCommentRenderSpec {
+            screen_row_idx: 2,
+            line_rows: 3,
+            max_rows: 6,
+            ..spec_for(&line)
+        };
+        assert_eq!(render(&comments, &spec).0, 1);
+
+        let long = file_comment(&"b".repeat(60));
+        let spec = TuiCommentRenderSpec {
+            screen_row_idx: 1,
+            line_rows: 1,
+            max_rows: 5,
+            ..spec_for(&line)
+        };
+        assert_eq!(render(&long, &spec).0, 3, "header, then the body cut to the rows left");
+    }
+
+    #[test]
+    fn the_line_number_column_is_blank_beside_comments_only_when_there_is_one() {
+        let comments = file_comment("note");
+        let line = DiffLine::file_header("a.rs");
+        for (width, blank) in [(0, ""), (3, "    ")] {
+            let spec = TuiCommentRenderSpec { line_num_width: width, ..spec_for(&line) };
+            let (_, lines) = render(&comments, &spec);
+            assert_eq!(lines[0].spans[0].content, blank, "width {width}");
+        }
+    }
+
+    #[test]
+    fn print_indents_by_the_line_number_column_only_when_there_is_one() {
+        let comments = file_comment("note");
+        let raw = |width| {
+            let mut buf = Vec::new();
+            write_print_comments(&mut buf, &comments, 0, width).unwrap();
+            String::from_utf8(buf).unwrap()
+        };
+        assert_eq!(raw(0), "\x1b[36m\x1b[1m  💬 file-level\x1b[0m\n\x1b[36m  │ \x1b[0m note\n");
+        assert_eq!(
+            raw(3),
+            "    \x1b[36m\x1b[1m  💬 file-level\x1b[0m\n    \x1b[36m  │ \x1b[0m note\n"
+        );
+    }
+
+    #[test]
+    fn print_colours_removed_rows_red_and_added_rows_green() {
+        let (lines, anchored) =
+            suggestion_fixture(CommentSide::New, "```suggestion\nNEW\n```", None);
+        let idx = (0..lines.len()).find(|i| anchored.for_line(*i).is_some()).unwrap();
+        let mut buf = Vec::new();
+        write_print_comments(&mut buf, &anchored, idx, 0).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("\x1b[31m- TWO\x1b[0m"), "{out:?}");
+        assert!(out.contains("\x1b[32m+ NEW\x1b[0m"), "{out:?}");
+    }
+
+    #[test]
+    fn tui_colours_removed_rows_red_and_added_rows_green() {
+        let (lines, anchored) =
+            suggestion_fixture(CommentSide::New, "```suggestion\nNEW\n```", None);
+        let idx = (0..lines.len()).find(|i| anchored.for_line(*i).is_some()).unwrap();
+        let (mut out, mut infos) = (Vec::new(), Vec::new());
+        let spec = spec_for(&lines[idx]);
+        render_tui_comments(&anchored, idx, &spec, &mut out, &mut infos);
+        let colour_of = |needle: &str| {
+            let line = out.iter().find(|l| line_text(l).contains(needle)).unwrap();
+            line.spans.last().unwrap().style.fg
+        };
+        assert_eq!(colour_of("- TWO"), Some(SUGGESTION_REMOVED_COLOR));
+        assert_eq!(colour_of("+ NEW"), Some(SUGGESTION_ADDED_COLOR));
+    }
 }

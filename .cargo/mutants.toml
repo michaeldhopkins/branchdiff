@@ -75,4 +75,9 @@ exclude_re = [
     # Equivalent off WSL: `/proc/version` is missing or has no Microsoft marker,
     # so the read already returns false. The decision is proc_version_is_wsl.
     '^src/limits\.rs:.*replace is_wsl -> bool with false$',
+    # Equivalent while DEFAULT_LABEL_STYLE is Words: the explicit "words" arm of
+    # style_from_env gives the same style as the fallback. The arm stays so that
+    # selecting words by name keeps working if the default is ever changed
+    # (pattern redundant-guard). The "words" and "signs" inputs are tested.
+    '^src/comments/label\.rs:\d+:\d+: delete match arm Some\("words"\) in style_from_env$',
 ]

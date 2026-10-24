@@ -113,3 +113,52 @@ fn parse_line_num(s: &str) -> Option<usize> {
     let n = s.parse::<i64>().ok().filter(|&n| n > 0)?;
     usize::try_from(n).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_double_hash_header_marks_a_revdiff_document() {
+        assert!(looks_like_revdiff("## a.rs:1 (+)\nnote"));
+        assert!(looks_like_revdiff("\npreamble\n## a.rs (file-level)"));
+        assert!(!looks_like_revdiff(r#"{"path":"a.rs","body":"x"}"#));
+        assert!(!looks_like_revdiff("#\n# a.rs:1\n##a.rs"));
+        assert!(!looks_like_revdiff(""));
+    }
+
+    #[test]
+    fn blank_lines_before_the_first_header_are_allowed_and_text_is_not() {
+        let ok = parse_revdiff("\n  \n## a.rs:1\nnote").unwrap();
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].body, "note");
+        let err = parse_revdiff("stray\n## a.rs:1\nnote").unwrap_err().to_string();
+        assert!(err.contains("unexpected text before first revdiff"), "{err}");
+    }
+
+    #[test]
+    fn blank_lines_around_a_body_are_trimmed_and_inner_ones_kept() {
+        let comments = parse_revdiff("## a.rs:1\n\n\nfirst\n\nsecond\n\n\n## b.rs:2\nx").unwrap();
+        assert_eq!(comments[0].body, "first\n\nsecond");
+        assert_eq!(comments[1].body, "x");
+    }
+
+    #[test]
+    fn a_header_with_no_body_or_only_blank_lines_has_an_empty_body() {
+        assert_eq!(parse_revdiff("## a.rs:1").unwrap()[0].body, "");
+        assert_eq!(parse_revdiff("## a.rs:1\n").unwrap()[0].body, "");
+        assert_eq!(parse_revdiff("## a.rs:1\n\n\n").unwrap()[0].body, "");
+        let two = parse_revdiff("## a.rs:1\n\n## b.rs:2\n\n").unwrap();
+        assert_eq!((two[0].body.as_str(), two[1].body.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn line_numbers_must_be_positive() {
+        assert!(parse_revdiff("## a.rs:0\nx").is_err());
+        assert!(parse_revdiff("## a.rs:0-3\nx").is_err());
+        assert!(parse_revdiff("## a.rs:-1\nx").is_err());
+        let ok = parse_revdiff("## a.rs:1-3 (-)\nx").unwrap();
+        assert_eq!((ok[0].start_line, ok[0].end_line), (Some(1), Some(3)));
+        assert_eq!(ok[0].side, CommentSide::Old);
+    }
+}

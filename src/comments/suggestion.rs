@@ -41,7 +41,8 @@ pub fn split_body<'a>(body: &'a str, explicit: Option<&'a str>) -> BodyParts<'a>
     while i < lines.len() {
         if fenced.is_none()
             && let Some(ticks) = opening_ticks(lines[i])
-            && let Some(close) = (i + 1..lines.len()).find(|&j| closes(lines[j], ticks))
+            // From `i` itself: the opening line holds "suggestion", so it never closes.
+            && let Some(close) = (i..lines.len()).find(|&j| closes(lines[j], ticks))
         {
             fenced = Some(lines[i + 1..close].to_vec());
             i = close + 1;
@@ -174,6 +175,15 @@ mod tests {
         let plain = split_body("", None);
         assert_eq!(plain.text, vec![""]);
         assert_eq!(split_body("x\n```suggestion\nfenced\n```", Some("")).suggestion, Some(vec![]));
+    }
+
+    #[test]
+    fn has_suggestion_is_true_for_a_fence_or_a_field_and_false_otherwise() {
+        assert!(has_suggestion("```suggestion\nx\n```", None));
+        assert!(has_suggestion("plain", Some("x")));
+        assert!(has_suggestion("", Some("")));
+        assert!(!has_suggestion("plain", None));
+        assert!(!has_suggestion("```suggestion\nunclosed", None));
     }
 
     #[test]
