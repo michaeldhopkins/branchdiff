@@ -11,6 +11,7 @@ pub mod file_links;
 pub mod file_list;
 pub mod fingerprint;
 pub mod gitignore;
+pub mod highlight;
 pub mod html;
 pub mod html_page;
 mod html_runs;

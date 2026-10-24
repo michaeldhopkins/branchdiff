@@ -63,6 +63,8 @@ pub struct ViewState {
     pub raw_comments: Vec<ReviewComment>,
     /// Review comments anchored to the current `app.lines()` indices.
     pub comments: AnchoredComments,
+    /// Flattened `--highlight` marks across `app.lines()`.
+    pub highlights: crate::highlight::HighlightMarks,
 
     // Dirty flags & UI timing
     pub needs_inline_spans: bool,
@@ -102,6 +104,7 @@ impl Default for ViewState {
             comments_source: CommentsSource::default(),
             raw_comments: Vec::new(),
             comments: AnchoredComments::default(),
+            highlights: crate::highlight::HighlightMarks::default(),
             needs_inline_spans: true,
             path_copied_at: None,
             status_flash: None,

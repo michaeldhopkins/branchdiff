@@ -9,15 +9,16 @@ use crate::diff::{DiffInput, FileDiff, compute_four_way_diff, compute_four_way_d
 use crate::file_links::compute_file_links;
 use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
-use crate::vcs::RefreshResult;
 use crate::vcs::shared::{FileProcessResult, assemble_results, process_files_parallel};
+use crate::vcs::{RefreshResult, UpstreamDivergence};
 
-use super::changed_files::{get_all_changed_files, get_changed_files_between};
+use super::changed_files::{ChangedFile, get_all_changed_files, get_changed_files_between};
 use super::commands::{
     batch_file_contents, compute_upstream_divergence, get_binary_files, get_binary_files_between,
     get_current_branch, get_file_at_ref, get_merge_base_preferring_origin_for,
     get_working_tree_file, is_binary_file, is_binary_file_between,
 };
+use super::highlight::{GitHighlightBatch, GitHighlightSpec, compute_single_file_highlight};
 
 struct FileContents {
     base: Option<String>,
@@ -107,6 +108,7 @@ fn process_single_file_batched(
     head_contents: &HashMap<String, String>,
     index_contents: &HashMap<String, String>,
     working_from_head: bool,
+    highlight_batch: Option<&GitHighlightBatch>,
     cancel: &AtomicBool,
 ) -> FileProcessResult {
     if cancel.load(Ordering::Relaxed) {
@@ -124,7 +126,7 @@ fn process_single_file_batched(
         file_path, old_path, base_contents, head_contents, index_contents, repo_path,
         working_from_head,
     );
-    FileProcessResult::Diff(compute_four_way_diff_cancellable(
+    let mut file_diff = compute_four_way_diff_cancellable(
         DiffInput {
             path: file_path,
             base: contents.base.as_deref(),
@@ -134,7 +136,17 @@ fn process_single_file_batched(
             old_path,
         },
         cancel,
-    ))
+    );
+    if let Some(hl) = highlight_batch {
+        file_diff.highlight = hl.compute_for_file(
+            &file_diff,
+            file_path,
+            old_path,
+            contents.base.as_deref(),
+            contents.working.as_deref(),
+        );
+    }
+    FileProcessResult::Diff(file_diff)
 }
 
 pub(super) fn git_compute_single_file_diff(
@@ -143,6 +155,7 @@ pub(super) fn git_compute_single_file_diff(
     old_path: Option<&str>,
     merge_base: &str,
     head_ref: Option<&str>,
+    highlight_spec: Option<&GitHighlightSpec>,
 ) -> Option<FileDiff> {
     let is_binary = match head_ref {
         Some(target_ref) => is_binary_file_between(repo_path, file_path, merge_base, target_ref),
@@ -153,23 +166,34 @@ pub(super) fn git_compute_single_file_diff(
     }
 
     let contents = FileContents::fetch(repo_path, file_path, old_path, merge_base, head_ref);
-
     if contents.all_equal() {
         return None;
     }
 
-    Some(compute_four_way_diff(DiffInput {
+    let mut file_diff = compute_four_way_diff(DiffInput {
         path: file_path,
         base: contents.base.as_deref(),
         head: contents.head.as_deref(),
         index: contents.index.as_deref(),
         working: contents.working.as_deref(),
         old_path,
-    }))
+    });
+    if let Some(spec) = highlight_spec {
+        file_diff.highlight = compute_single_file_highlight(
+            repo_path,
+            spec,
+            merge_base,
+            head_ref,
+            &file_diff,
+            (file_path, old_path),
+            (contents.base.as_deref(), contents.working.as_deref()),
+        )
+        .ok()?;
+    }
+    Some(file_diff)
 }
 
-/// Collect all file paths that need content fetching (primary + old_path for renames),
-/// excluding binary files.
+/// File paths needing content fetch (primary + old_path for renames), excluding binary files.
 pub(super) fn collect_fetch_paths<'a>(
     changed_files: &'a [super::changed_files::ChangedFile],
     binary_files: &HashSet<String>,
@@ -189,11 +213,107 @@ pub(super) fn collect_fetch_paths<'a>(
     paths
 }
 
+struct RefreshContext<'a> {
+    repo_path: &'a Path,
+    base_branch: &'a str,
+    head_ref: &'a str,
+    head_target: Option<(&'a str, &'a str)>,
+    highlight_spec: Option<&'a GitHighlightSpec>,
+}
+
+struct RefreshInputs {
+    base_contents: HashMap<String, String>,
+    head_contents: HashMap<String, String>,
+    index_contents: HashMap<String, String>,
+    current_branch: Option<String>,
+    divergence: Option<UpstreamDivergence>,
+    highlight_batch: Option<GitHighlightBatch>,
+}
+
+/// Batch pre-fetch (cat-file --batch, not N git show calls); branch, divergence and highlight git calls overlap it.
+fn prefetch_refresh_inputs(
+    ctx: &RefreshContext<'_>,
+    merge_base: &str,
+    fetch_paths: &[&str],
+    binary_files: &HashSet<String>,
+) -> Result<RefreshInputs> {
+    let RefreshContext { repo_path, base_branch, head_ref, head_target, highlight_spec } = *ctx;
+    std::thread::scope(|s| {
+        let branch_handle = s.spawn(|| match head_target {
+            Some((_, label)) => Some(label.to_string()),
+            None => get_current_branch(repo_path).unwrap_or(None),
+        });
+        let divergence_handle =
+            s.spawn(|| compute_upstream_divergence(repo_path, merge_base, base_branch));
+        let base_handle = s.spawn(|| {
+            if merge_base.is_empty() {
+                HashMap::new()
+            } else {
+                batch_file_contents(repo_path, fetch_paths, merge_base)
+            }
+        });
+        let head_handle = s.spawn(|| batch_file_contents(repo_path, fetch_paths, head_ref));
+        let index_handle = s.spawn(|| {
+            if head_target.is_some() {
+                HashMap::new()
+            } else {
+                batch_file_contents(repo_path, fetch_paths, "")
+            }
+        });
+        let highlight_handle = s.spawn(|| {
+            highlight_spec.map(|spec| {
+                GitHighlightBatch::fetch(
+                    repo_path,
+                    spec,
+                    merge_base,
+                    head_target.map(|(r, _)| r),
+                    binary_files,
+                )
+            })
+        });
+
+        let highlight_batch =
+            highlight_handle.join().expect("highlight batch thread panicked").transpose()?;
+        Ok(RefreshInputs {
+            base_contents: base_handle.join().expect("base batch thread panicked"),
+            head_contents: head_handle.join().expect("head batch thread panicked"),
+            index_contents: index_handle.join().expect("index batch thread panicked"),
+            current_branch: branch_handle.join().expect("current branch thread panicked"),
+            divergence: divergence_handle.join().expect("divergence thread panicked"),
+            highlight_batch,
+        })
+    })
+}
+
+fn list_changed_and_binary(
+    repo_path: &Path,
+    merge_base: &str,
+    head_target: Option<(&str, &str)>,
+) -> Result<(Vec<ChangedFile>, HashSet<String>)> {
+    let (changed_files_result, binary_files) = std::thread::scope(|s| {
+        let changed_handle = s.spawn(|| match head_target {
+            Some((target_ref, _)) => get_changed_files_between(repo_path, merge_base, target_ref),
+            None => get_all_changed_files(repo_path, merge_base),
+        });
+        let binary_handle = s.spawn(|| match head_target {
+            Some((target_ref, _)) => get_binary_files_between(repo_path, merge_base, target_ref),
+            None => get_binary_files(repo_path, merge_base),
+        });
+
+        (
+            changed_handle.join().expect("changed files thread panicked"),
+            binary_handle.join().expect("binary files thread panicked"),
+        )
+    });
+    Ok((changed_files_result.context("Failed to get changed files")?, binary_files))
+}
+
 pub(super) fn git_compute_refresh(
     repo_path: &Path,
     base_branch: &str,
     base_label: &str,
     head_target: Option<(&str, &str)>,
+    highlight_spec: Option<&GitHighlightSpec>,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<RefreshResult> {
     let head_ref = head_target.map_or("HEAD", |(r, _)| r);
@@ -204,64 +324,28 @@ pub(super) fn git_compute_refresh(
         return Err(anyhow!("refresh cancelled"));
     }
 
-    let (changed_files_result, binary_files) = std::thread::scope(|s| {
-        let changed_handle = s.spawn(|| match head_target {
-            Some((target_ref, _)) => get_changed_files_between(repo_path, &merge_base, target_ref),
-            None => get_all_changed_files(repo_path, &merge_base),
-        });
-        let binary_handle = s.spawn(|| match head_target {
-            Some((target_ref, _)) => get_binary_files_between(repo_path, &merge_base, target_ref),
-            None => get_binary_files(repo_path, &merge_base),
-        });
-
-        (
-            changed_handle.join().expect("changed files thread panicked"),
-            binary_handle.join().expect("binary files thread panicked"),
-        )
-    });
-
-    let changed_files = changed_files_result.context("Failed to get changed files")?;
+    let (changed_files, binary_files) =
+        list_changed_and_binary(repo_path, &merge_base, head_target)?;
 
     if cancel_flag.load(Ordering::Relaxed) {
         return Err(anyhow!("refresh cancelled"));
     }
 
-    // Batch pre-fetch: 3 cat-file --batch calls instead of 3*N git show calls.
     let fetch_paths = collect_fetch_paths(&changed_files, &binary_files);
-    // The branch name and upstream divergence need only the repository, so
-    // their git calls run while the file contents are fetched.
-    let (base_contents, head_contents, index_contents, current_branch, divergence) =
-        std::thread::scope(|s| {
-            let branch_handle = s.spawn(|| match head_target {
-                Some((_, label)) => Some(label.to_string()),
-                None => get_current_branch(repo_path).unwrap_or(None),
-            });
-            let divergence_handle =
-                s.spawn(|| compute_upstream_divergence(repo_path, &merge_base, base_branch));
-            let base_handle = s.spawn(|| {
-                if merge_base.is_empty() {
-                    HashMap::new()
-                } else {
-                    batch_file_contents(repo_path, &fetch_paths, &merge_base)
-                }
-            });
-            let head_handle = s.spawn(|| batch_file_contents(repo_path, &fetch_paths, head_ref));
-            let index_handle = s.spawn(|| {
-                if head_target.is_some() {
-                    HashMap::new()
-                } else {
-                    batch_file_contents(repo_path, &fetch_paths, "")
-                }
-            });
-
-            (
-                base_handle.join().expect("base batch thread panicked"),
-                head_handle.join().expect("head batch thread panicked"),
-                index_handle.join().expect("index batch thread panicked"),
-                branch_handle.join().expect("current branch thread panicked"),
-                divergence_handle.join().expect("divergence thread panicked"),
-            )
-        });
+    let inputs = prefetch_refresh_inputs(
+        &RefreshContext { repo_path, base_branch, head_ref, head_target, highlight_spec },
+        &merge_base,
+        &fetch_paths,
+        &binary_files,
+    )?;
+    let RefreshInputs {
+        base_contents,
+        head_contents,
+        index_contents,
+        current_branch,
+        divergence,
+        highlight_batch,
+    } = inputs;
 
     let working_from_head = head_target.is_some();
     let results = process_files_parallel(&changed_files, cancel_flag, |file| {
@@ -274,6 +358,7 @@ pub(super) fn git_compute_refresh(
             &head_contents,
             &index_contents,
             working_from_head,
+            highlight_batch.as_ref(),
             cancel_flag,
         )
     });
@@ -283,7 +368,10 @@ pub(super) fn git_compute_refresh(
     }
 
     let assembled = assemble_results(results);
-    let files = assembled.files;
+    let mut files = assembled.files;
+    if let Some(hl) = &highlight_batch {
+        hl.stamp_assembled_files(&mut files);
+    }
     let lines = assembled.lines;
 
     let metrics = DiffMetrics { total_lines: lines.len(), file_count: files.len() };

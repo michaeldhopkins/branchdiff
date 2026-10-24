@@ -162,6 +162,7 @@ mod tests {
         assert!(!v["head"].as_str().unwrap().is_empty());
         assert_eq!(v["files"][0]["path"], "g.txt");
         assert_eq!(v["files"][0]["status"], "added");
+        assert!(v["files"][0].get("highlighted").is_none());
     }
 
     #[test]

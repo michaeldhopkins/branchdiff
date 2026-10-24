@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use branchdiff::comments::render::write_print_comments;
 use branchdiff::diff::LineSource;
+use branchdiff::highlight::{format_badge_text, print_highlight_marker};
 use branchdiff::output::{OutputData, OutputFile};
 use branchdiff::ui::colors::print_line_style as line_style;
 use branchdiff::ui::gutter::Gutter;
@@ -72,6 +73,9 @@ fn write_diff(stdout: &mut impl Write, data: &OutputData) -> Result<()> {
     );
 
     writeln!(stdout, "\x1b[36m{}{}", status, RESET)?;
+    if let Some(legend) = data.highlight_legend() {
+        writeln!(stdout, "\x1b[33m{legend}{RESET}")?;
+    }
     writeln!(stdout)?;
 
     let gutter = Gutter::measure(data.files.iter().flat_map(|f| &f.lines), None);
@@ -84,7 +88,10 @@ fn write_diff(stdout: &mut impl Write, data: &OutputData) -> Result<()> {
 }
 
 fn print_file(stdout: &mut impl Write, file: &OutputFile, gutter: Gutter) -> Result<()> {
-    let line_num_width = gutter.print_width();
+    let highlight_active = file.highlight.is_active();
+    let raw_ln_width = gutter.print_width();
+    let line_num_width =
+        if raw_ln_width > 0 { raw_ln_width + usize::from(highlight_active) } else { 0 };
     for (line_idx, line) in file.lines.iter().enumerate() {
         let is_moved = line.move_target.is_some();
         let style = if is_moved {
@@ -100,8 +107,15 @@ fn print_file(stdout: &mut impl Write, file: &OutputFile, gutter: Gutter) -> Res
         if line.source == LineSource::FileHeader {
             if !line_num_str.is_empty() {
                 write!(stdout, "\x1b[90m{} {}", line_num_str, RESET)?;
+                if highlight_active {
+                    write!(stdout, " ")?;
+                }
             }
-            writeln!(stdout, "{}── {} ──{}", ansi, line.content, RESET)?;
+            if let Some(badge) = format_badge_text(&file.highlight) {
+                writeln!(stdout, "{}── {} [{}] ──{}", ansi, line.content, badge, RESET)?;
+            } else {
+                writeln!(stdout, "{}── {} ──{}", ansi, line.content, RESET)?;
+            }
             write_print_comments(stdout, &file.comments, line_idx, line_num_width)?;
             continue;
         }
@@ -109,6 +123,9 @@ fn print_file(stdout: &mut impl Write, file: &OutputFile, gutter: Gutter) -> Res
         if line.source == LineSource::Elided {
             if !line_num_str.is_empty() {
                 write!(stdout, "\x1b[90m{} {}", line_num_str, RESET)?;
+                if highlight_active {
+                    write!(stdout, " ")?;
+                }
             }
             writeln!(stdout, "{}┈┈ ⋮ {} ⋮ ┈┈{}", ansi, line.content, RESET)?;
             continue;
@@ -118,8 +135,9 @@ fn print_file(stdout: &mut impl Write, file: &OutputFile, gutter: Gutter) -> Res
             write!(stdout, "\x1b[90m{} {}", line_num_str, RESET)?;
         }
 
+        let hl_marker = print_highlight_marker(&file.highlight, line_idx);
         let prefix = if is_moved { 'M' } else { line.prefix };
-        write!(stdout, "{}{} ", ansi, prefix)?;
+        write!(stdout, "{hl_marker}{ansi}{prefix} ")?;
 
         if !line.inline_spans.is_empty() {
             let display_spans = coalesce_spans(&line.inline_spans);
@@ -202,6 +220,7 @@ mod tests {
                 deletions: 0,
                 collapsed: false,
                 comments: Default::default(),
+                highlight: Default::default(),
             }],
             total_additions: 1,
             total_deletions: 0,
@@ -269,6 +288,7 @@ mod tests {
             deletions: 1,
             collapsed: false,
             comments,
+            highlight: Default::default(),
         };
 
         let mut buf = Vec::new();
@@ -320,6 +340,7 @@ mod tests {
             deletions: 1,
             collapsed: false,
             comments: Default::default(),
+            highlight: Default::default(),
         };
         let mut buf = Vec::new();
         print_file(&mut buf, &file, Gutter::measure(&file.lines, None)).unwrap();
@@ -340,6 +361,7 @@ mod tests {
             deletions: 0,
             collapsed: false,
             comments: Default::default(),
+            highlight: Default::default(),
         };
         let mut buf = Vec::new();
         print_file(&mut buf, &file, Gutter::measure(&file.lines, None)).unwrap();
@@ -363,5 +385,77 @@ mod tests {
         let file_header_style = line_style(LineSource::FileHeader);
         assert_eq!(file_header_style.fg, Some(Color::White));
         assert!(file_header_style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn print_renders_highlight_legend_badge_and_markers() {
+        use branchdiff::comments::{CommentSide, ReviewComment, anchor_comments};
+        use branchdiff::diff::{DiffInput, compute_four_way_diff};
+        use branchdiff::highlight::{HighlightPair, compute_file_highlight};
+
+        let base = "ctx\n";
+        let commit1 = "ctx\nearlier\n";
+        let commit2 = "ctx\nearlier\nnewly_highlighted\n";
+        let mut diff = compute_four_way_diff(DiffInput {
+            path: "a.rs",
+            base: Some(base),
+            head: Some(commit2),
+            index: Some(commit2),
+            working: Some(commit2),
+            old_path: None,
+        });
+        for line in &mut diff.lines {
+            line.file_path = Some("a.rs".into());
+        }
+        let hl = compute_file_highlight(
+            &diff,
+            Some(base),
+            Some(commit2),
+            "origin/feat..feat",
+            &[HighlightPair { before: Some(commit1), after: Some(commit2) }],
+        );
+        let comments = anchor_comments(
+            &diff.lines,
+            &[ReviewComment {
+                path: "a.rs".into(),
+                start_line: Some(3),
+                end_line: Some(3),
+                side: CommentSide::New,
+                body: "note on highlighted".into(),
+                author: None,
+                suggestion: None,
+                outdated: false,
+            }],
+        );
+        let file = OutputFile {
+            path: "a.rs".into(),
+            lines: diff.lines,
+            additions: 2,
+            deletions: 0,
+            collapsed: false,
+            comments,
+            highlight: hl,
+        };
+        let data = OutputData {
+            repo_name: "r".into(),
+            to_label: "feat".into(),
+            from_label: "main".into(),
+            files: vec![file],
+            total_additions: 2,
+            total_deletions: 0,
+        };
+        let legend = data.highlight_legend().expect("highlight legend present");
+        assert_eq!(legend, "★ highlighted (origin/feat..feat): 1 line in 1 file (★ line, ┃ hunk)");
+
+        let mut buf = Vec::new();
+        print_file(&mut buf, &data.files[0], Gutter::measure(&data.files[0].lines, None)).unwrap();
+        let out = strip_ansi(&String::from_utf8(buf).unwrap());
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows[0], "     ── a.rs [★ 1 highlighted] ──", "{out}");
+        assert_eq!(rows[1], "1 1    ctx", "{out}");
+        assert_eq!(rows[2], "  2 ┃+ earlier", "{out}");
+        assert_eq!(rows[3], "  3 ★+ newly_highlighted", "{out}");
+        assert_eq!(rows[4], "       💬 new line 3", "{out}");
+        assert_eq!(rows[5], "       │  note on highlighted", "{out}");
     }
 }

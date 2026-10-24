@@ -25,7 +25,16 @@ impl JjVcs {
                 .into_iter()
                 .map(|f| f.path)
                 .collect();
-            return Ok(FingerprintInputs { base, head, state: String::new(), changed });
+            let state = self
+                .highlight_revset
+                .as_deref()
+                .map(|hl| {
+                    highlight_fingerprint_state(
+                        &self.repo_path, hl, effective_from, head_rev, &cancel,
+                    )
+                })
+                .unwrap_or_default();
+            return Ok(FingerprintInputs { base, head, state, changed });
         }
         let mut head = id_of("@")?;
         let mut changed: Vec<String> = self
@@ -35,13 +44,86 @@ impl JjVcs {
             .collect();
 
         // A tip above `@` holds committed changes the working copy does not show.
+        let mut effective_to = "@".to_string();
         if let Some(tip) = resolve_stack_tip(&self.repo_path, &self.from_rev, &cancel) {
             head = format!("{head},{}", id_of(&tip.change_id)?);
             let out = self.run_jj(&no_snapshot(&[
                 "diff", "--from", effective_from, "--to", &tip.change_id, "--name-only",
             ]))?;
             changed.extend(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from));
+            effective_to = tip.change_id;
         }
-        Ok(FingerprintInputs { base, head, state: String::new(), changed })
+        let state = self
+            .highlight_revset
+            .as_deref()
+            .map(|hl| {
+                highlight_fingerprint_state(
+                    &self.repo_path, hl, effective_from, &effective_to, &cancel,
+                )
+            })
+            .unwrap_or_default();
+        Ok(FingerprintInputs { base, head, state, changed })
     }
+}
+
+pub(super) fn highlight_fingerprint_state(
+    repo_path: &Path,
+    revset: &str,
+    effective_from: &str,
+    effective_to: &str,
+    cancel: &Arc<AtomicBool>,
+) -> String {
+    let scoped = format!("({revset}) & ({effective_from})..({effective_to})");
+    let mut state = String::from("\n#highlight\n");
+    for entry in highlight::query_highlight_log(repo_path, &scoped, cancel) {
+        state.push_str(&entry.commit_id);
+        state.push(':');
+        state.push_str(&entry.parents.join(","));
+        state.push('\n');
+    }
+    state
+}
+
+fn working_copy_digest(repo_path: &Path, branch_changed_files: &[ChangedFile]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    let feed = |h: &mut u64, bytes: &[u8]| {
+        for &b in bytes {
+            *h = (*h ^ u64::from(b)).wrapping_mul(0x100000001b3);
+        }
+        *h = (*h ^ 0xff).wrapping_mul(0x100000001b3);
+    };
+    for f in branch_changed_files {
+        feed(&mut h, f.path.as_bytes());
+        feed(&mut h, f.old_path.as_deref().unwrap_or("").as_bytes());
+        match std::fs::read(repo_path.join(&f.path)) {
+            Ok(bytes) => {
+                feed(&mut h, &[1]);
+                feed(&mut h, &bytes);
+            }
+            Err(_) => feed(&mut h, &[0]),
+        }
+    }
+    h
+}
+
+pub(super) fn op_head_key(
+    op_store_dir: &Path,
+    repo_path: &Path,
+    effective_from: &str,
+    effective_to: &str,
+    read_from_disk: bool,
+    branch_changed_files: &[ChangedFile],
+) -> Option<String> {
+    let op_heads_dir = op_store_dir.parent()?.join("op_heads").join("heads");
+    let mut heads: Vec<String> = std::fs::read_dir(op_heads_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    if heads.is_empty() {
+        return None;
+    }
+    heads.sort_unstable();
+    let wc = if read_from_disk { working_copy_digest(repo_path, branch_changed_files) } else { 0 };
+    Some(format!("{}:{effective_from}:{effective_to}:{read_from_disk}:{wc:016x}", heads.join(",")))
 }

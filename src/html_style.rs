@@ -15,6 +15,7 @@ pub const DARK_PALETTE: &str = "\
   --c-added:    #3fb950;
   --c-staged:   #22d3ee;
   --c-unstaged: #f5a524;
+  --c-highlight: #fbbf24;
   --c-deleted:  #ff6b66;
   --c-moved:    #8b93ff;
   --c-canceled: #f472b6;
@@ -44,6 +45,7 @@ pub const LIGHT_PALETTE: &str = "\
   --c-added:    #1a7f37;
   --c-staged:   #0e7490;
   --c-unstaged: #b45309;
+  --c-highlight: #854d0e;
   --c-deleted:  #cf222e;
   --c-moved:    #4f46e5;
   --c-canceled: #be185d;
@@ -120,6 +122,19 @@ body {{
 }}
 .header h1 {{ font-size: 16px; font-weight: 600; }}
 .header .stats {{ font-size: 13px; color: var(--fg-sec); margin-top: 4px; }}
+.header .legend {{ font-size: 13px; color: var(--c-highlight); margin-top: 4px; }}
+.hl-badge {{
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-highlight);
+  border: 1px solid var(--c-highlight);
+}}
+tr.hunk-highlighted td:first-child {{ box-shadow: inset 3px 0 0 var(--c-highlight); }}
+tr.line-highlighted .gutter {{ color: var(--c-highlight); font-weight: 700; }}
 .theme-toggle {{
   position: absolute; right: 0; top: 4px;
   background: none; border: 1px solid var(--border);
@@ -186,11 +201,13 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
 }}
 .ln-old, .ln-new {{ width: 3.5em; min-width: 3.5em; }}
 .gutter {{
-  width: 1.5em;
+  width: 2em;
+  min-width: 2em;
   text-align: center;
   color: var(--fg-sec);
   user-select: none;
   padding: 0;
+  white-space: nowrap;
 }}
 .content {{
   padding: 0 8px;
@@ -412,6 +429,29 @@ mod tests {
     }
 
     #[test]
+    fn highlight_uses_its_own_colour_token_and_keeps_gutter_nowrap() {
+        let css = stylesheet();
+        assert!(
+            palette_vars(DARK_PALETTE).contains_key("--c-highlight"),
+            "dark palette must define --c-highlight"
+        );
+        assert!(
+            palette_vars(LIGHT_PALETTE).contains_key("--c-highlight"),
+            "light palette must define --c-highlight"
+        );
+        assert!(css.contains(".header .legend { font-size: 13px; color: var(--c-highlight);"));
+        assert!(css.contains(
+            "tr.hunk-highlighted td:first-child { box-shadow: inset 3px 0 0 var(--c-highlight); }"
+        ));
+        assert!(css.contains(
+            "tr.line-highlighted .gutter { color: var(--c-highlight); font-weight: 700; }"
+        ));
+        let gutter_rule = css.find("\n.gutter {").expect("gutter rule");
+        let gutter_body = &css[gutter_rule..gutter_rule + css[gutter_rule..].find('}').unwrap()];
+        assert!(gutter_body.contains("white-space: nowrap;"), "{gutter_body}");
+    }
+
+    #[test]
     fn both_palettes_hold_their_wcag_contrast() {
         for (theme, palette) in [("dark", DARK_PALETTE), ("light", LIGHT_PALETTE)] {
             let vars = palette_vars(palette);
@@ -433,6 +473,14 @@ mod tests {
             assert!(
                 contrast_ratio(var("--c-staged"), bg_hl) >= 4.5,
                 "{theme}: comment header (--cyan) on --bg-hl is below 4.5:1"
+            );
+            assert!(
+                contrast_ratio(var("--c-highlight"), panel) >= 4.5,
+                "{theme}: --c-highlight on --panel is below 4.5:1"
+            );
+            assert!(
+                contrast_ratio(var("--c-highlight"), bg_hl) >= 4.5,
+                "{theme}: --c-highlight on --bg-hl is below 4.5:1"
             );
             for hue in [
                 "--c-added", "--c-staged", "--c-unstaged", "--c-deleted", "--c-moved",

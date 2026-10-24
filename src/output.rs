@@ -1,6 +1,7 @@
 use crate::app::App;
 use crate::comments::{AnchoredComments, ReviewComment, anchor_comments, file_diff_matches_path};
 use crate::diff::{DiffLine, LineSource};
+use crate::highlight::{FileHighlight, format_legend_text};
 
 /// A file prepared for non-interactive output, with view mode filtering
 /// and inline spans already computed.
@@ -13,6 +14,8 @@ pub struct OutputFile {
     pub collapsed: bool,
     /// Review comments anchored to indices in `lines`.
     pub comments: AnchoredComments,
+    /// Highlight provenance anchored to indices in `lines` when `--highlight` is active.
+    pub highlight: FileHighlight,
 }
 
 /// Everything a non-interactive renderer needs, independent of output format.
@@ -25,6 +28,16 @@ pub struct OutputData {
     pub total_deletions: usize,
 }
 
+impl OutputData {
+    /// Highlight legend line when `--highlight` was passed.
+    pub fn highlight_legend(&self) -> Option<String> {
+        let label = self.files.iter().find_map(|f| f.highlight.label.as_deref())?;
+        let total_lines: usize = self.files.iter().map(|f| f.highlight.line_count()).sum();
+        let file_count = self.files.iter().filter(|f| f.highlight.is_highlighted()).count();
+        Some(format_legend_text(label, total_lines, file_count))
+    }
+}
+
 const CONTEXT_LINES: usize = 5;
 
 /// Compute context visibility for a slice of lines.
@@ -33,7 +46,7 @@ const CONTEXT_LINES: usize = 5;
 /// Commented lines need no case of their own: a comment anchors to a line only
 /// within the same five lines of a change (`comments::anchor`), and is otherwise
 /// shown under the file header, so every anchored line is already in view.
-fn context_visibility(lines: &[DiffLine]) -> Vec<bool> {
+pub(crate) fn context_visibility(lines: &[DiffLine]) -> Vec<bool> {
     let interesting: Vec<bool> = lines
         .iter()
         .map(|line| {
@@ -57,9 +70,18 @@ fn context_visibility(lines: &[DiffLine]) -> Vec<bool> {
     show
 }
 
+#[cfg(test)]
 /// Filter lines by visibility, inserting elided markers for gaps.
 fn filter_with_elided(lines: &[DiffLine], show: &[bool]) -> Vec<DiffLine> {
+    filter_with_elided_and_mapping(lines, show).0
+}
+
+fn filter_with_elided_and_mapping(
+    lines: &[DiffLine],
+    show: &[bool],
+) -> (Vec<DiffLine>, Vec<Option<usize>>) {
     let mut result = Vec::new();
+    let mut mapping = Vec::new();
     let mut last_shown: Option<usize> = None;
 
     for (i, line) in lines.iter().enumerate() {
@@ -70,8 +92,10 @@ fn filter_with_elided(lines: &[DiffLine], show: &[bool]) -> Vec<DiffLine> {
             };
             if gap > 0 {
                 result.push(DiffLine::elided(gap));
+                mapping.push(None);
             }
             result.push(line.clone());
+            mapping.push(Some(i));
             last_shown = Some(i);
         }
     }
@@ -80,10 +104,11 @@ fn filter_with_elided(lines: &[DiffLine], show: &[bool]) -> Vec<DiffLine> {
         let trailing_hidden = (last + 1..lines.len()).filter(|&i| !show[i]).count();
         if trailing_hidden > 0 {
             result.push(DiffLine::elided(trailing_hidden));
+            mapping.push(None);
         }
     }
 
-    result
+    (result, mapping)
 }
 
 /// Prepare app data for non-interactive output.
@@ -131,7 +156,15 @@ pub fn prepare(app: &mut App) -> OutputData {
                 return None;
             }
 
-            let filtered = apply_view_mode(&file.lines, &app.view.view_mode);
+            let (filtered, highlight) =
+                if file.highlight.label.is_none() && !file.highlight.is_highlighted() {
+                    (apply_view_mode(&file.lines, &app.view.view_mode), FileHighlight::default())
+                } else {
+                    let (lines, mapping) =
+                        apply_view_mode_with_mapping(&file.lines, &app.view.view_mode);
+                    let hl = file.highlight.remap_to_context(&mapping);
+                    (lines, hl)
+                };
             let comments = if file_comments.is_empty() {
                 AnchoredComments::default()
             } else {
@@ -143,7 +176,15 @@ pub fn prepare(app: &mut App) -> OutputData {
 
             let collapsed = app.view.collapsed_files.contains(&path);
 
-            Some(OutputFile { path, lines: filtered, additions, deletions, collapsed, comments })
+            Some(OutputFile {
+                path,
+                lines: filtered,
+                additions,
+                deletions,
+                collapsed,
+                comments,
+                highlight,
+            })
         })
         .collect();
 
@@ -164,12 +205,19 @@ pub fn prepare(app: &mut App) -> OutputData {
 }
 
 fn apply_view_mode(lines: &[DiffLine], view_mode: &crate::app::ViewMode) -> Vec<DiffLine> {
+    apply_view_mode_with_mapping(lines, view_mode).0
+}
+
+pub(crate) fn apply_view_mode_with_mapping(
+    lines: &[DiffLine],
+    view_mode: &crate::app::ViewMode,
+) -> (Vec<DiffLine>, Vec<Option<usize>>) {
     use crate::app::ViewMode;
     match view_mode {
-        ViewMode::Full => lines.to_vec(),
+        ViewMode::Full => (lines.to_vec(), (0..lines.len()).map(Some).collect()),
         ViewMode::Context | ViewMode::CommitOnly | ViewMode::BookmarkOnly => {
             let show = context_visibility(lines);
-            filter_with_elided(lines, &show)
+            filter_with_elided_and_mapping(lines, &show)
         }
     }
 }

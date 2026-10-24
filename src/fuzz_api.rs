@@ -21,6 +21,7 @@ pub fn parse_all_vcs_output(text: &str) {
     let _ = jj::parse_jj_summary(text);
     let _ = jj::parse_rename(text);
     let _ = jj::parse_binary_from_stat(text);
+    let _ = jj::parse_highlight_log(text);
 }
 
 pub fn read_cat_file_batch(stream: &[u8], file_paths: &[&str]) -> HashMap<String, String> {

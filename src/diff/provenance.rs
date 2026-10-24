@@ -122,7 +122,7 @@ fn slide_hunks(hunks: &mut [(Range<u32>, Range<u32>)], old_lines: &[&str], new_l
 ///
 /// The histogram algorithm anchors on low-occurrence lines, producing better structural
 /// alignment for files with repetitive patterns (HTML, XML, etc.).
-pub(super) fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Vec<Option<usize>> {
+pub(crate) fn build_provenance_map(old_lines: &[&str], new_lines: &[&str]) -> Vec<Option<usize>> {
     if old_lines.is_empty() {
         return vec![None; new_lines.len()];
     }

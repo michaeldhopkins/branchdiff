@@ -7,6 +7,7 @@ use rayon::prelude::*;
 
 use crate::comments::render::write_html_comments;
 use crate::diff::{DiffLine, LineSource};
+use crate::highlight::{format_badge_text, html_highlight_classes_and_marker};
 use crate::image_diff::{CachedImage, ImageCache};
 use crate::output::{OutputData, OutputFile};
 use crate::syntax;
@@ -166,8 +167,6 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
 <div class="header">
   <h1>{branch_info}</h1>
   <div class="stats">{file_count} file{file_s} · <span class="adds">+{adds}</span> <span class="dels">-{dels}</span></div>
-  <button class="theme-toggle" aria-label="Toggle light/dark theme">☀</button>
-</div>
 "#,
         branch_info = html_escape(&branch_info),
         file_count = file_count,
@@ -177,6 +176,13 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
         style = cached_stylesheet(),
         noscript = noscript_style(),
         head_theme = HEAD_THEME_SCRIPT,
+    )?;
+    if let Some(legend) = data.highlight_legend() {
+        writeln!(out, "  <div class=\"legend\">{}</div>", html_escape(&legend))?;
+    }
+    write!(
+        out,
+        "  <button class=\"theme-toggle\" aria-label=\"Toggle light/dark theme\">☀</button>\n</div>\n"
     )?;
 
     // Table of contents
@@ -189,6 +195,9 @@ fn write_header(out: &mut impl Write, data: &OutputData) -> Result<()> {
         }
         if file.deletions > 0 {
             write!(out, " <span class=\"dels\">-{}</span>", file.deletions)?;
+        }
+        if let Some(badge) = format_badge_text(&file.highlight) {
+            write!(out, " <span class=\"hl-badge\">{}</span>", html_escape(&badge))?;
         }
         writeln!(out, "</a>")?;
     }
@@ -308,6 +317,9 @@ fn write_file(
     if file.deletions > 0 {
         write!(out, " <span class=\"dels\">-{}</span>", file.deletions)?;
     }
+    if let Some(badge) = format_badge_text(&file.highlight) {
+        write!(out, " <span class=\"hl-badge\">{}</span>", html_escape(&badge))?;
+    }
     writeln!(out, "</summary>")?;
     writeln!(out, "<table>")?;
 
@@ -337,10 +349,14 @@ fn write_file(
             continue;
         }
 
-        write!(out, "<tr class=\"{class}\">")?;
+        let (hl_classes, hl_marker) = html_highlight_classes_and_marker(
+            file.highlight.is_line_highlighted(line_idx),
+            file.highlight.is_in_highlighted_hunk(line_idx),
+        );
+        write!(out, "<tr class=\"{class}{hl_classes}\">")?;
         write_html_line_numbers(out, line, gutter)?;
         let prefix = if is_moved { 'M' } else { line.prefix };
-        write!(out, "<td class=\"gutter\">{prefix}</td><td class=\"content\">")?;
+        write!(out, "<td class=\"gutter\">{hl_marker}{prefix}</td><td class=\"content\">")?;
 
         if !line.inline_spans.is_empty() {
             write_inline_spans(out, line)?;
@@ -619,6 +635,7 @@ mod tests {
                 deletions: 1,
                 collapsed: false,
                 comments: Default::default(),
+                highlight: Default::default(),
             }],
             total_additions: 1,
             total_deletions: 1,
@@ -675,6 +692,7 @@ mod tests {
             deletions: 1,
             collapsed: false,
             comments: Default::default(),
+            highlight: Default::default(),
         }
     }
 
@@ -724,6 +742,7 @@ mod tests {
             deletions: 0,
             collapsed: false,
             comments: Default::default(),
+            highlight: Default::default(),
         };
         let mut buf = Vec::new();
         let gutter = Gutter::measure(&file.lines, None);
@@ -747,6 +766,7 @@ mod tests {
             deletions: 0,
             collapsed: false,
             comments: Default::default(),
+            highlight: Default::default(),
         }
     }
 
@@ -882,5 +902,68 @@ mod tests {
             buffered.calls,
             unbuffered.calls
         );
+    }
+
+    #[test]
+    fn html_renders_highlight_legend_badges_and_row_classes() {
+        use crate::highlight::{HighlightPair, compute_file_highlight};
+
+        let base = "ctx\n";
+        let commit1 = "ctx\nearlier\n";
+        let commit2 = "ctx\nearlier\nnewly_highlighted\n";
+        let diff = crate::diff::compute_four_way_diff(crate::diff::DiffInput {
+            path: "src/a.rs",
+            base: Some(base),
+            head: Some(commit2),
+            index: Some(commit2),
+            working: Some(commit2),
+            old_path: None,
+        });
+        let hl = compute_file_highlight(
+            &diff,
+            Some(base),
+            Some(commit2),
+            "feat@origin..feat",
+            &[HighlightPair { before: Some(commit1), after: Some(commit2) }],
+        );
+        let file = OutputFile {
+            path: "src/a.rs".into(),
+            lines: diff.lines,
+            additions: 2,
+            deletions: 0,
+            collapsed: false,
+            comments: Default::default(),
+            highlight: hl,
+        };
+        let data = OutputData {
+            repo_name: "r".into(),
+            to_label: "feat".into(),
+            from_label: "main".into(),
+            files: vec![file],
+            total_additions: 2,
+            total_deletions: 0,
+        };
+        let mut buf = Vec::new();
+        render_html(&mut buf, &data, &ImageCache::new(), Refresh::Off).unwrap();
+        let html = String::from_utf8(buf).unwrap();
+
+        assert!(
+            html.contains(
+                "<div class=\"legend\">★ highlighted (feat@origin..feat): 1 line in 1 file (★ line, ┃ hunk)</div>"
+            ),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches("<span class=\"hl-badge\">★ 1 highlighted</span>").count(),
+            2,
+            "{html}"
+        );
+        assert!(html.contains("class=\"line-committed hunk-highlighted\""), "{html}");
+        assert!(
+            html.contains("class=\"line-committed line-highlighted hunk-highlighted\""),
+            "{html}"
+        );
+        assert!(html.contains("<td class=\"gutter\">┃+</td>"), "{html}");
+        assert!(html.contains("<td class=\"gutter\">★+</td>"), "{html}");
     }
 }

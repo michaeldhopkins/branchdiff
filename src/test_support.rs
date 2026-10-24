@@ -64,7 +64,12 @@ impl TestAppBuilder {
     }
 
     pub fn with_files(mut self, files: Vec<FileDiff>) -> Self {
-        self.lines = files.iter().flat_map(|f| f.lines.clone()).collect();
+        let mut lines = Vec::new();
+        for file in &files {
+            lines.extend(file.lines.iter().cloned());
+            lines.push(DiffLine::new(LineSource::Base, String::new(), ' ', None));
+        }
+        self.lines = lines;
         self.files = files;
         self
     }
@@ -149,6 +154,7 @@ impl TestAppBuilder {
             pending_copy: None,
             status_bar_lines: Vec::new(),
             status_bar_screen_y: 0,
+            highlights: crate::highlight::HighlightMarks::from_files(&app.files, app.lines().len()),
             ..ViewState::default()
         };
         app

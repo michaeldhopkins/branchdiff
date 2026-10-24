@@ -13,10 +13,11 @@ use vcs_runner::{
 
 use super::jj_revset::{
     TRUNK_REMOTE_PREFERENCE, local_trunk_bookmark, pick_trunk_remote, revset_commit_count,
-    revset_committer_epoch, revset_resolves,
+    revset_commit_count_checked, revset_committer_epoch, revset_resolves,
 };
 mod bookmark;
 mod fingerprint;
+mod highlight;
 mod parse;
 mod refresh;
 mod stack;
@@ -25,16 +26,17 @@ use super::shared::{FileProcessResult, assemble_results, process_files_parallel}
 #[cfg(test)]
 use bookmark::{boundary_revset, resolve_bookmark_boundary};
 use bookmark::{mark_bookmark_provenance, resolve_bookmark_boundary_for};
-#[cfg(any(test, fuzzing))]
-pub(crate) use parse::parse_rename;
+use highlight::{JjHighlightPlan, validate_highlight_revset};
 pub(crate) use parse::{ChangedFile, parse_binary_from_stat, parse_jj_summary, parse_rev_metadata};
+#[cfg(any(test, fuzzing))]
+pub(crate) use parse::{parse_highlight_log, parse_rename};
 #[cfg(test)]
 use stack::resolve_fork_point;
 #[cfg(test)]
 use stack::resolve_orphaned_tip;
 use stack::{
     Anchors, compute_stack_position, get_change_id_static, joined, resolve_anchors,
-    resolve_fork_and_tips, resolve_stack_tip,
+    resolve_fork_and_tips, resolve_jj_op_store, resolve_stack_tip,
 };
 
 /// Prepend `--ignore-working-copy` to skip jj's auto-snapshot.
@@ -62,6 +64,8 @@ pub struct JjVcs {
     from_rev: String,
     /// Optional explicit `--head <REV>` revision to diff up to instead of `@`.
     head_rev: Option<String>,
+    /// Optional explicit `--highlight <REVSET>` to mark lines and hunks from.
+    highlight_revset: Option<String>,
     /// Whether to diff from the fork point or the trunk tip.
     /// Stored as AtomicU8 for interior mutability (Vcs trait uses &self).
     /// 0 = ForkPoint, 1 = TrunkTip.
@@ -97,6 +101,8 @@ struct DiskManifest {
     checkpoint: SystemTime,
     /// Per working-copy path: does its on-disk content differ from the base?
     differs: HashMap<String, bool>,
+    /// Cached `--highlight` plan keyed by operation-head ID and target revision.
+    highlight_cache: Option<(String, Arc<JjHighlightPlan>)>,
 }
 
 impl DiskManifest {
@@ -106,30 +112,9 @@ impl DiskManifest {
             base_files: Vec::new(),
             checkpoint: SystemTime::UNIX_EPOCH,
             differs: HashMap::new(),
+            highlight_cache: None,
         }
     }
-}
-
-/// Resolve the shared `op_store` directory for a jj repo. The default workspace
-/// has `.jj/repo` as a directory; a workspace created by `jj workspace add` has
-/// `.jj/repo` as a file containing the path (usually relative to `.jj/`) of the
-/// shared repo.
-fn resolve_jj_op_store(repo_path: &Path) -> PathBuf {
-    let jj_dir = repo_path.join(".jj");
-    let repo = jj_dir.join("repo");
-    let repo_dir = if repo.is_file() {
-        std::fs::read_to_string(&repo)
-            .ok()
-            .map(|contents| {
-                let target = Path::new(contents.trim());
-                if target.is_absolute() { target.to_path_buf() } else { jj_dir.join(target) }
-            })
-            .map(|joined| std::fs::canonicalize(&joined).unwrap_or(joined))
-            .unwrap_or(repo)
-    } else {
-        repo
-    };
-    repo_dir.join("op_store")
 }
 
 /// The base used when no trunk can be found: @'s parent.
@@ -269,19 +254,26 @@ impl JjVcs {
     pub fn with_options(repo_path: PathBuf, options: VcsOptions<'_>) -> Result<Self> {
         let head_rev = match options.head {
             Some(head) => {
-                match revset_commit_count(&repo_path, head) {
-                    1 => {}
-                    0 => anyhow::bail!(
+                match revset_commit_count_checked(&repo_path, head) {
+                    Ok(1) => {}
+                    Err(detail) => anyhow::bail!(
+                        "--head {head:?} is not a valid revset in this jj repo: {detail}"
+                    ),
+                    Ok(0) => anyhow::bail!(
                         "--head {head:?} does not resolve to a commit in this jj repo \
                          (expected a revset, e.g. feature or @-)"
                     ),
-                    _ => anyhow::bail!(
+                    Ok(_) => anyhow::bail!(
                         "--head {head:?} resolves to more than one commit; it must name \
-                         exactly one (e.g. feature, or heads({head}))"
+                         exactly one (e.g. feature, or latest({head}))"
                     ),
                 }
                 Some(head.to_string())
             }
+            None => None,
+        };
+        let highlight_revset = match options.highlight {
+            Some(revset) => Some(validate_highlight_revset(&repo_path, revset)?),
             None => None,
         };
         let from_rev = match options.base {
@@ -319,6 +311,7 @@ impl JjVcs {
             repo_path,
             from_rev,
             head_rev,
+            highlight_revset,
             diff_base: AtomicU8::new(0),
             op_store_dir,
             disk_manifest: Mutex::new(DiskManifest::empty()),
@@ -751,6 +744,7 @@ fn process_jj_file(
     at_rev: &str,
     read_from_disk: bool,
     bookmark_changed_files: Option<&HashSet<String>>,
+    highlight_plan: Option<&JjHighlightPlan>,
     cancel: &Arc<AtomicBool>,
 ) -> FileProcessResult {
     if cancel.load(Ordering::Relaxed) {
@@ -833,6 +827,18 @@ fn process_jj_file(
         mark_bookmark_provenance(&mut file_diff, in_bookmark);
     }
 
+    if let Some(plan) = highlight_plan {
+        file_diff.highlight = plan.compute_for_file(
+            repo_path,
+            &file_diff,
+            &changed.path,
+            changed.old_path.as_deref(),
+            base.as_deref(),
+            working,
+            cancel,
+        );
+    }
+
     FileProcessResult::Diff(file_diff)
 }
 
@@ -864,107 +870,7 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
-        // single_file_diff isn't surfaced as cancellable through the Vcs trait
-        // — it's a quick path used for incremental updates. Pass a never-set
-        // cancel flag so the subprocess calls compile against the cancellable
-        // helpers. A future change can plumb a real cancel through if needed.
-        let cancel = Arc::new(AtomicBool::new(false));
-        let base_rev = self.base_rev();
-        // Mirror refresh()'s anchoring so an incremental update stays consistent
-        // with a full refresh, including the orphaned-empty-@ re-anchor.
-        let (fork_point, stack_tip, orphaned) = resolve_fork_and_tips(
-            &self.repo_path,
-            &self.from_rev,
-            self.head_rev.as_deref(),
-            &cancel,
-        );
-        let effective_from = match self.load_diff_base() {
-            DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(base_rev.as_ref()),
-            DiffBase::TrunkTip => base_rev.as_ref(),
-        };
-        let at_rev = self
-            .head_rev
-            .as_deref()
-            .or_else(|| orphaned.as_ref().map(|t| t.change_id.as_str()))
-            .unwrap_or("@");
-        let effective_to = self
-            .head_rev
-            .as_deref()
-            .or_else(|| stack_tip.as_ref().or(orphaned.as_ref()).map(|t| t.change_id.as_str()))
-            .unwrap_or("@");
-        let read_from_disk = self.head_rev.is_none() && effective_to == "@";
-
-        // Discover from disk/git without snapshotting in the common case.
-        let changed_files = if read_from_disk {
-            self.discover_working_changes(effective_from, &cancel).ok()?
-        } else if self.head_rev.is_some() {
-            self.get_changed_files_no_snapshot(effective_from, effective_to, &cancel).ok()?
-        } else {
-            self.get_changed_files_with_from(effective_from, effective_to, &cancel).ok()?
-        };
-        let changed = changed_files.iter().find(|f| f.path == file_path);
-        let old_path = changed.and_then(|f| f.old_path.as_deref());
-
-        // Subsequent commands skip snapshot
-        let base_path = old_path.unwrap_or(file_path);
-        let base = file_content_no_snapshot(&self.repo_path, base_path, effective_from, &cancel);
-
-        let at_parent = format!("({at_rev})-");
-        let parent = file_content_no_snapshot(&self.repo_path, file_path, &at_parent, &cancel)
-            .or_else(|| {
-                old_path.and_then(|old| {
-                    file_content_no_snapshot(&self.repo_path, old, &at_parent, &cancel)
-                })
-            });
-
-        // Working side from disk (see `process_jj_file`); committed `at_rev` via jj.
-        let index = if read_from_disk {
-            crate::vcs::shared::read_working_file(&self.repo_path, file_path).ok().flatten()
-        } else {
-            file_content_no_snapshot(&self.repo_path, file_path, at_rev, &cancel)
-        };
-        // Only a real stack tip sits above @; an orphaned tip is itself the anchor.
-        let tip_content = stack_tip.as_ref().and_then(|t| {
-            file_content_no_snapshot(&self.repo_path, file_path, &t.change_id, &cancel)
-        });
-        let has_tip = stack_tip.is_some();
-
-        if base.is_none() && index.is_none() && tip_content.is_none() {
-            return None;
-        }
-
-        let is_binary = if read_from_disk {
-            crate::vcs::shared::working_file_is_binary(&self.repo_path, file_path)
-        } else {
-            self.get_binary_files_set(effective_from, effective_to, &cancel).contains(file_path)
-        };
-        if is_binary {
-            return None;
-        }
-
-        let working = if has_tip { tip_content.as_deref() } else { index.as_deref() };
-
-        let mut file_diff = compute_four_way_diff(DiffInput {
-            path: file_path,
-            base: base.as_deref(),
-            head: parent.as_deref(),
-            index: index.as_deref(),
-            working,
-            old_path,
-        });
-
-        // Mark bookmark provenance for BookmarkOnly view mode
-        if let Some(boundary) = resolve_bookmark_boundary_for(
-            &self.repo_path,
-            &self.from_rev,
-            self.target_rev(),
-            &cancel,
-        ) {
-            let in_bookmark = boundary.changed_files.contains(file_path);
-            mark_bookmark_provenance(&mut file_diff, in_bookmark);
-        }
-
-        Some(file_diff)
+        self.single_file_diff_anchored(file_path)
     }
 
     fn base_identifier(&self) -> Result<String> {
@@ -4378,7 +4284,7 @@ mod tests {
 
         let vcs = JjVcs::with_options(
             repo.to_path_buf(),
-            crate::vcs::VcsOptions { base: None, head: Some("feature") },
+            crate::vcs::VcsOptions { head: Some("feature"), ..crate::vcs::VcsOptions::default() },
         )
         .unwrap();
 
@@ -4417,23 +4323,816 @@ mod tests {
 
         let empty_err = match JjVcs::with_options(
             repo.to_path_buf(),
-            crate::vcs::VcsOptions { base: None, head: Some("none()") },
+            crate::vcs::VcsOptions { head: Some("none()"), ..crate::vcs::VcsOptions::default() },
         ) {
             Ok(_) => panic!("empty revset must fail"),
             Err(e) => format!("{e:#}"),
         };
         assert!(empty_err.contains("--head") && empty_err.contains("none()"), "got: {empty_err}");
+        assert!(empty_err.contains("does not resolve to a commit"), "got: {empty_err}");
+
+        let syntax_err = match JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions {
+                head: Some("feature..("),
+                ..crate::vcs::VcsOptions::default()
+            },
+        ) {
+            Ok(_) => panic!("invalid revset syntax must fail"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            syntax_err.starts_with("--head \"feature..(\" is not a valid revset in this jj repo: ")
+                && !syntax_err.contains("does not resolve")
+                && !syntax_err.contains("Error:"),
+            "got: {syntax_err}"
+        );
 
         let multi_err = match JjVcs::with_options(
             repo.to_path_buf(),
-            crate::vcs::VcsOptions { base: None, head: Some("all()") },
+            crate::vcs::VcsOptions { head: Some("all()"), ..crate::vcs::VcsOptions::default() },
         ) {
             Ok(_) => panic!("multi-commit revset must fail"),
             Err(e) => format!("{e:#}"),
         };
-        assert!(
-            multi_err.contains("--head") && multi_err.contains("more than one commit"),
-            "got: {multi_err}"
+        assert_eq!(
+            multi_err,
+            "--head \"all()\" resolves to more than one commit; it must name exactly one (e.g. feature, or latest(all()))"
         );
+    }
+
+    #[test]
+    fn highlight_flag_marks_unpushed_jj_revset_without_snapshotting_and_sets_files_json() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+            assert!(
+                out.status.success(),
+                "jj {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // Commit 1 on feature and push to origin so `feature@origin` exists.
+        std::fs::write(repo.join("file.txt"), "base1\nbase2\nbase3\npushed line\n").unwrap();
+        std::fs::write(repo.join("pushed.txt"), "pushed only\n").unwrap();
+        jj(&["commit", "-m", "pushed commit"]);
+        jj(&["bookmark", "set", "feature", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "feature", "--remote", "origin"]);
+
+        // Commit 2 on feature (unpushed).
+        std::fs::write(repo.join("file.txt"), "base1\nbase2\nbase3\npushed line\nunpushed line\n")
+            .unwrap();
+        std::fs::write(repo.join("unpushed.txt"), "unpushed only\n").unwrap();
+        jj(&["commit", "-m", "unpushed commit"]);
+        jj(&["bookmark", "set", "feature", "-r", "@-"]);
+
+        // Move @ back to main so we test --head feature --highlight feature@origin..feature.
+        jj(&["new", "main"]);
+
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions {
+                base: None,
+                head: Some("feature"),
+                highlight: Some("feature@origin..feature"),
+            },
+        )
+        .unwrap();
+
+        let before = op_count(repo);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_comparison, refresh) = vcs.comparison_and_refresh(&cancel).unwrap();
+        assert_eq!(
+            op_count(repo),
+            before,
+            "--highlight refresh must never snapshot the working copy"
+        );
+        assert_eq!(refresh.files.len(), 3);
+
+        let file_diff = refresh
+            .files
+            .iter()
+            .find(|f| f.lines.first().is_some_and(|l| l.content == "file.txt"))
+            .unwrap();
+        assert_eq!(file_diff.highlight.line_count(), 1);
+        let pushed_idx = file_diff.lines.iter().position(|l| l.content == "pushed line").unwrap();
+        let unpushed_idx =
+            file_diff.lines.iter().position(|l| l.content == "unpushed line").unwrap();
+        assert!(!file_diff.highlight.is_line_highlighted(pushed_idx));
+        assert!(file_diff.highlight.is_in_highlighted_hunk(pushed_idx));
+        assert!(file_diff.highlight.is_line_highlighted(unpushed_idx));
+
+        let pushed_diff = refresh
+            .files
+            .iter()
+            .find(|f| f.lines.first().is_some_and(|l| l.content == "pushed.txt"))
+            .unwrap();
+        assert_eq!(pushed_diff.highlight.line_count(), 0);
+
+        let unpushed_diff = refresh
+            .files
+            .iter()
+            .find(|f| f.lines.first().is_some_and(|l| l.content == "unpushed.txt"))
+            .unwrap();
+        assert_eq!(unpushed_diff.highlight.line_count(), 1);
+
+        // Single-file diff also preserves highlighting.
+        let single = vcs.single_file_diff("file.txt").unwrap();
+        assert_eq!(single.highlight.line_count(), 1);
+
+        // `--files --json` includes `"highlighted":true` / `"highlighted":false`.
+        let json =
+            crate::listing::render(&vcs, crate::cli::OutputMode::Files, true).unwrap().unwrap();
+        assert!(
+            json.contains("\"path\":\"file.txt\",\"old_path\":null,\"status\":\"added\",\"additions\":5,\"deletions\":0,\"highlighted\":true"),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"path\":\"pushed.txt\",\"old_path\":null,\"status\":\"added\",\"additions\":1,\"deletions\":0,\"highlighted\":false"),
+            "{json}"
+        );
+        assert!(
+            json.contains("\"path\":\"unpushed.txt\",\"old_path\":null,\"status\":\"added\",\"additions\":1,\"deletions\":0,\"highlighted\":true"),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn highlight_flag_accepts_empty_revset_after_push_and_rejects_invalid_revset() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+            assert!(
+                out.status.success(),
+                "jj {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        std::fs::write(repo.join("file.txt"), "initial\npushed line\n").unwrap();
+        jj(&["commit", "-m", "pushed commit"]);
+        jj(&["bookmark", "set", "feature", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "feature", "--remote", "origin"]);
+
+        // Right after pushing, `feature@origin..feature` resolves to 0 commits.
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions {
+                base: None,
+                head: Some("feature"),
+                highlight: Some("feature@origin..feature"),
+            },
+        )
+        .expect("empty highlight range after push must not fail startup");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_comparison, refresh) = vcs.comparison_and_refresh(&cancel).unwrap();
+        assert_eq!(refresh.files.len(), 1);
+        assert_eq!(refresh.files[0].highlight.label.as_deref(), Some("feature@origin..feature"));
+        assert_eq!(refresh.files[0].highlight.line_count(), 0);
+        assert!(!refresh.files[0].highlight.is_highlighted());
+
+        let json =
+            crate::listing::render(&vcs, crate::cli::OutputMode::Files, true).unwrap().unwrap();
+        assert!(json.contains("\"highlighted\":false"), "{json}");
+
+        // Invalid syntax or unknown symbol must still be refused at startup.
+        for bad in ["", "   ", "no_such_symbol_xyz", "a..b..c"] {
+            assert!(
+                JjVcs::with_options(
+                    repo.to_path_buf(),
+                    crate::vcs::VcsOptions {
+                        base: None,
+                        head: Some("feature"),
+                        highlight: Some(bad),
+                    },
+                )
+                .is_err(),
+                "invalid highlight revset {bad:?} should be rejected"
+            );
+        }
+        let bad_err = match JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions {
+                base: None,
+                head: Some("feature"),
+                highlight: Some("no_such_symbol_xyz"),
+            },
+        ) {
+            Ok(_) => panic!("unknown symbol must fail"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            bad_err.starts_with(
+                "--highlight \"no_such_symbol_xyz\" is not a valid revset in this jj repo: "
+            ) && bad_err.contains("no_such_symbol_xyz")
+                && !bad_err.contains("Error:"),
+            "got: {bad_err}"
+        );
+    }
+
+    fn refresh_highlighting(repo: &Path, revset: &str) -> crate::vcs::RefreshResult {
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: Some("feature"), highlight: Some(revset) },
+        )
+        .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        vcs.comparison_and_refresh(&cancel).unwrap().1
+    }
+
+    fn file_named<'a>(refresh: &'a crate::vcs::RefreshResult, name: &str) -> &'a FileDiff {
+        refresh.files.iter().find(|f| f.lines.first().is_some_and(|l| l.content == name)).unwrap()
+    }
+
+    fn marked_lines<'a>(refresh: &'a crate::vcs::RefreshResult, name: &str) -> Vec<&'a str> {
+        let file = file_named(refresh, name);
+        file.highlight
+            .highlighted_lines
+            .iter()
+            .map(|&idx| file.lines[idx].content.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn highlight_flag_handles_jj_merge_commits_and_side_branches_without_overmarking() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+            assert!(
+                out.status.success(),
+                "jj {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // Commit `one` on main: modifies file.txt
+        std::fs::write(repo.join("file.txt"), "initial\none\n").unwrap();
+        jj(&["commit", "-m", "one"]);
+
+        // Commit `two` on `one`: adds "two"
+        std::fs::write(repo.join("file.txt"), "initial\none\ntwo\n").unwrap();
+        jj(&["commit", "-m", "two"]);
+
+        // Side branch off `main`: adds `side.txt` and edits `file.txt`
+        jj(&["new", "main", "-m", "side"]);
+        std::fs::write(repo.join("file.txt"), "initial\nside\n").unwrap();
+        std::fs::write(repo.join("side.txt"), "side only\n").unwrap();
+
+        // Also create an unmerged side branch off `one` to ensure side branches don't break coalescing
+        jj(&["new", "description(substring:one)", "-m", "unmerged"]);
+        std::fs::write(repo.join("unmerged.txt"), "unmerged\n").unwrap();
+
+        // Merge `two` and `side` into `merge_commit`, resolving `file.txt` and adding `merge own`
+        jj(&[
+            "new",
+            "description(substring:two)",
+            "description(substring:side)",
+            "-m",
+            "merge_commit",
+        ]);
+        std::fs::write(repo.join("file.txt"), "initial\none\ntwo\nside\nmerge own\n").unwrap();
+        jj(&["bookmark", "set", "feature", "-r", "@"]);
+        jj(&["new", "main"]);
+
+        // 1. Highlighting ONLY the merge commit must mark only `merge own` (1 line),
+        //    never `one`, `two`, `side`, or `side.txt`.
+        let refresh_merge = refresh_highlighting(repo, "description(substring:merge_commit)");
+        assert_eq!(marked_lines(&refresh_merge, "file.txt"), vec!["merge own"]);
+        assert_eq!(file_named(&refresh_merge, "side.txt").highlight.line_count(), 0);
+
+        // 2. Highlighting `description(substring:two)::` must mark `two` and `merge own`,
+        //    and must NOT mark `one`, `side`, or `side.txt`.
+        let refresh_two = refresh_highlighting(repo, "description(substring:two)::");
+        assert_eq!(marked_lines(&refresh_two, "file.txt"), vec!["two", "merge own"]);
+        assert_eq!(file_named(&refresh_two, "side.txt").highlight.line_count(), 0);
+
+        // 3. A linear range while side branches exist coalesces into a single span.
+        let cancel = Arc::new(AtomicBool::new(false));
+        let vcs_linear = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions {
+                base: None,
+                head: Some("feature"),
+                highlight: Some("description(substring:one)..description(substring:two)"),
+            },
+        )
+        .unwrap();
+        let plan =
+            JjHighlightPlan::resolve(&vcs_linear, "main", "feature", false, &[], &cancel).unwrap();
+        assert_eq!(plan.spans.len(), 1, "side branches must not force per-commit fallback");
+    }
+
+    #[test]
+    fn test_parse_highlight_log_fixtures() {
+        let raw = concat!(
+            "c33333333333\t@\tc22222222222,s11111111111\n",
+            "c22222222222\t.\tc11111111111\n",
+            "c11111111111\t.\t0000000000000000000000000000000000000000\n",
+            "\n",
+            "malformed_without_tabs\n",
+        );
+        let entries = parse_highlight_log(raw);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].commit_id, "c33333333333");
+        assert!(entries[0].is_working_copy);
+        assert_eq!(entries[0].parents, vec!["c22222222222", "s11111111111"]);
+
+        assert_eq!(entries[1].commit_id, "c22222222222");
+        assert!(!entries[1].is_working_copy);
+        assert_eq!(entries[1].parents, vec!["c11111111111"]);
+
+        assert_eq!(entries[2].commit_id, "c11111111111");
+        assert!(!entries[2].is_working_copy);
+        assert_eq!(entries[2].parents, vec!["0000000000000000000000000000000000000000"]);
+    }
+
+    #[test]
+    fn highlight_flag_handles_jj_rename_inside_highlighted_range_and_tracks_fingerprint() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+            assert!(
+                out.status.success(),
+                "jj {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // f1 adds a.txt (x, y) and pushes `feature` to origin.
+        std::fs::write(repo.join("a.txt"), "x\ny\n").unwrap();
+        jj(&["commit", "-m", "f1"]);
+        jj(&["bookmark", "set", "f1", "-r", "@-"]);
+        jj(&["bookmark", "set", "feature", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "feature", "--remote", "origin"]);
+
+        // f2 renames a.txt -> renamed.txt and adds z.
+        std::fs::remove_file(repo.join("a.txt")).unwrap();
+        std::fs::write(repo.join("renamed.txt"), "x\ny\nz\n").unwrap();
+        jj(&["commit", "-m", "f2"]);
+        jj(&["bookmark", "set", "feature", "-r", "@-"]);
+        jj(&["new", "main"]);
+
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions {
+                base: None,
+                head: Some("feature"),
+                highlight: Some("f1..feature"),
+            },
+        )
+        .unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (_, refresh) = vcs.comparison_and_refresh(&cancel).unwrap();
+        let file = refresh
+            .files
+            .iter()
+            .find(|f| f.lines.first().is_some_and(|l| l.content.contains("renamed.txt")))
+            .unwrap();
+        let marked: Vec<&str> = file
+            .highlight
+            .highlighted_lines
+            .iter()
+            .map(|&idx| file.lines[idx].content.as_str())
+            .collect();
+        assert_eq!(marked, vec!["z"], "jj highlight across rename must mark only z");
+
+        let single = vcs.single_file_diff("renamed.txt").unwrap();
+        let single_marked: Vec<&str> = single
+            .highlight
+            .highlighted_lines
+            .iter()
+            .map(|&idx| single.lines[idx].content.as_str())
+            .collect();
+        assert_eq!(single_marked, vec!["z"]);
+
+        // Verify fingerprint changes when a push moves `feature@origin` without changing `feature`.
+        let vcs_origin = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions {
+                base: None,
+                head: Some("feature"),
+                highlight: Some("feature@origin..feature"),
+            },
+        )
+        .unwrap();
+        let fp_before =
+            crate::listing::render(&vcs_origin, crate::cli::OutputMode::Fingerprint, false)
+                .unwrap()
+                .unwrap();
+        jj(&["git", "push", "--bookmark", "feature", "--remote", "origin"]);
+        let fp_after =
+            crate::listing::render(&vcs_origin, crate::cli::OutputMode::Fingerprint, false)
+                .unwrap()
+                .unwrap();
+        assert_ne!(fp_before, fp_after, "pushing feature@origin must move jj fingerprint");
+    }
+
+    #[test]
+    fn highlight_flag_follows_rename_made_after_highlighted_range() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+            assert!(
+                out.status.success(),
+                "jj {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // f1 adds a.txt with l1..l5.
+        std::fs::write(repo.join("a.txt"), "l1\nl2\nl3\nl4\nl5\n").unwrap();
+        jj(&["commit", "-m", "f1"]);
+
+        // f2 renames a.txt -> renamed.txt and adds z.
+        std::fs::remove_file(repo.join("a.txt")).unwrap();
+        std::fs::write(repo.join("renamed.txt"), "l1\nl2\nl3\nl4\nl5\nz\n").unwrap();
+        jj(&["bookmark", "set", "feature", "-r", "@"]);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        for head in [None, Some("feature")] {
+            let vcs = JjVcs::with_options(
+                repo.to_path_buf(),
+                crate::vcs::VcsOptions { base: None, head, highlight: Some("feature-") },
+            )
+            .unwrap();
+            let (_, refresh) = vcs.comparison_and_refresh(&cancel).unwrap();
+            let marks =
+                crate::highlight::HighlightMarks::from_files(&refresh.files, refresh.lines.len());
+            assert_eq!(
+                marks.total_highlighted_lines, 5,
+                "head={head:?} must mark l1..l5 across post-range rename"
+            );
+            assert_eq!(marks.highlighted_file_count, 1, "head={head:?}");
+            let file = refresh
+                .files
+                .iter()
+                .find(|f| f.lines.first().is_some_and(|l| l.content.contains("renamed.txt")))
+                .unwrap();
+            let marked: Vec<&str> = file
+                .highlight
+                .highlighted_lines
+                .iter()
+                .map(|&idx| file.lines[idx].content.as_str())
+                .collect();
+            assert_eq!(marked, vec!["l1", "l2", "l3", "l4", "l5"]);
+
+            let single = vcs.single_file_diff("renamed.txt").unwrap();
+            let single_marked: Vec<&str> = single
+                .highlight
+                .highlighted_lines
+                .iter()
+                .map(|&idx| single.lines[idx].content.as_str())
+                .collect();
+            assert_eq!(single_marked, vec!["l1", "l2", "l3", "l4", "l5"]);
+        }
+    }
+
+    #[test]
+    fn highlight_plan_cache_hits_and_invalidates_after_op_and_working_copy_edit() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+            assert!(
+                out.status.success(),
+                "jj {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        jj(&["describe", "-m", "work"]);
+
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: None, highlight: Some("@") },
+        )
+        .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let changed = vcs.discover_working_changes("main", &cancel).unwrap();
+
+        let p1 = JjHighlightPlan::resolve(&vcs, "main", "@", true, &changed, &cancel).unwrap();
+        let p2 = JjHighlightPlan::resolve(&vcs, "main", "@", true, &changed, &cancel).unwrap();
+        assert!(
+            Arc::ptr_eq(&p1, &p2),
+            "second resolve without op or edit must hit highlight cache"
+        );
+
+        // A jj operation advances `.jj/repo/op_heads/heads` and must invalidate the cache.
+        jj(&["describe", "-m", "work renamed"]);
+        let p3 = JjHighlightPlan::resolve(&vcs, "main", "@", true, &changed, &cancel).unwrap();
+        assert!(!Arc::ptr_eq(&p2, &p3), "jj op must invalidate highlight plan cache");
+
+        let p4 = JjHighlightPlan::resolve(&vcs, "main", "@", true, &changed, &cancel).unwrap();
+        assert!(Arc::ptr_eq(&p3, &p4), "subsequent resolve at new op must hit cache");
+
+        // An unsnapshotted working-copy file edit must also invalidate when read_from_disk is true.
+        std::fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let p5 = JjHighlightPlan::resolve(&vcs, "main", "@", true, &changed, &cancel).unwrap();
+        assert!(
+            !Arc::ptr_eq(&p4, &p5),
+            "unsnapshotted working-copy edit must invalidate highlight plan cache"
+        );
+    }
+
+    #[test]
+    fn highlight_batches_jj_file_reads_across_20_files() {
+        if !jj_available() {
+            return;
+        }
+        let measure_spawns = |file_count: usize| -> usize {
+            let (temp, _remote) = setup_repo_with_remote();
+            let repo = temp.path();
+            let jj = |args: &[&str]| {
+                let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+                assert!(
+                    out.status.success(),
+                    "jj {args:?} failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            };
+            for i in 0..file_count {
+                std::fs::write(repo.join(format!("f_{i:02}.txt")), format!("f1_{i}\n")).unwrap();
+            }
+            jj(&["commit", "-m", "f1"]);
+            jj(&["bookmark", "set", "f1", "-r", "@-"]);
+
+            for i in 0..file_count {
+                std::fs::write(repo.join(format!("f_{i:02}.txt")), format!("f1_{i}\nf2_{i}\n"))
+                    .unwrap();
+            }
+            jj(&["commit", "-m", "f2"]);
+            jj(&["bookmark", "set", "feature", "-r", "@-"]);
+            jj(&["new", "main"]);
+
+            let vcs = JjVcs::with_options(
+                repo.to_path_buf(),
+                crate::vcs::VcsOptions { base: None, head: Some("feature"), highlight: Some("f1") },
+            )
+            .unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let (_, refresh) = vcs.comparison_and_refresh(&cancel).unwrap();
+            assert_eq!(refresh.files.len(), file_count);
+            for file in &refresh.files {
+                assert_eq!(file.highlight.line_count(), 1);
+            }
+            vcs.disk_manifest.lock().unwrap().highlight_cache.as_ref().unwrap().1.spawn_count
+        };
+
+        let spawns_1 = measure_spawns(1);
+        let spawns_20 = measure_spawns(20);
+        assert_eq!(
+            spawns_20, spawns_1,
+            "batched jj highlight file reads must not grow with file count (1 file={spawns_1}, 20 files={spawns_20})"
+        );
+        assert!(spawns_20 <= 6, "expected bounded highlight spawns, got {spawns_20}");
+    }
+
+    #[test]
+    fn highlight_fingerprint_pins_working_copy_path_and_commit_loop() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+            assert!(
+                out.status.success(),
+                "jj {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        std::fs::write(repo.join("file.txt"), "initial\nc1\n").unwrap();
+        jj(&["commit", "-m", "c1"]);
+        jj(&["bookmark", "set", "pushed", "-r", "@-"]);
+
+        std::fs::write(repo.join("file.txt"), "initial\nc1\nc2\n").unwrap();
+        jj(&["describe", "-m", "c2"]);
+
+        // Working-copy path (`head: None`): moving `pushed` up to `@` changes only the highlight revset.
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: None, highlight: Some("pushed..@") },
+        )
+        .unwrap();
+        let fp_before = crate::listing::render(&vcs, crate::cli::OutputMode::Fingerprint, false)
+            .unwrap()
+            .unwrap();
+
+        jj(&["bookmark", "set", "pushed", "-r", "@"]);
+
+        let fp_after = crate::listing::render(&vcs, crate::cli::OutputMode::Fingerprint, false)
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            fp_before, fp_after,
+            "moving highlight bookmark must change jj working-copy fingerprint"
+        );
+    }
+
+    #[test]
+    fn highlight_flag_excludes_base_commit_so_main_descendants_and_all_preserve_deletions() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+            assert!(
+                out.status.success(),
+                "jj {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // Advance `main` (and `main@origin`) with two lines so deleting the first and adding
+        // after the second produces a distinct `-` deletion line and `+` addition line.
+        std::fs::write(repo.join("file.txt"), "initial\nkeep\n").unwrap();
+        jj(&["commit", "-m", "main two lines"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "--bookmark", "main", "--remote", "origin"]);
+
+        // Delete `initial` (from `main`) and add `added` after `keep`.
+        std::fs::write(repo.join("file.txt"), "keep\nadded\n").unwrap();
+        jj(&["describe", "-m", "delete initial and add line"]);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let marked_for = |revset: &str| -> Vec<(char, String)> {
+            let vcs = JjVcs::with_options(
+                repo.to_path_buf(),
+                crate::vcs::VcsOptions { base: None, head: None, highlight: Some(revset) },
+            )
+            .unwrap();
+            let (_, refresh) = vcs.comparison_and_refresh(&cancel).unwrap();
+            let file = &refresh.files[0];
+            let single = vcs.single_file_diff("file.txt").unwrap();
+            assert_eq!(file.highlight.highlighted_lines, single.highlight.highlighted_lines);
+            file.highlight
+                .highlighted_lines
+                .iter()
+                .map(|&idx| (file.lines[idx].prefix, file.lines[idx].content.clone()))
+                .collect()
+        };
+
+        let expected = marked_for("main..");
+        assert_eq!(
+            expected,
+            vec![('-', "initial".to_string()), ('+', "added".to_string())],
+            "main.. must highlight both the deleted base line and the added line"
+        );
+        assert_eq!(marked_for("main::"), expected, "main:: must match main..");
+        assert_eq!(marked_for("all()"), expected, "all() must match main..");
+        assert!(marked_for("main").is_empty(), "base commit itself must not be highlighted");
+        assert!(marked_for("root()").is_empty(), "root() must not be highlighted");
+    }
+
+    fn jj_fixtures_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/jj")
+    }
+
+    #[test]
+    #[ignore = "captures highlight-log.txt from BRANCHDIFF_CAPTURE_JJ (or jj on PATH)"]
+    fn capture_jj_highlight_log_fixture() {
+        let jj = PathBuf::from(
+            std::env::var("BRANCHDIFF_CAPTURE_JJ").unwrap_or_else(|_| "jj".to_string()),
+        );
+        let raw_version = String::from_utf8(
+            Command::new(&jj).arg("--version").output().expect("jj --version").stdout,
+        )
+        .expect("utf-8");
+        let version = raw_version
+            .split_whitespace()
+            .nth(1)
+            .expect("jj <version>")
+            .split('-')
+            .next()
+            .expect("semver");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = tmp.path().join("config.toml");
+        std::fs::write(
+            &config,
+            "[user]\nname = \"Test User\"\nemail = \"test@example.com\"\n\
+             [ui]\ncolor = \"never\"\npaginate = \"never\"\n\
+             [debug]\ncommit-timestamp = \"2001-02-03T04:05:06+07:00\"\noperation-timestamp = \"2001-02-03T04:05:06+07:00\"\n\
+             [operation]\nhostname = \"host\"\nusername = \"user\"\n",
+        )
+        .expect("write config");
+        let repo = tmp.path().join("repo");
+        let run = |dir: &Path, args: &[&str]| -> String {
+            let out = Command::new(&jj)
+                .args(args)
+                .current_dir(dir)
+                .env("JJ_CONFIG", &config)
+                .output()
+                .expect("run jj");
+            assert!(out.status.success(), "jj {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).expect("utf-8")
+        };
+        run(tmp.path(), &["git", "init", "--colocate", "repo"]);
+        std::fs::write(repo.join("a.txt"), "base\n").unwrap();
+        run(&repo, &["commit", "-m", "base"]);
+        std::fs::write(repo.join("a.txt"), "base\none\n").unwrap();
+        run(&repo, &["commit", "-m", "one"]);
+        run(&repo, &["new", "description(substring:base)", "-m", "side"]);
+        std::fs::write(repo.join("side.txt"), "side\n").unwrap();
+        run(
+            &repo,
+            &["new", "description(substring:one)", "description(substring:side)", "-m", "merge"],
+        );
+        let log_out = run(
+            &repo,
+            &[
+                "--ignore-working-copy",
+                "log",
+                "-r",
+                "all()",
+                "--no-graph",
+                "-T",
+                highlight::HIGHLIGHT_LOG_TEMPLATE,
+            ],
+        );
+        let dir = jj_fixtures_root().join(version);
+        std::fs::create_dir_all(&dir).expect("mkdir fixtures");
+        std::fs::write(dir.join("highlight-log.txt"), log_out).expect("write highlight-log.txt");
+    }
+
+    fn check_jj_highlight_log_fixture(version: &str) {
+        let path = jj_fixtures_root().join(version).join("highlight-log.txt");
+        let raw =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let entries = parse_highlight_log(&raw);
+        assert_eq!(entries.len(), 5, "jj {version}: expected merge + side + one + base + root");
+        assert!(
+            entries
+                .iter()
+                .all(|e| !e.commit_id.is_empty()
+                    && e.commit_id.chars().all(|c| c.is_ascii_hexdigit())),
+            "jj {version}: {entries:?}"
+        );
+        let wc: Vec<_> = entries.iter().filter(|e| e.is_working_copy).collect();
+        assert_eq!(wc.len(), 1, "jj {version}: exactly one working-copy commit");
+        assert_eq!(wc[0].parents.len(), 2, "jj {version}: working-copy commit is a 2-parent merge");
+        let root = entries.iter().find(|e| e.parents.is_empty()).expect("root commit");
+        assert!(!root.is_working_copy, "jj {version}");
+        assert!(root.commit_id.bytes().all(|b| b == b'0'), "jj {version}: root is all zeros");
+    }
+
+    #[test]
+    fn every_captured_jj_highlight_fixture_has_a_test() {
+        let tested: Vec<&str> = TESTED_JJ_HIGHLIGHT_VERSIONS.to_vec();
+        let mut captured: Vec<String> = std::fs::read_dir(jj_fixtures_root())
+            .expect("tests/fixtures/jj")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        captured.sort();
+        assert_eq!(
+            captured, tested,
+            "add a jj_highlight_fixture_tests! entry for each captured jj version"
+        );
+    }
+
+    macro_rules! jj_highlight_fixture_tests {
+        ($($name:ident => $version:literal),* $(,)?) => {
+            const TESTED_JJ_HIGHLIGHT_VERSIONS: &[&str] = &[$($version),*];
+            $(
+                #[test]
+                fn $name() {
+                    check_jj_highlight_log_fixture($version);
+                }
+            )*
+        };
+    }
+
+    jj_highlight_fixture_tests! {
+        jj_highlight_log_0_45_1 => "0.45.1",
     }
 }

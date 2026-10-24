@@ -25,8 +25,15 @@ use crate::syntax::{HighlightCache, SyntaxSegment};
 use crate::vcs::VcsBackend;
 
 use super::colors::line_style_with_highlight;
-use super::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG, line_style, status_symbol};
+#[cfg(test)]
+use super::colors::{SEARCH_CURRENT_BG, SEARCH_MATCH_BG};
+use super::colors::{line_style, status_symbol};
 use super::gutter::Gutter;
+#[cfg(test)]
+use super::search_overlay::content_match_to_render_ranges;
+use super::search_overlay::{
+    apply_search_to_content, apply_search_to_inline_render, render_search_bar,
+};
 use super::selection::{apply_selection_to_span, get_line_selection_range};
 use super::spans::{
     InlineChangeType, build_deletion_spans_with_highlight, build_insertion_spans_with_highlight,
@@ -70,6 +77,8 @@ pub struct DiffViewModel<'a> {
     pub highlight_cache: &'a RefCell<HighlightCache>,
     /// Review comments anchored by line index.
     pub comments: &'a AnchoredComments,
+    /// Flattened `--highlight` marks across `lines`.
+    pub highlights: &'a crate::highlight::HighlightMarks,
 }
 
 /// Position where an image should be rendered after text render
@@ -127,6 +136,7 @@ impl<'a> DiffViewModel<'a> {
             top_sub_row,
             highlight_cache: &app.highlight_cache,
             comments: &app.view.comments,
+            highlights: &app.view.highlights,
         }
     }
 
@@ -146,14 +156,22 @@ impl<'a> DiffViewModel<'a> {
         self.collapsed_files.contains(path)
     }
 
-    /// Build the prefix string for a diff line (e.g. "+ C " or "M M ").
-    /// Moved lines always show "M M " regardless of source.
-    fn line_prefix(&self, line: &DiffLine, default_char: char, source: LineSource) -> String {
-        if line.move_target.is_some() {
-            "M   ".to_string()
-        } else {
-            format!("{} {} ", default_char, status_symbol(source, self.vcs_backend))
-        }
+    /// Build the prefix string for a diff line (e.g. "+ C " or "M   "),
+    /// including `★` / `┃` in the second column when `--highlight` is active.
+    fn line_prefix(
+        &self,
+        line: &DiffLine,
+        line_idx: usize,
+        default_char: char,
+        source: LineSource,
+    ) -> String {
+        crate::highlight::tui_line_prefix(
+            line.move_target.is_some(),
+            default_char,
+            status_symbol(source, self.vcs_backend),
+            self.highlights,
+            line_idx,
+        )
     }
 
     /// Render the diff view and return output data.
@@ -204,7 +222,7 @@ impl<'a> DiffViewModel<'a> {
             }
         }
 
-        let title = if let Some(msg) = &self.status_flash {
+        let mut title = if let Some(msg) = &self.status_flash {
             Line::from(vec![Span::styled(format!(" {msg} "), Style::default().fg(Color::Yellow))])
         } else if self.show_copied_flash {
             Line::from(vec![Span::styled(" ✓ Copied ", Style::default().fg(Color::Green))])
@@ -213,6 +231,11 @@ impl<'a> DiffViewModel<'a> {
         } else {
             Line::from(vec![Span::styled(" branchdiff ", Style::default().fg(Color::DarkGray))])
         };
+        if let Some(legend) = self.highlights.legend_text() {
+            title
+                .spans
+                .push(Span::styled(format!(" {legend} "), Style::default().fg(Color::Yellow)));
+        }
 
         let block = Block::default()
             .title(title)
@@ -392,6 +415,13 @@ impl<'a> DiffViewModel<'a> {
         spans.push(Span::styled("── ", Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(diff_line.content.clone(), style));
         spans.push(Span::styled(" ──", Style::default().fg(Color::DarkGray)));
+
+        // Add ★ highlighted badge if this file has highlighted lines/changes
+        if let Some(ref path) = diff_line.file_path
+            && let Some(badge) = self.highlights.file_badge(path)
+        {
+            spans.push(Span::styled(format!(" [{badge}]"), Style::default().fg(Color::Yellow)));
+        }
 
         // Add ✓ marker if file is reviewed
         if let Some(ref path) = diff_line.file_path
@@ -598,7 +628,7 @@ impl<'a> DiffViewModel<'a> {
                 // Search match offsets are computed against `line.content` (the
                 // new text), so they do not align with the deletion-side text
                 // (`old_content`). Skip search highlighting on this side.
-                let del_prefix_char = self.line_prefix(diff_line, '-', del_source);
+                let del_prefix_char = self.line_prefix(diff_line, line_idx, '-', del_source);
                 let (mut del_lines, del_row_infos) = wrap_content(
                     del_spans,
                     old_content,
@@ -628,7 +658,7 @@ impl<'a> DiffViewModel<'a> {
             );
             let ins_spans = apply_search_to_content(ins_spans, self.search, line_idx);
 
-            let ins_prefix_char = self.line_prefix(diff_line, '+', ins_source);
+            let ins_prefix_char = self.line_prefix(diff_line, line_idx, '+', ins_source);
             let (mut ins_lines, ins_row_infos) = wrap_content(
                 ins_spans,
                 new_content,
@@ -666,7 +696,7 @@ impl<'a> DiffViewModel<'a> {
                         apply_search_to_content(content_spans, self.search, line_idx);
 
                     let prefix_char =
-                        self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
+                        self.line_prefix(diff_line, line_idx, diff_line.prefix, diff_line.source);
                     let (mut lines, row_infos) = wrap_content(
                         content_spans,
                         &diff_line.content,
@@ -710,7 +740,7 @@ impl<'a> DiffViewModel<'a> {
             content_spans, &diff_line.inline_spans, self.search, line_idx,
         );
 
-        let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
+        let prefix_char = self.line_prefix(diff_line, line_idx, diff_line.prefix, diff_line.source);
         let (mut lines, row_infos) = wrap_content(
             content_spans,
             &diff_line.content,
@@ -746,7 +776,7 @@ impl<'a> DiffViewModel<'a> {
         all_lines: &mut Vec<Line<'static>>,
         all_row_infos: &mut Vec<ScreenRowInfo>,
     ) -> usize {
-        let prefix_char = self.line_prefix(diff_line, diff_line.prefix, diff_line.source);
+        let prefix_char = self.line_prefix(diff_line, line_idx, diff_line.prefix, diff_line.source);
 
         // Apply syntax highlighting - foreground from syntax, background from diff style
         let content_spans = syntax_highlight_content(&self.syntax_segments(line_idx), style);
@@ -849,204 +879,6 @@ fn apply_selection_to_wrapped_lines(
 
         *line = Line::from(result);
     }
-}
-
-/// Translate a content-space match range `[content_start, content_end)` into
-/// the corresponding render-space ranges, accounting for deletion text that
-/// `syntax_highlight_inline_spans` interleaves into the rendered output.
-///
-/// Search matches are computed against `line.content` (the new text only —
-/// see [`crate::app::search::compute_matches`]). When the renderer emits
-/// deletion text inline, those characters take up render columns but do not
-/// exist in `content`, so a single content match may map to multiple
-/// disjoint render ranges.
-fn content_match_to_render_ranges(
-    inline_spans: &[crate::diff::InlineSpan],
-    content_start: usize,
-    content_end: usize,
-) -> Vec<(usize, usize)> {
-    if content_start >= content_end {
-        return Vec::new();
-    }
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    let mut content_pos = 0;
-    let mut render_pos = 0;
-
-    for span in inline_spans {
-        let len = span.text.chars().count();
-        if span.is_deletion {
-            render_pos += len;
-            continue;
-        }
-        let span_c_end = content_pos + len;
-        let inter_start = content_start.max(content_pos);
-        let inter_end = content_end.min(span_c_end);
-        if inter_start < inter_end {
-            let r_start = render_pos + (inter_start - content_pos);
-            let r_end = render_pos + (inter_end - content_pos);
-            match ranges.last_mut() {
-                Some(last) if last.1 == r_start => last.1 = r_end,
-                _ => ranges.push((r_start, r_end)),
-            }
-        }
-        content_pos = span_c_end;
-        render_pos += len;
-        if content_pos >= content_end {
-            break;
-        }
-    }
-    ranges
-}
-
-/// Overlay search match highlights on content spans whose rendered text
-/// matches `line.content` 1:1 (no interleaved deletion text).
-///
-/// SearchMatch stores char offsets (not byte offsets) so this works correctly
-/// with multi-byte UTF-8 content.
-fn apply_search_to_content(
-    content_spans: Vec<Span<'static>>,
-    search: &Option<SearchState>,
-    line_idx: usize,
-) -> Vec<Span<'static>> {
-    apply_search_with_translation(content_spans, search, line_idx, None)
-}
-
-/// Same as [`apply_search_to_content`] but for spans whose rendered text is
-/// `inline_spans` concatenated (i.e., includes interleaved deletion text).
-/// Match offsets are translated through `inline_spans` so highlights land on
-/// the correct rendered characters.
-fn apply_search_to_inline_render(
-    content_spans: Vec<Span<'static>>,
-    inline_spans: &[crate::diff::InlineSpan],
-    search: &Option<SearchState>,
-    line_idx: usize,
-) -> Vec<Span<'static>> {
-    apply_search_with_translation(content_spans, search, line_idx, Some(inline_spans))
-}
-
-fn apply_search_with_translation(
-    content_spans: Vec<Span<'static>>,
-    search: &Option<SearchState>,
-    line_idx: usize,
-    inline_spans: Option<&[crate::diff::InlineSpan]>,
-) -> Vec<Span<'static>> {
-    let Some(search) = search else {
-        return content_spans;
-    };
-    if search.matches.is_empty() {
-        return content_spans;
-    }
-
-    // Collect render-space highlight ranges for matches on this line.
-    let mut highlights: Vec<(usize, usize, bool)> = Vec::new();
-    for (m_idx, m) in search.matches.iter().enumerate() {
-        if m.line_idx != line_idx {
-            continue;
-        }
-        let is_current = m_idx == search.current;
-        let c_start = m.char_start;
-        let c_end = m.char_start + m.char_len;
-        match inline_spans {
-            Some(inline) => {
-                for (rs, re) in content_match_to_render_ranges(inline, c_start, c_end) {
-                    highlights.push((rs, re, is_current));
-                }
-            }
-            None => highlights.push((c_start, c_end, is_current)),
-        }
-    }
-
-    if highlights.is_empty() {
-        return content_spans;
-    }
-
-    // Apply right-to-left so earlier indices stay stable as later splits insert spans.
-    highlights.sort_by_key(|h| std::cmp::Reverse(h.0));
-    let mut result = content_spans;
-    for (h_start, h_end, is_current) in highlights {
-        let bg = if is_current { SEARCH_CURRENT_BG } else { SEARCH_MATCH_BG };
-        result = overlay_range(result, h_start, h_end, bg);
-    }
-    result
-}
-
-/// Split spans as needed to apply `bg` over render-space `[h_start, h_end)`.
-fn overlay_range(
-    spans: Vec<Span<'static>>,
-    h_start: usize,
-    h_end: usize,
-    bg: ratatui::style::Color,
-) -> Vec<Span<'static>> {
-    let mut new_result = Vec::with_capacity(spans.len() + 2);
-    let mut char_offset = 0;
-    for span in spans {
-        let span_char_len = span.content.chars().count();
-        let span_end = char_offset + span_char_len;
-
-        if span_end <= h_start || char_offset >= h_end {
-            new_result.push(span);
-        } else {
-            let base_style = span.style;
-            let text: Vec<char> = span.content.chars().collect();
-            let rel_start = h_start.saturating_sub(char_offset);
-            let rel_end = (h_end - char_offset).min(span_char_len);
-
-            if rel_start > 0 {
-                let before: String = text[..rel_start].iter().collect();
-                new_result.push(Span::styled(before, base_style));
-            }
-            let matched: String = text[rel_start..rel_end].iter().collect();
-            new_result.push(Span::styled(matched, base_style.bg(bg)));
-            if rel_end < span_char_len {
-                let after: String = text[rel_end..].iter().collect();
-                new_result.push(Span::styled(after, base_style));
-            }
-        }
-        char_offset = span_end;
-    }
-    new_result
-}
-
-fn render_search_bar(frame: &mut Frame, search: &SearchState, area: Rect) {
-    let bar_bg = Color::Rgb(40, 42, 54);
-    let bar_style = Style::default().fg(Color::White).bg(bar_bg);
-
-    let counter = if search.matches.is_empty() && !search.query.is_empty() {
-        "[no matches]".to_string()
-    } else if !search.matches.is_empty() {
-        let total = search.match_count();
-        if search.visible_count < total {
-            format!("[{}/{}]", search.current_display(), search.visible_count)
-        } else {
-            format!("[{}/{}]", search.current_display(), total)
-        }
-    } else {
-        String::new()
-    };
-
-    let counter_width = counter.len();
-    let available_for_query = (area.width as usize).saturating_sub(counter_width + 2);
-
-    let query_char_count = search.query.chars().count();
-    let display_query: String = if query_char_count > available_for_query {
-        let skip = query_char_count - available_for_query + 1;
-        format!("…{}", search.query.chars().skip(skip).collect::<String>())
-    } else {
-        search.query.clone()
-    };
-
-    let cursor_char = if search.input_active { "█" } else { "" };
-    let left_text = format!("/{}{}", display_query, cursor_char);
-    let padding = (area.width as usize).saturating_sub(left_text.chars().count() + counter_width);
-
-    let line = Line::from(vec![
-        Span::styled(left_text, bar_style),
-        Span::styled(" ".repeat(padding), bar_style),
-        Span::styled(counter, Style::default().fg(Color::DarkGray).bg(bar_bg)),
-    ]);
-
-    frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(vec![line]), area);
 }
 
 /// Draw the diff view using a pre-computed frame context.
@@ -3253,5 +3085,43 @@ mod tests {
         assert!(rows[label + 1].contains("- added_new"), "{rows:#?}");
         assert!(rows[label + 2].contains("+ renamed"), "{rows:#?}");
         assert!(!rows.iter().any(|r| r.contains("```")), "{rows:#?}");
+    }
+
+    #[test]
+    fn the_tui_renders_highlight_legend_file_badge_and_prefix_markers() {
+        use crate::diff::{DiffInput, compute_four_way_diff};
+        use crate::highlight::{HighlightPair, compute_file_highlight};
+
+        let base = "ctx\n";
+        let commit1 = "ctx\nearlier\n";
+        let commit2 = "ctx\nearlier\nnewly_highlighted\n";
+        let mut diff = compute_four_way_diff(DiffInput {
+            path: "src/lib.rs",
+            base: Some(base),
+            head: Some(commit2),
+            index: Some(commit2),
+            working: Some(commit2),
+            old_path: None,
+        });
+        diff.highlight = compute_file_highlight(
+            &diff,
+            Some(base),
+            Some(commit2),
+            "feat@origin..feat",
+            &[HighlightPair { before: Some(commit1), after: Some(commit2) }],
+        );
+        let mut app = TestAppBuilder::new().with_files(vec![diff]).build();
+        let rows = screen_of(&mut app, 110, 12);
+        assert!(
+            rows[0]
+                .contains("★ highlighted (feat@origin..feat): 1 line in 1 file (★ line, ┃ hunk)"),
+            "{rows:#?}"
+        );
+        assert!(row_with(&rows, "── src/lib.rs ──").contains("[★ 1 highlighted]"), "{rows:#?}");
+        assert!(row_with(&rows, "earlier").contains("+┃C earlier"), "{rows:#?}");
+        assert!(
+            row_with(&rows, "newly_highlighted").contains("+★C newly_highlighted"),
+            "{rows:#?}"
+        );
     }
 }

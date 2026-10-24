@@ -1,6 +1,6 @@
 //! Fork point, upstream divergence, and the mutable stack tip above `@`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -8,6 +8,25 @@ use vcs_runner::{run_jj, run_jj_cancellable};
 
 use super::{is_trunk_base, no_snapshot, parse_jj_summary};
 use crate::vcs::UpstreamDivergence;
+
+/// Resolve the shared `op_store` directory for a jj repo.
+pub(super) fn resolve_jj_op_store(repo_path: &Path) -> PathBuf {
+    let jj_dir = repo_path.join(".jj");
+    let repo = jj_dir.join("repo");
+    let repo_dir = if repo.is_file() {
+        std::fs::read_to_string(&repo)
+            .ok()
+            .map(|contents| {
+                let target = Path::new(contents.trim());
+                if target.is_absolute() { target.to_path_buf() } else { jj_dir.join(target) }
+            })
+            .map(|joined| std::fs::canonicalize(&joined).unwrap_or(joined))
+            .unwrap_or(repo)
+    } else {
+        repo
+    };
+    repo_dir.join("op_store")
+}
 
 /// Find the fork point: the most recent common ancestor of trunk() and @.
 /// Returns None if @ is already on top of trunk (no divergence) or if

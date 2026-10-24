@@ -25,6 +25,16 @@ pub(super) fn revset_resolves(repo_path: &Path, revset: &str) -> bool {
 /// answers ">= 1", and `jj diff --from` takes exactly one revision. Limiting to
 /// 2 is enough to tell none / one / many apart without walking a large set.
 pub(super) fn revset_commit_count(repo_path: &Path, revset: &str) -> usize {
+    revset_commit_count_checked(repo_path, revset).unwrap_or(0)
+}
+
+/// Like [`revset_commit_count`], but a revset jj rejects (syntax error,
+/// unknown symbol) is an `Err` carrying jj's own message, so a caller can tell
+/// it from a revset that is valid and matches nothing.
+pub(super) fn revset_commit_count_checked(
+    repo_path: &Path,
+    revset: &str,
+) -> std::result::Result<usize, String> {
     run_jj(
         repo_path,
         &[
@@ -33,7 +43,16 @@ pub(super) fn revset_commit_count(repo_path: &Path, revset: &str) -> usize {
         ],
     )
     .map(|o| o.stdout_lossy().lines().filter(|l| !l.trim().is_empty()).count())
-    .unwrap_or(0)
+    .map_err(|err| jj_error_detail(&err))
+}
+
+/// jj's message for a failed call, without its leading `Error:`.
+pub(super) fn jj_error_detail(err: &vcs_runner::RunError) -> String {
+    err.stderr()
+        .map(str::trim)
+        .map(|s| s.strip_prefix("Error:").map_or(s, str::trim_start))
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| err.to_string(), str::to_string)
 }
 
 /// Committer timestamp (epoch seconds) of the commit a revset resolves to, or

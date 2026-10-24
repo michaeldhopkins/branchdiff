@@ -115,6 +115,13 @@ pub fn is_binary_file(repo_path: &Path, file_path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Git's well-known SHA-1 for the empty tree (`git hash-object -t tree /dev/null`).
+const EMPTY_TREE_HASH: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+fn or_empty_tree(git_ref: &str) -> &str {
+    if git_ref.is_empty() { EMPTY_TREE_HASH } else { git_ref }
+}
+
 /// Check if a file is binary between two committed refs.
 pub fn is_binary_file_between(
     repo_path: &Path,
@@ -122,8 +129,7 @@ pub fn is_binary_file_between(
     from_ref: &str,
     to_ref: &str,
 ) -> bool {
-    let base_ref =
-        if from_ref.is_empty() { "4b825dc642cb6eb9a060e54bf8d69288fbee4904" } else { from_ref };
+    let base_ref = or_empty_tree(from_ref);
     run_git(repo_path, &["diff", "--numstat", base_ref, to_ref, "--", file_path])
         .map(|o| o.stdout_lossy().starts_with("-\t-\t"))
         .unwrap_or(false)
@@ -131,8 +137,7 @@ pub fn is_binary_file_between(
 
 /// Get all binary files in the diff between `merge_base` and working tree.
 pub fn get_binary_files(repo_path: &Path, merge_base: &str) -> HashSet<String> {
-    let base_ref =
-        if merge_base.is_empty() { "4b825dc642cb6eb9a060e54bf8d69288fbee4904" } else { merge_base };
+    let base_ref = or_empty_tree(merge_base);
 
     run_git(repo_path, &["diff", "--numstat", base_ref])
         .map(|output| parse_numstat_binaries(&output.stdout_lossy()))
@@ -145,8 +150,7 @@ pub fn get_binary_files_between(
     merge_base: &str,
     to_ref: &str,
 ) -> HashSet<String> {
-    let base_ref =
-        if merge_base.is_empty() { "4b825dc642cb6eb9a060e54bf8d69288fbee4904" } else { merge_base };
+    let base_ref = or_empty_tree(merge_base);
     run_git(repo_path, &["diff", "--numstat", base_ref, to_ref])
         .map(|output| parse_numstat_binaries(&output.stdout_lossy()))
         .unwrap_or_default()

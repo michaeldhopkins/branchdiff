@@ -1,6 +1,6 @@
 //! Parsers for `jj diff` and `jj log` output.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Changed file from `jj diff --summary` output.
 #[derive(Debug, Clone)]
@@ -114,4 +114,121 @@ pub(crate) fn parse_binary_from_stat(output: &str) -> HashSet<String> {
             if path.is_empty() { None } else { Some(path.to_string()) }
         })
         .collect()
+}
+
+/// One commit row from the batched `--highlight` `jj log` template:
+/// `commit_id ++ "\t" ++ if(self.contained_in("@"), "@", ".") ++ "\t" ++ parents.map(|p| p.commit_id()).join(",")`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HighlightLogEntry {
+    pub(crate) commit_id: String,
+    pub(crate) is_working_copy: bool,
+    pub(crate) parents: Vec<String>,
+}
+
+/// Parse batched `jj log` output for `--highlight` into commit entries.
+pub(crate) fn parse_highlight_log(output: &str) -> Vec<HighlightLogEntry> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let mut parts = line.splitn(3, '\t');
+            let commit_id = parts.next()?.trim();
+            if commit_id.is_empty() {
+                return None;
+            }
+            let marker = parts.next()?.trim();
+            let parents_raw = parts.next().unwrap_or("");
+            let parents = parents_raw
+                .split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(String::from)
+                .collect();
+            Some(HighlightLogEntry {
+                commit_id: commit_id.to_string(),
+                is_working_copy: marker == "@",
+                parents,
+            })
+        })
+        .collect()
+}
+
+/// Marker prefix used with `jj file show -T` to frame multiple files in one call.
+pub(crate) const FILE_SHOW_MARKER: &str = "\0\0branchdiff-file:";
+
+/// Parse batched `jj file show` output framed with [`FILE_SHOW_MARKER`].
+pub(crate) fn parse_batched_file_show(raw: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for chunk in raw.split(FILE_SHOW_MARKER).skip(1) {
+        if let Some((path, content)) = chunk.split_once('\0') {
+            out.insert(path.replace('\\', "/"), content.to_string());
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SpanTarget {
+    Revision(String),
+    WorkingCopy,
+}
+
+fn target_for(entry: &HighlightLogEntry, read_from_disk: bool) -> SpanTarget {
+    if read_from_disk && entry.is_working_copy {
+        SpanTarget::WorkingCopy
+    } else {
+        SpanTarget::Revision(entry.commit_id.clone())
+    }
+}
+
+pub(super) fn coalesce_highlight_entries(
+    entries: &[HighlightLogEntry],
+    read_from_disk: bool,
+) -> Vec<(Vec<String>, SpanTarget)> {
+    let entries: Vec<&HighlightLogEntry> = entries.iter().collect();
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let in_set: HashSet<&str> = entries.iter().map(|e| e.commit_id.as_str()).collect();
+    let mut child_count: HashMap<&str, usize> = HashMap::new();
+    let mut external_parents: Vec<&str> = Vec::new();
+    for entry in &entries {
+        for p in &entry.parents {
+            if in_set.contains(p.as_str()) {
+                *child_count.entry(p.as_str()).or_insert(0) += 1;
+            } else if !external_parents.contains(&p.as_str()) {
+                external_parents.push(p.as_str());
+            }
+        }
+    }
+    let heads: Vec<&HighlightLogEntry> = entries
+        .iter()
+        .copied()
+        .filter(|e| child_count.get(e.commit_id.as_str()).copied().unwrap_or(0) == 0)
+        .collect();
+    if heads.len() == 1 && external_parents.len() <= 1 {
+        let from_revs = external_parents.into_iter().map(String::from).collect();
+        return vec![(from_revs, target_for(heads[0], read_from_disk))];
+    }
+    let mut raw_spans: Vec<(Vec<String>, SpanTarget)> = Vec::new();
+    for entry in entries.iter().rev() {
+        let next_target = target_for(entry, read_from_disk);
+        if entry.parents.len() == 1 {
+            let parent = &entry.parents[0];
+            if in_set.contains(parent.as_str())
+                && child_count.get(parent.as_str()).copied().unwrap_or(0) == 1
+                && let Some((_, to_target)) = raw_spans.iter_mut().find(|(from_revs, to)| {
+                    from_revs.len() <= 1 && matches!(to, SpanTarget::Revision(rev) if rev == parent)
+                })
+            {
+                *to_target = next_target;
+                continue;
+            }
+        }
+        raw_spans.push((entry.parents.clone(), next_target));
+    }
+    raw_spans
 }

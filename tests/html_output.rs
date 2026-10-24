@@ -254,3 +254,94 @@ fn diff_mode_writes_comments_before_each_file_and_the_patch_still_applies() {
     std::fs::write(dir.path().join("out.patch"), &patch).expect("write out.patch");
     run_git(&["apply", "--check", "-R", "out.patch"]);
 }
+
+#[test]
+fn cli_head_and_highlight_flags_work_across_print_html_and_files_json() {
+    let dir = TempDir::new().expect("create temp dir");
+    let run_git = |args: &[&str]| {
+        let out = git_in(dir.path()).args(args).output().expect("run git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    run_git(&["init", "-b", "main"]);
+    std::fs::write(dir.path().join("notes.txt"), "base\n").expect("write notes.txt");
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "base"]);
+
+    run_git(&["checkout", "-b", "feature"]);
+    std::fs::write(dir.path().join("notes.txt"), "base\npushed\n").expect("write notes.txt");
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "pushed"]);
+    run_git(&["tag", "pushed-tip"]);
+
+    std::fs::write(dir.path().join("notes.txt"), "base\npushed\nunpushed\n")
+        .expect("write notes.txt");
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "unpushed"]);
+
+    // Switch back to main so `--head feature` renders without checking out feature.
+    run_git(&["checkout", "main"]);
+
+    let path = std::env::var("PATH").expect("PATH is set in test env");
+    let run_bd = |extra_args: &[&str]| -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_branchdiff"))
+            .args([
+                ".", "--no-auto-fetch", "--head", "feature", "--highlight", "pushed-tip..feature",
+            ])
+            .args(extra_args)
+            .current_dir(dir.path())
+            .env_clear()
+            .env("PATH", &path)
+            .env("HOME", dir.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("run branchdiff");
+        assert!(
+            out.status.success(),
+            "branchdiff {extra_args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("utf8 stdout")
+    };
+
+    let print_out = run_bd(&["--print"]);
+    assert!(
+        print_out
+            .contains("★ highlighted (pushed-tip..feature): 1 line in 1 file (★ line, ┃ hunk)"),
+        "{print_out}"
+    );
+    assert!(print_out.contains("[★ 1 highlighted]"), "{print_out}");
+
+    let html_out = run_bd(&["--html=static"]);
+    assert!(
+        html_out.contains("<div class=\"legend\">★ highlighted (pushed-tip..feature): 1 line in 1 file (★ line, ┃ hunk)</div>"),
+        "{html_out}"
+    );
+    assert!(html_out.contains("<span class=\"hl-badge\">★ 1 highlighted</span>"), "{html_out}");
+    assert!(
+        html_out.contains("class=\"line-committed line-highlighted hunk-highlighted\""),
+        "{html_out}"
+    );
+
+    let files_json = run_bd(&["--files", "--json"]);
+    assert!(
+        files_json.contains("\"path\":\"notes.txt\",\"old_path\":null,\"status\":\"modified\",\"additions\":2,\"deletions\":0,\"highlighted\":true"),
+        "{files_json}"
+    );
+
+    let unhighlighted_json = Command::new(env!("CARGO_BIN_EXE_branchdiff"))
+        .args([".", "--no-auto-fetch", "--head", "feature", "--files", "--json"])
+        .current_dir(dir.path())
+        .env_clear()
+        .env("PATH", &path)
+        .env("HOME", dir.path())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("run branchdiff --files --json without --highlight");
+    let unhighlighted_str = String::from_utf8(unhighlighted_json.stdout).expect("utf8 stdout");
+    assert!(
+        !unhighlighted_str.contains("\"highlighted\""),
+        "omitting --highlight must omit highlighted key: {unhighlighted_str}"
+    );
+}

@@ -12,7 +12,7 @@ mod cancellation;
 mod inline;
 mod line_builder;
 mod output;
-mod provenance;
+pub(crate) mod provenance;
 
 pub use algorithm::{
     DiffInput, compute_four_way_diff, compute_four_way_diff_cancellable,
@@ -252,13 +252,21 @@ pub struct FileDiff {
     /// rename (no content change), which is the signal that lets such files
     /// survive the "header-only files are noise" filter in the output stage.
     pub old_path: Option<String>,
+    /// Commit-range highlight provenance when `--highlight <REVSET>` is active.
+    pub highlight: crate::highlight::FileHighlight,
 }
 
 impl FileDiff {
     pub fn new(mut lines: Vec<DiffLine>) -> Self {
         let blocks = block::extract_blocks(&mut lines);
         let content_hash = Self::compute_content_hash(&lines);
-        Self { lines, blocks, content_hash, old_path: None }
+        Self {
+            lines,
+            blocks,
+            content_hash,
+            old_path: None,
+            highlight: crate::highlight::FileHighlight::default(),
+        }
     }
 
     /// True when this file is a rename/move. A pure rename has no add/delete

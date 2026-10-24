@@ -63,6 +63,7 @@ pub fn detect_repo_dir(path: &Path) -> Option<(&'static str, PathBuf)> {
 pub struct VcsOptions<'a> {
     pub base: Option<&'a str>,
     pub head: Option<&'a str>,
+    pub highlight: Option<&'a str>,
 }
 
 /// Detect the VCS backend for a given path.

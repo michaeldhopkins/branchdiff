@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// The file-link map for the first line of each rendered file.
+fn file_links_for(files: &[FileDiff]) -> HashMap<String, String> {
+    let file_paths: Vec<&str> = files
+        .iter()
+        .filter_map(|f| f.lines.first())
+        .filter_map(|l| l.file_path.as_deref())
+        .collect();
+    crate::file_links::compute_file_links(&file_paths)
+}
+
 impl JjVcs {
     pub(super) fn refresh_anchored(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
         let target_rev = self.target_rev();
@@ -47,32 +57,12 @@ impl JjVcs {
 
         let bookmark_changed_files = bookmark_boundary.as_ref().map(|b| &b.changed_files);
 
-        // Discover changed files. When the working copy is the diff target (the
-        // common case), do it from disk/git without snapshotting. Explicit `--head`
-        // uses `--ignore-working-copy`; stack/orphaned-tip uses the jj summary.
-        let changed_files = if read_from_disk {
-            self.discover_working_changes(effective_from, cancel_flag)?
-        } else if self.head_rev.is_some() {
-            self.get_changed_files_no_snapshot(effective_from, effective_to, cancel_flag)?
-        } else {
-            self.get_changed_files_with_from(effective_from, effective_to, cancel_flag)?
-        };
+        let (changed_files, binary_files) =
+            self.discover_changes(effective_from, effective_to, read_from_disk, cancel_flag)?;
 
-        if cancel_flag.load(Ordering::Relaxed) {
-            anyhow::bail!("refresh cancelled");
-        }
-
-        // Binary detection: from disk for the working target (no snapshot), else
-        // the committed-diff stat for the stack/orphaned/`--head` cases.
-        let binary_files = if read_from_disk {
-            self.working_binary_files(&changed_files)
-        } else {
-            self.get_binary_files_set(effective_from, effective_to, cancel_flag)
-        };
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            anyhow::bail!("refresh cancelled");
-        }
+        let highlight_plan = JjHighlightPlan::resolve(
+            self, effective_from, effective_to, read_from_disk, &changed_files, cancel_flag,
+        );
 
         // Normally the "to" label is @ (where the working copy sits). When we
         // re-anchored to an orphaned sibling tip, @ is an empty throwaway commit,
@@ -100,8 +90,16 @@ impl JjVcs {
                 });
                 let results = process_files_parallel(&changed_files, cancel_flag, |changed| {
                     process_jj_file(
-                        &self.repo_path, effective_from, changed, &binary_files, tip_rev, at_rev,
-                        read_from_disk, bookmark_changed_files, cancel_flag,
+                        &self.repo_path,
+                        effective_from,
+                        changed,
+                        &binary_files,
+                        tip_rev,
+                        at_rev,
+                        read_from_disk,
+                        bookmark_changed_files,
+                        highlight_plan.as_deref(),
+                        cancel_flag,
                     )
                 });
                 (results, (joined(base), joined(to), joined(position)))
@@ -112,17 +110,15 @@ impl JjVcs {
         }
 
         let assembled = assemble_results(results);
-        let files = assembled.files;
+        let mut files = assembled.files;
+        if let Some(plan) = &highlight_plan {
+            plan.stamp_assembled_files(&mut files);
+        }
         let all_lines = assembled.lines;
 
         let metrics = DiffMetrics { total_lines: all_lines.len(), file_count: files.len() };
 
-        let file_paths: Vec<&str> = files
-            .iter()
-            .filter_map(|f| f.lines.first())
-            .filter_map(|l| l.file_path.as_deref())
-            .collect();
-        let file_links = crate::file_links::compute_file_links(&file_paths);
+        let file_links = file_links_for(&files);
 
         let result = RefreshResult {
             files,
@@ -139,6 +135,148 @@ impl JjVcs {
             // Populated by the worker thread / initial-load path, not the backend.
         };
         Ok(result)
+    }
+
+    /// Changed files and the binary subset. When the working copy is the diff
+    /// target (the common case), this reads disk/git without snapshotting.
+    /// Explicit `--head` uses `--ignore-working-copy`; stack/orphaned-tip uses
+    /// the jj summary and the committed-diff stat.
+    fn discover_changes(
+        &self,
+        effective_from: &str,
+        effective_to: &str,
+        read_from_disk: bool,
+        cancel_flag: &Arc<AtomicBool>,
+    ) -> Result<(Vec<ChangedFile>, HashSet<String>)> {
+        let changed_files = if read_from_disk {
+            self.discover_working_changes(effective_from, cancel_flag)?
+        } else if self.head_rev.is_some() {
+            self.get_changed_files_no_snapshot(effective_from, effective_to, cancel_flag)?
+        } else {
+            self.get_changed_files_with_from(effective_from, effective_to, cancel_flag)?
+        };
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            anyhow::bail!("refresh cancelled");
+        }
+
+        let binary_files = if read_from_disk {
+            self.working_binary_files(&changed_files)
+        } else {
+            self.get_binary_files_set(effective_from, effective_to, cancel_flag)
+        };
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            anyhow::bail!("refresh cancelled");
+        }
+        Ok((changed_files, binary_files))
+    }
+
+    pub(super) fn single_file_diff_anchored(&self, file_path: &str) -> Option<FileDiff> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let base_rev = self.base_rev();
+        let (fork_point, stack_tip, orphaned) = resolve_fork_and_tips(
+            &self.repo_path,
+            &self.from_rev,
+            self.head_rev.as_deref(),
+            &cancel,
+        );
+        let effective_from = match self.load_diff_base() {
+            DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(base_rev.as_ref()),
+            DiffBase::TrunkTip => base_rev.as_ref(),
+        };
+        let at_rev = self
+            .head_rev
+            .as_deref()
+            .or_else(|| orphaned.as_ref().map(|t| t.change_id.as_str()))
+            .unwrap_or("@");
+        let effective_to = self
+            .head_rev
+            .as_deref()
+            .or_else(|| stack_tip.as_ref().or(orphaned.as_ref()).map(|t| t.change_id.as_str()))
+            .unwrap_or("@");
+        let read_from_disk = self.head_rev.is_none() && effective_to == "@";
+
+        let changed_files = if read_from_disk {
+            self.discover_working_changes(effective_from, &cancel).ok()?
+        } else if self.head_rev.is_some() {
+            self.get_changed_files_no_snapshot(effective_from, effective_to, &cancel).ok()?
+        } else {
+            self.get_changed_files_with_from(effective_from, effective_to, &cancel).ok()?
+        };
+        let changed = changed_files.iter().find(|f| f.path == file_path)?;
+        let old_path = changed.old_path.as_deref();
+
+        let base_path = old_path.unwrap_or(file_path);
+        let base = file_content_no_snapshot(&self.repo_path, base_path, effective_from, &cancel);
+
+        let at_parent = format!("({at_rev})-");
+        let parent = file_content_no_snapshot(&self.repo_path, file_path, &at_parent, &cancel)
+            .or_else(|| {
+                old_path.and_then(|old| {
+                    file_content_no_snapshot(&self.repo_path, old, &at_parent, &cancel)
+                })
+            });
+
+        let index = if read_from_disk {
+            crate::vcs::shared::read_working_file(&self.repo_path, file_path).ok().flatten()
+        } else {
+            file_content_no_snapshot(&self.repo_path, file_path, at_rev, &cancel)
+        };
+        let tip_content = stack_tip.as_ref().and_then(|t| {
+            file_content_no_snapshot(&self.repo_path, file_path, &t.change_id, &cancel)
+        });
+        let has_tip = stack_tip.is_some();
+
+        if base.is_none() && index.is_none() && tip_content.is_none() {
+            return None;
+        }
+
+        let is_binary = if read_from_disk {
+            crate::vcs::shared::working_file_is_binary(&self.repo_path, file_path)
+        } else {
+            self.get_binary_files_set(effective_from, effective_to, &cancel).contains(file_path)
+        };
+        if is_binary {
+            return None;
+        }
+
+        let working = if has_tip { tip_content.as_deref() } else { index.as_deref() };
+
+        let mut file_diff = compute_four_way_diff(DiffInput {
+            path: file_path,
+            base: base.as_deref(),
+            head: parent.as_deref(),
+            index: index.as_deref(),
+            working,
+            old_path,
+        });
+
+        if let Some(boundary) = resolve_bookmark_boundary_for(
+            &self.repo_path,
+            &self.from_rev,
+            self.target_rev(),
+            &cancel,
+        ) {
+            let in_bookmark = boundary.changed_files.contains(file_path);
+            mark_bookmark_provenance(&mut file_diff, in_bookmark);
+        }
+
+        if let Some(plan) = JjHighlightPlan::resolve(
+            self, effective_from, effective_to, read_from_disk, &changed_files, &cancel,
+        ) {
+            file_diff.highlight = plan.compute_for_file(
+                &self.repo_path,
+                &file_diff,
+                file_path,
+                old_path,
+                base.as_deref(),
+                working,
+                &cancel,
+            );
+        }
+
+        Some(file_diff)
     }
 
     /// The display label of `rev`, or `rev` itself when jj cannot say.

@@ -89,6 +89,8 @@ impl App {
     /// Ensure files referenced by comments exist in `self.files` and re-anchor
     /// `self.view.comments` to `self.lines`.
     pub(crate) fn sync_commented_files_and_anchor(&mut self) {
+        self.view.highlights =
+            crate::highlight::HighlightMarks::from_files(&self.files, self.lines().len());
         if self.view.raw_comments.is_empty() && self.view.comments.is_empty() {
             return;
         }
@@ -96,6 +98,8 @@ impl App {
         ensure_commented_files(&mut self.files, &self.view.raw_comments);
         if self.files.len() != prev_len {
             self.regenerate_lines();
+            self.view.highlights =
+                crate::highlight::HighlightMarks::from_files(&self.files, self.lines().len());
         }
         self.view.comments = anchor_comments(self.lines(), &self.view.raw_comments);
         self.view.needs_inline_spans = true;

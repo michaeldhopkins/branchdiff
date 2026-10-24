@@ -10,6 +10,7 @@ pub mod diff_view;
 pub mod gutter;
 pub mod image_view;
 pub mod modals;
+pub mod search_overlay;
 pub mod selection;
 pub mod spans;
 pub mod status_bar;

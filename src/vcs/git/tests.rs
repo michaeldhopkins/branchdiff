@@ -883,6 +883,7 @@ fn classify(repo_path: &Path, relative: &str) -> VcsEventType {
         base_branch: "main".to_string(),
         base_label: "main".to_string(),
         head_target: None,
+        highlight_spec: None,
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     vcs.classify_event(&repo_path.join(relative))
@@ -981,6 +982,7 @@ fn test_classify_path_outside_repo() {
         base_branch: "main".to_string(),
         base_label: "main".to_string(),
         head_target: None,
+        highlight_spec: None,
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     // Path outside repo — strip_prefix fails, treated as source
@@ -998,6 +1000,7 @@ fn test_watch_paths_includes_index_and_head() {
         base_branch: "main".to_string(),
         base_label: "main".to_string(),
         head_target: None,
+        highlight_spec: None,
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     let paths = vcs.watch_paths();
@@ -1014,6 +1017,7 @@ fn test_watch_paths_includes_refs_dir() {
         base_branch: "main".to_string(),
         base_label: "main".to_string(),
         head_target: None,
+        highlight_spec: None,
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     let paths = vcs.watch_paths();
@@ -1474,7 +1478,7 @@ fn test_git_explicit_head_renders_branch_without_checking_it_out() {
 
     let vcs = GitVcs::with_options(
         repo.to_path_buf(),
-        crate::vcs::VcsOptions { base: None, head: Some("feature") },
+        crate::vcs::VcsOptions { head: Some("feature"), ..crate::vcs::VcsOptions::default() },
     )
     .unwrap();
 
@@ -1507,11 +1511,649 @@ fn test_git_explicit_head_that_does_not_resolve_is_rejected() {
     let temp = create_test_repo();
     let result = GitVcs::with_options(
         temp.path().to_path_buf(),
-        crate::vcs::VcsOptions { base: None, head: Some("no-such-head") },
+        crate::vcs::VcsOptions { head: Some("no-such-head"), ..crate::vcs::VcsOptions::default() },
     );
     let msg = match result {
         Ok(_) => panic!("an unresolvable --head must be rejected"),
         Err(e) => format!("{e:#}"),
     };
     assert!(msg.contains("--head") && msg.contains("no-such-head"), "got: {msg}");
+}
+
+// === --highlight tests ===
+
+#[test]
+fn test_git_highlight_range_and_single_commit_and_files_json() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "initial\npushed line\n").unwrap();
+    fs::write(repo.join("pushed.txt"), "already pushed\n").unwrap();
+    git_cmd(repo, &["add", "."]);
+    git_cmd(repo, &["commit", "-m", "pushed commit"]);
+    git_cmd(repo, &["tag", "pushed-tip"]);
+
+    fs::write(repo.join("file.txt"), "initial\npushed line\nunpushed line\n").unwrap();
+    fs::write(repo.join("unpushed.txt"), "brand new\n").unwrap();
+    git_cmd(repo, &["add", "."]);
+    git_cmd(repo, &["commit", "-m", "unpushed commit"]);
+
+    // Move back to main so we exercise --head + --highlight together.
+    git_cmd(repo, &["checkout", "main"]);
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("feature"),
+            highlight: Some("pushed-tip..feature"),
+        },
+    )
+    .unwrap();
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refresh = vcs.refresh(&cancel).unwrap();
+    assert_eq!(refresh.files.len(), 3);
+
+    let file_diff = refresh
+        .files
+        .iter()
+        .find(|f| f.lines.first().is_some_and(|l| l.content == "file.txt"))
+        .unwrap();
+    assert_eq!(file_diff.highlight.line_count(), 1);
+    let pushed_idx = file_diff.lines.iter().position(|l| l.content == "pushed line").unwrap();
+    let unpushed_idx = file_diff.lines.iter().position(|l| l.content == "unpushed line").unwrap();
+    assert!(!file_diff.highlight.is_line_highlighted(pushed_idx));
+    assert!(file_diff.highlight.is_in_highlighted_hunk(pushed_idx));
+    assert!(file_diff.highlight.is_line_highlighted(unpushed_idx));
+
+    let pushed_diff = refresh
+        .files
+        .iter()
+        .find(|f| f.lines.first().is_some_and(|l| l.content == "pushed.txt"))
+        .unwrap();
+    assert_eq!(pushed_diff.highlight.line_count(), 0);
+
+    let unpushed_diff = refresh
+        .files
+        .iter()
+        .find(|f| f.lines.first().is_some_and(|l| l.content == "unpushed.txt"))
+        .unwrap();
+    assert_eq!(unpushed_diff.highlight.line_count(), 1);
+
+    // Single-file diff also preserves highlighting.
+    let single = vcs.single_file_diff("file.txt").unwrap();
+    assert_eq!(single.highlight.line_count(), 1);
+
+    // Single-commit --highlight form (`feature` = `feature^..feature`).
+    let single_commit_vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: Some("feature"), highlight: Some("feature") },
+    )
+    .unwrap();
+    let single_commit_refresh = single_commit_vcs.refresh(&cancel).unwrap();
+    let sc_file = single_commit_refresh
+        .files
+        .iter()
+        .find(|f| f.lines.first().is_some_and(|l| l.content == "file.txt"))
+        .unwrap();
+    assert_eq!(sc_file.highlight.line_count(), 1);
+
+    // `--files --json` includes `"highlighted":true` / `"highlighted":false`.
+    let json = crate::listing::render(&vcs, crate::cli::OutputMode::Files, true).unwrap().unwrap();
+    assert!(
+        json.contains("\"path\":\"file.txt\",\"old_path\":null,\"status\":\"modified\",\"additions\":2,\"deletions\":0,\"highlighted\":true"),
+        "{json}"
+    );
+    assert!(
+        json.contains("\"path\":\"pushed.txt\",\"old_path\":null,\"status\":\"added\",\"additions\":1,\"deletions\":0,\"highlighted\":false"),
+        "{json}"
+    );
+    assert!(
+        json.contains("\"path\":\"unpushed.txt\",\"old_path\":null,\"status\":\"added\",\"additions\":1,\"deletions\":0,\"highlighted\":true"),
+        "{json}"
+    );
+}
+
+#[test]
+fn test_git_highlight_rename_inside_highlighted_range_marks_only_new_lines() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("a.txt"), "x\ny\n").unwrap();
+    git_cmd(repo, &["add", "a.txt"]);
+    git_cmd(repo, &["commit", "-m", "f1"]);
+    git_cmd(repo, &["tag", "f1"]);
+
+    git_cmd(repo, &["mv", "a.txt", "renamed.txt"]);
+    fs::write(repo.join("renamed.txt"), "x\ny\nz\n").unwrap();
+    git_cmd(repo, &["add", "renamed.txt"]);
+    git_cmd(repo, &["commit", "-m", "f2"]);
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("feature"),
+            highlight: Some("f1..feature"),
+        },
+    )
+    .unwrap();
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refresh = vcs.refresh(&cancel).unwrap();
+    let file = refresh
+        .files
+        .iter()
+        .find(|f| f.lines.first().is_some_and(|l| l.content.contains("renamed.txt")))
+        .unwrap();
+    let marked: Vec<&str> = file
+        .highlight
+        .highlighted_lines
+        .iter()
+        .map(|&idx| file.lines[idx].content.as_str())
+        .collect();
+    assert_eq!(marked, vec!["z"], "refresh should mark only z, not x or y from f1");
+
+    let single = vcs.single_file_diff("renamed.txt").unwrap();
+    let single_marked: Vec<&str> = single
+        .highlight
+        .highlighted_lines
+        .iter()
+        .map(|&idx| single.lines[idx].content.as_str())
+        .collect();
+    assert_eq!(single_marked, vec!["z"], "single_file_diff should mark only z");
+}
+
+#[test]
+fn test_git_highlight_resolves_refs_live_on_refresh_and_updates_fingerprint() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "initial\nc1\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c1"]);
+    git_cmd(repo, &["branch", "pushed", "HEAD"]);
+
+    fs::write(repo.join("file.txt"), "initial\nc1\nc2\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c2"]);
+
+    let range_vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("feature"),
+            highlight: Some("pushed..feature"),
+        },
+    )
+    .unwrap();
+    let single_vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: Some("feature"), highlight: Some("feature") },
+    )
+    .unwrap();
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let fp_before_push =
+        crate::listing::render(&range_vcs, crate::cli::OutputMode::Fingerprint, false)
+            .unwrap()
+            .unwrap();
+
+    // Simulate a push that moves `pushed` up to `feature` without changing `feature` itself.
+    git_cmd(repo, &["branch", "-f", "pushed", "feature"]);
+
+    let fp_after_push =
+        crate::listing::render(&range_vcs, crate::cli::OutputMode::Fingerprint, false)
+            .unwrap()
+            .unwrap();
+    assert_ne!(
+        fp_before_push, fp_after_push,
+        "moving highlight endpoint ref must change fingerprint so live views re-render"
+    );
+
+    let refresh_after_push = range_vcs.refresh(&cancel).unwrap();
+    assert_eq!(
+        refresh_after_push.files[0].highlight.line_count(),
+        0,
+        "pushed..feature should mark 0 lines once pushed advances to feature"
+    );
+
+    // Advance `feature` with a new commit c3: single-commit `--highlight feature` must track `feature^..feature`.
+    fs::write(repo.join("file.txt"), "initial\nc1\nc2\nc3\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c3"]);
+
+    let single_refresh = single_vcs.refresh(&cancel).unwrap();
+    let file = &single_refresh.files[0];
+    let marked: Vec<&str> = file
+        .highlight
+        .highlighted_lines
+        .iter()
+        .map(|&idx| file.lines[idx].content.as_str())
+        .collect();
+    assert_eq!(marked, vec!["c3"], "single-commit --highlight X must stay X^..X of current X");
+}
+
+#[test]
+fn test_git_highlight_rename_after_highlighted_range_marks_earlier_lines() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("a.txt"), "l1\nl2\nl3\nl4\nl5\n").unwrap();
+    git_cmd(repo, &["add", "a.txt"]);
+    git_cmd(repo, &["commit", "-m", "f1"]);
+
+    git_cmd(repo, &["mv", "a.txt", "renamed.txt"]);
+    fs::write(repo.join("renamed.txt"), "l1\nl2\nl3\nl4\nl5\nz\n").unwrap();
+    git_cmd(repo, &["add", "renamed.txt"]);
+    git_cmd(repo, &["commit", "-m", "f2"]);
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    for spec in ["HEAD~1", "main..HEAD~1"] {
+        for head in [None, Some("feature")] {
+            let vcs = GitVcs::with_options(
+                repo.to_path_buf(),
+                crate::vcs::VcsOptions { base: None, head, highlight: Some(spec) },
+            )
+            .unwrap();
+            let refresh = vcs.refresh(&cancel).unwrap();
+            let marks =
+                crate::highlight::HighlightMarks::from_files(&refresh.files, refresh.lines.len());
+            assert_eq!(
+                marks.total_highlighted_lines, 5,
+                "spec={spec}, head={head:?} should mark l1..l5"
+            );
+            assert_eq!(marks.highlighted_file_count, 1, "spec={spec}, head={head:?}");
+            let file = refresh
+                .files
+                .iter()
+                .find(|f| f.lines.first().is_some_and(|l| l.content.contains("renamed.txt")))
+                .unwrap();
+            let marked: Vec<&str> = file
+                .highlight
+                .highlighted_lines
+                .iter()
+                .map(|&idx| file.lines[idx].content.as_str())
+                .collect();
+            assert_eq!(marked, vec!["l1", "l2", "l3", "l4", "l5"]);
+
+            let single = vcs.single_file_diff("renamed.txt").unwrap();
+            let single_marked: Vec<&str> = single
+                .highlight
+                .highlighted_lines
+                .iter()
+                .map(|&idx| single.lines[idx].content.as_str())
+                .collect();
+            assert_eq!(single_marked, vec!["l1", "l2", "l3", "l4", "l5"]);
+        }
+    }
+}
+
+#[test]
+fn test_git_highlight_merge_commit_matches_jj_without_overmarking() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "initial\none\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "one"]);
+
+    fs::write(repo.join("file.txt"), "initial\none\ntwo\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "two"]);
+
+    git_cmd(repo, &["checkout", "-b", "side", "main"]);
+    fs::write(repo.join("file.txt"), "initial\nside\n").unwrap();
+    fs::write(repo.join("side.txt"), "side only\n").unwrap();
+    git_cmd(repo, &["add", "."]);
+    git_cmd(repo, &["commit", "-m", "side"]);
+
+    git_cmd(repo, &["checkout", "feature"]);
+    let _ = Command::new("git")
+        .args(["merge", "--no-ff", "--no-commit", "side"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    // First verify a clean merge with no new lines of its own marks 0 lines.
+    fs::write(repo.join("file.txt"), "initial\none\ntwo\nside\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "clean_merge"]);
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let clean_vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: None, highlight: Some("HEAD") },
+    )
+    .unwrap();
+    let clean_refresh = clean_vcs.refresh(&cancel).unwrap();
+    for f in &clean_refresh.files {
+        assert_eq!(
+            f.highlight.line_count(),
+            0,
+            "clean merge must not mark side branch lines in {:?}",
+            f.lines.first().map(|l| &l.content)
+        );
+    }
+
+    // Now amend the merge commit to add `merge own`, matching the jj merge fixture.
+    fs::write(repo.join("file.txt"), "initial\none\ntwo\nside\nmerge own\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "--amend", "-m", "merge_commit"]);
+
+    let git_vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: Some("feature"), highlight: Some("feature") },
+    )
+    .unwrap();
+    let git_refresh = git_vcs.refresh(&cancel).unwrap();
+    let git_summary: Vec<(String, Vec<String>)> = git_refresh
+        .files
+        .iter()
+        .map(|f| {
+            let path = f.lines[0].content.clone();
+            let lines = f
+                .highlight
+                .highlighted_lines
+                .iter()
+                .map(|&idx| f.lines[idx].content.clone())
+                .collect();
+            (path, lines)
+        })
+        .collect();
+    assert_eq!(
+        git_summary,
+        vec![
+            ("file.txt".to_string(), vec!["merge own".to_string()]),
+            ("side.txt".to_string(), Vec::<String>::new()),
+        ]
+    );
+    let single = git_vcs.single_file_diff("file.txt").unwrap();
+    assert_eq!(single.highlight.line_count(), 1);
+
+    if vcs_runner::jj_available() {
+        Command::new("jj").args(["git", "init", "--colocate"]).current_dir(repo).output().unwrap();
+        let jj_vcs = crate::vcs::jj::JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions {
+                base: Some("main"),
+                head: Some("feature"),
+                highlight: Some("feature"),
+            },
+        )
+        .unwrap();
+        let (_, jj_refresh) = jj_vcs.comparison_and_refresh(&cancel).unwrap();
+        let jj_summary: Vec<(String, Vec<String>)> = jj_refresh
+            .files
+            .iter()
+            .map(|f| {
+                let path = f.lines[0].content.clone();
+                let lines = f
+                    .highlight
+                    .highlighted_lines
+                    .iter()
+                    .map(|&idx| f.lines[idx].content.clone())
+                    .collect();
+                (path, lines)
+            })
+            .collect();
+        assert_eq!(git_summary, jj_summary, "git and jj must mark the exact same merge lines");
+    }
+}
+
+#[test]
+fn test_git_highlight_fingerprint_pins_working_tree_path() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "initial\nc1\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c1"]);
+    git_cmd(repo, &["branch", "pushed"]);
+
+    fs::write(repo.join("file.txt"), "initial\nc1\nc2\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c2"]);
+
+    // Working-tree path (`head: None`): moving `pushed` does not change HEAD, base, index, or worktree.
+    let wt_vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: None, highlight: Some("pushed..HEAD") },
+    )
+    .unwrap();
+    let fp_before = crate::listing::render(&wt_vcs, crate::cli::OutputMode::Fingerprint, false)
+        .unwrap()
+        .unwrap();
+
+    git_cmd(repo, &["branch", "-f", "pushed", "HEAD"]);
+
+    let fp_after = crate::listing::render(&wt_vcs, crate::cli::OutputMode::Fingerprint, false)
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        fp_before, fp_after,
+        "working-tree fingerprint must include highlight_state so moving pushed invalidates it"
+    );
+}
+
+#[test]
+fn test_git_highlight_range_clamped_to_ancestors_of_shown_head() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "initial\nc1\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c1"]);
+    git_cmd(repo, &["branch", "c1_ref"]);
+
+    fs::write(repo.join("file.txt"), "initial\nc1\nc2\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c2"]);
+    git_cmd(repo, &["branch", "c2_ref"]);
+
+    fs::write(repo.join("file.txt"), "initial\nc1\nc2\nc3\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c3"]);
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Range `c2_ref..feature` is entirely after `--head c2_ref`, so clamping to ::c2_ref marks 0 lines.
+    let after_head_vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("c2_ref"),
+            highlight: Some("c2_ref..feature"),
+        },
+    )
+    .unwrap();
+    let after_refresh = after_head_vcs.refresh(&cancel).unwrap();
+    assert_eq!(after_refresh.files[0].highlight.line_count(), 0);
+    assert!(!after_refresh.files[0].highlight.touched);
+
+    // Range `c1_ref..feature` clamped to `--head c2_ref` marks only `c2`.
+    let clamped_vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("c2_ref"),
+            highlight: Some("c1_ref..feature"),
+        },
+    )
+    .unwrap();
+    let clamped_refresh = clamped_vcs.refresh(&cancel).unwrap();
+    let file = &clamped_refresh.files[0];
+    let marked: Vec<&str> = file
+        .highlight
+        .highlighted_lines
+        .iter()
+        .map(|&idx| file.lines[idx].content.as_str())
+        .collect();
+    assert_eq!(marked, vec!["c2"]);
+}
+
+#[test]
+fn test_git_highlight_deleted_branch_drops_to_no_highlight_on_refresh_and_fingerprint() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "initial\nc1\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c1"]);
+    git_cmd(repo, &["branch", "pushed", "HEAD"]);
+
+    fs::write(repo.join("file.txt"), "initial\nc1\nc2\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c2"]);
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: None, highlight: Some("pushed..HEAD") },
+    )
+    .unwrap();
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let before = vcs.refresh(&cancel).unwrap();
+    assert_eq!(before.files[0].highlight.line_count(), 1);
+    let fp_before =
+        crate::listing::render(&vcs, crate::cli::OutputMode::Fingerprint, false).unwrap().unwrap();
+
+    // Deleting the highlighted branch during a session must not break refresh or --fingerprint.
+    git_cmd(repo, &["branch", "-D", "pushed"]);
+
+    let after = vcs.refresh(&cancel).unwrap();
+    assert_eq!(after.files[0].highlight.label.as_deref(), Some("pushed..HEAD"));
+    assert_eq!(after.files[0].highlight.line_count(), 0);
+    assert!(!after.files[0].highlight.touched);
+
+    let single = vcs.single_file_diff("file.txt").unwrap();
+    assert_eq!(single.highlight.line_count(), 0);
+
+    let fp_after =
+        crate::listing::render(&vcs, crate::cli::OutputMode::Fingerprint, false).unwrap().unwrap();
+    assert_ne!(fp_before, fp_after);
+}
+
+#[test]
+fn test_git_highlight_excludes_base_and_root_commits_and_preserves_deletions() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    // Tag the initial root commit, then advance `main` so `root_commit` is an ancestor of `main`.
+    git_cmd(repo, &["tag", "root_commit"]);
+    fs::write(repo.join("file.txt"), "to_delete\nkeep\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "main base update"]);
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "keep\nadded\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "delete to_delete and add line"]);
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let marked_for = |spec: &str| -> Vec<(char, String)> {
+        let vcs = GitVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: Some("feature"), highlight: Some(spec) },
+        )
+        .unwrap();
+        let refresh = vcs.refresh(&cancel).unwrap();
+        let file = &refresh.files[0];
+        let single = vcs.single_file_diff("file.txt").unwrap();
+        assert_eq!(file.highlight.highlighted_lines, single.highlight.highlighted_lines);
+        file.highlight
+            .highlighted_lines
+            .iter()
+            .map(|&idx| (file.lines[idx].prefix, file.lines[idx].content.clone()))
+            .collect()
+    };
+
+    let expected = marked_for("main..feature");
+    assert_eq!(
+        expected,
+        vec![('-', "to_delete".to_string()), ('+', "added".to_string())],
+        "main..feature must mark both the deleted base line and the added line"
+    );
+    assert_eq!(
+        marked_for("root_commit..feature"),
+        expected,
+        "range starting before main must exclude base commit and preserve deletion marks"
+    );
+    assert_eq!(
+        marked_for("root_commit...feature"),
+        expected,
+        "triple-dot range starting before main must exclude base commit and preserve deletion marks"
+    );
+    assert!(marked_for("main").is_empty(), "base commit must not be highlighted");
+    assert!(marked_for("root_commit").is_empty(), "root commit must not be highlighted");
+
+    // Even when `merge_base` is empty, a single root commit with no parents resolves to an empty range.
+    let root_spec = super::highlight::resolve_highlight_spec(repo, "root_commit").unwrap();
+    let (from_shas, to_sha) = root_spec.resolve_for_head(repo, "", Some("feature")).unwrap();
+    assert_eq!(from_shas, vec![to_sha]);
+
+    // An unsupported git range form like `tA^!` names the accepted range forms in the error.
+    let bad_err = match GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: None, highlight: Some("tA^!") },
+    ) {
+        Ok(_) => panic!("tA^! must be rejected in git"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(
+        bad_err.contains("--highlight \"tA^!\"")
+            && bad_err.contains("expected A..B, A...B, or a single commit/ref"),
+        "got: {bad_err}"
+    );
+}
+
+#[test]
+fn test_git_highlight_surfaces_git_failures_but_drops_deleted_refs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "initial\nc1\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c1"]);
+    git_cmd(repo, &["branch", "pushed", "HEAD"]);
+    fs::write(repo.join("file.txt"), "initial\nc1\nc2\n").unwrap();
+    git_cmd(repo, &["add", "file.txt"]);
+    git_cmd(repo, &["commit", "-m", "c2"]);
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: None, highlight: Some("pushed..HEAD") },
+    )
+    .unwrap();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    assert_eq!(vcs.refresh(&cancel).unwrap().files[0].highlight.line_count(), 1);
+
+    // Remove the highlighted commit's tree object: the ref still resolves, but
+    // diffing from it fails, and that failure must reach the caller.
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "pushed^{tree}"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    let tree = String::from_utf8(output.stdout).unwrap();
+    let tree = tree.trim();
+    let object = repo.join(".git/objects").join(&tree[..2]).join(&tree[2..]);
+    fs::set_permissions(&object, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::remove_file(&object).unwrap();
+
+    let err = vcs.refresh(&cancel).expect_err("a git failure must not read as zero marked lines");
+    assert!(format!("{err:#}").contains("--highlight"), "got: {err:#}");
+    assert!(vcs.single_file_diff("file.txt").is_none());
 }

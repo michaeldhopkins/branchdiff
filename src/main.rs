@@ -499,7 +499,7 @@ fn run_main_app(mut detected: Box<dyn Vcs>, mut repo_root: PathBuf, cli: &Cli) -
         match loop_action {
             LoopAction::Quit => break,
             LoopAction::RestartVcs => {
-                match vcs::detect_with_base(&repo_root, cli.base.as_deref()) {
+                match vcs::detect_with_options(&repo_root, cli.vcs_options()) {
                     Ok(new_vcs) => {
                         repo_root = new_vcs.repo_path().to_path_buf();
                         detected = new_vcs;

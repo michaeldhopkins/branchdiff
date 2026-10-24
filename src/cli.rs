@@ -55,7 +55,7 @@ pub struct OutputFlags {
 /// Modifiers of one output format each.
 #[derive(clap::Args)]
 pub struct OutputOptions {
-    /// With --files, print JSON
+    /// With --files, print JSON (includes "highlighted" per file with --highlight)
     #[arg(long, requires = "files", conflicts_with_all = ["print", "diff", "html", "fingerprint"])]
     pub json: bool,
 }
@@ -103,12 +103,22 @@ pub struct Cli {
     #[arg(long, value_name = "REV")]
     pub base: Option<String>,
 
-    /// Render the diff up to this revision instead of the working tree without checking it out.
+    /// Show the diff as of this revision instead of the working copy, without checking it out.
     ///
     /// jj: any single-commit revset (e.g. `feature`, `@-`, a change id).
     /// git: a branch name, `origin/`-qualified name, tag, or commit.
     #[arg(long, value_name = "REV")]
     pub head: Option<String>,
+
+    /// Highlight hunks and lines introduced by this commit or revision range.
+    ///
+    /// Shown in the TUI, `--print`, `--html`, and `--files --json` (ignored by
+    /// `--diff` and plain `--files`).
+    ///
+    /// jj: any revset (e.g. `feature@origin..feature`, `@`, a change id).
+    /// git: a commit range (`A..B`, `A...B`) or a single commit/ref.
+    #[arg(long, value_name = "REVSET")]
+    pub highlight: Option<String>,
 
     /// Disable automatic fetching of base branch
     #[arg(long)]
@@ -143,7 +153,11 @@ impl Cli {
 
     /// Options for VCS backend detection and initialization.
     pub fn vcs_options(&self) -> crate::vcs::VcsOptions<'_> {
-        crate::vcs::VcsOptions { base: self.base.as_deref(), head: self.head.as_deref() }
+        crate::vcs::VcsOptions {
+            base: self.base.as_deref(),
+            head: self.head.as_deref(),
+            highlight: self.highlight.as_deref(),
+        }
     }
 }
 
@@ -254,11 +268,22 @@ mod tests {
 
     #[test]
     fn head_flag_parses_with_base_and_output_modes() {
-        let cli = parse(&["--base", "main", "--head", "feature", "--print"]).unwrap();
+        let cli = parse(&[
+            "--base",
+            "main",
+            "--head",
+            "feature",
+            "--highlight",
+            "feature@origin..feature",
+            "--print",
+        ])
+        .unwrap();
         assert_eq!(cli.base.as_deref(), Some("main"));
         assert_eq!(cli.head.as_deref(), Some("feature"));
+        assert_eq!(cli.highlight.as_deref(), Some("feature@origin..feature"));
         assert_eq!(cli.vcs_options().base, Some("main"));
         assert_eq!(cli.vcs_options().head, Some("feature"));
+        assert_eq!(cli.vcs_options().highlight, Some("feature@origin..feature"));
         assert_eq!(cli.output.mode(), OutputMode::Print);
     }
 

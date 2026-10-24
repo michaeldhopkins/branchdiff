@@ -2,6 +2,7 @@ pub(crate) mod changed_files;
 pub(crate) mod commands;
 mod content;
 mod fingerprint;
+pub(crate) mod highlight;
 pub(crate) mod parse;
 mod refresh;
 
@@ -38,6 +39,8 @@ pub struct GitVcs {
     base_label: String,
     /// Optional explicit `--head <REV>` as `(resolved_ref, display_label)`.
     head_target: Option<(String, String)>,
+    /// Optional explicit `--highlight <REVSET>` specification.
+    highlight_spec: Option<highlight::GitHighlightSpec>,
     git_version: GitVersion,
 }
 
@@ -51,7 +54,11 @@ pub struct GitVcs {
 ///
 /// Returns `(ref_to_use, label)`. Anything that isn't a branch name — a tag, a
 /// SHA, an already-qualified ref — falls through to git's own resolution.
-fn resolve_explicit_ref(repo_path: &Path, flag: &str, rev: &str) -> Result<(String, String)> {
+pub(super) fn resolve_explicit_ref(
+    repo_path: &Path,
+    flag: &str,
+    rev: &str,
+) -> Result<(String, String)> {
     let local = format!("refs/heads/{rev}");
     let remote = format!("refs/remotes/origin/{rev}");
 
@@ -67,9 +74,14 @@ fn resolve_explicit_ref(repo_path: &Path, flag: &str, rev: &str) -> Result<(Stri
             if commands::rev_id(repo_path, rev).is_some() {
                 Ok((rev.to_string(), rev.to_string()))
             } else {
+                let hint = if flag == "--highlight" {
+                    "expected A..B, A...B, or a single commit/ref; "
+                } else {
+                    ""
+                };
                 anyhow::bail!(
                     "{flag} {rev:?} is not a branch, tag or commit in this repo \
-                     (looked for {local}, {remote}, and {rev})"
+                     ({hint}looked for {local}, {remote}, and {rev})"
                 )
             }
         }
@@ -80,6 +92,7 @@ struct ResolvedRefs {
     base_branch: String,
     base_label: String,
     head_target: Option<(String, String)>,
+    highlight_spec: Option<highlight::GitHighlightSpec>,
 }
 
 impl GitVcs {
@@ -111,15 +124,19 @@ impl GitVcs {
             let resolved = Self::resolve_refs(&repo_path, options);
             (resolved, version.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
         });
-        let ResolvedRefs { base_branch, base_label, head_target } = resolved?;
+        let ResolvedRefs { base_branch, base_label, head_target, highlight_spec } = resolved?;
         let git_version = git_version.context("Failed to detect git version")?;
-        Ok(Self { repo_path, base_branch, base_label, head_target, git_version })
+        Ok(Self { repo_path, base_branch, base_label, head_target, highlight_spec, git_version })
     }
 
-    /// Resolve `--base` (or detected trunk) and optional `--head`, verifying their merge-base.
+    /// Resolve `--base` (or detected trunk), optional `--head`, and optional `--highlight`.
     fn resolve_refs(repo_path: &Path, options: VcsOptions<'_>) -> Result<ResolvedRefs> {
         let head_target = match options.head {
             Some(head) => Some(resolve_explicit_ref(repo_path, "--head", head)?),
+            None => None,
+        };
+        let highlight_spec = match options.highlight {
+            Some(spec) => Some(highlight::resolve_highlight_spec(repo_path, spec)?),
             None => None,
         };
         let head_ref = head_target.as_ref().map_or("HEAD", |(r, _)| r.as_str());
@@ -151,7 +168,7 @@ impl GitVcs {
                 (detected.clone(), detected)
             }
         };
-        Ok(ResolvedRefs { base_branch, base_label, head_target })
+        Ok(ResolvedRefs { base_branch, base_label, head_target, highlight_spec })
     }
 
     /// The base branch name (e.g., "main" or "master").
@@ -190,7 +207,12 @@ impl Vcs for GitVcs {
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
         let head_target = self.head_target.as_ref().map(|(r, l)| (r.as_str(), l.as_str()));
         refresh::git_compute_refresh(
-            &self.repo_path, &self.base_branch, &self.base_label, head_target, cancel_flag,
+            &self.repo_path,
+            &self.base_branch,
+            &self.base_label,
+            head_target,
+            self.highlight_spec.as_ref(),
+            cancel_flag,
         )
     }
 
@@ -208,6 +230,7 @@ impl Vcs for GitVcs {
             old_path.as_deref(),
             &merge_base,
             self.head_target.as_ref().map(|(r, _)| r.as_str()),
+            self.highlight_spec.as_ref(),
         )
     }
 
@@ -285,6 +308,7 @@ impl Vcs for GitVcs {
             &self.repo_path,
             &self.base_branch,
             self.head_target.as_ref().map(|(r, _)| r.as_str()),
+            self.highlight_spec.as_ref(),
         )
     }
 

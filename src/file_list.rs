@@ -31,6 +31,8 @@ pub struct FileEntry {
     pub status: FileStatus,
     pub additions: usize,
     pub deletions: usize,
+    /// Present only when `--highlight` was given; true when at least one line in the file is marked.
+    pub highlighted: Option<bool>,
 }
 
 /// The files in the diff plus the ids it was taken between.
@@ -90,6 +92,11 @@ pub fn entries(files: &[FileDiff]) -> Vec<FileEntry> {
                 status: status_of(file.is_rename(), additions, deletions, other),
                 additions,
                 deletions,
+                highlighted: file
+                    .highlight
+                    .label
+                    .is_some()
+                    .then_some(!file.highlight.highlighted_lines.is_empty()),
             })
         })
         .collect()
@@ -142,13 +149,17 @@ pub fn render_json(list: &FileList) -> String {
         let old = f.old_path.as_deref().map_or_else(|| "null".to_string(), json_string);
         let _ = write!(
             out,
-            "{{\"path\":{},\"old_path\":{},\"status\":\"{}\",\"additions\":{},\"deletions\":{}}}",
+            "{{\"path\":{},\"old_path\":{},\"status\":\"{}\",\"additions\":{},\"deletions\":{}",
             json_string(&f.path),
             old,
             f.status.as_str(),
             f.additions,
-            f.deletions
+            f.deletions,
         );
+        if let Some(hl) = f.highlighted {
+            let _ = write!(out, ",\"highlighted\":{hl}");
+        }
+        out.push('}');
     }
     out.push_str("]}\n");
     out
@@ -240,6 +251,7 @@ mod tests {
                 status: FileStatus::Modified,
                 additions: 3,
                 deletions: 1,
+                highlighted: None,
             }],
         }
     }
@@ -250,11 +262,45 @@ mod tests {
     }
 
     #[test]
-    fn json_has_ids_and_every_field() {
+    fn json_omits_highlighted_when_highlight_was_not_given() {
+        let from_entries = FileList {
+            base: "b1".into(),
+            head: "h1".into(),
+            files: entries(&[diff(
+                "a \"q\".rs",
+                Some("a\n"),
+                Some("a\n"),
+                Some("b\nc\nd\n"),
+                None,
+            )]),
+        };
+        assert_eq!(from_entries.files[0].highlighted, None);
         assert_eq!(
-            render_json(&list()),
+            render_json(&from_entries),
             "{\"base\":\"b1\",\"head\":\"h1\",\"files\":[{\"path\":\"a \\\"q\\\".rs\",\"old_path\":null,\"status\":\"modified\",\"additions\":3,\"deletions\":1}]}\n"
         );
+    }
+
+    #[test]
+    fn json_computes_highlighted_from_marked_lines_not_touched() {
+        let mut touched_only = diff("t.rs", Some("a\n"), Some("a\nb\n"), Some("a\nb\n"), None);
+        touched_only.highlight.label = Some("c1..c2".into());
+        touched_only.highlight.touched = true;
+
+        let mut marked = diff("hl.rs", Some("a\n"), Some("a\nb\n"), Some("a\nb\n"), None);
+        marked.highlight.label = Some("c1..c2".into());
+        marked.highlight.highlighted_lines = vec![2];
+
+        let l = FileList {
+            base: "b".into(),
+            head: "h".into(),
+            files: entries(&[touched_only, marked]),
+        };
+        assert_eq!(l.files[0].highlighted, Some(false));
+        assert_eq!(l.files[1].highlighted, Some(true));
+        let v: serde_json::Value = serde_json::from_str(&render_json(&l)).unwrap();
+        assert_eq!(v["files"][0]["highlighted"], false);
+        assert_eq!(v["files"][1]["highlighted"], true);
     }
 
     #[test]
@@ -282,7 +328,7 @@ mod tests {
                 head: "h".into(),
                 files: paths.iter().map(|p| FileEntry {
                     path: p.clone(), old_path: Some(p.clone()), status: FileStatus::Renamed,
-                    additions: adds, deletions: 0,
+                    additions: adds, deletions: 0, highlighted: None,
                 }).collect(),
             };
             let v: serde_json::Value = serde_json::from_str(&render_json(&l)).unwrap();
