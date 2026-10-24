@@ -216,7 +216,7 @@ impl<'a> JsonParser<'a> {
                         return Err(CommentError::Parse("invalid UTF-16 low surrogate".into()));
                     }
                     let combined =
-                        0x10000 + (((u32::from(cp) - 0xD800) << 10) | (u32::from(low) - 0xDC00));
+                        0x10000 + ((u32::from(cp) - 0xD800) << 10) + (u32::from(low) - 0xDC00);
                     out.push(
                         char::from_u32(combined)
                             .ok_or_else(|| CommentError::Parse("invalid surrogate".into()))?,
@@ -347,4 +347,223 @@ fn push_json_str(out: &mut String, s: &str) {
         }
     }
     out.push('"');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn parse_one(input: &str) -> Result<JsonVal, CommentError> {
+        let mut values = parse_json_stream(input)?;
+        assert_eq!(values.len(), 1, "{input:?} held {} values", values.len());
+        Ok(values.remove(0))
+    }
+
+    fn str_of(input: &str) -> String {
+        match parse_one(input).unwrap() {
+            JsonVal::Str(s) => s,
+            other => panic!("{input:?} parsed to {other:?}"),
+        }
+    }
+
+    fn from_serde(value: &serde_json::Value) -> JsonVal {
+        match value {
+            serde_json::Value::Null => JsonVal::Null,
+            serde_json::Value::Bool(b) => JsonVal::Bool(*b),
+            serde_json::Value::Number(n) => JsonVal::Number(n.as_i64().unwrap()),
+            serde_json::Value::String(s) => JsonVal::Str(s.clone()),
+            serde_json::Value::Array(items) => {
+                JsonVal::Array(items.iter().map(from_serde).collect())
+            }
+            serde_json::Value::Object(map) => {
+                JsonVal::Object(map.iter().map(|(k, v)| (k.clone(), from_serde(v))).collect())
+            }
+        }
+    }
+
+    /// Writes `value` with every non-ASCII and control character as a `\u` escape,
+    /// so characters outside the Basic Multilingual Plane become surrogate pairs.
+    fn escape_everything(value: &serde_json::Value) -> String {
+        fn string(out: &mut String, s: &str) {
+            out.push('"');
+            for unit in s.encode_utf16() {
+                match unit {
+                    0x22 => out.push_str("\\\""),
+                    0x5c => out.push_str("\\\\"),
+                    0x20..=0x7e => out.push(char::from_u32(u32::from(unit)).unwrap()),
+                    _ => out.push_str(&format!("\\u{unit:04X}")),
+                }
+            }
+            out.push('"');
+        }
+        let mut out = String::new();
+        match value {
+            serde_json::Value::String(s) => string(&mut out, s),
+            serde_json::Value::Array(items) => {
+                out.push_str("[ ");
+                let parts: Vec<String> = items.iter().map(escape_everything).collect();
+                out.push_str(&parts.join(" ,\n"));
+                out.push_str(" ]");
+            }
+            serde_json::Value::Object(map) => {
+                out.push_str("{\t");
+                let parts: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| {
+                        let mut key = String::new();
+                        string(&mut key, k);
+                        format!("{key} :\r\n{}", escape_everything(v))
+                    })
+                    .collect();
+                out.push_str(&parts.join(","));
+                out.push_str("\t}");
+            }
+            other => out.push_str(&other.to_string()),
+        }
+        out
+    }
+
+    fn arb_json() -> impl Strategy<Value = serde_json::Value> {
+        let leaf = prop_oneof![
+            Just(serde_json::Value::Null),
+            any::<bool>().prop_map(serde_json::Value::Bool),
+            any::<i64>().prop_map(serde_json::Value::from),
+            any::<String>().prop_map(serde_json::Value::String),
+        ];
+        leaf.prop_recursive(4, 32, 6, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..6).prop_map(serde_json::Value::Array),
+                prop::collection::btree_map(any::<String>(), inner, 0..6)
+                    .prop_map(|m| serde_json::Value::Object(m.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        /// Differential: whatever serde_json writes, compact, pretty or with every
+        /// character escaped, parses to the same value.
+        #[test]
+        fn parses_what_serde_json_writes(value in arb_json()) {
+            let expected = from_serde(&value);
+            for text in [
+                serde_json::to_string(&value).unwrap(),
+                serde_json::to_string_pretty(&value).unwrap(),
+                escape_everything(&value),
+            ] {
+                prop_assert_eq!(parse_one(&text).unwrap(), expected.clone(), "{}", text);
+            }
+        }
+
+        /// Roundtrip: a comment written as a JSON line parses back to its strings.
+        #[test]
+        fn comment_json_lines_parse_back(body in any::<String>(), path in any::<String>()) {
+            let comment = ReviewComment {
+                path: path.clone(),
+                start_line: Some(4),
+                end_line: Some(4),
+                side: CommentSide::New,
+                body: body.clone(),
+                author: None,
+                suggestion: None,
+                outdated: false,
+            };
+            let parsed = parse_one(&comment_to_json_line(&comment)).unwrap();
+            prop_assert_eq!(parsed.get("body").and_then(JsonVal::as_str), Some(body.as_str()));
+            prop_assert_eq!(parsed.get("path").and_then(JsonVal::as_str), Some(path.as_str()));
+        }
+    }
+
+    #[test]
+    fn every_escape_decodes_to_its_character() {
+        assert_eq!(str_of(r#""\"\\\/\b\f\n\r\t""#), "\"\\/\u{8}\u{c}\n\r\t");
+        assert_eq!(str_of(r#""caf\u00e9 \u00E9""#), "café é");
+        assert_eq!(str_of(r#""\ud83d\ude00 x""#), "😀 x");
+        assert_eq!(str_of(r#""\ud800\udc00\udbff\udfff""#), "\u{10000}\u{10FFFF}");
+        assert_eq!(str_of(r#""a\u0041b""#), "aAb");
+    }
+
+    #[test]
+    fn broken_escapes_and_strings_are_errors() {
+        for bad in [
+            r#""\ud83d""#, r#""\ud83d x""#, r#""\ud83dA""#, r#""\ud83d\n""#, r#""\u12""#,
+            r#""\u12"#, r#""\uzzzz""#, r#""\x""#, "\"\\", "\"abc", "\"abc\\\"", "\"a\u{1}b\"",
+            "\"\u{1f}\"", "\"tab\there\"",
+        ] {
+            assert!(parse_json_stream(bad).is_err(), "{bad:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn numbers_keep_their_integer_part() {
+        assert_eq!(
+            parse_one("[0, -5, 12, 1.25, -3e+2, 4E-1, 5.0e10, 7e3, 8]").unwrap(),
+            JsonVal::Array(
+                [0, -5, 12, 1, -3, 4, 5, 7, 8].into_iter().map(JsonVal::Number).collect()
+            )
+        );
+        assert_eq!(parse_one("{\"a\":1.5,\"b\":2}").unwrap().get("b"), Some(&JsonVal::Number(2)));
+        for bad in ["-", "1.", "1.e5", "1e", "1e+", "-x", "[1.]", "[2e-]"] {
+            assert!(parse_json_stream(bad).is_err(), "{bad:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn empty_containers_end_where_they_close() {
+        assert_eq!(
+            parse_one("[[],{},[ ],{ },\"x\"]").unwrap(),
+            JsonVal::Array(vec![
+                JsonVal::Array(vec![]),
+                JsonVal::Object(vec![]),
+                JsonVal::Array(vec![]),
+                JsonVal::Object(vec![]),
+                JsonVal::Str("x".into()),
+            ])
+        );
+        assert_eq!(
+            parse_json_stream("{}[]").unwrap(),
+            vec![JsonVal::Object(vec![]), JsonVal::Array(vec![])]
+        );
+    }
+
+    #[test]
+    fn nesting_is_allowed_to_exactly_the_maximum_depth() {
+        let arrays = |n: usize| format!("{}0{}", "[".repeat(n), "]".repeat(n));
+        let objects = |n: usize| format!("{}0{}", "{\"a\":".repeat(n), "}".repeat(n));
+        assert!(parse_json_stream(&arrays(MAX_JSON_DEPTH)).is_ok());
+        assert!(parse_json_stream(&arrays(MAX_JSON_DEPTH + 1)).is_err());
+        assert!(parse_json_stream(&objects(MAX_JSON_DEPTH)).is_ok());
+        assert!(parse_json_stream(&objects(MAX_JSON_DEPTH + 1)).is_err());
+    }
+
+    #[test]
+    fn only_positive_numbers_are_line_numbers() {
+        assert_eq!(JsonVal::Number(1).as_usize(), Some(1));
+        assert_eq!(JsonVal::Number(0).as_usize(), None);
+        assert_eq!(JsonVal::Number(-3).as_usize(), None);
+        assert_eq!(JsonVal::Str("1".into()).as_usize(), None);
+    }
+
+    #[test]
+    fn a_one_line_comment_is_written_with_line() {
+        let mut comment = ReviewComment {
+            path: "a.rs".into(),
+            start_line: Some(5),
+            end_line: Some(5),
+            side: CommentSide::Old,
+            body: "b".into(),
+            author: None,
+            suggestion: None,
+            outdated: false,
+        };
+        assert_eq!(
+            comment_to_json_line(&comment),
+            r#"{"path":"a.rs","line":5,"side":"old","body":"b"}"#
+        );
+        comment.end_line = Some(3);
+        assert_eq!(
+            comment_to_json_line(&comment),
+            r#"{"path":"a.rs","start_line":3,"end_line":5,"side":"old","body":"b"}"#
+        );
+    }
 }
