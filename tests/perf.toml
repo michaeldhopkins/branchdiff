@@ -2,7 +2,7 @@
 # Wall floors are ceilings of the committed ref_median_ns in benches/baselines.toml
 # (2026-10-18, html rows 2026-10-20), or the class cap where no bench exists.
 # They are not a new timing run. A floor or a target may only tighten.
-# Class caps live in the checker: command is external_us + 50ms, keystroke 8ms,
+# Class caps live in the checker: command is 50ms, keystroke 8ms,
 # page 100ms, frame 4ms, mcp 200ms.
 #
 # Command and page fixture: 500 files, 25 changed, 5 lines each. That is the
@@ -17,9 +17,8 @@ test = "command_process_counts_match_their_floors"
 processes = 63
 alloc = ["update/handle_tick", "refresh/colocated/500f_25c"]
 wall_floor_us = 131542
-external_us = 40000
 target_us = 50000
-derivation = "Startup loads the same diff as print; one jj log at 40 ms plus the first frames fits in the 50 ms margin. Measured as --benchmark 1 because the interactive loop does not exit."
+derivation = "Startup loads the same diff as print; one batched jj log plus the first frame fits in the 50 ms command budget. Measured as --benchmark 1 because the interactive loop does not exit."
 
 [[op]]
 id = "command:print"
@@ -27,11 +26,10 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 61
-alloc = ["refresh/colocated/500f_25c", "refresh/colocated/50f_10c"]
+alloc = ["refresh/colocated/500f_25c", "refresh/colocated/50f_10c", "refresh/non_colocated/50f_10c"]
 wall_floor_us = 131542
-external_us = 40000
 target_us = 50000
-derivation = "One jj diff of the 500-file fixture is the unavoidable work (40 ms, the stated cost of one jj log) and writing the text fits in the 50 ms class margin."
+derivation = "One batched jj diff of the 500-file fixture (40 ms) plus writing the rendered text fits in the 50 ms command budget."
 
 [[op]]
 id = "command:diff"
@@ -39,11 +37,10 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 61
-alloc = ["refresh/non_colocated/50f_10c"]
-wall_floor_us = 73176
-external_us = 40000
+alloc = ["refresh/colocated/500f_25c"]
+wall_floor_us = 131542
 target_us = 50000
-derivation = "A patch is the same diff, formatted unified; one jj log at 40 ms plus formatting fits in the 50 ms margin."
+derivation = "A patch is the same 500-file diff formatted unified; one batched jj log (40 ms) plus formatting fits in the 50 ms command budget."
 
 [[op]]
 id = "command:files"
@@ -51,10 +48,9 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 62
-wall_floor_us = 90000
-external_us = 40000
+wall_floor_us = 50000
 target_us = 50000
-derivation = "One diff's names and counts, not a rendered page; one jj log plus the listing fits in the 50 ms margin. No bench yet, so the wall floor is the class ceiling."
+derivation = "One diff's names and line counts, not a rendered page; one batched jj log plus the listing fits in the 50 ms command budget. No bench yet, so the wall floor is the class ceiling."
 
 [[op]]
 id = "command:json"
@@ -62,10 +58,9 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 62
-wall_floor_us = 90000
-external_us = 40000
+wall_floor_us = 50000
 target_us = 50000
-derivation = "The file list encoded, same jj work as --files; one jj log plus encoding fits in the 50 ms margin. No bench yet, so the wall floor is the class ceiling."
+derivation = "The file list JSON-encoded, same jj work as --files; one batched jj log plus encoding fits in the 50 ms command budget. No bench yet, so the wall floor is the class ceiling."
 
 [[op]]
 id = "command:fingerprint"
@@ -73,10 +68,9 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 11
-wall_floor_us = 90000
-external_us = 40000
+wall_floor_us = 50000
 target_us = 50000
-derivation = "The hash reads base, head and the working copy without a rendered diff; one jj log plus the hash fits in the 50 ms margin. No bench yet, so the wall floor is the class ceiling."
+derivation = "The hash reads base, head and the working copy without a rendered diff; one jj log plus hashing fits in the 50 ms command budget. No bench yet, so the wall floor is the class ceiling."
 
 [[op]]
 id = "command:base"
@@ -84,10 +78,19 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 64
-wall_floor_us = 90000
-external_us = 40000
+wall_floor_us = 50000
 target_us = 50000
-derivation = "One named rev plus the same diff; one jj log plus that lookup fits in the 50 ms margin. No bench yet, so the wall floor is the class ceiling."
+derivation = "Resolving one named base rev plus the same diff; one batched jj log plus that lookup fits in the 50 ms command budget. No bench yet, so the wall floor is the class ceiling."
+
+[[op]]
+id = "command:comments"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each, 25 review comments; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "command_process_counts_match_their_floors"
+processes = 61
+wall_floor_us = 50000
+target_us = 50000
+derivation = "Reading and anchoring the JSONL review comments file is in-process over the same diff as --print; one batched jj log plus anchoring fits in the 50 ms command budget."
 
 [[op]]
 id = "command:no-auto-fetch"
@@ -95,10 +98,9 @@ class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "command_process_counts_match_their_floors"
 processes = 61
-wall_floor_us = 90000
-external_us = 40000
+wall_floor_us = 50000
 target_us = 50000
-derivation = "One-shot commands do not fetch; the flag only drops the TUI background fetch, so the pinned path is print with the flag and the same 40 ms jj log plus the 50 ms margin. No separate bench, so the wall floor is the class ceiling."
+derivation = "One-shot commands do not fetch; the flag only drops the TUI background fetch, so the pinned path is print with the flag inside the 50 ms command budget. No separate bench, so the wall floor is the class ceiling."
 
 [[op]]
 id = "command:benchmark"
@@ -108,9 +110,8 @@ test = "command_process_counts_match_their_floors"
 processes = 63
 alloc = ["refresh/colocated/500f_25c"]
 wall_floor_us = 131542
-external_us = 40000
 target_us = 50000
-derivation = "The stress run loads the diff once, then renders in process; the load is one jj log at 40 ms and the frames fit in the 50 ms margin."
+derivation = "The stress run loads the diff once, then renders in process; the load is one batched jj log and 1 frame fits in the 50 ms command budget."
 
 [[op]]
 id = "command:version"
@@ -119,7 +120,6 @@ fixture = "no repository; clap exits before opening one"
 test = "command_process_counts_match_their_floors"
 processes = 0
 wall_floor_us = 1000
-external_us = 0
 target_us = 1000
 derivation = "Clap writes the version and exits before opening a repository; there is no external call, so the floor and the target are 1 ms."
 
@@ -130,7 +130,6 @@ fixture = "no repository; clap exits before opening one"
 test = "command_process_counts_match_their_floors"
 processes = 0
 wall_floor_us = 1000
-external_us = 0
 target_us = 1000
 derivation = "Clap writes the help and exits before opening a repository; there is no external call, so the floor and the target are 1 ms."
 
@@ -142,9 +141,8 @@ test = "command_process_counts_match_their_floors"
 processes = 61
 alloc = ["html/render/500_lines", "html/render/200_lines", "refresh/colocated/500f_25c"]
 wall_floor_us = 136950
-external_us = 40000
 target_us = 50000
-derivation = "Main content is the diff; one jj log at 40 ms plus the 500-line render (5408 us, 2026-10-20) is the unavoidable work, and the target stays inside the 100 ms page cap."
+derivation = "Main content is the diff; one batched jj log at 40 ms plus the 500-line render (5408 us, 2026-10-20) is the unavoidable work, and the target stays inside the 100 ms page cap."
 
 [[op]]
 id = "page:html-static"
@@ -154,9 +152,8 @@ test = "command_process_counts_match_their_floors"
 processes = 61
 alloc = ["html/render/50_lines", "refresh/colocated/500f_25c"]
 wall_floor_us = 132740
-external_us = 40000
 target_us = 50000
-derivation = "The same diff as the live page without the poll script; one jj log at 40 ms plus markup stays under the 100 ms page cap."
+derivation = "The same diff as the live page without the poll script; one batched jj log at 40 ms plus markup stays under the 100 ms page cap."
 
 [[op]]
 id = "frame:html-page"
@@ -293,7 +290,7 @@ test = "keystrokes_render_without_spawning"
 processes = 0
 wall_floor_us = 8000
 target_us = 1000
-derivation = "Flips a set of flags, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+derivation = "Flips the reviewed set across all 30 files, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
 
 [[op]]
 id = "key:toggle-help"
@@ -324,7 +321,7 @@ test = "keystrokes_render_without_spawning"
 processes = 0
 wall_floor_us = 8000
 target_us = 2000
-derivation = "The reducer would touch the clipboard, which this render does not; the paint is aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+derivation = "Resolves the current file path and paints without touching the system clipboard, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
 
 [[op]]
 id = "key:copy-diff"
@@ -334,7 +331,7 @@ test = "keystrokes_render_without_spawning"
 processes = 0
 wall_floor_us = 8000
 target_us = 4000
-derivation = "Copying the whole diff is clipboard work outside the paint; the paint is aimed at 4 ms. No bench, so the wall floor is the 8 ms cap."
+derivation = "Formats the whole diff for copy and paints without touching the system clipboard, aimed at 4 ms. No bench, so the wall floor is the 8 ms cap."
 
 [[op]]
 id = "key:copy-patch"
@@ -344,7 +341,7 @@ test = "keystrokes_render_without_spawning"
 processes = 0
 wall_floor_us = 8000
 target_us = 4000
-derivation = "Copying the patch is clipboard work outside the paint; the paint is aimed at 4 ms. No bench, so the wall floor is the 8 ms cap."
+derivation = "Generates the unified patch and paints without touching the system clipboard, aimed at 4 ms. No bench, so the wall floor is the 8 ms cap."
 
 [[op]]
 id = "key:open-search"
@@ -404,7 +401,7 @@ test = "keystrokes_render_without_spawning"
 processes = 0
 wall_floor_us = 8000
 target_us = 1000
-derivation = "With nothing pending this is a no-op; a real recovery is a later command. Aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+derivation = "Updates the banner and requests a background recovery action; the external command is asynchronous, and the key is aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
 
 [[op]]
 id = "key:start-selection"
@@ -414,7 +411,7 @@ test = "keystrokes_render_without_spawning"
 processes = 0
 wall_floor_us = 8000
 target_us = 2000
-derivation = "Records the click, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+derivation = "Maps the screen click through row_map and records the selection start, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
 
 [[op]]
 id = "key:update-selection"
@@ -424,7 +421,7 @@ test = "keystrokes_render_without_spawning"
 processes = 0
 wall_floor_us = 8000
 target_us = 2000
-derivation = "Extends the drag, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+derivation = "Extends the active selection through row_map and repaints highlight spans, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
 
 [[op]]
 id = "key:end-selection"
@@ -434,7 +431,7 @@ test = "keystrokes_render_without_spawning"
 processes = 0
 wall_floor_us = 8000
 target_us = 2000
-derivation = "Ends the drag; a copy after a drag is clipboard work and this render skips it. Aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
+derivation = "Deactivates the selection and repaints without touching the system clipboard, aimed at 2 ms. No bench, so the wall floor is the 8 ms cap."
 
 [[op]]
 id = "key:search-type"

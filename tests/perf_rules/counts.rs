@@ -8,6 +8,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Instant;
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,
@@ -18,9 +19,10 @@ use ratatui::backend::TestBackend;
 use tempfile::TempDir;
 
 use branchdiff::app::{App, FrameContext};
-use branchdiff::diff::{DiffLine, LineSource};
+use branchdiff::diff::{DiffLine, FileDiff, LineSource};
 use branchdiff::input::handle_event;
 use branchdiff::ui::draw_with_frame;
+use branchdiff::update::RecoveryHint;
 
 use super::guard::{Op, parse_operations};
 use super::surface::{action_name, apply_input, search_effect};
@@ -35,8 +37,10 @@ fn command_process_counts_match_their_floors() {
     let home = TempDir::new().expect("home");
     let config = write_jj_config(home.path());
     let stub = write_stub(home.path());
+    let comments = write_comments_file(home.path());
     for op in ops.iter().filter(|op| op.class == "command" || op.class == "page") {
-        let args = args_for(&op.id).unwrap_or_else(|| panic!("{} has no measurement arm", op.id));
+        let args = args_for(&op.id, &comments)
+            .unwrap_or_else(|| panic!("{} has no measurement arm", op.id));
         let needs_repo = !matches!(op.id.as_str(), "command:version" | "command:help");
         let repo = needs_repo.then(|| build_repo(home.path(), &config));
         let first = run_counted(&op.id, &args, repo.as_ref(), &stub, home.path(), &config);
@@ -53,17 +57,19 @@ fn command_process_counts_match_their_floors() {
 
 #[test]
 fn keystrokes_render_without_spawning() {
-    let lines = render_lines();
+    let files = render_files();
     let mut rendered = 0;
     for op in manifest_ops().iter().filter(|op| op.class == "keystroke") {
         assert_eq!(op.processes, 0, "{} is in-process and its process floor is 0", op.id);
         let drive = drive_for(&op.id).unwrap_or_else(|| panic!("{} has no key arm", op.id));
-        let mut app = prepare(&lines, &op.id);
+        let mut app = prepare(&files, &op.id);
         match drive {
             Drive::Action(event) => {
                 let action = handle_event(event);
                 assert_eq!(action_name(action), Some(op.id.as_str()), "{}", op.id);
-                if !skips_reducer(&op.id) {
+                if skips_reducer(&op.id) {
+                    exercise_clipboard_prep(&mut app, &op.id);
+                } else {
                     apply_input(&mut app, action);
                 }
             }
@@ -84,28 +90,35 @@ fn manifest_ops() -> Vec<Op> {
     parse_operations(&text).unwrap_or_else(|errors| panic!("{}", errors.join("\n")))
 }
 
-fn args_for(id: &str) -> Option<Vec<&str>> {
-    Some(match id {
-        "command:branchdiff" | "command:benchmark" => {
-            vec!["--benchmark", "1", "--no-auto-fetch"]
+fn args_for(id: &str, comments: &Path) -> Option<Vec<String>> {
+    let strs: &[&str] = match id {
+        "command:branchdiff" | "command:benchmark" => &["--benchmark", "1", "--no-auto-fetch"],
+        "command:print" | "command:no-auto-fetch" => &["--print", "--no-auto-fetch"],
+        "command:diff" => &["--diff", "--no-auto-fetch"],
+        "command:files" => &["--files", "--no-auto-fetch"],
+        "command:json" => &["--files", "--json", "--no-auto-fetch"],
+        "command:fingerprint" => &["--fingerprint", "--no-auto-fetch"],
+        "command:base" => &["--print", "--base", "@-", "--no-auto-fetch"],
+        "command:comments" => {
+            return Some(vec![
+                "--print".to_string(),
+                "--comments".to_string(),
+                comments.display().to_string(),
+                "--no-auto-fetch".to_string(),
+            ]);
         }
-        "command:print" | "command:no-auto-fetch" => vec!["--print", "--no-auto-fetch"],
-        "command:diff" => vec!["--diff", "--no-auto-fetch"],
-        "command:files" => vec!["--files", "--no-auto-fetch"],
-        "command:json" => vec!["--files", "--json", "--no-auto-fetch"],
-        "command:fingerprint" => vec!["--fingerprint", "--no-auto-fetch"],
-        "command:base" => vec!["--print", "--base", "@-", "--no-auto-fetch"],
-        "command:version" => vec!["--version"],
-        "command:help" => vec!["--help"],
-        "page:html-live" => vec!["--html", "--no-auto-fetch"],
-        "page:html-static" => vec!["--html=static", "--no-auto-fetch"],
+        "command:version" => &["--version"],
+        "command:help" => &["--help"],
+        "page:html-live" => &["--html", "--no-auto-fetch"],
+        "page:html-static" => &["--html=static", "--no-auto-fetch"],
         _ => return None,
-    })
+    };
+    Some(strs.iter().map(|s| (*s).to_string()).collect())
 }
 
 fn run_counted(
     id: &str,
-    args: &[&str],
+    args: &[String],
     repo: Option<&TempDir>,
     stub: &Path,
     home: &Path,
@@ -152,6 +165,13 @@ fn assert_output(id: &str, output: &Output) {
         }
         "command:help" => assert!(stdout.contains("--print"), "{id}:\n{}", tail(&stdout)),
         "command:fingerprint" => assert!(!stdout.trim().is_empty(), "{id} wrote nothing"),
+        "command:comments" => {
+            assert!(
+                stdout.contains("file_0.txt") && stdout.contains("review note 0"),
+                "{id} did not render comments\n{}",
+                tail(&stdout)
+            );
+        }
         "command:branchdiff" | "command:benchmark" => {
             assert!(stderr.contains("Running 1 frames"), "{id}:\n{}", tail(&stderr));
             assert!(!stderr.contains("No changes to benchmark"), "{id}:\n{}", tail(&stderr));
@@ -173,6 +193,18 @@ fn build_repo(home: &Path, config: &Path) -> TempDir {
         fs::write(&path, "one\nCHANGED\nthree\nfour\nfive\n").expect("dirty file");
     }
     repo
+}
+
+fn write_comments_file(home: &Path) -> PathBuf {
+    let path = home.join("comments.jsonl");
+    let mut body = String::new();
+    for index in 0..CHANGED {
+        body.push_str(&format!(
+            "{{\"path\":\"file_{index}.txt\",\"line\":2,\"body\":\"review note {index}\"}}\n"
+        ));
+    }
+    fs::write(&path, body).expect("comments file");
+    path
 }
 
 fn tool(home: &Path, config: &Path, dir: &Path, program: &str, args: &[&str]) {
@@ -261,25 +293,44 @@ fn tail(text: &str) -> String {
     text[start..].to_string()
 }
 
-fn render_lines() -> Vec<DiffLine> {
-    let mut lines = Vec::with_capacity(30 * 301);
+fn render_files() -> Vec<FileDiff> {
+    let mut files = Vec::with_capacity(30);
     for file in 0..30 {
-        lines.push(DiffLine::file_header(&format!("file_{file}.txt")));
+        let path = format!("file_{file}.txt");
+        let mut lines = Vec::with_capacity(301);
+        lines.push(DiffLine::file_header(&path));
         for row in 0..300 {
+            let (source, prefix, old_line, new_line) = match row % 20 {
+                2 => (LineSource::DeletedBase, '-', Some(row + 1), None),
+                3 => (LineSource::Committed, '+', None, Some(row + 1)),
+                7 => (LineSource::DeletedCommitted, '-', Some(row + 1), None),
+                8 => (LineSource::Staged, '+', None, Some(row + 1)),
+                12 => (LineSource::Unstaged, '+', None, Some(row + 1)),
+                _ => (LineSource::Base, ' ', Some(row + 1), Some(row + 1)),
+            };
             let text = if row % 100 == 0 {
                 format!("value {file}:{row}")
             } else {
                 format!("line {file}:{row}")
             };
-            lines.push(DiffLine::new(LineSource::Base, text, ' ', Some(row + 1)));
+            let mut line = DiffLine::new(source, text, prefix, new_line).with_file_path(&path);
+            if let Some(old) = old_line {
+                line = line.with_old_line_number(old);
+            }
+            lines.push(line);
         }
+        files.push(FileDiff::new(lines));
     }
-    lines
+    files
 }
 
-fn prepare(lines: &[DiffLine], id: &str) -> App {
-    let mut app = App::new_for_bench(lines.to_vec());
+fn prepare(files: &[FileDiff], id: &str) -> App {
+    let lines: Vec<DiffLine> = files.iter().flat_map(|file| file.lines.iter().cloned()).collect();
+    let mut app = App::new_for_bench(lines);
+    app.files = files.iter().map(|file| FileDiff::new(file.lines.clone())).collect();
     app.set_viewport_height(50);
+    app.view.scroll_offset = 100;
+    app.view.sub_row = 0;
     if id.starts_with("key:search-") {
         app.open_search();
         app.search_insert_char('v');
@@ -287,8 +338,17 @@ fn prepare(lines: &[DiffLine], id: &str) -> App {
             search.current = 1;
         }
     }
-    app.view.scroll_offset = 100;
-    app.view.sub_row = 0;
+    if id == "key:run-recovery" {
+        app.error = Some("Working copy is stale".to_string());
+        app.pending_recovery = Some(RecoveryHint::jj_update_stale());
+    }
+    if matches!(id, "key:start-selection" | "key:update-selection" | "key:end-selection") {
+        paint(&mut app);
+        if matches!(id, "key:update-selection" | "key:end-selection") {
+            app.start_selection(10, 5);
+            app.view.last_click = Some((Instant::now(), 10, 5, 1));
+        }
+    }
     app
 }
 
@@ -347,20 +407,51 @@ fn key_event(code: KeyCode, modifiers: KeyModifiers) -> Event {
 }
 
 fn mouse(kind: MouseEventKind) -> Event {
-    Event::Mouse(MouseEvent { kind, column: 1, row: 1, modifiers: KeyModifiers::NONE })
+    Event::Mouse(MouseEvent { kind, column: 10, row: 8, modifiers: KeyModifiers::NONE })
 }
 
 fn skips_reducer(id: &str) -> bool {
-    matches!(id, "key:copy-path" | "key:copy-diff" | "key:copy-patch" | "key:end-selection")
+    matches!(id, "key:copy-path" | "key:copy-diff" | "key:copy-patch")
+}
+
+fn exercise_clipboard_prep(app: &mut App, id: &str) {
+    match id {
+        "key:copy-path" => {
+            assert!(app.current_file().is_some(), "current_file must resolve");
+        }
+        "key:copy-diff" => {
+            assert!(!branchdiff::output::prepare(app).files.is_empty(), "diff must not be empty");
+        }
+        "key:copy-patch" => {
+            assert!(
+                !branchdiff::patch::generate_patch(app.lines()).is_empty(),
+                "generated patch must not be empty"
+            );
+        }
+        _ => {}
+    }
 }
 
 fn paint(app: &mut App) {
     let backend = TestBackend::new(120, 50);
     let mut terminal = Terminal::new(backend).expect("terminal");
+    let items = if app.needs_inline_spans() {
+        let items = app.ensure_inline_spans_for_visible(50);
+        app.clear_needs_inline_spans();
+        Some(items)
+    } else {
+        None
+    };
     terminal
         .draw(|frame| {
-            let ctx = FrameContext::new(app);
+            let ctx = match items {
+                Some(items) => FrameContext::with_items(items, app),
+                None => FrameContext::new(app),
+            };
             draw_with_frame(frame, app, &ctx);
         })
         .expect("draw");
+    let has_text =
+        terminal.backend().buffer().content.iter().any(|cell| !cell.symbol().trim().is_empty());
+    assert!(has_text, "rendered frame is blank");
 }

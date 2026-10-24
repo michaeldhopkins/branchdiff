@@ -1,5 +1,5 @@
 //! This program's user-facing operations: the clap tree, the TUI key map,
-//! and the live page's per-frame script.
+//! and the live page's per-frame script and routes.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -22,29 +22,58 @@ use branchdiff::vcs::{
     ComparisonContext, RefreshResult, Vcs, VcsBackend, VcsEventType, VcsWatchPaths,
 };
 
+const FRAME_MARKERS: [&str; 9] = [
+    "requestAnimationFrame",
+    "requestVideoFrameCallback",
+    "<canvas",
+    "createElement('canvas')",
+    "createElement(\"canvas\")",
+    ".getContext(",
+    "CADisplayLink",
+    "TimelineView",
+    "MTKView",
+];
+
 pub(super) fn operations() -> BTreeSet<String> {
     let mut ops = command_ids();
     ops.extend(key_operations());
-    ops.extend(frame_ids());
+    ops.extend(frame_and_route_ids());
     ops
 }
 
-/// The manifest committed on `main`, if that revision has one.
+/// The manifest committed on `main@origin` or `main`, if that revision has one.
 pub(super) fn committed_baseline() -> Option<String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo = root.to_str().expect("repo path");
-    let output = Command::new("jj")
-        .args(["--repository", repo, "file", "show", "-r", "main", "tests/perf.toml"])
-        .output()
-        .unwrap_or_else(|err| panic!("jj file show failed to start: {err}"));
-    if output.status.success() {
-        return Some(String::from_utf8(output.stdout).expect("baseline is utf-8"));
+    for rev in ["main@origin", "main"] {
+        let listed = Command::new("jj")
+            .args([
+                "--ignore-working-copy", "--repository", repo, "file", "list", "-r", rev,
+                "tests/perf.toml",
+            ])
+            .output()
+            .unwrap_or_else(|err| panic!("jj file list failed to start: {err}"));
+        if !listed.status.success() {
+            continue;
+        }
+        if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
+            return None;
+        }
+        let shown = Command::new("jj")
+            .args([
+                "--ignore-working-copy", "--repository", repo, "file", "show", "-r", rev,
+                "tests/perf.toml",
+            ])
+            .output()
+            .unwrap_or_else(|err| panic!("jj file show failed to start: {err}"));
+        assert!(
+            shown.status.success(),
+            "jj file show -r {rev} tests/perf.toml failed: {}",
+            String::from_utf8_lossy(&shown.stderr)
+        );
+        return Some(String::from_utf8(shown.stdout).expect("baseline is utf-8"));
     }
-    let err = String::from_utf8_lossy(&output.stderr);
-    if err.contains("No such path") || err.contains("does not exist") || err.contains("not found") {
-        return None;
-    }
-    panic!("jj file show -r main tests/perf.toml failed: {err}");
+    None
 }
 
 pub(super) fn action_name(action: AppAction) -> Option<&'static str> {
@@ -74,13 +103,14 @@ pub(super) fn action_name(action: AppAction) -> Option<&'static str> {
         AppAction::OpenEditor => "key:open-editor",
         AppAction::OpenRepo => "key:open-repo",
         AppAction::RunRecovery => "key:run-recovery",
-        AppAction::Resize | AppAction::ForceRepaint => "key:force-repaint",
+        AppAction::Resize => "key:resize",
+        AppAction::ForceRepaint => "key:force-repaint",
         AppAction::None => return None,
     })
 }
 
-/// Run one non-search action through the reducer. Clipboard and selection-end
-/// stay with the caller: those arms touch the clipboard.
+/// Run one non-search action through the reducer. Clipboard arms stay with the
+/// caller so unit tests never touch the system clipboard.
 pub(super) fn apply_input(app: &mut App, action: AppAction) {
     let mut refresh = RefreshState::Idle;
     let mut lock = VcsLockState::default();
@@ -157,29 +187,53 @@ fn key_operations() -> BTreeSet<String> {
     ops
 }
 
-fn frame_ids() -> BTreeSet<String> {
+fn frame_and_route_ids() -> BTreeSet<String> {
     let mut ops = BTreeSet::new();
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    walk_frames(&src, &mut ops);
+    walk_frames_and_routes(&src, &mut ops);
     ops
 }
 
-fn walk_frames(dir: &Path, ops: &mut BTreeSet<String>) {
+fn walk_frames_and_routes(dir: &Path, ops: &mut BTreeSet<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            walk_frames(&path, ops);
+            walk_frames_and_routes(&path, ops);
             continue;
         }
         if path.extension().is_some_and(|ext| ext == "rs")
-            && let Ok(text) = std::fs::read_to_string(&path)
-            && text.contains("requestAnimationFrame")
+            && let Ok(raw) = std::fs::read_to_string(&path)
         {
-            let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("page");
-            ops.insert(format!("frame:{}", normalize(stem)));
+            let prod = strip_inline_test_mod(&raw);
+            if FRAME_MARKERS.iter().any(|marker| prod.contains(marker)) {
+                let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("page");
+                ops.insert(format!("frame:{}", normalize(stem)));
+            }
+            push_fetch_routes(prod, ops);
+        }
+    }
+}
+
+fn strip_inline_test_mod(text: &str) -> &str {
+    text.find("#[cfg(test)]").map_or(text, |idx| &text[..idx])
+}
+
+fn push_fetch_routes(text: &str, ops: &mut BTreeSet<String>) {
+    for prefix in ["fetch('", "fetch(\""] {
+        let quote = prefix.chars().last().expect("quote");
+        let mut rest = text;
+        while let Some(pos) = rest.find(prefix) {
+            let after = &rest[pos + prefix.len()..];
+            if let Some(end) = after.find(quote) {
+                let route = &after[..end];
+                if !route.is_empty() {
+                    ops.insert(format!("page:route-{}", normalize(route.trim_start_matches('/'))));
+                }
+            }
+            rest = after;
         }
     }
 }

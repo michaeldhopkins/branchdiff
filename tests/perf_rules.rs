@@ -22,11 +22,11 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
     let surface = surface::operations();
     assert_eq!(surface::operations(), surface, "surface discovery is not stable");
     let mut tests = BTreeSet::new();
-    guard::collect_function_names(&root.join("tests"), &mut tests);
-    guard::collect_function_names(&root.join("src"), &mut tests);
+    guard::collect_test_names(&root.join("tests"), &mut tests);
+    guard::collect_test_names(&root.join("src"), &mut tests);
     let bench_text =
         fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
-    let benches = guard::recorded_bench_ids(&bench_text);
+    let benches = guard::recorded_benches(&bench_text);
     let baseline = surface::committed_baseline();
     let errors = guard::check(&guard::Input {
         manifest: &manifest,
