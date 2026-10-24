@@ -23,8 +23,6 @@ pub use inline::InlineSpan;
 
 pub(crate) use inline::compute_inline_diff_merged;
 
-use std::sync::OnceLock;
-
 /// Compute the column width of `s` when displayed in a terminal.
 ///
 /// Tabs expand to 4 columns; other ASCII control characters and unicode chars
@@ -109,6 +107,10 @@ pub struct DiffLine {
     pub content: String,
     pub prefix: char,
     pub line_number: Option<usize>,
+    /// 1-based line number in the old (base) version of the file, when known.
+    /// Populated on deleted lines (where `line_number` is `None` inside modified
+    /// files) and on surviving/modified lines that trace back to base.
+    pub old_line_number: Option<u32>,
     pub file_path: Option<String>,
     pub inline_spans: Vec<InlineSpan>,
     pub old_content: Option<String>,
@@ -120,12 +122,11 @@ pub struct DiffLine {
     pub block_idx: Option<usize>,
     /// If this line is part of a moved block, the file path of the matching block.
     pub move_target: Option<String>,
-    /// Cached display width of `content`. Populated eagerly by `DiffLine::new`;
-    /// struct-literal constructions can leave this unset and rely on lazy init
-    /// via `display_width()`. The cache lets `wrapped_line_height` skip the
-    /// O(n) char walk on every frame — critical for diffs containing very
-    /// long single lines (e.g. minified search indexes).
-    display_width: OnceLock<usize>,
+    /// Cached display width of `content`, populated eagerly by `DiffLine::new`.
+    /// The cache lets `wrapped_line_height` skip the O(n) char walk on every
+    /// frame — critical for diffs containing very long single lines (e.g.
+    /// minified search indexes).
+    display_width: usize,
 }
 
 impl DiffLine {
@@ -135,15 +136,13 @@ impl DiffLine {
         prefix: char,
         line_number: Option<usize>,
     ) -> Self {
-        let display_width = OnceLock::new();
-        // OK to ignore — OnceLock::set only fails when already set, which can't
-        // happen on a freshly constructed cell.
-        let _ = display_width.set(content_display_width(&content));
+        let display_width = content_display_width(&content);
         Self {
             source,
             content,
             prefix,
             line_number,
+            old_line_number: None,
             file_path: None,
             inline_spans: Vec::new(),
             old_content: None,
@@ -157,10 +156,21 @@ impl DiffLine {
 
     /// Cached column width of `content`.
     ///
-    /// Computed once on first access (or in `new`) and reused. Treats tab as 4
-    /// columns; matches `crate::diff::content_display_width`.
+    /// Computed once in `new` and reused. Treats tab as 4 columns; matches
+    /// `crate::diff::content_display_width`.
     pub fn display_width(&self) -> usize {
-        *self.display_width.get_or_init(|| content_display_width(&self.content))
+        self.display_width
+    }
+
+    /// 1-based line number in the old (base) file, if this line traces to or
+    /// was deleted from base.
+    pub fn old_line(&self) -> Option<usize> {
+        self.old_line_number.map(|n| n as usize)
+    }
+
+    pub fn with_old_line_number(mut self, line: usize) -> Self {
+        self.old_line_number = u32::try_from(line).ok();
+        self
     }
 
     pub fn with_old_content(mut self, old: &str) -> Self {

@@ -4,7 +4,7 @@
 "src/app/mod.rs" = 625
 "src/app/selection.rs" = 772
 "src/app/view_mode.rs" = 449
-"src/diff/algorithm.rs" = 438
+"src/diff/algorithm.rs" = 437
 "src/main.rs" = 1111
 "src/ui/diff_view.rs" = 1122
 "src/vcs/jj.rs" = 1194

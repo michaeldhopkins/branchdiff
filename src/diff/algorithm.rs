@@ -49,7 +49,11 @@ pub struct DiffInput<'a> {
 fn build_deletion_diff(path: &str, content: &str, source: LineSource) -> FileDiff {
     let mut lines = vec![DiffLine::deleted_file_header(path, content.lines().count())];
     for (i, line) in content.lines().enumerate() {
-        lines.push(DiffLine::new(source, line.to_string(), '-', Some(i + 1)).with_file_path(path));
+        lines.push(
+            DiffLine::new(source, line.to_string(), '-', Some(i + 1))
+                .with_old_line_number(i + 1)
+                .with_file_path(path),
+        );
     }
     FileDiff::new(lines)
 }
@@ -286,6 +290,31 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
 
     let mut next_base_deletion = 0usize;
     let mut output_head_positions: Vec<Option<usize>> = Vec::new();
+    let emit_deletions_before =
+        |boundary: usize,
+         next_base_deletion: &mut usize,
+         lines: &mut Vec<DiffLine>,
+         output_head_positions: &mut Vec<Option<usize>>| {
+            while *next_base_deletion < boundary {
+                let base_idx = *next_base_deletion;
+                if base_to_working[base_idx].is_none() {
+                    let base_content = base_lines[base_idx].trim_end();
+                    let delete_source = determine_deletion_source(
+                        base_idx, &base_lines, &head_lines, &index_lines, &head_from_base,
+                        &index_from_head,
+                    );
+                    lines.push(
+                        DiffLine::new(delete_source, base_content.to_string(), '-', None)
+                            .with_old_line_number(base_idx + 1)
+                            .with_file_path(path),
+                    );
+                    let head_idx_for_deletion =
+                        head_from_base.iter().position(|&h| h == Some(base_idx));
+                    output_head_positions.push(head_idx_for_deletion);
+                }
+                *next_base_deletion += 1;
+            }
+        };
 
     for (line_num, working_idx) in (1usize..).zip(0..working_lines.len()) {
         if working_idx & (CANCEL_CHECK_INTERVAL - 1) == 0 && is_cancelled() {
@@ -296,48 +325,29 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
 
         // Deletion boundary: output deletions before working lines from later base positions.
         // For insertions, look ahead to find the next base position.
-        let deletion_boundary = if let Some(pos) = working_base_pos {
-            Some(pos)
-        } else {
-            let mut next_base = None;
-            for future_idx in (working_idx + 1)..working_lines.len() {
-                if let Some(pos) = get_working_base_pos(future_idx) {
-                    next_base = Some(pos);
-                    break;
-                }
-            }
-            next_base
-        };
+        let deletion_boundary = working_base_pos
+            .or_else(|| ((working_idx + 1)..working_lines.len()).find_map(get_working_base_pos));
 
         if let Some(boundary) = deletion_boundary {
-            while next_base_deletion < boundary {
-                if base_to_working[next_base_deletion].is_none() {
-                    let base_content = base_lines[next_base_deletion].trim_end();
-                    let delete_source = determine_deletion_source(
-                        next_base_deletion, &base_lines, &head_lines, &index_lines,
-                        &head_from_base, &index_from_head,
-                    );
-
-                    lines.push(
-                        DiffLine::new(delete_source, base_content.to_string(), '-', None)
-                            .with_file_path(path),
-                    );
-                    let head_idx_for_deletion =
-                        head_from_base.iter().position(|&h| h == Some(next_base_deletion));
-                    output_head_positions.push(head_idx_for_deletion);
-                }
-                next_base_deletion += 1;
-            }
+            emit_deletions_before(
+                boundary,
+                &mut next_base_deletion,
+                &mut lines,
+                &mut output_head_positions,
+            );
         }
 
         let source = trace_source(working_idx);
         let working_head_idx = get_working_head_idx(working_idx);
         output_head_positions.push(working_head_idx);
-        let output_line = build_working_line_output(
+        let mut output_line = build_working_line_output(
             working_idx, working_content, source, line_num, path, &working_from_index,
             &index_from_head, &head_from_base, &index_working_mods, &base_head_mods,
             &head_index_mods, &index_lines, &head_lines, &trace_index_source, &trace_head_source,
         );
+        if let Some(base_pos) = working_base_pos {
+            output_line.old_line_number = u32::try_from(base_pos + 1).ok();
+        }
 
         lines.push(output_line);
 
@@ -346,23 +356,12 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
         }
     }
 
-    while next_base_deletion < base_lines.len() {
-        if base_to_working[next_base_deletion].is_none() {
-            let base_content = base_lines[next_base_deletion].trim_end();
-            let delete_source = determine_deletion_source(
-                next_base_deletion, &base_lines, &head_lines, &index_lines, &head_from_base,
-                &index_from_head,
-            );
-            lines.push(
-                DiffLine::new(delete_source, base_content.to_string(), '-', None)
-                    .with_file_path(path),
-            );
-            let head_idx_for_deletion =
-                head_from_base.iter().position(|&h| h == Some(next_base_deletion));
-            output_head_positions.push(head_idx_for_deletion);
-        }
-        next_base_deletion += 1;
-    }
+    emit_deletions_before(
+        base_lines.len(),
+        &mut next_base_deletion,
+        &mut lines,
+        &mut output_head_positions,
+    );
 
     if append_canceled_sections(
         &mut lines,
@@ -1314,5 +1313,46 @@ fn brand_new() {\n    println!(\"new\");\n}";
             "diff has {n} lines — must be header-only (1) or fully completed (>= {line_count}); \
              a partial count means the bail path leaked accumulated lines"
         );
+    }
+
+    #[test]
+    fn test_deleted_lines_in_modified_file_keep_old_line_number() {
+        let base = "alpha\nbeta\ngamma\ndelta\nepsilon";
+        let working = "alpha\ninserted\ngamma_modified\ndelta";
+
+        let diff = compute_four_way_diff(DiffInput {
+            path: "test.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+
+        let beta = diff.lines.iter().find(|l| l.content == "beta").unwrap();
+        assert!(beta.source.is_deletion());
+        assert_eq!(beta.line_number, None, "deleted line in modified file keeps line_number None");
+        assert_eq!(beta.old_line(), Some(2));
+
+        let epsilon = diff.lines.iter().find(|l| l.content == "epsilon").unwrap();
+        assert!(epsilon.source.is_deletion());
+        assert_eq!(epsilon.line_number, None);
+        assert_eq!(epsilon.old_line(), Some(5));
+
+        let alpha = diff.lines.iter().find(|l| l.content == "alpha").unwrap();
+        assert_eq!(alpha.line_number, Some(1));
+        assert_eq!(alpha.old_line(), Some(1));
+
+        let inserted = diff.lines.iter().find(|l| l.content == "inserted").unwrap();
+        assert_eq!(inserted.line_number, Some(2));
+        assert_eq!(inserted.old_line(), None);
+
+        let gamma = diff.lines.iter().find(|l| l.content == "gamma_modified").unwrap();
+        assert_eq!(gamma.line_number, Some(3));
+        assert_eq!(gamma.old_line(), Some(3));
+
+        let delta = diff.lines.iter().find(|l| l.content == "delta").unwrap();
+        assert_eq!(delta.line_number, Some(4));
+        assert_eq!(delta.old_line(), Some(4));
     }
 }
