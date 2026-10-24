@@ -29,16 +29,18 @@ const CONTEXT_LINES: usize = 5;
 
 /// Compute context visibility for a slice of lines.
 /// Returns a bool-per-line indicating whether it should be shown.
-fn context_visibility(lines: &[DiffLine], comments: Option<&AnchoredComments>) -> Vec<bool> {
+///
+/// Commented lines need no case of their own: a comment anchors to a line only
+/// within the same five lines of a change (`comments::anchor`), and is otherwise
+/// shown under the file header, so every anchored line is already in view.
+fn context_visibility(lines: &[DiffLine]) -> Vec<bool> {
     let interesting: Vec<bool> = lines
         .iter()
-        .enumerate()
-        .map(|(i, line)| {
+        .map(|line| {
             line.source.is_header()
                 || line.old_content.is_some()
                 || !line.inline_spans.is_empty()
                 || line.source.is_change()
-                || comments.is_some_and(|c| c.for_line(i).is_some())
         })
         .collect();
 
@@ -129,9 +131,7 @@ pub fn prepare(app: &mut App) -> OutputData {
                 return None;
             }
 
-            let pre_anchored =
-                (!file_comments.is_empty()).then(|| anchor_comments(&file.lines, &file_comments));
-            let filtered = apply_view_mode(&file.lines, &app.view.view_mode, pre_anchored.as_ref());
+            let filtered = apply_view_mode(&file.lines, &app.view.view_mode);
             let comments = if file_comments.is_empty() {
                 AnchoredComments::default()
             } else {
@@ -163,16 +163,12 @@ pub fn prepare(app: &mut App) -> OutputData {
     }
 }
 
-fn apply_view_mode(
-    lines: &[DiffLine],
-    view_mode: &crate::app::ViewMode,
-    comments: Option<&AnchoredComments>,
-) -> Vec<DiffLine> {
+fn apply_view_mode(lines: &[DiffLine], view_mode: &crate::app::ViewMode) -> Vec<DiffLine> {
     use crate::app::ViewMode;
     match view_mode {
         ViewMode::Full => lines.to_vec(),
         ViewMode::Context | ViewMode::CommitOnly | ViewMode::BookmarkOnly => {
-            let show = context_visibility(lines, comments);
+            let show = context_visibility(lines);
             filter_with_elided(lines, &show)
         }
     }
@@ -209,6 +205,43 @@ mod tests {
     }
 
     #[test]
+    fn context_view_shows_each_comment_on_its_line_or_under_the_header() {
+        let base: String = (1..=40).map(|n| format!("line{n}\n")).collect();
+        let working = base.replacen("line2\n", "LINE2\n", 1);
+        let diff = compute_four_way_diff(DiffInput {
+            path: "a.txt",
+            base: Some(&base),
+            head: Some(&base),
+            index: Some(&base),
+            working: Some(&working),
+            old_path: None,
+        });
+        let mut app = TestAppBuilder::new()
+            .with_files(vec![diff])
+            .with_view_mode(crate::app::ViewMode::Context)
+            .build();
+        let on = |line: usize| ReviewComment {
+            path: "a.txt".into(),
+            start_line: Some(line),
+            end_line: Some(line),
+            side: crate::comments::CommentSide::New,
+            body: format!("about {line}"),
+            author: None,
+            suggestion: None,
+            outdated: false,
+        };
+        app.set_comments(vec![on(7), on(30)]);
+        let data = prepare(&mut app);
+        let file = &data.files[0];
+        let near = file.lines.iter().position(|l| l.content == "line7").expect("line7 in context");
+        assert_eq!(file.comments.for_line(near).unwrap()[0].comment.body, "about 7");
+        assert!(!file.lines.iter().any(|l| l.content == "line30"));
+        let header = file.comments.for_line(0).expect("a far comment sits under the header");
+        assert_eq!(header[0].comment.body, "about 30");
+        assert!(header[0].outdated);
+    }
+
+    #[test]
     fn test_prepare_drops_header_only_non_rename() {
         // A header-only file that is NOT a rename is genuine noise and stays filtered.
         let empty = FileDiff::new(vec![DiffLine::file_header("ghost.txt")]);
@@ -233,7 +266,7 @@ mod tests {
             lines.push(DiffLine::new(LineSource::Base, format!("line {i}"), ' ', Some(i + 1)));
         }
 
-        let show = context_visibility(&lines, None);
+        let show = context_visibility(&lines);
 
         // Lines 0-4 should be hidden (indices 0-4, more than 5 away from change at 10)
         assert!(!show[0], "line 0 should be hidden");
@@ -279,7 +312,7 @@ mod tests {
             DiffLine::new(LineSource::Base, "a".into(), ' ', Some(1)),
             DiffLine::new(LineSource::Committed, "b".into(), '+', Some(2)),
         ];
-        let result = apply_view_mode(&lines, &crate::app::ViewMode::Full, None);
+        let result = apply_view_mode(&lines, &crate::app::ViewMode::Full);
         assert_eq!(result.len(), 3);
     }
 }
