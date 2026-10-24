@@ -79,12 +79,106 @@ fn ci_installs_pinned_jj_and_runs_perf_rules() {
     assert!(
         ci.contains("PERF_BASELINE_REV:")
             && ci.contains("github.event.pull_request.base.sha")
-            && ci.contains("github.event.before"),
-        "ci.yml must pass PERF_BASELINE_REV from PR base sha or push before sha"
+            && ci.contains("github.event.before")
+            && ci.contains("git merge-base HEAD origin/main"),
+        "ci.yml must resolve PERF_BASELINE_REV from PR base sha, push before sha, or git merge-base HEAD origin/main"
+    );
+    assert!(
+        mutants.lines().any(|line| line.trim() == "concurrency:")
+            && mutants.contains("group: mutants-${{ github.ref }}")
+            && mutants.contains("cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}"),
+        "mutants.yml must define a concurrency group that cancels in-progress runs off main"
     );
     assert!(
         !mutants.contains("ci.yml does not install jj")
             && !mutants.contains("it never installs jj"),
         "mutants.yml must not claim ci.yml never installs jj"
     );
+}
+
+#[test]
+fn ci_workflow_step_resolves_perf_baseline_rev_for_new_branch_and_force_push() {
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ci = read(&root.join(".github/workflows/ci.yml"));
+    let (_, after_step) = ci
+        .split_once("- name: cargo test (performance budgets)")
+        .expect("perf budgets step in ci.yml");
+    let (_, after_run) = after_step.split_once("run: |\n").expect("multiline run in perf step");
+    let mut script = String::new();
+    for line in after_run.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("cargo test") {
+            break;
+        }
+        script.push_str(trimmed);
+        script.push('\n');
+    }
+    script.push_str("printf '%s' \"$PERF_BASELINE_REV\"\n");
+
+    let tmp = TempDir::new().expect("tempdir");
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+    };
+
+    git(&["init", "-q", "-b", "main"]);
+    fs::write(tmp.path().join("f.txt"), "base\n").expect("write");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "main base"]);
+    let main_sha = git(&["rev-parse", "HEAD"]);
+    git(&["update-ref", "refs/remotes/origin/main", &main_sha]);
+
+    git(&["checkout", "-q", "-b", "feature"]);
+    fs::write(tmp.path().join("f.txt"), "feature 1\n").expect("write");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "feature 1"]);
+    let feature_1_sha = git(&["rev-parse", "HEAD"]);
+    fs::write(tmp.path().join("f.txt"), "feature 2\n").expect("write");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "feature 2"]);
+
+    let run_step = |event: &str, gref: &str, before: &str| -> String {
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .current_dir(tmp.path())
+            .env("GITHUB_EVENT_NAME", event)
+            .env("GITHUB_REF", gref)
+            .env("PERF_BASELINE_REV", before)
+            .output()
+            .expect("sh");
+        assert!(
+            out.status.success(),
+            "step script failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("utf8")
+    };
+
+    let zero = "0000000000000000000000000000000000000000";
+    let unreachable = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+    assert_eq!(run_step("push", "refs/heads/feature", zero), main_sha);
+    assert_eq!(run_step("push", "refs/heads/feature", unreachable), main_sha);
+    assert_eq!(run_step("push", "refs/heads/feature", &feature_1_sha), main_sha);
+    assert_eq!(run_step("pull_request", "refs/pull/1/merge", &feature_1_sha), feature_1_sha);
+    assert_eq!(run_step("pull_request", "refs/pull/1/merge", unreachable), main_sha);
+    assert_eq!(run_step("push", "refs/heads/main", zero), zero);
+    assert_eq!(run_step("push", "refs/heads/main", unreachable), unreachable);
 }

@@ -43,19 +43,40 @@ pub(super) fn operations() -> BTreeSet<String> {
 /// The manifest committed at `PERF_BASELINE_REV` (when set in CI) or on
 /// `main@origin` / `main`, if that revision has one.
 pub(super) fn committed_baseline() -> Option<String> {
+    committed_baseline_file("tests/perf.toml")
+}
+
+#[allow(dead_code)]
+pub(super) fn committed_baseline_benches() -> Option<String> {
+    committed_baseline_file("benches/baselines.toml")
+}
+
+fn committed_baseline_file(rel_path: &str) -> Option<String> {
     let root = std::env::var_os("BRANCHDIFF_TEST_BASELINE_REPO")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
     let rev = std::env::var("PERF_BASELINE_REV").ok();
-    committed_baseline_in(&root, rev.as_deref())
+    let github_ref = std::env::var("GITHUB_REF").ok();
+    committed_baseline_file_in(&root, rev.as_deref(), github_ref.as_deref(), rel_path)
 }
 
+#[cfg(test)]
 pub(super) fn committed_baseline_in(root: &Path, rev_override: Option<&str>) -> Option<String> {
+    committed_baseline_file_in(root, rev_override, None, "tests/perf.toml")
+}
+
+pub(super) fn committed_baseline_file_in(
+    root: &Path,
+    rev_override: Option<&str>,
+    github_ref: Option<&str>,
+    rel_path: &str,
+) -> Option<String> {
     let rev_override = rev_override.map(str::trim).filter(|rev| !rev.is_empty());
+    let github_ref = github_ref.map(str::trim).filter(|gref| !gref.is_empty());
     if root.join(".jj").exists() {
-        committed_baseline_jj(root, rev_override)
+        committed_baseline_jj(root, rev_override, github_ref, rel_path)
     } else {
-        committed_baseline_git(root, rev_override)
+        committed_baseline_git(root, rev_override, github_ref, rel_path)
     }
 }
 
@@ -63,32 +84,54 @@ fn is_all_zero_sha(rev: &str) -> bool {
     !rev.is_empty() && rev.bytes().all(|b| b == b'0')
 }
 
-fn committed_baseline_jj(root: &Path, rev_override: Option<&str>) -> Option<String> {
+fn committed_baseline_jj(
+    root: &Path,
+    rev_override: Option<&str>,
+    github_ref: Option<&str>,
+    rel_path: &str,
+) -> Option<String> {
     let repo = root.to_str().expect("repo path");
+    let on_main = github_ref.is_none_or(|gref| gref == "refs/heads/main" || gref == "main");
     if let Some(rev) = rev_override {
+        if !on_main {
+            let is_pr = github_ref.is_some_and(|gref| gref.starts_with("refs/pull/"));
+            if is_pr
+                && !is_all_zero_sha(rev)
+                && let Some(found) = read_jj_file_at(root, repo, rev, rel_path)
+            {
+                return found;
+            }
+            for revset in
+                ["heads(::@ & ::main@origin)", "heads(::@ & ::main)", "main@origin", "main"]
+            {
+                if let Some(found) = read_jj_file_at(root, repo, revset, rel_path) {
+                    return found;
+                }
+            }
+        }
         if is_all_zero_sha(rev) {
             let exists_in_parent =
-                read_jj_manifest_at(root, repo, "heads(::@ & ~empty())-").flatten().is_some();
+                read_jj_file_at(root, repo, "heads(::@ & ~empty())-", rel_path).flatten().is_some();
             assert!(
                 !exists_in_parent,
-                "PERF_BASELINE_REV is all-zero ({rev}) but tests/perf.toml already exists in the parent revision of {}",
+                "PERF_BASELINE_REV is all-zero ({rev}) but {rel_path} already exists in the parent revision of {}",
                 root.display()
             );
             return None;
         }
-        return read_jj_manifest_at(root, repo, rev).unwrap_or_else(|| {
+        return read_jj_file_at(root, repo, rev, rel_path).unwrap_or_else(|| {
             panic!("PERF_BASELINE_REV `{rev}` did not resolve in jj repository {}", root.display())
         });
     }
     for rev in ["main@origin", "main"] {
-        if let Some(found) = read_jj_manifest_at(root, repo, rev) {
+        if let Some(found) = read_jj_file_at(root, repo, rev, rel_path) {
             return found;
         }
     }
     panic!("neither main@origin nor main resolved in jj repository {}", root.display());
 }
 
-fn read_jj_manifest_at(root: &Path, repo: &str, rev: &str) -> Option<Option<String>> {
+fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option<Option<String>> {
     let resolved = Command::new("jj")
         .current_dir(root)
         .args([
@@ -100,23 +143,17 @@ fn read_jj_manifest_at(root: &Path, repo: &str, rev: &str) -> Option<Option<Stri
     if !resolved.status.success() || String::from_utf8_lossy(&resolved.stdout).trim().is_empty() {
         return None;
     }
+    let root_pattern = format!("root:\"{rel_path}\"");
     let listed = Command::new("jj")
         .current_dir(root)
         .args([
-            "--ignore-working-copy",
-            "--repository",
-            repo,
-            "file",
-            "list",
-            "-r",
-            rev,
-            "root:\"tests/perf.toml\"",
+            "--ignore-working-copy", "--repository", repo, "file", "list", "-r", rev, &root_pattern,
         ])
         .output()
         .unwrap_or_else(|err| panic!("jj file list failed to start: {err}"));
     assert!(
         listed.status.success(),
-        "jj file list -r {rev} tests/perf.toml failed: {}",
+        "jj file list -r {rev} {rel_path} failed: {}",
         String::from_utf8_lossy(&listed.stderr)
     );
     if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
@@ -125,50 +162,104 @@ fn read_jj_manifest_at(root: &Path, repo: &str, rev: &str) -> Option<Option<Stri
     let shown = Command::new("jj")
         .current_dir(root)
         .args([
-            "--ignore-working-copy",
-            "--repository",
-            repo,
-            "file",
-            "show",
-            "-r",
-            rev,
-            "root:\"tests/perf.toml\"",
+            "--ignore-working-copy", "--repository", repo, "file", "show", "-r", rev, &root_pattern,
         ])
         .output()
         .unwrap_or_else(|err| panic!("jj file show failed to start: {err}"));
     assert!(
         shown.status.success(),
-        "jj file show -r {rev} tests/perf.toml failed: {}",
+        "jj file show -r {rev} {rel_path} failed: {}",
         String::from_utf8_lossy(&shown.stderr)
     );
     Some(Some(String::from_utf8(shown.stdout).expect("baseline is utf-8")))
 }
 
-fn committed_baseline_git(root: &Path, rev_override: Option<&str>) -> Option<String> {
+fn is_on_main_git(repo: &str, github_ref: Option<&str>) -> bool {
+    if let Some(gref) = github_ref {
+        return gref == "refs/heads/main" || gref == "main";
+    }
+    let out = Command::new("git")
+        .args(["-C", repo, "symbolic-ref", "--short", "-q", "HEAD"])
+        .output()
+        .unwrap_or_else(|err| panic!("git symbolic-ref failed to start: {err}"));
+    if out.status.success() {
+        let branch = String::from_utf8_lossy(&out.stdout);
+        return branch.trim() == "main";
+    }
+    true
+}
+
+fn git_merge_base(repo: &str, left: &str, right: &str) -> String {
+    let out = Command::new("git")
+        .args(["-C", repo, "merge-base", left, right])
+        .output()
+        .unwrap_or_else(|err| panic!("git merge-base failed to start: {err}"));
+    assert!(
+        out.status.success(),
+        "git merge-base {left} {right} failed in {repo}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("merge-base utf-8").trim().to_string()
+}
+
+fn committed_baseline_git(
+    root: &Path,
+    rev_override: Option<&str>,
+    github_ref: Option<&str>,
+    rel_path: &str,
+) -> Option<String> {
     let repo = root.to_str().expect("repo path");
+    let on_main = is_on_main_git(repo, github_ref);
     if let Some(rev) = rev_override {
+        if !on_main {
+            let is_pr = github_ref.is_some_and(|gref| gref.starts_with("refs/pull/"));
+            if is_pr
+                && !is_all_zero_sha(rev)
+                && let Some(found) = read_git_file_at(repo, rev, rel_path)
+            {
+                return found;
+            }
+            let mb = git_merge_base(repo, "HEAD", "origin/main");
+            return read_git_file_at(repo, &mb, rel_path).unwrap_or_else(|| {
+                panic!(
+                    "merge-base `{mb}` with origin/main did not resolve in git repository {}",
+                    root.display()
+                )
+            });
+        }
         if is_all_zero_sha(rev) {
-            let exists_in_parent = read_git_manifest_at(repo, "HEAD~1").flatten().is_some();
+            let exists_in_parent = read_git_file_at(repo, "HEAD~1", rel_path).flatten().is_some();
             assert!(
                 !exists_in_parent,
-                "PERF_BASELINE_REV is all-zero ({rev}) but tests/perf.toml already exists in HEAD~1 of {}",
+                "PERF_BASELINE_REV is all-zero ({rev}) but {rel_path} already exists in HEAD~1 of {}",
                 root.display()
             );
             return None;
         }
-        return read_git_manifest_at(repo, rev).unwrap_or_else(|| {
+        return read_git_file_at(repo, rev, rel_path).unwrap_or_else(|| {
             panic!("PERF_BASELINE_REV `{rev}` did not resolve in git repository {}", root.display())
         });
     }
+    if !on_main
+        && Command::new("git")
+            .args(["-C", repo, "rev-parse", "--verify", "--quiet", "origin/main^{commit}"])
+            .status()
+            .is_ok_and(|s| s.success())
+    {
+        let mb = git_merge_base(repo, "HEAD", "origin/main");
+        if let Some(found) = read_git_file_at(repo, &mb, rel_path) {
+            return found;
+        }
+    }
     for rev in ["origin/main", "main"] {
-        if let Some(found) = read_git_manifest_at(repo, rev) {
+        if let Some(found) = read_git_file_at(repo, rev, rel_path) {
             return found;
         }
     }
     panic!("neither origin/main nor main resolved in git repository {}", root.display());
 }
 
-fn read_git_manifest_at(repo: &str, rev: &str) -> Option<Option<String>> {
+fn read_git_file_at(repo: &str, rev: &str, rel_path: &str) -> Option<Option<String>> {
     let verify_arg = format!("{rev}^{{commit}}");
     let resolved = Command::new("git")
         .args(["-C", repo, "rev-parse", "--verify", "--quiet", &verify_arg])
@@ -178,18 +269,18 @@ fn read_git_manifest_at(repo: &str, rev: &str) -> Option<Option<String>> {
         return None;
     }
     let listed = Command::new("git")
-        .args(["-C", repo, "ls-tree", "--name-only", rev, "--", "tests/perf.toml"])
+        .args(["-C", repo, "ls-tree", "--name-only", rev, "--", rel_path])
         .output()
         .unwrap_or_else(|err| panic!("git ls-tree failed to start: {err}"));
     assert!(
         listed.status.success(),
-        "git ls-tree {rev} tests/perf.toml failed: {}",
+        "git ls-tree {rev} {rel_path} failed: {}",
         String::from_utf8_lossy(&listed.stderr)
     );
     if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
         return Some(None);
     }
-    let spec = format!("{rev}:tests/perf.toml");
+    let spec = format!("{rev}:{rel_path}");
     let shown = Command::new("git")
         .args(["-C", repo, "show", &spec])
         .output()
@@ -201,6 +292,37 @@ fn read_git_manifest_at(repo: &str, rev: &str) -> Option<Option<String>> {
     );
     Some(Some(String::from_utf8(shown.stdout).expect("baseline is utf-8")))
 }
+
+const ALL_APP_ACTIONS: &[AppAction] = &[
+    AppAction::Quit,
+    AppAction::ScrollUp(1),
+    AppAction::ScrollDown(1),
+    AppAction::PageUp,
+    AppAction::PageDown,
+    AppAction::GoToTop,
+    AppAction::GoToBottom,
+    AppAction::NextFile,
+    AppAction::PrevFile,
+    AppAction::ToggleHelp,
+    AppAction::CycleViewMode,
+    AppAction::StartSelection(0, 0),
+    AppAction::UpdateSelection(0, 0),
+    AppAction::EndSelection,
+    AppAction::CopyPath,
+    AppAction::CopyDiff,
+    AppAction::CopyPatch,
+    AppAction::CopyOrQuit,
+    AppAction::OpenSearch,
+    AppAction::ToggleDiffBase,
+    AppAction::ToggleReviewed,
+    AppAction::ToggleAllReviewed,
+    AppAction::OpenEditor,
+    AppAction::OpenRepo,
+    AppAction::RunRecovery,
+    AppAction::Resize,
+    AppAction::ForceRepaint,
+    AppAction::None,
+];
 
 pub(super) fn action_name(action: AppAction) -> Option<&'static str> {
     Some(match action {
@@ -298,16 +420,12 @@ fn normalize(name: &str) -> String {
 }
 
 fn key_operations() -> BTreeSet<String> {
+    let mut ops: BTreeSet<String> =
+        ALL_APP_ACTIONS.iter().copied().filter_map(action_name).map(str::to_string).collect();
     let lines = probe_lines();
-    let mut ops = BTreeSet::new();
     for event in probe_events() {
-        let action = if matches!(event, Event::Resize(_, _)) {
-            AppAction::Resize
-        } else {
-            handle_event(event.clone())
-        };
-        if let Some(id) = action_name(action) {
-            ops.insert(id.to_string());
+        if let Some(id) = action_name(handle_event(event.clone())) {
+            assert!(ops.contains(id), "ALL_APP_ACTIONS is missing variant for {id}");
         }
         let mut app = probe_app(&lines);
         if let Some(id) = search_effect(&mut app, event) {
@@ -675,7 +793,11 @@ mod tests {
                         baseline: baseline.as_deref(),
                         benches: &benches,
                     });
-                    assert!(errors.is_empty(), "tighter baseline must fail: {}", errors.join("\n"));
+                    assert!(
+                        errors.is_empty(),
+                        "manifest looser than baseline:\n{}",
+                        errors.join("\n")
+                    );
                 }
                 "new_zero" => {
                     assert_eq!(baseline, None, "all-zero SHA on a new manifest must return None");
@@ -804,6 +926,90 @@ mod tests {
         run_cmd(tmp.path(), "git", &["add", "."]);
         run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "add perf"]);
         assert_eq!(committed_baseline_in(tmp.path(), None).as_deref(), Some("# baseline\n"));
+    }
+
+    #[test]
+    fn non_main_branch_push_and_force_push_resolve_baseline_via_origin_main_merge_base() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_cmd(tmp.path(), "git", &["init", "-q", "-b", "main"]);
+        fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
+        fs::write(tmp.path().join("tests/perf.toml"), "# origin-main-baseline\n")
+            .expect("write main perf.toml");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "main baseline"]);
+        let main_sha = git_head(tmp.path());
+        run_cmd(tmp.path(), "git", &["update-ref", "refs/remotes/origin/main", &main_sha]);
+
+        run_cmd(tmp.path(), "git", &["checkout", "-q", "-b", "feature"]);
+        fs::write(tmp.path().join("tests/perf.toml"), "# feature-commit-1\n")
+            .expect("write feature 1");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "feature commit 1"]);
+        let feature_1_sha = git_head(tmp.path());
+
+        fs::write(tmp.path().join("tests/perf.toml"), "# feature-commit-2\n")
+            .expect("write feature 2");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "feature commit 2"]);
+
+        let zero = "0000000000000000000000000000000000000000";
+        let unreachable_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+        // New-branch push: before is all-zeros while HEAD~1 already has tests/perf.toml.
+        assert_eq!(
+            committed_baseline_file_in(
+                tmp.path(),
+                Some(zero),
+                Some("refs/heads/feature"),
+                "tests/perf.toml"
+            )
+            .as_deref(),
+            Some("# origin-main-baseline\n"),
+            "new-branch push must resolve baseline via merge-base with origin/main"
+        );
+
+        // Force-push: old before SHA is unreachable.
+        assert_eq!(
+            committed_baseline_file_in(
+                tmp.path(),
+                Some(unreachable_sha),
+                Some("refs/heads/feature"),
+                "tests/perf.toml"
+            )
+            .as_deref(),
+            Some("# origin-main-baseline\n"),
+            "force-push with unreachable before SHA must resolve baseline via merge-base with origin/main"
+        );
+
+        // Incremental push to feature branch: still baselines against merge-base with origin/main.
+        assert_eq!(
+            committed_baseline_file_in(
+                tmp.path(),
+                Some(&feature_1_sha),
+                Some("refs/heads/feature"),
+                "tests/perf.toml"
+            )
+            .as_deref(),
+            Some("# origin-main-baseline\n"),
+            "feature branch push must baseline against merge-base with origin/main"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "did not resolve")]
+    fn main_branch_push_with_unreachable_before_sha_panics_loudly() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_cmd(tmp.path(), "git", &["init", "-q", "-b", "main"]);
+        fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
+        fs::write(tmp.path().join("tests/perf.toml"), "# main\n").expect("write perf.toml");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "main"]);
+        let _ = committed_baseline_file_in(
+            tmp.path(),
+            Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            Some("refs/heads/main"),
+            "tests/perf.toml",
+        );
     }
 
     #[test]

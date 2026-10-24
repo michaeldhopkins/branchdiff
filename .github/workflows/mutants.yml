@@ -24,6 +24,12 @@ on:
 permissions:
   contents: read
 
+# Branch and PR pushes replace a run that has not finished; main runs to
+# completion so rotating slices never drop mid-flight.
+concurrency:
+  group: mutants-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
   # 73 unit tests in src/vcs/jj.rs return early when `jj` is not on PATH, and a
