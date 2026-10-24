@@ -8,12 +8,11 @@ on:
 permissions:
   contents: read
 
-# A new push replaces a run that has not finished. The allocation bench is
-# required, and a superseded commit should not hold a runner until the
-# six-hour default.
+# Branch and PR pushes replace a run that has not finished; main runs to
+# completion so release-branch checks never drop mid-flight.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -67,7 +66,9 @@ jobs:
         run: cargo test --locked --lib --bins
 
       - name: cargo test (performance budgets)
-        run: cargo test --locked --test perf_rules
+        env:
+          PERF_BASELINE_REV: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: cargo test --locked --test perf_rules --test ci_alloc_job
 
       # The runner image ships Chrome; a missing browser fails this step.
       - name: cargo test (live page in headless Chrome)

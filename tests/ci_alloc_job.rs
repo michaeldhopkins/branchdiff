@@ -34,6 +34,10 @@ fn alloc_ci_job_is_bounded_and_pins_the_toolchain() {
         "ci.yml must set permissions contents: read"
     );
     assert!(ci.lines().any(|line| line.trim() == "concurrency:"), "ci.yml must set concurrency");
+    assert!(
+        ci.contains("cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}"),
+        "ci.yml must cancel in-progress runs only off main"
+    );
     assert!(ci.contains("cargo bench --locked --bench alloc"), "ci.yml has no alloc bench step");
     assert!(
         ci.lines().any(|line| line.trim_start().starts_with("timeout-minutes:")),
@@ -70,5 +74,17 @@ fn ci_installs_pinned_jj_and_runs_perf_rules() {
     assert!(
         ci.contains("cargo test --locked --test perf_rules"),
         "ci.yml must run cargo test --locked --test perf_rules"
+    );
+    assert!(ci.contains("--test ci_alloc_job"), "ci.yml must run --test ci_alloc_job");
+    assert!(
+        ci.contains("PERF_BASELINE_REV:")
+            && ci.contains("github.event.pull_request.base.sha")
+            && ci.contains("github.event.before"),
+        "ci.yml must pass PERF_BASELINE_REV from PR base sha or push before sha"
+    );
+    assert!(
+        !mutants.contains("ci.yml does not install jj")
+            && !mutants.contains("it never installs jj"),
+        "mutants.yml must not claim ci.yml never installs jj"
     );
 }

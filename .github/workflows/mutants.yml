@@ -28,14 +28,13 @@ env:
   CARGO_TERM_COLOR: always
   # 73 unit tests in src/vcs/jj.rs return early when `jj` is not on PATH, and a
   # skipped test reports as passed, so without jj every mutant only those tests
-  # cover would come back MISSED. ci.yml does not install jj; this workflow must.
+  # cover would come back MISSED. Keep this pin and identity in sync with ci.yml.
   # Pinned so a jj release cannot change what this job reports overnight; this is
   # the version the suite was verified against locally. Bump deliberately.
   JJ_VERSION: v0.45.1
   # A runner has no jj identity, and with none, 10+ stack tests in jj.rs fail
   # (measured with an empty JJ_CONFIG and HOME) — which fails the baseline, so
-  # cargo-mutants exits 4 having tested nothing. ci.yml never sees this because
-  # it never installs jj.
+  # cargo-mutants exits 4 having tested nothing.
   JJ_USER: branchdiff-ci
   JJ_EMAIL: ci@example.invalid
 
