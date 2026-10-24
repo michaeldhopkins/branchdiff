@@ -19,6 +19,7 @@ Terminal UI showing unified diff of current branch vs its base.
 - Live file watching with auto-refresh on changes
 - Mouse support: scrolling, click-to-collapse file sections, text selection with auto-copy (double-click word, triple-click line)
 - Copy to clipboard: auto-copy on selection, file path, entire diff, or git patch format
+- Inline review comments in the TUI, `--print`, `--diff`, and `--html` from `--comments PATH` or `.jj/comments*` / `.git/comments*`
 - Non-interactive output modes for scripting (`--print`, `--diff`, `--html`)
 
 ## Requirements
@@ -68,6 +69,7 @@ If no repository is found, branchdiff waits and automatically starts when `git i
 | `--files` | List the files in the diff with status and line counts, and the base and head ids; add `--json` for JSON |
 | `--fingerprint` | Print a hash that changes when the diff does; never writes to jj's operation log, so it is safe to poll |
 | `--base REV` | Compare against `REV` instead of the detected base (jj: any revset, e.g. `main@origin`; git: a branch, `origin/`-qualified name, or commit) |
+| `--comments PATH` | Read review comments from `PATH` (`-` for stdin); overrides the autodetected file (see [Review comments](#review-comments)) |
 | `--no-auto-fetch` | Disable automatic fetching of base branch |
 | `--benchmark N` | Run stress test rendering N frames (for profiling) |
 | `-h`, `--help` | Print help |
@@ -107,6 +109,23 @@ never a silent choice.
 
 A base that doesn't resolve — or that resolves to more than one commit — is an
 error, not an empty diff.
+
+### Review comments
+
+branchdiff renders review comments below their anchored diff lines in the TUI, `--print`, and `--html`, and before each file's patch in `--diff`. Without `--comments`, it checks `.jj/comments.{jsonl,json,txt}`, `.jj/comments`, `.git/comments.{jsonl,json,txt}`, and `.git/comments` in that order. Pass `--comments PATH` (or `--comments -` for stdin) to read from a specific source.
+
+Four formats are detected from file content:
+
+1. **branchdiff JSON Lines**: one JSON object per line with `path`, `line` (or `start_line`/`end_line`), optional `side` (`"new"` default, `"old"`), `body`, and optional `author`.
+2. **revdiff text**: sections headed `## path:LINE (+)`, `## path:A-B (-)`, or `## path (file-level)` followed by body lines (lines starting with `##` are prefixed with a leading space).
+3. **reviewdog** `rdjson` / `rdjsonl`: `diagnostics[].location.path` and `range.start.line`.
+4. **GitHub PR review comments JSON**: the array returned by `gh api repos/OWNER/REPO/pulls/N/comments`.
+
+Comments whose target line is outside the current diff are shown under the file header with their original line number and `outside diff`.
+
+In `--diff` output, each file's comments are written as `#` lines just before that file's patch. `git apply` and `patch` skip those lines, so the patch still applies.
+
+Control characters in comments are shown as spaces, so a comment cannot send escape sequences to your terminal. A comments source over 16 MiB is an error.
 
 ### Profiling
 

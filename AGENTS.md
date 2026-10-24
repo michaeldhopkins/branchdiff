@@ -264,6 +264,7 @@ not grow. A new target that needs a private function gets a wrapper there.
 | `vcs_output` | never-panics | Every parser over git/jj stdout: `git status --porcelain`, `diff --name-status`, `--numstat`, `git --version`, jj `diff --summary`/`--stat`, the rev-metadata template. |
 | `cat_file_batch` | roundtrip + never-panics | A `git cat-file --batch` stream built from fuzzed responses (blob, tree, `missing`, `ambiguous`, with fuzzed paths) reads back as exactly its blobs; a raw stream never panics or allocates what a header claims. |
 | `diff_patch` | structural invariant | `compute_four_way_diff` over four fuzzed file versions, turned into the `--diff` patch and applied to the base, gives the working tree; hunk headers match their bodies. |
+| `comments` | roundtrip + structural invariant + never-panics | Every review-comment format (`src/comments/`): what parses re-encodes to JSONL and parses back equal; every comment anchors to a line or header, never dropped; HTML output escapes it; `--print` and `--diff` output carries no control character from it; `--diff` minus its `#` comment lines is the plain patch. |
 
 **Input vocabulary.** `fuzz/dict/vcs_output.dict` and `cat_file_batch.dict` are
 the literals the parsers branch on (`src/vcs/git/parse.rs`,
@@ -300,10 +301,8 @@ this target checks.
   third-party parsers that branchdiff only calls.
 - HTML output (`src/html.rs`) parses nothing: every text it writes goes
   through `html_escape`, which is unit-tested.
-- Terminal control sequences: branchdiff does not promise to strip them. `-p`
-  writes file content through verbatim, so an escape sequence in a changed file
-  reaches the terminal. There is no sanitising code to fuzz; adding it is a
-  product decision.
+- Control sequences in file content: `-p` writes it verbatim (a product
+  decision). Comment text is sanitised (`comments::sanitize`); `comments` checks it.
 - jj's change-id and stack-position output is split by line and compared, with
   no indexing that could panic.
 

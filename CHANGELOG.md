@@ -1,5 +1,11 @@
 ## [unreleased]
 
+### Features
+
+- *(diff)* Retain old line numbers on deleted and base-derived lines
+- *(comments)* Add multi-format review comment parser, loader, and anchoring
+- *(comments)* Render inline review comments in TUI, --print, --diff, and --html
+
 ### Bug Fixes
 
 - *(tests)* Keep canonical ratchet templates invariant across rustfmt configs
@@ -27,6 +33,10 @@
 - *(tests)* Adopt canonical quality-ratchet templates and ratchets.toml
 - *(app)* Split modules back under the file-length pins
 - *(html)* Move the HTML renderer into the library
+
+### Documentation
+
+- Document review comments and bump version to 0.78.0
 
 ### Performance
 
@@ -69,6 +79,7 @@
 - *(browser)* Fail clearly when the Chrome override names no file
 - *(html)* Scan the whole file and parse timer calls in the per-frame guard
 - *(html)* Join Rust line continuations before reading a timer call and its delay
+- *(fuzz)* Add comments fuzz target and corpus seeds
 
 ### Miscellaneous
 
