@@ -46,7 +46,6 @@ pub(super) fn committed_baseline() -> Option<String> {
     committed_baseline_file("tests/perf.toml")
 }
 
-#[allow(dead_code)]
 pub(super) fn committed_baseline_benches() -> Option<String> {
     committed_baseline_file("benches/baselines.toml")
 }
@@ -792,6 +791,7 @@ mod tests {
                         tests: &tests,
                         baseline: baseline.as_deref(),
                         benches: &benches,
+                        baseline_benches: None,
                     });
                     assert!(
                         errors.is_empty(),
@@ -1047,6 +1047,7 @@ mod tests {
                 tests: &tests,
                 baseline: None,
                 benches: &benches,
+                baseline_benches: None,
             });
             assert!(
                 errors.iter().any(|err| err.contains("frame:html") && err.contains("no budget")),

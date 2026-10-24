@@ -35,13 +35,17 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
         fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
     let benches = guard::recorded_benches(&bench_text);
     let baseline = surface::committed_baseline();
-    let errors = guard::check(&guard::Input {
+    let baseline_bench_text = surface::committed_baseline_benches();
+    let baseline_benches = baseline_bench_text.as_deref().map(guard::recorded_benches);
+    let mut errors = guard::check(&guard::Input {
         manifest: &manifest,
         surface: &surface,
         tests: &tests,
         baseline: baseline.as_deref(),
         benches: &benches,
+        baseline_benches: baseline_benches.as_ref(),
     });
+    guard::check_baseline_medians(&bench_text, baseline_bench_text.as_deref(), &mut errors);
     assert!(
         errors.is_empty(),
         "{}\n\nsurface:\n{}",
@@ -94,7 +98,8 @@ fn fingerprint_speedup_to_40ms_without_proposal_passes_and_10_percent_above_benc
     guard::collect_test_names(&root.join("src"), &mut tests);
     let bench_text =
         fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
-    let mut benches = guard::recorded_benches(&bench_text);
+    let baseline_benches = guard::recorded_benches(&bench_text);
+    let mut benches = baseline_benches.clone();
     benches.insert("refresh/fingerprint/500f_25c".to_string(), 40_000);
 
     let sped_up: String = manifest
@@ -113,6 +118,7 @@ fn fingerprint_speedup_to_40ms_without_proposal_passes_and_10_percent_above_benc
         tests: &tests,
         baseline: Some(&manifest),
         benches: &benches,
+        baseline_benches: Some(&baseline_benches),
     });
     assert!(errors.is_empty(), "40 ms fingerprint with no proposal must pass: {errors:?}");
 
@@ -126,9 +132,67 @@ fn fingerprint_speedup_to_40ms_without_proposal_passes_and_10_percent_above_benc
         tests: &tests,
         baseline: Some(&manifest),
         benches: &benches,
+        baseline_benches: Some(&baseline_benches),
     });
     assert!(
         errors.iter().any(|err| err.contains("command:fingerprint") && err.contains("44000")),
         "floor 10% above bench must fail: {errors:?}"
+    );
+}
+
+#[test]
+fn raising_non_colocated_bench_median_or_deleting_files_bench_from_derivation_fails() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = fs::read_to_string(root.join("tests/perf.toml")).expect("read tests/perf.toml");
+    let surface = surface::operations();
+    let mut tests = BTreeSet::new();
+    guard::collect_test_names(&root.join("tests"), &mut tests);
+    guard::collect_test_names(&root.join("src"), &mut tests);
+    let bench_text =
+        fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
+    let benches = guard::recorded_benches(&bench_text);
+
+    // 1. Raising refresh/non_colocated/50f_10c ref_median_ns 73175330 -> 130000000 must fail.
+    let raised_bench_text =
+        bench_text.replace("ref_median_ns = 73175330", "ref_median_ns = 130000000");
+    assert_ne!(raised_bench_text, bench_text, "refresh/non_colocated/50f_10c median must exist");
+    let raised_benches = guard::recorded_benches(&raised_bench_text);
+    let mut raised_errors = guard::check(&guard::Input {
+        manifest: &manifest,
+        surface: &surface,
+        tests: &tests,
+        baseline: Some(&manifest),
+        benches: &raised_benches,
+        baseline_benches: Some(&benches),
+    });
+    guard::check_baseline_medians(&raised_bench_text, Some(&bench_text), &mut raised_errors);
+    assert!(
+        raised_errors
+            .iter()
+            .any(|err| err.contains("refresh/non_colocated/50f_10c") && err.contains("looser")),
+        "raising refresh/non_colocated/50f_10c ref_median_ns 73175330 -> 130000000 must fail: {raised_errors:?}"
+    );
+
+    // 2. Deleting a bench from command:files' derivation while lowering its floor must fail.
+    let stripped_derivation = manifest
+        .replace(
+            "Floor is refresh/colocated/500f_25c (131542 us) plus refresh/files_head/500f_25c (10499 us).",
+            "Floor is refresh/colocated/500f_25c (131542 us).",
+        )
+        .replace("wall_floor_us = 142041", "wall_floor_us = 131542");
+    assert_ne!(stripped_derivation, manifest);
+    let files_errors = guard::check(&guard::Input {
+        manifest: &stripped_derivation,
+        surface: &surface,
+        tests: &tests,
+        baseline: Some(&manifest),
+        benches: &benches,
+        baseline_benches: Some(&benches),
+    });
+    assert!(
+        files_errors.iter().any(|err| err.contains("command:files")
+            && err.contains("131542")
+            && err.contains("142041")),
+        "deleting a bench from command:files' derivation while lowering its floor must fail: {files_errors:?}"
     );
 }

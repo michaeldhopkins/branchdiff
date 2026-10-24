@@ -29,6 +29,7 @@ pub struct Input<'a> {
     pub tests: &'a BTreeSet<String>,
     pub baseline: Option<&'a str>,
     pub benches: &'a BTreeMap<String, u64>,
+    pub baseline_benches: Option<&'a BTreeMap<String, u64>>,
 }
 
 /// One budgeted operation.
@@ -40,6 +41,7 @@ pub struct Op {
     pub test: String,
     pub processes: u64,
     pub owed: bool,
+    pub floor: String,
     pub wall_floor_us: u64,
     pub target_us: u64,
     pub derivation: String,
@@ -78,7 +80,7 @@ pub fn check(input: &Input<'_>) -> Vec<String> {
     for op in &ops {
         check_entry(op, input.tests, &mut errors);
     }
-    check_benches(&ops, input.benches, &mut errors);
+    check_benches(&ops, input.benches, input.baseline_benches, &mut errors);
     if let Some(baseline) = input.baseline {
         match parse_operations(baseline) {
             Ok(previous) => looseness(&ops, &previous, &mut errors),
@@ -92,8 +94,8 @@ pub fn check(input: &Input<'_>) -> Vec<String> {
     errors
 }
 
-/// `[[bench]]` records mapped to `ref_median_ns.div_ceil(1_000)` in microseconds.
-pub fn recorded_benches(text: &str) -> BTreeMap<String, u64> {
+/// `[[bench]]` records mapped to `ref_median_ns` in nanoseconds.
+pub fn recorded_medians_ns(text: &str) -> BTreeMap<String, u64> {
     let mut benches = BTreeMap::new();
     let mut current_id: Option<String> = None;
     for raw in text.lines() {
@@ -110,10 +112,44 @@ pub fn recorded_benches(text: &str) -> BTreeMap<String, u64> {
         if let Some(ns) = number_assignment(line, "ref_median_ns")
             && let Some(id) = current_id.as_ref()
         {
-            benches.insert(id.clone(), ns.div_ceil(1_000));
+            benches.insert(id.clone(), ns);
         }
     }
     benches
+}
+
+/// `[[bench]]` records mapped to `ref_median_ns.div_ceil(1_000)` in microseconds.
+pub fn recorded_benches(text: &str) -> BTreeMap<String, u64> {
+    recorded_medians_ns(text).into_iter().map(|(id, ns)| (id, ns.div_ceil(1_000))).collect()
+}
+
+/// Fail when any `ref_median_ns` in `benches/baselines.toml` rises above or
+/// disappears from the baseline revision's copy.
+pub fn check_baseline_medians(
+    live_text: &str,
+    baseline_text: Option<&str>,
+    errors: &mut Vec<String>,
+) {
+    let Some(baseline_text) = baseline_text else {
+        return;
+    };
+    let live = recorded_medians_ns(live_text);
+    let prior = recorded_medians_ns(baseline_text);
+    for (bench, before_ns) in prior {
+        match live.get(&bench) {
+            Some(&live_ns) if live_ns > before_ns => {
+                errors.push(format!(
+                    "bench `{bench}` ref_median_ns {live_ns} is looser than the baseline {before_ns}"
+                ));
+            }
+            None => {
+                errors.push(format!("bench `{bench}` was in the baseline but is missing"));
+            }
+            _ => {}
+        }
+    }
+    errors.sort();
+    errors.dedup();
 }
 
 /// Record every `#[test]` function under `dir` as `<file.rs>::<name>`.
@@ -320,6 +356,7 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
     let test = require_one_line(&mut fields, "test", &mut local);
     let processes = require_number(&mut fields, "processes", &mut local);
     let owed = optional_bool(&mut fields, "owed", &mut local);
+    let floor = optional_one_line(&mut fields, "floor", &mut local);
     let wall_floor_us = require_number(&mut fields, "wall_floor_us", &mut local);
     let target_us = require_number(&mut fields, "target_us", &mut local);
     let derivation = require_one_line(&mut fields, "derivation", &mut local);
@@ -342,6 +379,7 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
         test: test.unwrap_or_default(),
         processes: processes.unwrap_or_default(),
         owed: owed.unwrap_or_default(),
+        floor: floor.unwrap_or_default(),
         wall_floor_us: wall_floor_us.unwrap_or_default(),
         target_us: target_us.unwrap_or_default(),
         derivation: derivation.unwrap_or_default(),
@@ -494,8 +532,17 @@ fn check_entry(op: &Op, tests: &BTreeSet<String>, errors: &mut Vec<String>) {
     if op.owed && !op.benches.is_empty() {
         errors.push(format!("operation `{}` is owed but names benches", op.id));
     }
+    if op.owed && !op.floor.is_empty() {
+        errors.push(format!("operation `{}` is owed but sets floor `{}`", op.id, op.floor));
+    }
     if !op.owed && op.benches.is_empty() {
         errors.push(format!("operation `{}` is not owed and names no benches", op.id));
+    }
+    if !op.owed && !matches!(op.floor.as_str(), "sum" | "max") {
+        errors.push(format!(
+            "operation `{}` must set floor = \"sum\" or \"max\" (got `{}`)",
+            op.id, op.floor
+        ));
     }
     match allowed_target_us(&op.class) {
         Ok(cap) => {
@@ -522,13 +569,28 @@ fn check_entry(op: &Op, tests: &BTreeSet<String>, errors: &mut Vec<String>) {
     }
 }
 
-fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<String>) {
+fn check_benches(
+    ops: &[Op],
+    benches: &BTreeMap<String, u64>,
+    baseline_benches: Option<&BTreeMap<String, u64>>,
+    errors: &mut Vec<String>,
+) {
     let mut named = BTreeSet::new();
     for op in ops {
         let mut all_known = !op.benches.is_empty();
+        let mut seen_in_op = BTreeSet::new();
         for bench in &op.benches {
+            if !seen_in_op.insert(bench.as_str()) {
+                errors.push(format!("operation `{}` lists bench `{bench}` more than once", op.id));
+            }
             match benches.get(bench) {
                 Some(&floor_us) => {
+                    if floor_us == 0 {
+                        errors.push(format!(
+                            "operation `{}` bench `{bench}` ceiling must be > 0",
+                            op.id
+                        ));
+                    }
                     if op.wall_floor_us < floor_us {
                         errors.push(format!(
                             "operation `{}` wall_floor_us {} is below bench `{bench}` ceiling {floor_us}",
@@ -543,21 +605,18 @@ fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<S
             }
             named.insert(bench.as_str());
         }
-        if all_known {
-            let max_ceiling =
-                op.benches.iter().filter_map(|b| benches.get(b).copied()).max().unwrap_or(0);
-            let derived: Vec<u64> = op
-                .benches
-                .iter()
-                .filter(|b| op.derivation.contains(b.as_str()))
-                .filter_map(|b| benches.get(b).copied())
-                .collect();
-            let expected_floor =
-                if derived.len() >= 2 { derived.into_iter().sum() } else { max_ceiling };
+        if all_known && matches!(op.floor.as_str(), "sum" | "max") {
+            let expected_floor: u64 = match op.floor.as_str() {
+                "sum" => op.benches.iter().filter_map(|b| benches.get(b).copied()).sum(),
+                "max" => {
+                    op.benches.iter().filter_map(|b| benches.get(b).copied()).max().unwrap_or(0)
+                }
+                _ => 0,
+            };
             if op.wall_floor_us != expected_floor {
                 errors.push(format!(
-                    "operation `{}` wall_floor_us {} does not match bench floor {expected_floor}",
-                    op.id, op.wall_floor_us
+                    "operation `{}` wall_floor_us {} does not match {} bench floor {expected_floor}",
+                    op.id, op.wall_floor_us, op.floor
                 ));
             }
         }
@@ -567,12 +626,30 @@ fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<S
             errors.push(format!("bench `{bench}` is not named by any operation"));
         }
     }
+    if let Some(prior_benches) = baseline_benches {
+        for (bench, &before) in prior_benches {
+            match benches.get(bench) {
+                Some(&live) if live > before => {
+                    errors.push(format!(
+                        "bench `{bench}` ref_median_ns {live} is looser than the baseline {before}"
+                    ));
+                }
+                None => {
+                    errors.push(format!("bench `{bench}` was in the baseline but is missing"));
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
     let prior: BTreeMap<&str, &Op> = previous.iter().map(|op| (op.id.as_str(), op)).collect();
     for op in ops {
         let Some(before) = prior.get(op.id.as_str()) else {
+            if op.owed {
+                errors.push(format!("operation `{}` is owed and absent from the baseline", op.id));
+            }
             continue;
         };
         looser(&op.id, "processes", op.processes, before.processes, errors);
@@ -580,6 +657,20 @@ fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
         looser(&op.id, "target_us", op.target_us, before.target_us, errors);
         if !before.owed && op.owed {
             errors.push(format!("operation `{}` is owed but was measured in the baseline", op.id));
+        }
+        if before.floor == "sum" && op.floor == "max" {
+            errors.push(format!(
+                "operation `{}` floor changed from `sum` to `max` against the baseline",
+                op.id
+            ));
+        }
+        for bench in &before.benches {
+            if !op.benches.contains(bench) {
+                errors.push(format!(
+                    "operation `{}` dropped bench `{bench}` from the baseline",
+                    op.id
+                ));
+            }
         }
     }
 }

@@ -26,6 +26,7 @@ fn run(case: Case<'_>) -> Vec<String> {
         tests: &tests,
         baseline: case.baseline,
         benches: &benches,
+        baseline_benches: None,
     })
 }
 
@@ -37,6 +38,7 @@ class = "command"
 fixture = "one file"
 test = "tests/counts.rs::counts"
 processes = 2
+floor = "max"
 wall_floor_us = 40000
 target_us = 40000
 derivation = "One external call plus the class margin."
@@ -311,18 +313,35 @@ fn a_derivation_must_be_one_non_empty_line() {
 }
 
 #[test]
-fn a_new_operation_absent_from_the_baseline_is_allowed() {
-    let live = format!(
-        "{HAPPY}\n[[op]]\nid = \"command:help\"\nclass = \"command\"\nfixture = \"none\"\ntest = \"tests/counts.rs::counts\"\nprocesses = 0\nowed = true\nwall_floor_us = 1\ntarget_us = 1\nderivation = \"No external call.\"\n"
+fn a_new_operation_absent_from_the_baseline_is_allowed_when_measured_and_refused_when_owed() {
+    let live_measured = format!(
+        "{HAPPY}\n[[op]]\nid = \"command:help\"\nclass = \"command\"\nfixture = \"none\"\ntest = \"tests/counts.rs::counts\"\nprocesses = 0\nfloor = \"max\"\nwall_floor_us = 40000\ntarget_us = 40000\nderivation = \"Measured against bench-a.\"\nbenches = [\"bench-a\"]\n"
     );
     let errors = run(Case {
-        manifest: &live,
+        manifest: &live_measured,
         surface: &["command:print", "command:help"],
         tests: &["tests/counts.rs::counts"],
         baseline: Some(HAPPY),
         benches: &[("bench-a", 40_000)],
     });
     assert!(errors.is_empty(), "{errors:?}");
+
+    let live_owed = format!(
+        "{HAPPY}\n[[op]]\nid = \"command:help\"\nclass = \"command\"\nfixture = \"none\"\ntest = \"tests/counts.rs::counts\"\nprocesses = 0\nowed = true\nwall_floor_us = 1\ntarget_us = 1\nderivation = \"No external call.\"\n"
+    );
+    let owed_errors = run(Case {
+        manifest: &live_owed,
+        surface: &["command:print", "command:help"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(HAPPY),
+        benches: &[("bench-a", 40_000)],
+    });
+    assert!(
+        owed_errors.iter().any(|error| error.contains("command:help")
+            && error.contains("owed")
+            && error.contains("baseline")),
+        "growing the owed set against the baseline must fail: {owed_errors:?}"
+    );
 }
 
 #[test]
@@ -365,6 +384,7 @@ fixture = "500 files, 25 changed"
 test = "tests/counts.rs::counts"
 processes = 11
 benches = ["refresh/fingerprint/500f_25c"]
+floor = "max"
 wall_floor_us = 40000
 target_us = 40000
 derivation = "Floor is refresh/fingerprint/500f_25c (40000 us)."
@@ -394,7 +414,8 @@ derivation = "Floor is refresh/fingerprint/500f_25c (40000 us)."
         "floor 10% above bench must fail: {floated:?}"
     );
 
-    // When the derivation names multiple benches, wall_floor_us must equal their sum.
+    // When floor = "sum", wall_floor_us must equal the sum of all named benches,
+    // regardless of what the derivation prose says.
     let summed = r#"
 [[op]]
 id = "command:files"
@@ -403,6 +424,7 @@ fixture = "500 files"
 test = "tests/counts.rs::counts"
 processes = 5
 benches = ["bench-a", "bench-b"]
+floor = "sum"
 wall_floor_us = 40000
 target_us = 40000
 derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
@@ -415,6 +437,27 @@ derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
         benches: &[("bench-a", 30_000), ("bench-b", 10_000)],
     });
     assert!(sum_ok.is_empty(), "derived sum must pass: {sum_ok:?}");
+
+    // Deleting a bench from derivation while lowering wall_floor_us must fail.
+    let stripped_derivation = summed
+        .replace(
+            "Floor is bench-a (30000 us) plus bench-b (10000 us).",
+            "Floor is bench-a (30000 us).",
+        )
+        .replace("wall_floor_us = 40000", "wall_floor_us = 30000");
+    let stripped_err = run(Case {
+        manifest: &stripped_derivation,
+        surface: &["command:files"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(summed),
+        benches: &[("bench-a", 30_000), ("bench-b", 10_000)],
+    });
+    assert!(
+        stripped_err
+            .iter()
+            .any(|error| error.contains("wall_floor_us 30000") && error.contains("40000")),
+        "deleting a bench from derivation while lowering floor must fail: {stripped_err:?}"
+    );
 
     let sum_floated = summed.replace("wall_floor_us = 40000", "wall_floor_us = 44000");
     let sum_err = run(Case {
@@ -429,6 +472,39 @@ derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
             .iter()
             .any(|error| error.contains("wall_floor_us 44000") && error.contains("40000")),
         "floor 10% above derived sum must fail: {sum_err:?}"
+    );
+}
+
+#[test]
+fn baseline_benches_ratchet_rejects_raised_or_deleted_medians() {
+    let surface = names(&["command:print"]);
+    let tests = names(&["tests/counts.rs::counts"]);
+    let baseline_benches = bench_map(&[("bench-a", 40_000)]);
+    let raised_benches = bench_map(&[("bench-a", 45_000)]);
+    let raised_manifest = HAPPY.replace("wall_floor_us = 40000", "wall_floor_us = 45000");
+    let errors = check(&Input {
+        manifest: &raised_manifest,
+        surface: &surface,
+        tests: &tests,
+        baseline: None,
+        benches: &raised_benches,
+        baseline_benches: Some(&baseline_benches),
+    });
+    assert!(
+        errors.iter().any(|err| err.contains("bench `bench-a`") && err.contains("looser")),
+        "raised baseline bench must fail: {errors:?}"
+    );
+
+    let mut median_errors = Vec::new();
+    let base_toml = "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 73175330\n";
+    let raised_toml =
+        "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 130000000\n";
+    check_baseline_medians(raised_toml, Some(base_toml), &mut median_errors);
+    assert!(
+        median_errors.iter().any(|err| err.contains("refresh/non_colocated/50f_10c")
+            && err.contains("130000000")
+            && err.contains("73175330")),
+        "raised ref_median_ns must fail: {median_errors:?}"
     );
 }
 
