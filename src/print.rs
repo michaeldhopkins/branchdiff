@@ -54,8 +54,10 @@ fn style_to_ansi(style: Style) -> String {
 }
 
 pub fn print_diff(data: &OutputData) -> Result<()> {
-    let mut stdout = io::stdout().lock();
+    write_diff(&mut io::stdout().lock(), data)
+}
 
+fn write_diff(stdout: &mut impl Write, data: &OutputData) -> Result<()> {
     let branch_info = format!("{} | {} vs {}", data.repo_name, data.to_label, data.from_label);
     let file_count = data.files.len();
     let line_count = data.total_additions + data.total_deletions;
@@ -75,7 +77,7 @@ pub fn print_diff(data: &OutputData) -> Result<()> {
     let gutter = Gutter::measure(data.files.iter().flat_map(|f| &f.lines), None);
 
     for file in &data.files {
-        print_file(&mut stdout, file, gutter)?;
+        print_file(stdout, file, gutter)?;
     }
 
     Ok(())
@@ -205,8 +207,12 @@ mod tests {
             total_deletions: 0,
         };
 
-        let result = print_diff(&data);
-        assert!(result.is_ok());
+        let mut buf = Vec::new();
+        write_diff(&mut buf, &data).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.starts_with("\x1b[36mtest | feature vs main | 1 file | 1 line"), "{text:?}");
+        assert!(text.contains("unchanged"), "{text:?}");
+        assert!(text.contains("added"), "{text:?}");
     }
 
     #[test]

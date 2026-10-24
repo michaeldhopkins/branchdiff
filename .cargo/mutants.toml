@@ -56,6 +56,9 @@ exclude_re = [
     '^src/main\.rs:.*poll_input',
     # Binds the real stdout; the page it writes is render_html, tested there.
     '^src/html\.rs:.*print_html',
+    # Binds the real stdout; what it writes is write_diff, tested there
+    # (pattern stdout-only).
+    '^src/print\.rs:.*replace print_diff ->',
     # The terminal app's entry point: it takes over the real TTY, queries it for
     # an image protocol, starts a real file watcher and restarts on a new VCS.
     # Only the PTY integration tests drive it, and they never see a mutation.
