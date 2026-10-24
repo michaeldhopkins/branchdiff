@@ -324,9 +324,9 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
         let working_base_pos = get_working_base_pos(working_idx);
 
         // Deletion boundary: output deletions before working lines from later base positions.
-        // For insertions, look ahead to find the next base position.
+        // For insertions, look ahead to the next base position (the insertion itself has none).
         let deletion_boundary = working_base_pos
-            .or_else(|| ((working_idx + 1)..working_lines.len()).find_map(get_working_base_pos));
+            .or_else(|| (working_idx..working_lines.len()).find_map(get_working_base_pos));
 
         if let Some(boundary) = deletion_boundary {
             emit_deletions_before(
@@ -1354,5 +1354,44 @@ fn brand_new() {\n    println!(\"new\");\n}";
         let delta = diff.lines.iter().find(|l| l.content == "delta").unwrap();
         assert_eq!(delta.line_number, Some(4));
         assert_eq!(delta.old_line(), Some(4));
+    }
+
+    #[test]
+    fn test_deleted_file_lines_carry_their_old_line_numbers() {
+        let input = DiffInput {
+            path: "gone.rs",
+            base: Some("one\ntwo\nthree"),
+            head: Some("one\ntwo\nthree"),
+            index: Some("one\ntwo\nthree"),
+            working: None,
+            old_path: None,
+        };
+        let diff = check_file_deletion(&input).expect("deleted in the working tree");
+        let old: Vec<_> = diff.lines.iter().skip(1).map(|l| l.old_line()).collect();
+        assert_eq!(old, vec![Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn test_canceled_committed_line_stays_above_a_later_deleted_base_line() {
+        // HEAD added `y` after `a` and the index took it out again; `c` is deleted
+        // in the working tree. `y` is ordered by its HEAD position, so it stays ahead
+        // of `b` and of the deleted `c` (whose HEAD position is after it).
+        let diff = compute_four_way_diff(DiffInput {
+            path: "f.txt",
+            base: Some("a\nb\nc\n"),
+            head: Some("a\ny\nb\nc\n"),
+            index: Some("a\nb\nc\n"),
+            working: Some("a\nb\n"),
+            old_path: None,
+        });
+        let shown: Vec<_> =
+            diff.lines.iter().skip(1).map(|l| (l.source, l.content.as_str())).collect();
+        let contents: Vec<_> = shown.iter().map(|(_, c)| *c).collect();
+        let at = |text: &str| contents.iter().position(|c| *c == text).unwrap();
+        assert_eq!(contents.len(), 4, "{shown:?}");
+        assert!(at("y") < at("b"), "y is placed by its HEAD position: {shown:?}");
+        assert!(at("b") < at("c"), "{shown:?}");
+        assert_eq!(shown[at("y")].0, LineSource::CanceledCommitted);
+        assert!(shown[at("c")].0.is_deletion(), "{shown:?}");
     }
 }

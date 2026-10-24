@@ -16,6 +16,12 @@
 - *(comments)* Show a suggestion off the diff's lines as written, and keep control characters out of HTML comments
 - *(comments)* Show an off-diff suggestion field in place of the body's fence, in a fence longer than its backticks
 
+### Refactor
+
+- *(benchmark)* Move the benchmark's frame cycle into App::bench_step and test it
+- *(print)* Write --print output through write_diff so a test can read it
+- *(output)* Drop the pre-anchoring a context view never needed, and test where comments land
+
 ### Documentation
 
 - Document review comments and bump version to 0.78.0
@@ -23,6 +29,12 @@
 ### Testing
 
 - *(fuzz)* Add comments fuzz target and corpus seeds
+- *(comments)* Cover watch_path, to_json_line, empty authors and default-path detection
+- *(html)* Cover the placeholder row of an image not yet loaded
+- *(comments)* Check the JSON parser against serde_json and pin its escapes, numbers and depth limit
+- *(comments)* Kill surviving mutants in render, revdiff, extract, suggestion, label
+- *(comments)* Pin anchoring, path matching and comment reload decisions
+- *(diff)* Pin view-mode visibility, deletion numbering and gutter cells
 ## [0.77.5] - 2026-10-20
 
 ### Bug Fixes

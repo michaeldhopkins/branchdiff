@@ -1075,4 +1075,85 @@ mod tests {
             "Should fall back from BookmarkOnly to Context when backend switches to Git"
         );
     }
+
+    fn numbered_file(path: &str, count: usize, staged_at: usize) -> crate::diff::FileDiff {
+        let mut lines = vec![DiffLine::file_header(path)];
+        for n in 1..=count {
+            let source = if n == staged_at { LineSource::Staged } else { LineSource::Base };
+            let prefix = if n == staged_at { '+' } else { ' ' };
+            lines.push(
+                DiffLine::new(source, format!("{path}:{n}"), prefix, Some(n)).with_file_path(path),
+            );
+        }
+        crate::diff::FileDiff::new(lines)
+    }
+
+    fn comment_on(path: &str, line: usize) -> crate::comments::ReviewComment {
+        crate::comments::ReviewComment {
+            path: path.into(),
+            start_line: Some(line),
+            end_line: Some(line),
+            side: crate::comments::CommentSide::New,
+            body: "look here".into(),
+            author: None,
+            suggestion: None,
+            outdated: false,
+        }
+    }
+
+    #[test]
+    fn test_commit_only_keeps_commented_line_and_its_context_visible() {
+        // An earlier commit's change at line 10 is not part of this view, but a
+        // comment on line 12 anchors there (it is next to a change) and must
+        // keep its line, with context, on screen. Line 40 has nothing near it.
+        let mut file = numbered_file("a.rs", 80, 70);
+        file.lines[10] = DiffLine::new(LineSource::Committed, "a.rs:10".into(), '+', Some(10))
+            .with_file_path("a.rs");
+        let mut app =
+            TestAppBuilder::new().with_files(vec![file]).with_vcs_backend(VcsBackend::Jj).build();
+        app.view.view_mode = ViewMode::CommitOnly;
+
+        let shown = |app: &crate::app::App| -> Vec<String> {
+            let items = app.compute_displayable_items();
+            collect_visible_lines(app, &items).iter().map(|l| l.content.clone()).collect()
+        };
+        let before = shown(&app);
+        assert!(!before.contains(&"a.rs:12".to_string()), "hidden without a comment");
+
+        app.set_comments(vec![comment_on("a.rs", 12)]);
+        let after = shown(&app);
+        assert!(after.contains(&"a.rs:12".to_string()), "commented line is visible");
+        assert!(after.contains(&"a.rs:8".to_string()), "context before the comment");
+        assert!(after.contains(&"a.rs:17".to_string()), "context after the comment");
+        assert!(!after.contains(&"a.rs:40".to_string()), "lines near nothing stay hidden");
+        assert!(after.contains(&"a.rs:70".to_string()), "the commit's own change stays visible");
+    }
+
+    #[test]
+    fn test_collapsed_file_drops_its_elided_markers_but_other_files_keep_theirs() {
+        let mut app = TestAppBuilder::new()
+            .with_files(vec![numbered_file("a.rs", 40, 20), numbered_file("b.rs", 40, 20)])
+            .with_vcs_backend(VcsBackend::Jj)
+            .build();
+        app.view.view_mode = ViewMode::CommitOnly;
+        app.view.collapsed_files.insert("a.rs".to_string());
+
+        let items = app.compute_displayable_items();
+        let first_b = items
+            .iter()
+            .position(
+                |item| matches!(item, DisplayableItem::Line(i) if app.lines[*i].content == "b.rs"),
+            )
+            .expect("b.rs header is shown");
+        assert!(
+            items[..first_b].iter().all(
+                |item| matches!(item, DisplayableItem::Line(i) if app.lines[*i].content == "a.rs")
+            ),
+            "only a.rs's header precedes b.rs: {items:?}"
+        );
+        assert!(
+            items[first_b..].iter().any(|item| matches!(item, DisplayableItem::Elided(_))),
+            "b.rs keeps its elided markers"
+        );
+    }
 }

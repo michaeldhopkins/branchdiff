@@ -242,4 +242,21 @@ mod tests {
         let lines = vec![line('-', Some(1), None)];
         assert!(!Gutter::measure(&lines, None).is_two_column());
     }
+
+    #[test]
+    fn rows_without_numbers_are_blank_cells_of_the_full_width() {
+        let lines = sample();
+        let gutter = Gutter::measure(&lines, None);
+        let blank = gutter.tui_cell(&DiffLine::file_header("a.rs"));
+        assert_eq!(blank, " ".repeat(5));
+        assert_eq!(blank.chars().count(), gutter.tui_width() + 1);
+    }
+
+    #[test]
+    fn html_rows_have_one_number_cell_per_column() {
+        let two = Gutter::measure(&sample(), None);
+        assert_eq!(two.ln_cells(), 2);
+        let one = Gutter::measure(&[line('+', None, Some(1))], None);
+        assert_eq!(one.ln_cells(), 1);
+    }
 }
