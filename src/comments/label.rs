@@ -9,7 +9,7 @@ use super::{CommentSide, ReviewComment};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelStyle {
-    /// `new line 3`, `old lines 7-8`, `new line 500, outside diff`.
+    /// `new line 3`, `old lines 7-8`, `new line 500, outside diff`, `original line 12, outside diff`.
     Words,
     /// `line 3 (+)`, `lines 7-8 (-)`, `line 500 (+, outside diff)`.
     Signs,
@@ -43,9 +43,13 @@ pub fn location_label(comment: &ReviewComment, outdated: bool, style: LabelStyle
     let range = if lo == hi { format!("line {lo}") } else { format!("lines {lo}-{hi}") };
     match style {
         LabelStyle::Words => {
-            let side = match comment.side {
-                CommentSide::New => "new",
-                CommentSide::Old => "old",
+            let side = if comment.outdated {
+                "original"
+            } else {
+                match comment.side {
+                    CommentSide::New => "new",
+                    CommentSide::Old => "old",
+                }
             };
             let outside = if outdated { ", outside diff" } else { "" };
             format!("{side} {range}{outside}")
@@ -88,6 +92,13 @@ mod tests {
             label(&comment(CommentSide::New, Some(500), None), true),
             "new line 500, outside diff"
         );
+        let moved =
+            ReviewComment { outdated: true, ..comment(CommentSide::New, Some(12), Some(12)) };
+        assert_eq!(label(&moved, false), "original line 12");
+        assert_eq!(label(&moved, true), "original line 12, outside diff");
+        let moved_range =
+            ReviewComment { outdated: true, ..comment(CommentSide::Old, Some(3), Some(5)) };
+        assert_eq!(label(&moved_range, true), "original lines 3-5, outside diff");
         assert_eq!(label(&comment(CommentSide::New, None, None), false), "file-level");
     }
 

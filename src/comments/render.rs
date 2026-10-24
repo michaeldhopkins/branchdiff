@@ -452,7 +452,40 @@ mod tests {
         let (rows, html) = rows_outside_the_diff(comment);
         assert_eq!(rows, ["│  Rename.", "│  ```suggestion", "│  new", "│  ```"]);
         assert!(!html.contains(SUGGESTION_LABEL), "{html}");
+        assert!(html.contains("💬 original line 2, outside diff"), "{html}");
         assert!(html.contains("```suggestion\nnew\n```"), "{html}");
+    }
+
+    #[test]
+    fn an_outdated_comment_labels_its_original_line_in_tui_print_and_html() {
+        let lines = vec![DiffLine::file_header("a.rs")];
+        let anchored = anchor_comments(
+            &lines,
+            &[ReviewComment {
+                outdated: true,
+                author: Some("amy".into()),
+                ..comment_at(Some(12), "moved", None)
+            }],
+        );
+        let (_, tui_lines) =
+            render(&anchored, &TuiCommentRenderSpec { content_width: 80, ..spec_for(&lines[0]) });
+        assert_eq!(line_text(&tui_lines[0]), " 💬 @amy · original line 12, outside diff");
+
+        let print = print_text(&anchored, 0);
+        assert!(
+            print.lines().next().unwrap().contains("💬 @amy · original line 12, outside diff"),
+            "{print}"
+        );
+
+        let mut html = Vec::new();
+        write_html_comments(&mut html, &anchored, 0, 2).unwrap();
+        let html = String::from_utf8(html).unwrap();
+        assert!(
+            html.contains(
+                "<div class=\"comment-header\">💬 @amy · original line 12, outside diff</div>"
+            ),
+            "{html}"
+        );
     }
 
     #[test]

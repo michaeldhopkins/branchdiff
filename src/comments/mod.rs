@@ -790,7 +790,7 @@ File-level summary note.
         let header = anchored.for_line(0).expect("stale comment sits under the file header");
         assert_eq!(header.len(), 1);
         assert!(header[0].outdated);
-        assert_eq!(header[0].header_label(), "@amy · new line 2, outside diff");
+        assert_eq!(header[0].header_label(), "@amy · original line 2, outside diff");
         let on_line = (1..diff.lines.len()).find_map(|i| anchored.for_line(i)).unwrap();
         assert_eq!(on_line[0].header_label(), "@amy · new line 3");
     }
