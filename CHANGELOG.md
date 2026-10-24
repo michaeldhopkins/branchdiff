@@ -1,5 +1,26 @@
 ## [unreleased]
 
+### Bug Fixes
+
+- *(diff)* Place a cancelled committed line after the line it follows
+- *(diff)* Order simple-path cancelled lines by provenance position
+- *(diff)* Place top-of-file cancelled lines right after the header
+- *(comments)* Label an outdated comment with its original line numbers
+
+### Documentation
+
+- Say when both number columns show; label moved comments with their original line
+
+### Testing
+
+- *(patch)* Pin hunk line kinds and counts
+- *(diff)* Pin where a cancelled committed line lands before a later staged one
+
+### Miscellaneous
+
+- *(release)* 0.78.1
+## [0.78.0] - 2026-10-24
+
 ### Features
 
 - *(diff)* Retain old line numbers on deleted and base-derived lines
