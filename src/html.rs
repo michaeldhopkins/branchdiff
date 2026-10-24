@@ -23,7 +23,7 @@ const SECTION_BYTES_PER_LINE: usize = 320;
 /// Room for most of a page, so a typical one leaves in few writes.
 const OUTPUT_BUFFER_BYTES: usize = 64 * 1024;
 
-fn html_escape(s: &str) -> String {
+pub(crate) fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
