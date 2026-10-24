@@ -118,7 +118,7 @@ fn cli_comments_flag_stdin_and_autodetect_work_across_print_html_and_fingerprint
         "missing out-of-diff fallback comment:\n{print_stdout}"
     );
     assert!(
-        print_stdout.contains("line 99 (+, outside diff)"),
+        print_stdout.contains("new line 99, outside diff"),
         "missing original line label on out-of-diff comment:\n{print_stdout}"
     );
 
@@ -246,7 +246,7 @@ fn diff_mode_writes_comments_before_each_file_and_the_patch_still_applies() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let patch = String::from_utf8(out.stdout).expect("patch is UTF-8");
     assert!(
-        patch.starts_with("# 💬 notes.txt · @alice · line 2 (+)\n# │ nice ]0;x \ndiff --git"),
+        patch.starts_with("# 💬 notes.txt · @alice · new line 2\n# │ nice ]0;x \ndiff --git"),
         "{patch}"
     );
 

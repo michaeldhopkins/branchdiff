@@ -121,14 +121,14 @@ mod tests {
         let patch = generate_patch_with_comments(&lines, &anchored);
 
         assert_eq!(without_comment_lines(&patch), generate_patch(&lines), "{patch}");
-        let a_comment = patch.find("# 💬 a.txt · line 2 (-)").expect(&patch);
+        let a_comment = patch.find("# 💬 a.txt · old line 2").expect(&patch);
         let a_diff = patch.find("diff --git a/a.txt").expect(&patch);
-        let b_comment = patch.find("# 💬 b.txt · line 2 (+)").expect(&patch);
+        let b_comment = patch.find("# 💬 b.txt · new line 2").expect(&patch);
         let b_diff = patch.find("diff --git a/b.txt").expect(&patch);
         assert!(a_comment < a_diff && a_diff < b_comment && b_comment < b_diff, "{patch}");
         assert!(patch.contains("# │ on b\n# │ second line\n"), "{patch}");
         assert!(
-            patch.contains("# 💬 c.txt · line 9 (+, outside diff)\n# │ untouched\n"),
+            patch.contains("# 💬 c.txt · new line 9, outside diff\n# │ untouched\n"),
             "{patch}"
         );
     }

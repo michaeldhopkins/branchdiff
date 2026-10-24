@@ -3140,11 +3140,11 @@ mod tests {
 
         assert!(screen_text.contains("@alice · file-level"), "{screen_text}");
         assert!(screen_text.contains("File-level review note"), "{screen_text}");
-        assert!(screen_text.contains("line 500 (+, outside diff)"), "{screen_text}");
+        assert!(screen_text.contains("new line 500, outside diff"), "{screen_text}");
         assert!(screen_text.contains("Outside diff fallback comment"), "{screen_text}");
-        assert!(screen_text.contains("line 2 (-)"), "{screen_text}");
+        assert!(screen_text.contains("old line 2"), "{screen_text}");
         assert!(screen_text.contains("Old deleted line comment"), "{screen_text}");
-        assert!(screen_text.contains("@bob · line 2 (+)"), "{screen_text}");
+        assert!(screen_text.contains("@bob · new line 2"), "{screen_text}");
         assert!(screen_text.contains("New added line comment"), "{screen_text}");
     }
 

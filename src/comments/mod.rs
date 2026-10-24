@@ -9,6 +9,7 @@
 pub mod anchor;
 mod extract;
 mod json;
+pub mod label;
 pub mod patch;
 pub mod render;
 mod revdiff;
@@ -23,6 +24,7 @@ pub use anchor::{
     paths_match,
 };
 pub use json::comment_to_json_line;
+pub use label::LabelStyle;
 
 /// Default candidate paths (relative to the repository root) checked when
 /// `--comments` is not specified.
@@ -89,24 +91,11 @@ pub struct AnchoredComment {
 
 impl AnchoredComment {
     pub fn location_label(&self) -> String {
-        let side_marker = match self.comment.side {
-            CommentSide::New => "+",
-            CommentSide::Old => "-",
-        };
-        let suffix = if self.outdated {
-            format!("{side_marker}, outside diff")
-        } else {
-            side_marker.to_string()
-        };
-        match (self.comment.start_line, self.comment.end_line) {
-            (Some(s), Some(e)) if s == e => format!("line {s} ({suffix})"),
-            (Some(s), Some(e)) => {
-                let (lo, hi) = (s.min(e), s.max(e));
-                format!("lines {lo}-{hi} ({suffix})")
-            }
-            (Some(s), None) | (None, Some(s)) => format!("line {s} ({suffix})"),
-            (None, None) => "file-level".to_string(),
-        }
+        self.location_label_in(label::label_style())
+    }
+
+    pub fn location_label_in(&self, style: LabelStyle) -> String {
+        label::location_label(&self.comment, self.outdated, style)
     }
 
     pub fn header_label(&self) -> String {
@@ -596,14 +585,14 @@ File-level summary note.
         assert!(!header_comments[0].outdated);
         assert_eq!(header_comments[0].header_label(), "file-level");
         assert!(header_comments[1].outdated);
-        assert_eq!(header_comments[1].header_label(), "line 999 (+, outside diff)");
+        assert_eq!(header_comments[1].header_label(), "new line 999, outside diff");
 
         // Deleted line `deleted_old_2`
         let del_idx = all_lines.iter().position(|l| l.content == "deleted_old_2").unwrap();
         let del_comments = anchored.for_line(del_idx).unwrap();
         assert_eq!(del_comments.len(), 1);
         assert!(!del_comments[0].outdated);
-        assert_eq!(del_comments[0].header_label(), "line 2 (-)");
+        assert_eq!(del_comments[0].header_label(), "old line 2");
 
         // Added line `added_new_2`
         let add2_idx = all_lines.iter().position(|l| l.content == "added_new_2").unwrap();
@@ -615,7 +604,7 @@ File-level summary note.
         let add3_idx = all_lines.iter().position(|l| l.content == "added_new_3").unwrap();
         let add3_comments = anchored.for_line(add3_idx).unwrap();
         assert_eq!(add3_comments.len(), 1);
-        assert_eq!(add3_comments[0].header_label(), "lines 2-3 (+)");
+        assert_eq!(add3_comments[0].header_label(), "new lines 2-3");
 
         // Header of src/untouched.rs
         let untouched_idx = all_lines
@@ -625,7 +614,7 @@ File-level summary note.
         let untouched_comments = anchored.for_line(untouched_idx).unwrap();
         assert_eq!(untouched_comments.len(), 1);
         assert!(untouched_comments[0].outdated);
-        assert_eq!(untouched_comments[0].header_label(), "line 12 (+, outside diff)");
+        assert_eq!(untouched_comments[0].header_label(), "new line 12, outside diff");
     }
 
     #[test]

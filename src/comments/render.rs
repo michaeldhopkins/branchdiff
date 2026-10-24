@@ -234,7 +234,7 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
         let ours = out.replace("\x1b[36m", "").replace("\x1b[1m", "").replace("\x1b[0m", "");
         assert!(ours.chars().all(|c| !c.is_control() || c == '\n'), "{out:?}");
-        assert!(ours.contains("@eve [5m · line 1 (+)"), "{out:?}");
+        assert!(ours.contains("@eve [5m · new line 1"), "{out:?}");
         assert!(ours.contains("title  ]0;PWNED  then  2J"), "{out:?}");
     }
 }
