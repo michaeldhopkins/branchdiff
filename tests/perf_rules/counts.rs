@@ -666,9 +666,10 @@ fn counted_children_run_without_controlling_tty_and_never_spawn_tput() {
         .env("BRANCHDIFF_NO_TTY_PROBE", "1");
     detach_controlling_tty(&mut probe);
     let probe_out = probe.output().expect("spawn probe");
+    let probe_stdout = String::from_utf8_lossy(&probe_out.stdout);
     assert!(
-        probe_out.status.success(),
-        "no-tty probe failed:\n{}",
+        probe_out.status.success() && probe_stdout.contains("1 passed"),
+        "no-tty probe failed:\nstdout: {probe_stdout}\nstderr: {}",
         String::from_utf8_lossy(&probe_out.stderr)
     );
 

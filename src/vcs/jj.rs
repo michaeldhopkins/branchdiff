@@ -635,7 +635,8 @@ impl JjVcs {
 
     /// Detect binary files by checking --stat output for "(binary)" markers.
     /// Uses `--ignore-working-copy` since the snapshot is already fresh from
-    /// `get_changed_files`.
+    /// `get_changed_files`, and a wide fixed `COLUMNS` so paths are never
+    /// truncated by a narrow terminal or `COLUMNS` env var.
     fn get_binary_files_set(
         &self,
         from: &str,
@@ -643,12 +644,7 @@ impl JjVcs {
         cancel: &Arc<AtomicBool>,
     ) -> HashSet<String> {
         let args = no_snapshot(&["diff", "--from", from, "--to", effective_to, "--stat"]);
-        match run_jj_with_retry_cancellable(
-            &self.repo_path,
-            &args,
-            is_transient_error,
-            Arc::clone(cancel),
-        ) {
+        match refresh::run_jj_stat(&self.repo_path, &args, Arc::clone(cancel)) {
             Ok(output) => parse_binary_from_stat(&output.stdout_lossy()),
             Err(_) => HashSet::new(),
         }

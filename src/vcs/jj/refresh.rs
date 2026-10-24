@@ -309,6 +309,24 @@ impl JjVcs {
     }
 }
 
+/// Wide terminal width for `jj diff --stat` so long paths are never truncated
+/// by an inherited `COLUMNS` environment variable or a narrow terminal.
+const STAT_COLUMNS: &str = "10000";
+
+pub(super) fn run_jj_stat(
+    repo_path: &Path,
+    args: &[&str],
+    cancel: Arc<AtomicBool>,
+) -> std::result::Result<vcs_runner::RunOutput, vcs_runner::RunError> {
+    vcs_runner::Cmd::new("jj")
+        .in_dir(repo_path)
+        .env("COLUMNS", STAT_COLUMNS)
+        .args(args)
+        .retry(vcs_runner::RetryPolicy::default().when(is_transient_error))
+        .cancel(cancel)
+        .run()
+}
+
 /// The labels and the refresh a one-shot run needs.
 ///
 /// A refresh labels the revision it diffed from and the one it treated as
@@ -401,5 +419,68 @@ mod tests {
         let (comparison, _) = comparison_labels(temp.path());
         assert_eq!(comparison.to_label, vcs.label_of(&tip));
         assert_ne!(comparison.to_label, vcs.label_of("@"));
+    }
+
+    #[test]
+    fn binary_file_with_long_path_is_detected_under_columns_50_and_unset() {
+        if !jj_available() {
+            return;
+        }
+        if std::env::var_os("BRANCHDIFF_STAT_COLUMNS_PROBE").is_none() {
+            let exe = std::env::current_exe().unwrap();
+            let name = "vcs::jj::refresh::tests::binary_file_with_long_path_is_detected_under_columns_50_and_unset";
+            for mode in ["50", "unset"] {
+                let mut cmd = Command::new(&exe);
+                cmd.args(["--exact", name]).env("BRANCHDIFF_STAT_COLUMNS_PROBE", mode);
+                if mode == "unset" {
+                    cmd.env_remove("COLUMNS");
+                } else {
+                    cmd.env("COLUMNS", mode);
+                }
+                let out = cmd.output().unwrap();
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    out.status.success() && stdout.contains("1 passed"),
+                    "probe ({mode}) failed:\nstdout: {stdout}\nstderr: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            return;
+        }
+
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let long_rel = "deeply/nested/directory/structure/with/a/very/long/subpath/that/exceeds/fifty/and/one/hundred/twenty/columns/easily/image_asset.bin";
+        assert!(long_rel.len() > 120);
+        let full_path = repo.join(long_rel);
+        std::fs::create_dir_all(full_path.parent().unwrap()).unwrap();
+        std::fs::write(&full_path, b"\x00\x01\x02\xff\x00binary-payload").unwrap();
+        jj(repo, &["commit", "-m", "add binary"]);
+        std::fs::write(repo.join("tip.txt"), "tip\n").unwrap();
+        jj(repo, &["commit", "-m", "stack tip"]);
+        // Move `@` to the mid-stack commit so `effective_to` is the committed stack tip
+        // (`!= "@"`), exercising `get_binary_files_set` (`jj diff --stat`).
+        jj(repo, &["edit", "@--"]);
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let binaries = vcs.get_binary_files_set(&vcs.from_rev, "@+", &cancel);
+        assert!(
+            binaries.contains(long_rel),
+            "expected full binary path `{long_rel}` in {binaries:?}"
+        );
+        let refresh = vcs.refresh(&cancel).unwrap();
+        let bin_diff = refresh
+            .files
+            .iter()
+            .find(|d| {
+                d.lines.first().and_then(|l| l.file_path.as_deref()).is_some_and(|p| p == long_rel)
+            })
+            .expect("full long binary path must be present in refresh files");
+        assert!(
+            bin_diff.lines.iter().any(|l| l.content.contains("[binary file]")),
+            "long-path binary file must be marked [binary file], got: {:?}",
+            bin_diff.lines
+        );
     }
 }

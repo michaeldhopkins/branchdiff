@@ -90,26 +90,20 @@ pub fn benchmark_size(columns: Option<&str>, lines: Option<&str>) -> (u16, u16) 
     )
 }
 
-/// Read `COLUMNS`/`LINES` (defaulting to 120x40) and, when `pin_env` is true,
-/// export them so child `jj` commands never fall back to spawning `tput` when
-/// there is no controlling terminal.
-///
-/// # Safety
-/// Must be called on the main thread before any other threads are spawned.
-#[doc(hidden)]
-pub unsafe fn pin_headless_size_env(pin_env: bool) -> (u16, u16) {
-    let (cols, rows) = benchmark_size(
-        std::env::var("COLUMNS").ok().as_deref(),
-        std::env::var("LINES").ok().as_deref(),
-    );
-    if pin_env {
-        // SAFETY: Caller guarantees no other threads are running.
-        unsafe {
-            std::env::set_var("COLUMNS", cols.to_string());
-            std::env::set_var("LINES", rows.to_string());
-        }
+/// Values of `(COLUMNS, LINES)` to export for child processes in headless mode:
+/// `Some((cols, rows))` only when running headless, `COLUMNS` is unset, and
+/// `/dev/tty` cannot be opened (so child `jj` commands never fall back to `tput`).
+pub fn pin_headless_size_env(
+    headless: bool,
+    columns: Option<&str>,
+    lines: Option<&str>,
+    has_controlling_tty: bool,
+) -> Option<(u16, u16)> {
+    if headless && columns.is_none() && !has_controlling_tty {
+        Some(benchmark_size(columns, lines))
+    } else {
+        None
     }
-    (cols, rows)
 }
 
 #[cfg(test)]
@@ -224,26 +218,12 @@ mod tests {
     }
 
     #[test]
-    fn pin_headless_size_env_exports_columns_and_lines_when_requested() {
-        // SAFETY: only this test touches COLUMNS and LINES in the unit binary.
-        unsafe {
-            std::env::remove_var("COLUMNS");
-            std::env::remove_var("LINES");
-            assert_eq!(pin_headless_size_env(false), (120, 40));
-            assert!(std::env::var_os("COLUMNS").is_none());
-            assert!(std::env::var_os("LINES").is_none());
-
-            assert_eq!(pin_headless_size_env(true), (120, 40));
-            assert_eq!(std::env::var("COLUMNS").as_deref(), Ok("120"));
-            assert_eq!(std::env::var("LINES").as_deref(), Ok("40"));
-
-            std::env::set_var("COLUMNS", "90");
-            std::env::set_var("LINES", "25");
-            assert_eq!(pin_headless_size_env(true), (90, 25));
-            assert_eq!(std::env::var("COLUMNS").as_deref(), Ok("90"));
-            assert_eq!(std::env::var("LINES").as_deref(), Ok("25"));
-            std::env::remove_var("COLUMNS");
-            std::env::remove_var("LINES");
-        }
+    fn pin_headless_size_env_returns_dimensions_only_when_headless_unset_and_without_tty() {
+        assert_eq!(pin_headless_size_env(false, None, None, false), None);
+        assert_eq!(pin_headless_size_env(true, None, None, true), None);
+        assert_eq!(pin_headless_size_env(true, Some("90"), Some("25"), false), None);
+        assert_eq!(pin_headless_size_env(true, Some("50"), None, false), None);
+        assert_eq!(pin_headless_size_env(true, None, None, false), Some((120, 40)));
+        assert_eq!(pin_headless_size_env(true, None, Some("25"), false), Some((120, 25)));
     }
 }
