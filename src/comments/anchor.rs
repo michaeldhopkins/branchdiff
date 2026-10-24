@@ -233,12 +233,11 @@ fn find_anchor_in_span(
         }
     }
 
-    // For a line range, anchor to the last line of the range that is within the diff context
-    if target_start < target_end {
-        for (pos, &line_idx) in span.line_indices.iter().enumerate().rev() {
-            if span.in_diff[pos] && matches_range(&lines[line_idx]) {
-                return Some(line_idx);
-            }
+    // For a line range, anchor to the last line of the range that is within the diff
+    // context. For a single line this finds nothing the loop above missed.
+    for (pos, &line_idx) in span.line_indices.iter().enumerate().rev() {
+        if span.in_diff[pos] && matches_range(&lines[line_idx]) {
+            return Some(line_idx);
         }
     }
 
@@ -283,4 +282,166 @@ pub fn anchor_comments(lines: &[DiffLine], comments: &[ReviewComment]) -> Anchor
     }
 
     AnchoredComments { by_line }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::InlineSpan;
+
+    fn numbered(n: usize, source: LineSource) -> DiffLine {
+        let prefix = if source.is_change() { '+' } else { ' ' };
+        DiffLine::new(source, format!("line {n}"), prefix, Some(n)).with_file_path("f.rs")
+    }
+
+    /// Header at index 0, then one line per entry at index 1.. in order.
+    fn file(entries: Vec<DiffLine>) -> Vec<DiffLine> {
+        let mut lines = vec![DiffLine::file_header("f.rs")];
+        lines.extend(entries);
+        lines
+    }
+
+    fn comment(start: Option<usize>, end: Option<usize>) -> ReviewComment {
+        ReviewComment {
+            path: "f.rs".into(),
+            start_line: start,
+            end_line: end,
+            side: CommentSide::New,
+            body: "c".into(),
+            author: None,
+            suggestion: None,
+            outdated: false,
+        }
+    }
+
+    /// `(line index, outdated)` of the only anchored comment.
+    fn anchor_of(lines: &[DiffLine], c: ReviewComment) -> (usize, bool) {
+        let anchored = anchor_comments(lines, &[c]);
+        assert_eq!(anchored.by_line.len(), 1);
+        let (idx, list) = anchored.by_line.iter().next().unwrap();
+        (*idx, list[0].outdated)
+    }
+
+    fn base_run(range: std::ops::RangeInclusive<usize>) -> Vec<DiffLine> {
+        range.map(|n| numbered(n, LineSource::Base)).collect()
+    }
+
+    #[test]
+    fn paths_match_ignores_a_b_prefixes_on_either_side() {
+        assert!(paths_match("src/x.rs", "a/src/x.rs"));
+        assert!(paths_match("src/x.rs", "b/src/x.rs"));
+        assert!(paths_match("a/src/x.rs", "src/x.rs"));
+        assert!(paths_match("b/src/x.rs", "src/x.rs"));
+        assert!(paths_match("./src/x.rs", "/src/x.rs"));
+        assert!(!paths_match("src/x.rs", "a/src/y.rs"));
+        assert!(!paths_match("a/src/y.rs", "src/x.rs"));
+    }
+
+    #[test]
+    fn file_diff_matches_either_side_of_a_rename_header() {
+        let header = DiffLine::new(LineSource::FileHeader, "old.rs → new.rs".into(), ' ', None);
+        let file = FileDiff::new(vec![header]);
+        assert!(file_diff_matches_path(&file, "old.rs"));
+        assert!(file_diff_matches_path(&file, "new.rs"));
+        assert!(!file_diff_matches_path(&file, "other.rs"));
+    }
+
+    #[test]
+    fn a_plain_change_puts_five_lines_either_side_in_the_diff() {
+        // Change at line 4; lines 1..=9 are within five of it, 10 and beyond are not.
+        let mut entries = base_run(1..=30);
+        entries[3] = numbered(4, LineSource::Committed);
+        let lines = file(entries);
+        assert_eq!(anchor_of(&lines, comment(Some(9), Some(9))), (9, false));
+        assert_eq!(anchor_of(&lines, comment(Some(10), Some(10))), (0, true));
+        assert_eq!(anchor_of(&lines, comment(Some(14), Some(14))), (0, true));
+    }
+
+    #[test]
+    fn a_line_far_from_every_change_is_outdated() {
+        let lines = file(base_run(1..=30));
+        assert_eq!(anchor_of(&lines, comment(Some(15), Some(15))), (0, true));
+    }
+
+    #[test]
+    fn inline_spans_alone_put_nearby_lines_in_the_diff() {
+        let mut entries = base_run(1..=30);
+        entries[9].inline_spans =
+            vec![InlineSpan { text: "x".into(), source: None, is_deletion: false }];
+        let lines = file(entries);
+        assert_eq!(anchor_of(&lines, comment(Some(12), Some(12))), (12, false));
+        assert_eq!(anchor_of(&lines, comment(Some(25), Some(25))), (0, true));
+    }
+
+    #[test]
+    fn a_comment_with_only_one_end_is_a_line_comment_not_a_file_comment() {
+        let mut entries = base_run(1..=10);
+        entries[3] = numbered(4, LineSource::Committed);
+        let lines = file(entries);
+        assert_eq!(anchor_of(&lines, comment(Some(4), None)), (4, false));
+        assert_eq!(anchor_of(&lines, comment(None, Some(4))), (4, false));
+        assert_eq!(anchor_of(&lines, comment(None, None)), (0, false));
+    }
+
+    #[test]
+    fn single_line_comment_skips_elided_and_header_rows_carrying_its_number() {
+        let mut entries = base_run(1..=6);
+        entries[3] = numbered(4, LineSource::Committed);
+        // An elided marker that happens to carry line number 5, placed before line 5.
+        let mut elided = DiffLine::elided(3);
+        elided.line_number = Some(5);
+        entries.insert(4, elided);
+        let lines = file(entries);
+        assert_eq!(lines[5].source, LineSource::Elided);
+        assert_eq!(anchor_of(&lines, comment(Some(5), Some(5))), (6, false));
+    }
+
+    #[test]
+    fn range_comment_anchors_to_last_range_line_in_the_diff_when_end_is_missing() {
+        // Lines 1-4 and 6-8: line 5 is absent, so the range 3..=5 settles on 4.
+        let mut entries = base_run(1..=4);
+        entries.extend(base_run(6..=8));
+        entries[3] = numbered(4, LineSource::Committed);
+        let lines = file(entries);
+        assert_eq!(anchor_of(&lines, comment(Some(3), Some(5))), (4, false));
+        // A range wholly outside the diff stays outdated.
+        assert_eq!(anchor_of(&lines, comment(Some(20), Some(22))), (0, true));
+    }
+
+    #[test]
+    fn range_comment_never_lands_on_an_elided_row() {
+        let mut entries = base_run(1..=3);
+        entries[1] = numbered(2, LineSource::Committed);
+        let mut elided = DiffLine::elided(3);
+        elided.line_number = Some(5);
+        entries.push(elided);
+        let lines = file(entries);
+        assert_eq!(anchor_of(&lines, comment(Some(2), Some(5))), (3, false));
+    }
+
+    #[test]
+    fn range_comment_prefers_the_exact_end_line_over_a_later_line_in_the_range() {
+        // Rows in an unusual order: the end line (5) comes before line 4.
+        let mut entries = vec![
+            numbered(3, LineSource::Base),
+            numbered(5, LineSource::Committed),
+            numbered(4, LineSource::Base),
+        ];
+        entries.push(numbered(9, LineSource::Base));
+        let lines = file(entries);
+        assert_eq!(anchor_of(&lines, comment(Some(3), Some(5))), (2, false));
+    }
+
+    #[test]
+    fn a_deleted_line_never_answers_for_a_new_side_line_number() {
+        // A deletion carrying line number 3 is not new-side line 3.
+        let entries = vec![
+            numbered(2, LineSource::Committed),
+            DiffLine::new(LineSource::DeletedCommitted, "gone".into(), '-', Some(3))
+                .with_file_path("f.rs"),
+            numbered(4, LineSource::Base),
+        ];
+        let lines = file(entries);
+        assert_eq!(anchor_of(&lines, comment(Some(3), Some(3))), (0, true));
+    }
 }

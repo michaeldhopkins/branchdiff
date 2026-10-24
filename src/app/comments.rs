@@ -8,6 +8,14 @@ use crate::comments::{
 
 use super::App;
 
+fn comments_source_for(explicit: Option<&Path>, repo_path: &Path) -> CommentsSource {
+    match explicit {
+        Some(p) if p == Path::new("-") => CommentsSource::Stdin,
+        Some(p) => CommentsSource::Explicit(p.to_path_buf()),
+        None => CommentsSource::Auto(detect_comments_file(repo_path)),
+    }
+}
+
 impl App {
     /// Install review comments and anchor them against the current diff.
     pub fn set_comments(&mut self, comments: Vec<ReviewComment>) {
@@ -18,11 +26,7 @@ impl App {
     /// Load review comments from `explicit` (`"-"` for stdin) or the default
     /// repository comments location, anchoring them to the current diff.
     pub fn load_comments_from(&mut self, explicit: Option<&Path>) -> Result<(), CommentError> {
-        self.view.comments_source = match explicit {
-            Some(p) if p == Path::new("-") => CommentsSource::Stdin,
-            Some(p) => CommentsSource::Explicit(p.to_path_buf()),
-            None => CommentsSource::Auto(detect_comments_file(&self.repo_path)),
-        };
+        self.view.comments_source = comments_source_for(explicit, &self.repo_path);
         let comments = load_comments(explicit, &self.repo_path)?;
         self.set_comments(comments);
         Ok(())
@@ -165,5 +169,119 @@ mod tests {
         assert!(app.should_reload_comments_for(&paths));
         assert!(app.reload_comments_from_disk(), "updated file should reload");
         assert_eq!(app.view.raw_comments[0].body, "updated");
+    }
+
+    fn review_comment(path: &str, line: usize, body: &str) -> ReviewComment {
+        ReviewComment {
+            path: path.into(),
+            start_line: Some(line),
+            end_line: Some(line),
+            side: CommentSide::New,
+            body: body.into(),
+            author: None,
+            suggestion: None,
+            outdated: false,
+        }
+    }
+
+    fn one_file_app() -> crate::app::App {
+        let file = FileDiff::new(vec![
+            DiffLine::file_header("src/a.rs"),
+            DiffLine::new(LineSource::Committed, "let x = 1;".into(), '+', Some(1))
+                .with_file_path("src/a.rs"),
+        ]);
+        TestAppBuilder::new().with_files(vec![file]).build()
+    }
+
+    #[test]
+    fn comments_source_is_stdin_only_for_a_dash() {
+        let repo = Path::new("/nonexistent-repo");
+        assert_eq!(comments_source_for(Some(Path::new("-")), repo), CommentsSource::Stdin);
+        assert_eq!(
+            comments_source_for(Some(Path::new("review.jsonl")), repo),
+            CommentsSource::Explicit(PathBuf::from("review.jsonl"))
+        );
+        assert_eq!(comments_source_for(None, repo), CommentsSource::Auto(None));
+    }
+
+    #[test]
+    fn load_comments_from_a_file_records_an_explicit_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("review.jsonl");
+        std::fs::write(&path, r#"{"path":"src/a.rs","line":1,"body":"hi"}"#).unwrap();
+        let mut app = one_file_app();
+        app.load_comments_from(Some(&path)).unwrap();
+        assert_eq!(app.view.comments_source, CommentsSource::Explicit(path));
+        assert_eq!(app.view.raw_comments.len(), 1);
+    }
+
+    #[test]
+    fn patch_with_comments_writes_comments_before_the_patch() {
+        let mut app = one_file_app();
+        app.set_comments(vec![review_comment("src/a.rs", 1, "check this")]);
+        let patch = app.patch_with_comments();
+        assert_eq!(
+            patch,
+            crate::comments::patch::generate_patch_with_comments(app.lines(), &app.view.comments)
+        );
+        let comment_at = patch.find("# │ check this").expect(&patch);
+        let diff_at = patch.find("diff --git").expect(&patch);
+        assert!(comment_at < diff_at, "{patch}");
+    }
+
+    #[test]
+    fn should_reload_comments_for_matches_only_the_active_comments_file() {
+        let repo = PathBuf::from("/repo");
+        let mut app = one_file_app();
+        app.repo_path = repo.clone();
+        let relative = PathBuf::from("notes/review.jsonl");
+        app.view.comments_source = CommentsSource::Explicit(relative.clone());
+
+        let joined = repo.join(&relative);
+        let unrelated = repo.join("src/main.rs");
+        let check = |app: &crate::app::App, p: &PathBuf| {
+            app.should_reload_comments_for(&HashSet::from([p]))
+        };
+        assert!(check(&app, &relative), "the path exactly as configured");
+        assert!(check(&app, &joined), "the configured path under the repository");
+        assert!(!check(&app, &unrelated), "an unrelated file");
+        assert!(
+            !check(&app, &repo.join(".jj/comments.jsonl")),
+            "an explicit source ignores defaults"
+        );
+
+        app.view.comments_source = CommentsSource::Explicit(joined.clone());
+        assert!(check(&app, &joined), "an absolute configured path");
+        assert!(!check(&app, &unrelated));
+    }
+
+    #[test]
+    fn should_reload_comments_for_auto_source_watches_default_locations() {
+        let repo = PathBuf::from("/repo");
+        let mut app = one_file_app();
+        app.repo_path = repo.clone();
+        app.view.comments_source = CommentsSource::Auto(None);
+        let check = |app: &crate::app::App, p: &PathBuf| {
+            app.should_reload_comments_for(&HashSet::from([p]))
+        };
+        assert!(check(&app, &repo.join(".jj/comments.jsonl")));
+        assert!(!check(&app, &repo.join("src/main.rs")));
+
+        app.view.comments_source = CommentsSource::Stdin;
+
+        assert!(!check(&app, &repo.join(".jj/comments.jsonl")));
+    }
+
+    #[test]
+    fn comments_on_untouched_files_get_a_header_line_in_the_diff() {
+        let mut app = one_file_app();
+        app.set_comments(vec![review_comment("src/b.rs", 10, "untouched")]);
+        let header = app
+            .lines()
+            .iter()
+            .position(|l| l.source == LineSource::FileHeader && l.content == "src/b.rs")
+            .expect("header for the commented file is in the visible lines");
+        let anchored = app.view.comments.for_line(header).expect("comment sits on that header");
+        assert_eq!(anchored[0].comment.body, "untouched");
     }
 }

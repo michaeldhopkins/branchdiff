@@ -892,4 +892,54 @@ mod tests {
             "VCS event within cooldown after SingleFile should be suppressed"
         );
     }
+
+    /// An app watching `comments.jsonl` in a temp dir, already loaded with "first".
+    fn app_with_comments_file() -> (tempfile::TempDir, PathBuf, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("comments.jsonl");
+        std::fs::write(&path, r#"{"path":"a.rs","line":1,"body":"first"}"#).unwrap();
+        let mut app = TestAppBuilder::new().build();
+        app.repo_path = dir.path().to_path_buf();
+        app.load_comments_from(Some(&path)).unwrap();
+        assert_eq!(app.view.raw_comments[0].body, "first");
+        (dir, path, app)
+    }
+
+    fn handle(app: &mut App, repo: &std::path::Path, changed: PathBuf) -> UpdateResult {
+        let mut refresh_state = RefreshState::Idle;
+        let mut vcs_lock = VcsLockState::default();
+        let mut timers = Timers::default();
+        let vcs = StubVcs::new(repo.to_path_buf());
+        let events = vec![DebouncedEvent::new(changed, DebouncedEventKind::Any)];
+        handle_file_change(events, app, &mut refresh_state, &mut vcs_lock, &mut timers, &vcs)
+    }
+
+    #[test]
+    fn a_change_to_the_comments_file_reloads_the_comments_and_redraws() {
+        let (dir, path, mut app) = app_with_comments_file();
+        std::fs::write(&path, r#"{"path":"a.rs","line":1,"body":"second"}"#).unwrap();
+
+        let result = handle(&mut app, dir.path(), path);
+
+        assert!(result.needs_redraw);
+        assert_eq!(app.view.raw_comments[0].body, "second");
+    }
+
+    #[test]
+    fn a_change_elsewhere_leaves_the_comments_alone_even_if_their_file_changed() {
+        let (dir, path, mut app) = app_with_comments_file();
+        std::fs::write(&path, r#"{"path":"a.rs","line":1,"body":"second"}"#).unwrap();
+
+        let result = handle(&mut app, dir.path(), dir.path().join("src/main.rs"));
+
+        assert!(!result.needs_redraw);
+        assert_eq!(app.view.raw_comments[0].body, "first", "no event named the comments file");
+    }
+
+    #[test]
+    fn a_touched_comments_file_with_the_same_content_does_not_redraw() {
+        let (dir, path, mut app) = app_with_comments_file();
+        let result = handle(&mut app, dir.path(), path);
+        assert!(!result.needs_redraw);
+    }
 }
