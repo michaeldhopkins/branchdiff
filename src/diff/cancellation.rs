@@ -69,9 +69,8 @@ pub(super) fn collect_canceled_simple(
         }
     }
 
-    while next_head_idx < head_lines.len() {
-        emit_canceled_committed(next_head_idx, &mut result);
-        next_head_idx += 1;
+    for head_idx in next_head_idx..head_lines.len() {
+        emit_canceled_committed(head_idx, &mut result);
     }
 
     result
@@ -345,6 +344,27 @@ mod tests {
         assert_eq!(
             shown,
             vec![(LineSource::CanceledStaged, "c"), (LineSource::CanceledCommitted, "f"),]
+        );
+    }
+
+    #[test]
+    fn test_collect_canceled_simple_orders_committed_before_later_staged() {
+        // base = "a\nd", head = "a\nb\nd", index = "a\nd\nc", working = "a\nd"
+        let head_lines = vec!["a", "b", "d"];
+        let index_lines = vec!["a", "d", "c"];
+        let head_from_base = vec![Some(0), None, Some(1)];
+        let index_from_head = vec![Some(0), Some(2), None];
+        let working_from_index = vec![Some(0), Some(1)];
+
+        let result = collect_canceled_simple(
+            &head_lines, &index_lines, &head_from_base, &index_from_head, &working_from_index,
+            "test.txt",
+        );
+
+        let shown: Vec<_> = result.iter().map(|l| (l.source, l.content.as_str())).collect();
+        assert_eq!(
+            shown,
+            vec![(LineSource::CanceledCommitted, "b"), (LineSource::CanceledStaged, "c")]
         );
     }
 
