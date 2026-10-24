@@ -35,17 +35,46 @@ const FRAME_MARKERS: [&str; 9] = [
 ];
 
 pub(super) fn operations() -> BTreeSet<String> {
-    let mut ops = command_ids();
-    ops.extend(key_operations());
-    ops.extend(frame_and_route_ids());
+    let commands = command_ids();
+    assert!(!commands.is_empty(), "command surface must not be empty");
+    let keys = key_operations();
+    assert!(!keys.is_empty(), "keystroke surface must not be empty");
+    let frames = frame_and_route_ids();
+    assert!(frames.iter().any(|id| id.starts_with("frame:")), "frame surface must not be empty");
+    let mut ops = commands;
+    ops.extend(keys);
+    ops.extend(frames);
     ops
 }
 
 /// The manifest committed on `main@origin` or `main`, if that revision has one.
 pub(super) fn committed_baseline() -> Option<String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    committed_baseline_in(&root)
+}
+
+pub(super) fn committed_baseline_in(root: &Path) -> Option<String> {
+    if root.join(".jj").exists() {
+        committed_baseline_jj(root)
+    } else {
+        committed_baseline_git(root)
+    }
+}
+
+fn committed_baseline_jj(root: &Path) -> Option<String> {
     let repo = root.to_str().expect("repo path");
     for rev in ["main@origin", "main"] {
+        let resolved = Command::new("jj")
+            .args([
+                "--ignore-working-copy", "--repository", repo, "log", "--no-graph", "-r", rev,
+                "-T", "commit_id",
+            ])
+            .output()
+            .unwrap_or_else(|err| panic!("jj log failed to start: {err}"));
+        if !resolved.status.success() || String::from_utf8_lossy(&resolved.stdout).trim().is_empty()
+        {
+            continue;
+        }
         let listed = Command::new("jj")
             .args([
                 "--ignore-working-copy", "--repository", repo, "file", "list", "-r", rev,
@@ -53,9 +82,11 @@ pub(super) fn committed_baseline() -> Option<String> {
             ])
             .output()
             .unwrap_or_else(|err| panic!("jj file list failed to start: {err}"));
-        if !listed.status.success() {
-            continue;
-        }
+        assert!(
+            listed.status.success(),
+            "jj file list -r {rev} tests/perf.toml failed: {}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
         if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
             return None;
         }
@@ -73,7 +104,45 @@ pub(super) fn committed_baseline() -> Option<String> {
         );
         return Some(String::from_utf8(shown.stdout).expect("baseline is utf-8"));
     }
-    None
+    panic!("neither main@origin nor main resolved in jj repository {}", root.display());
+}
+
+fn committed_baseline_git(root: &Path) -> Option<String> {
+    let repo = root.to_str().expect("repo path");
+    for rev in ["origin/main", "main"] {
+        let verify_arg = format!("{rev}^{{commit}}");
+        let resolved = Command::new("git")
+            .args(["-C", repo, "rev-parse", "--verify", "--quiet", &verify_arg])
+            .output()
+            .unwrap_or_else(|err| panic!("git rev-parse failed to start: {err}"));
+        if !resolved.status.success() {
+            continue;
+        }
+        let listed = Command::new("git")
+            .args(["-C", repo, "ls-tree", "--name-only", rev, "--", "tests/perf.toml"])
+            .output()
+            .unwrap_or_else(|err| panic!("git ls-tree failed to start: {err}"));
+        assert!(
+            listed.status.success(),
+            "git ls-tree {rev} tests/perf.toml failed: {}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
+        if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
+            return None;
+        }
+        let spec = format!("{rev}:tests/perf.toml");
+        let shown = Command::new("git")
+            .args(["-C", repo, "show", &spec])
+            .output()
+            .unwrap_or_else(|err| panic!("git show failed to start: {err}"));
+        assert!(
+            shown.status.success(),
+            "git show {spec} failed: {}",
+            String::from_utf8_lossy(&shown.stderr)
+        );
+        return Some(String::from_utf8(shown.stdout).expect("baseline is utf-8"));
+    }
+    panic!("neither origin/main nor main resolved in git repository {}", root.display());
 }
 
 pub(super) fn action_name(action: AppAction) -> Option<&'static str> {
@@ -195,18 +264,19 @@ fn frame_and_route_ids() -> BTreeSet<String> {
 }
 
 fn walk_frames_and_routes(dir: &Path, ops: &mut BTreeSet<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+    let entries = std::fs::read_dir(dir)
+        .unwrap_or_else(|err| panic!("read_dir {} failed: {err}", dir.display()));
+    for entry in entries {
+        let entry =
+            entry.unwrap_or_else(|err| panic!("read_dir entry in {} failed: {err}", dir.display()));
         let path = entry.path();
         if path.is_dir() {
             walk_frames_and_routes(&path, ops);
             continue;
         }
-        if path.extension().is_some_and(|ext| ext == "rs")
-            && let Ok(raw) = std::fs::read_to_string(&path)
-        {
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            let raw = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {} failed: {err}", path.display()));
             let prod = strip_inline_test_mod(&raw);
             if FRAME_MARKERS.iter().any(|marker| prod.contains(marker)) {
                 let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("page");
@@ -457,5 +527,66 @@ impl Vcs for IdleVcs {
 
     fn current_revision_id(&self) -> anyhow::Result<String> {
         Ok("bench".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn run_cmd(dir: &Path, program: &str, args: &[&str]) {
+        let out = Command::new(program)
+            .args(args)
+            .current_dir(dir)
+            .env("JJ_USER", "Test")
+            .env("JJ_EMAIL", "test@example.com")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("spawn command");
+        assert!(
+            out.status.success(),
+            "{program} {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "resolved")]
+    fn committed_baseline_panics_when_revision_does_not_resolve() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_cmd(tmp.path(), "jj", &["git", "init", "--colocate"]);
+        let _ = committed_baseline_in(tmp.path());
+    }
+
+    #[test]
+    fn committed_baseline_returns_none_when_revision_resolves_and_lacks_file_and_reads_git_checkout()
+     {
+        let tmp = TempDir::new().expect("tempdir");
+        run_cmd(tmp.path(), "git", &["init", "-q", "-b", "main"]);
+        fs::write(tmp.path().join("README.md"), "hello\n").expect("write readme");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "init"]);
+        assert_eq!(committed_baseline_in(tmp.path()), None);
+
+        fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
+        fs::write(tmp.path().join("tests/perf.toml"), "# baseline\n").expect("write perf.toml");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "add perf"]);
+        assert_eq!(committed_baseline_in(tmp.path()).as_deref(), Some("# baseline\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "read_dir")]
+    fn walk_frames_and_routes_panics_when_read_dir_fails() {
+        let mut ops = BTreeSet::new();
+        walk_frames_and_routes(
+            Path::new("/nonexistent/branchdiff-perf-surface-missing-dir"),
+            &mut ops,
+        );
     }
 }

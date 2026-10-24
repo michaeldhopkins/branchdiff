@@ -114,21 +114,28 @@ pub fn recorded_benches(text: &str) -> BTreeMap<String, u64> {
     benches
 }
 
-/// Record every `#[test]` function name under `dir`.
+/// Record every `#[test]` function under `dir` as `<file.rs>::<name>`.
 pub fn collect_test_names(dir: &Path, out: &mut BTreeSet<String>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    collect_test_names_from(root, dir, out);
+}
+
+fn collect_test_names_from(root: &Path, dir: &Path, out: &mut BTreeSet<String>) {
+    let entries =
+        fs::read_dir(dir).unwrap_or_else(|err| panic!("read_dir {} failed: {err}", dir.display()));
+    for entry in entries {
+        let entry =
+            entry.unwrap_or_else(|err| panic!("read_dir entry in {} failed: {err}", dir.display()));
         let path = entry.path();
         if path.is_dir() {
-            collect_test_names(&path, out);
+            collect_test_names_from(root, &path, out);
             continue;
         }
-        if path.extension().is_some_and(|ext| ext == "rs")
-            && let Ok(text) = fs::read_to_string(&path)
-        {
-            push_test_names(&text, out);
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("read {} failed: {err}", path.display()));
+            let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            push_test_names(&rel, &text, out);
         }
     }
 }
@@ -440,7 +447,11 @@ fn coverage(ops: &[Op], surface: &BTreeSet<String>, errors: &mut Vec<String>) {
 }
 
 fn check_entry(op: &Op, tests: &BTreeSet<String>, errors: &mut Vec<String>) {
-    if !tests.contains(&op.test) {
+    let valid_test_path = op
+        .test
+        .split_once("::")
+        .is_some_and(|(file, name)| file.ends_with(".rs") && !name.is_empty());
+    if !valid_test_path || !tests.contains(&op.test) {
         errors.push(format!("operation `{}` names missing test `{}`", op.id, op.test));
     }
     if op.wall_floor_us == 0 {
@@ -559,7 +570,7 @@ fn number_assignment(line: &str, key: &str) -> Option<u64> {
     rest.parse::<u64>().ok()
 }
 
-fn push_test_names(source: &str, out: &mut BTreeSet<String>) {
+fn push_test_names(rel_path: &str, source: &str, out: &mut BTreeSet<String>) {
     let scrubbed = scrub_comments_and_strings(source);
     let bytes = scrubbed.as_bytes();
     let mut index = 0;
@@ -587,7 +598,7 @@ fn push_test_names(source: &str, out: &mut BTreeSet<String>) {
         if at_fn && boundary {
             let (name, next) = read_ident(bytes, index + 2);
             if has_test_attr && !name.is_empty() {
-                out.insert(name.to_string());
+                out.insert(format!("{rel_path}::{name}"));
             }
             has_test_attr = false;
             index = next;

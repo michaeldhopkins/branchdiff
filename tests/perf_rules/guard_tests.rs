@@ -35,7 +35,7 @@ const HAPPY: &str = r#"
 id = "command:print"
 class = "command"
 fixture = "one file"
-test = "counts"
+test = "tests/counts.rs::counts"
 processes = 2
 wall_floor_us = 50000
 target_us = 50000
@@ -47,7 +47,7 @@ fn happy<'a>(baseline: Option<&'a str>) -> Case<'a> {
     Case {
         manifest: HAPPY,
         surface: &["command:print"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline,
         benches: &[("bench-a", 100)],
     }
@@ -62,7 +62,7 @@ fn manifest(class: &str, wall_floor: u64, target: u64, proposal: &str) -> String
 id = "item"
 class = "{class}"
 fixture = "n"
-test = "counts"
+test = "tests/counts.rs::counts"
 processes = 1
 wall_floor_us = {wall_floor}
 target_us = {target}
@@ -72,7 +72,13 @@ derivation = "Within the class."
 }
 
 fn class_case(manifest: &str) -> Vec<String> {
-    run(Case { manifest, surface: &["item"], tests: &["counts"], baseline: None, benches: &[] })
+    run(Case {
+        manifest,
+        surface: &["item"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[],
+    })
 }
 
 #[test]
@@ -98,7 +104,7 @@ fn a_surface_operation_without_an_entry_fails() {
     let errors = run(Case {
         manifest: HAPPY,
         surface: &["command:print", "command:help"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: None,
         benches: &[("bench-a", 100)],
     });
@@ -112,7 +118,7 @@ fn an_entry_for_a_missing_operation_fails() {
     let errors = run(Case {
         manifest: HAPPY,
         surface: &[],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: None,
         benches: &[("bench-a", 100)],
     });
@@ -124,7 +130,7 @@ fn an_entry_for_a_missing_operation_fails() {
 }
 
 #[test]
-fn an_entry_that_names_a_missing_test_fails() {
+fn an_entry_that_names_a_missing_or_bare_test_fails() {
     let errors = run(Case {
         manifest: HAPPY,
         surface: &["command:print"],
@@ -132,7 +138,41 @@ fn an_entry_that_names_a_missing_test_fails() {
         baseline: None,
         benches: &[("bench-a", 100)],
     });
-    assert!(errors.iter().any(|error| error.contains("missing test `counts`")));
+    assert!(errors.iter().any(|error| error.contains("missing test")));
+
+    let bare_manifest = HAPPY.replace("tests/counts.rs::counts", "counts");
+    let errors = run(Case {
+        manifest: &bare_manifest,
+        surface: &["command:print"],
+        tests: &["counts", "tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 100)],
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("missing test `counts`")),
+        "bare test name must fail even if present in set: {errors:?}"
+    );
+
+    let wrong_file = HAPPY.replace("tests/counts.rs::counts", "tests/other.rs::counts");
+    let errors = run(Case {
+        manifest: &wrong_file,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 100)],
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("missing test `tests/other.rs::counts`")),
+        "test name from wrong file must fail: {errors:?}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "read_dir")]
+fn collect_test_names_panics_when_read_dir_fails() {
+    let missing = Path::new("/nonexistent/branchdiff-perf-rules-missing-dir");
+    let mut out = BTreeSet::new();
+    collect_test_names(missing, &mut out);
 }
 
 #[test]
@@ -148,7 +188,7 @@ fn a_looser_floor_or_target_fails_and_a_tighter_one_passes() {
     let errors = run(Case {
         manifest: &tighter,
         surface: &["command:print"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: Some(HAPPY),
         benches: &[("bench-a", 100)],
     });
@@ -157,7 +197,7 @@ fn a_looser_floor_or_target_fails_and_a_tighter_one_passes() {
     let errors = run(Case {
         manifest: &looser,
         surface: &["command:print"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: Some(HAPPY),
         benches: &[("bench-a", 100)],
     });
@@ -240,7 +280,7 @@ fn a_derivation_must_be_one_non_empty_line() {
     let errors = run(Case {
         manifest: &empty,
         surface: &["command:print"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: None,
         benches: &[("bench-a", 100)],
     });
@@ -257,7 +297,7 @@ fn a_derivation_must_be_one_non_empty_line() {
     let errors = run(Case {
         manifest: &split,
         surface: &["command:print"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: None,
         benches: &[("bench-a", 100)],
     });
@@ -272,12 +312,12 @@ fn a_derivation_must_be_one_non_empty_line() {
 #[test]
 fn a_new_operation_absent_from_the_baseline_is_allowed() {
     let live = format!(
-        "{HAPPY}\n[[op]]\nid = \"command:help\"\nclass = \"command\"\nfixture = \"none\"\ntest = \"counts\"\nprocesses = 0\nwall_floor_us = 1\ntarget_us = 1\nderivation = \"No external call.\"\n"
+        "{HAPPY}\n[[op]]\nid = \"command:help\"\nclass = \"command\"\nfixture = \"none\"\ntest = \"tests/counts.rs::counts\"\nprocesses = 0\nwall_floor_us = 1\ntarget_us = 1\nderivation = \"No external call.\"\n"
     );
     let errors = run(Case {
         manifest: &live,
         surface: &["command:print", "command:help"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: Some(HAPPY),
         benches: &[("bench-a", 100)],
     });
@@ -290,7 +330,7 @@ fn every_named_bench_has_to_exist_and_wall_floor_must_cover_its_median() {
     let errors = run(Case {
         manifest: &unknown,
         surface: &["command:print"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: None,
         benches: &[("bench-a", 100)],
     });
@@ -306,7 +346,7 @@ fn every_named_bench_has_to_exist_and_wall_floor_must_cover_its_median() {
     let below_bench = run(Case {
         manifest: HAPPY,
         surface: &["command:print"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: None,
         benches: &[("bench-a", 60_000)],
     });
@@ -339,7 +379,7 @@ fn happy_manifest<'a>(manifest: &'a str) -> Case<'a> {
     Case {
         manifest,
         surface: &["command:print"],
-        tests: &["counts"],
+        tests: &["tests/counts.rs::counts"],
         baseline: None,
         benches: &[("bench-a", 100)],
     }
@@ -358,6 +398,7 @@ fn recorded_benches_parse_ids_and_ceiling_medians() {
 fn test_names_come_only_from_test_attributed_functions() {
     let mut found = BTreeSet::new();
     push_test_names(
+        "src/lib.rs",
         r##"
         fn helper() {}
         // #[test]
@@ -376,5 +417,8 @@ fn test_names_come_only_from_test_attributed_functions() {
         "##,
         &mut found,
     );
-    assert_eq!(found.iter().map(String::as_str).collect::<Vec<_>>(), vec!["alpha", "beta"]);
+    assert_eq!(
+        found.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["src/lib.rs::alpha", "src/lib.rs::beta"]
+    );
 }

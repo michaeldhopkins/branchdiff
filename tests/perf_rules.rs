@@ -21,9 +21,16 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
     let manifest = fs::read_to_string(root.join("tests/perf.toml")).expect("read tests/perf.toml");
     let surface = surface::operations();
     assert_eq!(surface::operations(), surface, "surface discovery is not stable");
+    for prefix in ["command:", "key:", "frame:"] {
+        assert!(
+            surface.iter().any(|id| id.starts_with(prefix)),
+            "surface must contain at least one `{prefix}` operation"
+        );
+    }
     let mut tests = BTreeSet::new();
     guard::collect_test_names(&root.join("tests"), &mut tests);
     guard::collect_test_names(&root.join("src"), &mut tests);
+    assert!(!tests.is_empty(), "collected test names must not be empty");
     let bench_text =
         fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
     let benches = guard::recorded_benches(&bench_text);
