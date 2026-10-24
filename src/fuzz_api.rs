@@ -1,5 +1,5 @@
 //! Entry points for the fuzz targets in `fuzz/`, compiled only under `cargo fuzz`
-//! (which passes `--cfg fuzzing`). The parsers they wrap are crate-private; this
+//! (which passes `--cfg fuzzing`) and under `cargo test`, which replays the committed seeds. The parsers they wrap are crate-private; this
 //! module reaches them without making them part of the published library API.
 
 use std::collections::HashMap;
@@ -84,7 +84,10 @@ fn verify_parsed_comments(comments: &[crate::comments::ReviewComment]) {
             .expect("write print to vec");
     }
     let printed = String::from_utf8(printed).expect("print comments must be valid UTF-8");
-    let text = printed.replace("\x1b[36m", "").replace("\x1b[1m", "").replace("\x1b[0m", "");
+    // The renderer's own colours: cyan frame, bold, and the suggestion's red and green rows.
+    let text = ["\x1b[36m", "\x1b[1m", "\x1b[31m", "\x1b[32m", "\x1b[0m"]
+        .iter()
+        .fold(printed, |text, code| text.replace(code, ""));
     assert!(
         text.chars().all(|c| !c.is_control() || c == '\n' || c == '\t'),
         "comment text must never reach the terminal with control characters"
@@ -98,4 +101,26 @@ fn verify_parsed_comments(comments: &[crate::comments::ReviewComment]) {
         patch.chars().all(|c| !c.is_control() || c == '\n' || c == '\t'),
         "comment text must never put control characters in the patch"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    /// The committed seeds must pass the harness that `cargo fuzz` runs, so a
+    /// change to what the renderers write cannot leave the fuzz target crashing
+    /// on its own corpus with only the fuzz replay job to notice.
+    #[test]
+    fn every_committed_comments_seed_passes_the_harness() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/comments");
+        let mut seeds = 0;
+        for entry in std::fs::read_dir(&dir).expect("read the comments corpus") {
+            let path = entry.expect("corpus entry").path();
+            if path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("seed-")) {
+                super::fuzz_comments(&std::fs::read(&path).expect("read seed"));
+                seeds += 1;
+            }
+        }
+        assert!(seeds >= 6, "found only {seeds} seeds in {}", dir.display());
+    }
 }

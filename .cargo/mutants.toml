@@ -14,9 +14,8 @@ additional_cargo_test_args = ["--lib", "--bins"]
 gitignore = true
 
 exclude_globs = [
-    # Compiled only under `--cfg fuzzing` (cargo fuzz), so `cargo test` never
-    # builds it and every mutant here would read as MISSED. Thin forwarders to
-    # parsers tested directly.
+    # The fuzz harness: thin forwarders to parsers tested directly, and invariant
+    # checks that only the fuzz targets and a seed-replay unit test drive.
     "src/fuzz_api.rs",
 ]
 

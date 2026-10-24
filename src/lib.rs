@@ -19,7 +19,7 @@ pub mod image_diff;
 pub mod listing;
 pub mod vcs;
 
-#[cfg(fuzzing)]
+#[cfg(any(fuzzing, test))]
 #[doc(hidden)]
 pub mod fuzz_api;
 pub mod input;

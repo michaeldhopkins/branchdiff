@@ -256,15 +256,17 @@ fuzz/target/aarch64-apple-darwin/release/diff_patch -runs=0 fuzz/corpus/diff_pat
 ```
 
 The crate-private parsers are reached through `src/fuzz_api.rs`, compiled only
-under `--cfg fuzzing` (which cargo-fuzz sets), so the published library API does
-not grow. A new target that needs a private function gets a wrapper there.
+under `--cfg fuzzing` (which cargo-fuzz sets) and under `cargo test`, so the published
+library API does not grow. A unit test there replays every committed `seed-*` of
+`comments` through the harness, so a renderer change that breaks the harness fails
+`cargo test`, not only the fuzz replay job. A new target that needs a private function gets a wrapper there.
 
 | Target | Kind | Asserts |
 |---|---|---|
 | `vcs_output` | never-panics | Every parser over git/jj stdout: `git status --porcelain`, `diff --name-status`, `--numstat`, `git --version`, jj `diff --summary`/`--stat`, the rev-metadata template. |
 | `cat_file_batch` | roundtrip + never-panics | A `git cat-file --batch` stream built from fuzzed responses (blob, tree, `missing`, `ambiguous`, with fuzzed paths) reads back as exactly its blobs; a raw stream never panics or allocates what a header claims. |
 | `diff_patch` | structural invariant | `compute_four_way_diff` over four fuzzed file versions, turned into the `--diff` patch and applied to the base, gives the working tree; hunk headers match their bodies. |
-| `comments` | roundtrip + structural invariant + never-panics | Every review-comment format (`src/comments/`): what parses re-encodes to JSONL and parses back equal; every comment anchors to a line or header, never dropped; HTML output escapes it; `--print` and `--diff` output carries no control character from it; `--diff` minus its `#` comment lines is the plain patch. |
+| `comments` | roundtrip + structural invariant + never-panics | Every review-comment format (`src/comments/`): what parses re-encodes to JSONL and parses back equal; every comment anchors to a line or header, never dropped (an outdated one under its file header); suggestions render with them; HTML output escapes it; `--print` and `--diff` output carries no control character from it; `--diff` minus its `#` comment lines is the plain patch. |
 
 **Input vocabulary.** `fuzz/dict/vcs_output.dict` and `cat_file_batch.dict` are
 the literals the parsers branch on (`src/vcs/git/parse.rs`,
