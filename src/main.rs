@@ -239,7 +239,9 @@ impl AnyDebouncer {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-
+    let headless = cli.benchmark.is_some() || startup::is_one_shot(cli.output.mode());
+    // SAFETY: `main` has not spawned any threads yet.
+    let bench_size = unsafe { startup::pin_headless_size_env(headless) };
     let repo_path = cli.path.canonicalize().context("Failed to resolve repository path")?;
 
     // Try to detect VCS - for non-TUI modes, fail immediately if not found
@@ -306,7 +308,7 @@ fn main() -> Result<()> {
         Some(vcs) => {
             let repo_root = vcs.repo_path().to_path_buf();
             if let Some(frames) = cli.benchmark {
-                return run_benchmark(vcs, repo_root, frames);
+                return run_benchmark(vcs, repo_root, frames, bench_size);
             }
             run_main_app(vcs, repo_root, &cli)
         }
@@ -515,7 +517,12 @@ fn run_main_app(mut detected: Box<dyn Vcs>, mut repo_root: PathBuf, cli: &Cli) -
     Ok(())
 }
 
-fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> Result<()> {
+fn run_benchmark(
+    detected: Box<dyn Vcs>,
+    repo_root: PathBuf,
+    frames: usize,
+    (cols, rows): (u16, u16),
+) -> Result<()> {
     use ratatui::backend::TestBackend;
 
     eprintln!("Loading diff from {}...", repo_root.display());
@@ -537,19 +544,16 @@ fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> R
         return Ok(());
     }
 
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend)?;
-    let visible_height = 40_usize;
+    let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;
+    let visible_height = usize::from(rows);
 
     app.set_viewport_height(visible_height);
     app.view.collapsed_files.clear();
 
     eprintln!("Running {} frames...", frames);
     let bench_start = Instant::now();
-
     for frame_num in 0..frames {
         app.bench_step(frame_num);
-
         let items = if app.needs_inline_spans() {
             let items = app.ensure_inline_spans_for_visible(visible_height);
             app.clear_needs_inline_spans();
@@ -557,7 +561,6 @@ fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> R
         } else {
             None
         };
-
         terminal.draw(|f| {
             let frame_ctx = match items {
                 Some(items) => FrameContext::with_items(items, &app),
@@ -566,16 +569,13 @@ fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> R
             ui::draw_with_frame(f, &mut app, &frame_ctx)
         })?;
     }
-
     let bench_time = bench_start.elapsed();
     let avg_frame = bench_time.as_micros() as f64 / frames as f64;
-
     eprintln!("\nResults:");
     eprintln!("  Total time:     {:?}", bench_time);
     eprintln!("  Frames:         {}", frames);
     eprintln!("  Avg frame:      {:.1} µs", avg_frame);
     eprintln!("  Throughput:     {:.0} fps", 1_000_000.0 / avg_frame);
-
     Ok(())
 }
 
@@ -1605,7 +1605,7 @@ mod tests {
     #[test]
     fn a_benchmark_that_cannot_load_the_diff_fails() {
         let root = PathBuf::from("/bench");
-        let result = run_benchmark(Box::new(IdleVcs(root.clone())), root, 1);
+        let result = run_benchmark(Box::new(IdleVcs(root.clone())), root, 1, (120, 40));
         assert!(result.is_err());
     }
 

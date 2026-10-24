@@ -220,11 +220,29 @@ fn run_counted(
     let path = stub_env_path(stub);
     isolated(&mut cmd, home, config, &path);
     cmd.env("BRANCHDIFF_PERF_COUNTS", &counts);
+    detach_controlling_tty(&mut cmd);
     let output = cmd.output().unwrap_or_else(|err| panic!("{id} failed to start: {err}"));
     assert_output(id, &output);
     let unexpected = unexpected_spawns(&counts);
     assert!(unexpected.is_empty(), "{id} spawned unexpected program(s): {}", unexpected.join(", "));
     count_spawns(&counts)
+}
+
+fn detach_controlling_tty(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // SAFETY: `setsid` is async-signal-safe and a freshly forked child is never
+    // a process-group leader, so it always starts a new session without a
+    // controlling terminal (`/dev/tty` opens fail with ENXIO).
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 fn stub_env_path(stub: &Path) -> String {
@@ -626,4 +644,55 @@ fn stub_path_is_stub_dir_only_and_counts_any_spawn_including_non_vcs_programs() 
         .env("PATH", stub_env_path(&stub))
         .output();
     assert!(unstubbed.is_err(), "program absent from stub dir must fail to start");
+}
+
+#[test]
+fn counted_children_run_without_controlling_tty_and_never_spawn_tput() {
+    if std::env::var_os("BRANCHDIFF_NO_TTY_PROBE").is_some() {
+        assert!(
+            fs::File::open("/dev/tty").is_err(),
+            "detached child must have no controlling terminal (/dev/tty must not open)"
+        );
+        return;
+    }
+
+    let mut probe = Command::new(std::env::current_exe().expect("current_exe"));
+    probe
+        .args([
+            "--exact",
+            "counts::counted_children_run_without_controlling_tty_and_never_spawn_tput",
+            "--nocapture",
+        ])
+        .env("BRANCHDIFF_NO_TTY_PROBE", "1");
+    detach_controlling_tty(&mut probe);
+    let probe_out = probe.output().expect("spawn probe");
+    assert!(
+        probe_out.status.success(),
+        "no-tty probe failed:\n{}",
+        String::from_utf8_lossy(&probe_out.stderr)
+    );
+
+    let home = TempDir::new().expect("home");
+    let stub = write_stub(home.path());
+    let config = write_jj_config(home.path());
+    let repo = build_repo(home.path(), &config);
+
+    let args = vec!["--benchmark".to_string(), "1".to_string(), "--no-auto-fetch".to_string()];
+    let count = run_counted("command:branchdiff", &args, Some(&repo), &stub, home.path(), &config);
+    assert_eq!(count, 63, "command:branchdiff with no controlling tty must match its floor");
+
+    let counts = home.path().join("counts-custom-size.txt");
+    fs::write(&counts, "").expect("init custom counts");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_branchdiff"));
+    cmd.args(&args).current_dir(repo.path());
+    isolated(&mut cmd, home.path(), &config, &stub_env_path(&stub));
+    cmd.env("COLUMNS", "100").env("LINES", "30").env("BRANCHDIFF_PERF_COUNTS", &counts);
+    detach_controlling_tty(&mut cmd);
+    let output = cmd.output().expect("run custom-size benchmark");
+    assert_output("command:branchdiff", &output);
+    assert!(
+        unexpected_spawns(&counts).is_empty(),
+        "injected COLUMNS/LINES benchmark spawned unexpected program(s)"
+    );
+    assert_eq!(count_spawns(&counts), 63);
 }
