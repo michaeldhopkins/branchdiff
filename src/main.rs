@@ -15,7 +15,6 @@ use branchdiff::file_events::VcsLockState;
 #[cfg(target_os = "linux")]
 use branchdiff::gitignore::GitignoreFilter;
 use branchdiff::html::print_html;
-use branchdiff::input::AppAction;
 use branchdiff::limits;
 #[cfg(target_os = "linux")]
 use branchdiff::message::Message;
@@ -260,7 +259,12 @@ fn main() -> Result<()> {
     if let Some(vcs) = &detected {
         let mode = cli.output.mode();
         if startup::is_one_shot(mode) {
-            if branchdiff::listing::print(vcs.as_ref(), mode, cli.options.json)? {
+            if branchdiff::listing::print_with_comments(
+                vcs.as_ref(),
+                mode,
+                cli.options.json,
+                cli.comments.as_deref(),
+            )? {
                 return Ok(());
             }
             let repo_root = vcs.repo_path().to_path_buf();
@@ -268,9 +272,10 @@ fn main() -> Result<()> {
             let (comparison, initial) =
                 branchdiff::startup_load::load_comparison_and_refresh(vcs.as_ref(), &cancel_flag)?;
             let mut app = app::App::new(repo_root, comparison, initial);
+            app.load_comments_from(cli.comments.as_deref())?;
 
             match mode {
-                OutputMode::Diff => print!("{}", branchdiff::patch::generate_patch(app.lines())),
+                OutputMode::Diff => print!("{}", app.patch_with_comments()),
                 OutputMode::Print | OutputMode::Html => {
                     app.view.view_mode = startup::view_mode_for(mode);
                     let data = branchdiff::output::prepare(&mut app);
@@ -303,9 +308,9 @@ fn main() -> Result<()> {
             if let Some(frames) = cli.benchmark {
                 return run_benchmark(vcs, repo_root, frames);
             }
-            run_main_app(vcs, repo_root, cli.auto_fetch(), cli.base.as_deref())
+            run_main_app(vcs, repo_root, &cli)
         }
-        None => run_waiting_for_vcs(&repo_path, cli.auto_fetch(), cli.base.as_deref()),
+        None => run_waiting_for_vcs(&repo_path, &cli),
     }
 }
 
@@ -315,7 +320,7 @@ fn main() -> Result<()> {
 /// creation, with a polling fallback. Once a VCS directory is found, retries
 /// full `vcs::detect()` (which runs external commands) with backoff until it
 /// succeeds — surfacing errors on screen so PATH issues are visible.
-fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Result<()> {
+fn run_waiting_for_vcs(path: &Path, cli: &Cli) -> Result<()> {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::layout::Alignment;
     use ratatui::widgets::{Block, Borders, Paragraph};
@@ -387,10 +392,7 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Res
         }
 
         // Drain any watcher events (they signal potential directory creation).
-        let mut watcher_fired = false;
-        while watch_rx.try_recv().is_ok() {
-            watcher_fired = true;
-        }
+        let watcher_fired = watch_rx.try_iter().count() > 0;
 
         // Phase 1: check for VCS directory existence (filesystem only, no commands).
         if repo_found.is_none() && (watcher_fired || last_poll.elapsed() >= poll_interval) {
@@ -404,12 +406,12 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Res
         // Phase 2: repo directory exists — try full detection with commands.
         if repo_found.is_some() && last_detect_attempt.elapsed() >= retry_delay {
             last_detect_attempt = Instant::now();
-            match vcs::detect_with_base(path, base) {
+            match vcs::detect_with_base(path, cli.base.as_deref()) {
                 Ok(detected) => {
                     let repo_root = detected.repo_path().to_path_buf();
                     // Restore before handing off; run_main_app installs its own guard.
                     drop(guard);
-                    return run_main_app(detected, repo_root, auto_fetch, base);
+                    return run_main_app(detected, repo_root, cli);
                 }
                 Err(e) => {
                     last_error = Some(format!("{e:#}"));
@@ -421,12 +423,7 @@ fn run_waiting_for_vcs(path: &Path, auto_fetch: bool, base: Option<&str>) -> Res
 }
 
 /// Main app logic, extracted for reuse after VCS detection.
-fn run_main_app(
-    mut detected: Box<dyn Vcs>,
-    mut repo_root: PathBuf,
-    auto_fetch: bool,
-    base: Option<&str>,
-) -> Result<()> {
+fn run_main_app(mut detected: Box<dyn Vcs>, mut repo_root: PathBuf, cli: &Cli) -> Result<()> {
     // Initialize image protocol picker (once — survives restarts)
     let mut image_picker = branchdiff::terminal_query::detect_image_picker();
     image_picker.set_background_color(image::Rgba([30, 30, 30, 255]));
@@ -441,6 +438,9 @@ fn run_main_app(
         let vcs: Arc<dyn Vcs> = Arc::from(detected);
 
         let mut app = build_initial_app(&*vcs, repo_root.clone());
+        if let Err(e) = app.load_comments_from(cli.comments.as_deref()) {
+            app.error = Some(e.to_string());
+        }
         app.load_images_for_markers(&*vcs);
         app.set_image_picker(image_picker.clone());
 
@@ -461,6 +461,11 @@ fn run_main_app(
 
         let watcher_metrics =
             setup_watcher(debouncer.watcher(), &vcs.watch_paths(), vcs.repo_path(), watch_limit)?;
+        if let Some(comment_path) = app.view.comments_source.watch_path()
+            && comment_path.exists()
+        {
+            let _ = debouncer.watcher().watch(comment_path, NonRecursive);
+        }
 
         let needs_fallback_refresh =
             limits::check_watch_warning(&watcher_metrics, watch_limit).is_some();
@@ -472,7 +477,7 @@ fn run_main_app(
         let (refresh_tx, refresh_rx) = mpsc::channel::<RefreshOutcome>();
 
         let config = UpdateConfig::for_session(
-            auto_fetch,
+            cli.auto_fetch(),
             needs_fallback_refresh,
             repo_root.clone(),
             watchdog_timeout_from_env(),
@@ -493,14 +498,16 @@ fn run_main_app(
 
         match loop_action {
             LoopAction::Quit => break,
-            LoopAction::RestartVcs => match vcs::detect_with_base(&repo_root, base) {
-                Ok(new_vcs) => {
-                    repo_root = new_vcs.repo_path().to_path_buf();
-                    detected = new_vcs;
-                    continue;
+            LoopAction::RestartVcs => {
+                match vcs::detect_with_base(&repo_root, cli.base.as_deref()) {
+                    Ok(new_vcs) => {
+                        repo_root = new_vcs.repo_path().to_path_buf();
+                        detected = new_vcs;
+                        continue;
+                    }
+                    Err(_) => break,
                 }
-                Err(_) => break,
-            },
+            }
             LoopAction::Continue => unreachable!("run_app should not return Continue"),
         }
     }
@@ -541,30 +548,17 @@ fn run_benchmark(detected: Box<dyn Vcs>, repo_root: PathBuf, frames: usize) -> R
     let bench_start = Instant::now();
 
     for frame_num in 0..frames {
-        let action = match frame_num % 20 {
-            0..=4 => AppAction::ScrollDown(3),
-            5..=9 => AppAction::ScrollUp(2),
-            10 => AppAction::NextFile,
-            11 => AppAction::PrevFile,
-            12 => AppAction::CycleViewMode,
-            13 => AppAction::GoToBottom,
-            14 => AppAction::GoToTop,
-            15 => AppAction::PageDown,
-            16 => AppAction::PageUp,
-            _ => AppAction::ScrollDown(1),
-        };
-
-        match action {
-            AppAction::ScrollDown(n) => app.scroll_down(n),
-            AppAction::ScrollUp(n) => app.scroll_up(n),
-            AppAction::NextFile => app.next_file(),
-            AppAction::PrevFile => app.prev_file(),
-            AppAction::CycleViewMode => app.cycle_view_mode(),
-            AppAction::GoToBottom => app.go_to_bottom(),
-            AppAction::GoToTop => app.go_to_top(),
-            AppAction::PageDown => app.page_down(),
-            AppAction::PageUp => app.page_up(),
-            _ => {}
+        match frame_num % 20 {
+            0..=4 => app.scroll_down(3),
+            5..=9 => app.scroll_up(2),
+            10 => app.next_file(),
+            11 => app.prev_file(),
+            12 => app.cycle_view_mode(),
+            13 => app.go_to_bottom(),
+            14 => app.go_to_top(),
+            15 => app.page_down(),
+            16 => app.page_up(),
+            _ => app.scroll_down(1),
         }
 
         let items = if app.needs_inline_spans() {

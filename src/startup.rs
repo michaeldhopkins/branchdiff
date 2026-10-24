@@ -134,6 +134,7 @@ mod tests {
                 additions: 0,
                 deletions: 0,
                 collapsed: false,
+                comments: Default::default(),
             }],
             total_additions: 0,
             total_deletions: 0,

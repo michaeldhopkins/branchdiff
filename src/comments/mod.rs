@@ -9,14 +9,19 @@
 pub mod anchor;
 mod extract;
 mod json;
+pub mod patch;
 pub mod render;
 mod revdiff;
+pub mod sanitize;
 
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub use anchor::{anchor_comments, ensure_commented_files, normalize_comment_path, paths_match};
+pub use anchor::{
+    anchor_comments, ensure_commented_files, file_diff_matches_path, normalize_comment_path,
+    paths_match,
+};
 pub use json::comment_to_json_line;
 
 /// Default candidate paths (relative to the repository root) checked when
@@ -25,6 +30,31 @@ pub const DEFAULT_COMMENT_CANDIDATES: &[&str] = &[
     ".jj/comments.jsonl", ".jj/comments.json", ".jj/comments.txt", ".jj/comments",
     ".git/comments.jsonl", ".git/comments.json", ".git/comments.txt", ".git/comments",
 ];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommentsSource {
+    /// Autodetected comments file in `.jj/` or `.git/` (if any currently exists).
+    Auto(Option<PathBuf>),
+    /// Explicit file path passed via `--comments <PATH>`.
+    Explicit(PathBuf),
+    /// Standard input passed via `--comments -`.
+    Stdin,
+}
+
+impl Default for CommentsSource {
+    fn default() -> Self {
+        Self::Auto(None)
+    }
+}
+
+impl CommentsSource {
+    pub fn watch_path(&self) -> Option<&Path> {
+        match self {
+            Self::Auto(Some(p)) | Self::Explicit(p) => Some(p.as_path()),
+            Self::Auto(None) | Self::Stdin => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CommentSide {
@@ -186,6 +216,38 @@ pub fn resolve_comments_file(explicit: Option<&Path>, repo_root: &Path) -> Optio
     }
 }
 
+/// The most a comments source may hold. Review files are kilobytes; the cap
+/// stops a wrong path or an endless pipe from filling memory.
+pub const MAX_COMMENTS_BYTES: usize = 16 * 1024 * 1024;
+
+/// Read at most `MAX_COMMENTS_BYTES` from `reader`, failing when there is more.
+pub fn read_capped(reader: impl Read, what: &str) -> Result<Vec<u8>, CommentError> {
+    let mut buf = Vec::new();
+    reader
+        .take(MAX_COMMENTS_BYTES as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| CommentError::Io(format!("{what}: {e}")))?;
+    if buf.len() > MAX_COMMENTS_BYTES {
+        return Err(CommentError::Io(format!(
+            "{what}: larger than {} MiB",
+            MAX_COMMENTS_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(buf)
+}
+
+fn capped_text(reader: impl Read, what: &str) -> Result<String, CommentError> {
+    String::from_utf8(read_capped(reader, what)?)
+        .map_err(|_| CommentError::Io(format!("{what}: not valid UTF-8")))
+}
+
+/// Read a comments file as text, within `MAX_COMMENTS_BYTES`.
+pub fn read_comments_file(path: &Path) -> Result<String, CommentError> {
+    let what = path.display().to_string();
+    let file = std::fs::File::open(path).map_err(|e| CommentError::Io(format!("{what}: {e}")))?;
+    capped_text(file, &what)
+}
+
 /// Read the raw bytes of the comments source for `--fingerprint` (returns `Ok(None)`
 /// when no comments file is active).
 pub fn read_comments_source_bytes(
@@ -193,18 +255,14 @@ pub fn read_comments_source_bytes(
     repo_root: &Path,
 ) -> Result<Option<Vec<u8>>, CommentError> {
     if explicit == Some(Path::new("-")) {
-        let mut buf = Vec::new();
-        std::io::stdin()
-            .read_to_end(&mut buf)
-            .map_err(|e| CommentError::Io(format!("stdin: {e}")))?;
-        return Ok(Some(buf));
+        return read_capped(std::io::stdin(), "stdin").map(Some);
     }
     let Some(path) = resolve_comments_file(explicit, repo_root) else {
         return Ok(None);
     };
-    let bytes =
-        std::fs::read(&path).map_err(|e| CommentError::Io(format!("{}: {e}", path.display())))?;
-    Ok(Some(bytes))
+    let what = path.display().to_string();
+    let file = std::fs::File::open(&path).map_err(|e| CommentError::Io(format!("{what}: {e}")))?;
+    read_capped(file, &what).map(Some)
 }
 
 /// Load and parse comments from `explicit` (`"-"` for stdin) or the autodetected
@@ -214,11 +272,7 @@ pub fn load_comments(
     repo_root: &Path,
 ) -> Result<Vec<ReviewComment>, CommentError> {
     if explicit == Some(Path::new("-")) {
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .map_err(|e| CommentError::Io(format!("stdin: {e}")))?;
-        return parse_comments(&buf);
+        return parse_comments(&capped_text(std::io::stdin(), "stdin")?);
     }
     load_comments_with_stdin(explicit, repo_root, None)
 }
@@ -240,9 +294,7 @@ pub fn load_comments_with_stdin(
             None => return Ok(Vec::new()),
         },
     };
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| CommentError::Io(format!("{}: {e}", path.display())))?;
-    parse_comments(&content)
+    parse_comments(&read_comments_file(&path)?)
 }
 
 #[cfg(test)]
@@ -610,5 +662,25 @@ File-level summary note.
         assert_eq!(stdin_loaded.len(), 1);
         assert_eq!(stdin_loaded[0].path, "c.rs");
         assert_eq!(stdin_loaded[0].body, "from stdin");
+    }
+
+    #[test]
+    fn a_source_over_the_cap_is_an_error_and_one_at_the_cap_is_read() {
+        let at = vec![b' '; MAX_COMMENTS_BYTES];
+        assert_eq!(read_capped(&at[..], "x").unwrap().len(), MAX_COMMENTS_BYTES);
+        let over = vec![b' '; MAX_COMMENTS_BYTES + 1];
+        assert_eq!(
+            read_capped(&over[..], "x"),
+            Err(CommentError::Io("x: larger than 16 MiB".into()))
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.txt");
+        std::fs::write(&path, &over).unwrap();
+        let err = load_comments_with_stdin(Some(&path), dir.path(), None).unwrap_err();
+        assert!(err.to_string().ends_with("larger than 16 MiB"), "{err}");
+        std::fs::write(&path, b"\xff").unwrap();
+        let err = read_comments_file(&path).unwrap_err();
+        assert!(err.to_string().ends_with("not valid UTF-8"), "{err}");
     }
 }

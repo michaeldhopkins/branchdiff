@@ -1,6 +1,7 @@
 //! Application state and logic module for branchdiff
 
 mod collapse;
+mod comments;
 mod frame;
 mod navigation;
 mod refresh;
@@ -279,6 +280,7 @@ impl App {
                 self.view.view_mode = ViewMode::Context;
             }
         }
+        self.sync_commented_files_and_anchor();
         self.auto_collapse_files();
         self.check_reviewed_staleness();
         self.clamp_scroll();
@@ -365,26 +367,23 @@ impl App {
         });
 
         match (existing_idx, new_diff) {
-            (Some(idx), Some(diff)) => {
-                self.files[idx] = diff;
-            }
+            (Some(idx), Some(diff)) => self.files[idx] = diff,
             (Some(idx), None) => {
                 self.files.remove(idx);
             }
-            (None, Some(diff)) => {
-                self.files.push(diff);
-            }
+            (None, Some(diff)) => self.files.push(diff),
             (None, None) => {}
         }
 
         self.regenerate_lines();
+        self.sync_commented_files_and_anchor();
         self.auto_collapse_files();
         self.check_reviewed_staleness();
         self.clamp_scroll();
         self.view.needs_inline_spans = true;
     }
 
-    fn regenerate_lines(&mut self) {
+    pub(crate) fn regenerate_lines(&mut self) {
         use crate::diff::LineSource;
 
         let mut lines = Vec::new();

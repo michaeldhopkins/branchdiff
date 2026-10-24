@@ -107,6 +107,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_auto_fetch: bool,
 
+    /// Read review comments from PATH (- for stdin)
+    #[arg(long = "comments", value_name = "PATH")]
+    pub comments: Option<PathBuf>,
+
     #[command(flatten)]
     pub output: OutputFlags,
 
@@ -219,6 +223,21 @@ mod tests {
     #[test]
     fn an_unknown_html_value_is_refused() {
         assert!(parse(&["--html=fast"]).is_err());
+    }
+
+    #[test]
+    fn comments_flag_accepts_path_or_stdin_across_modes() {
+        let tui = parse(&["--comments", "review.jsonl"]).unwrap();
+        assert_eq!(tui.comments, Some(PathBuf::from("review.jsonl")));
+        assert_eq!(tui.output.mode(), OutputMode::Tui);
+
+        let html = parse(&["--html", "--comments", "-"]).unwrap();
+        assert_eq!(html.comments, Some(PathBuf::from("-")));
+        assert_eq!(html.output.mode(), OutputMode::Html);
+
+        let print = parse(&["--print", "--comments=notes.txt"]).unwrap();
+        assert_eq!(print.comments, Some(PathBuf::from("notes.txt")));
+        assert_eq!(print.output.mode(), OutputMode::Print);
     }
 
     #[test]

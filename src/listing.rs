@@ -1,5 +1,6 @@
 //! The outputs that skip rendering a diff: `--files` and `--fingerprint`.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -12,9 +13,26 @@ use crate::vcs::Vcs;
 
 /// The text for `--files` or `--fingerprint`, or `None` for every other mode.
 pub fn render(vcs: &dyn Vcs, mode: OutputMode, json: bool) -> Result<Option<String>> {
+    render_with_comments(vcs, mode, json, None)
+}
+
+/// The text for `--files` or `--fingerprint` (including `comments` in the fingerprint),
+/// or `None` for every other mode.
+pub fn render_with_comments(
+    vcs: &dyn Vcs,
+    mode: OutputMode,
+    json: bool,
+    comments: Option<&Path>,
+) -> Result<Option<String>> {
     match mode {
         OutputMode::Fingerprint => {
-            let inputs = vcs.fingerprint_inputs()?;
+            let mut inputs = vcs.fingerprint_inputs()?;
+            if let Some(bytes) =
+                crate::comments::read_comments_source_bytes(comments, vcs.repo_path())?
+            {
+                inputs.state.push_str("\n#comments\n");
+                inputs.state.push_str(&String::from_utf8_lossy(&bytes));
+            }
             let hash = fingerprint(&inputs, |path| vcs.working_file_bytes(path).ok().flatten());
             Ok(Some(format!("{hash}\n")))
         }
@@ -33,7 +51,17 @@ pub fn render(vcs: &dyn Vcs, mode: OutputMode, json: bool) -> Result<Option<Stri
 
 /// Print the listing for `mode` if it is one; whether it was.
 pub fn print(vcs: &dyn Vcs, mode: OutputMode, json: bool) -> Result<bool> {
-    let Some(text) = render(vcs, mode, json)? else { return Ok(false) };
+    print_with_comments(vcs, mode, json, None)
+}
+
+/// Print the listing for `mode` (with `comments` included in `--fingerprint`).
+pub fn print_with_comments(
+    vcs: &dyn Vcs,
+    mode: OutputMode,
+    json: bool,
+    comments: Option<&Path>,
+) -> Result<bool> {
+    let Some(text) = render_with_comments(vcs, mode, json, comments)? else { return Ok(false) };
     print!("{text}");
     Ok(true)
 }
@@ -244,5 +272,25 @@ mod tests {
         run(d, "jj", &["commit", "-m", "more"]);
         let vcs = crate::vcs::detect(d).unwrap();
         assert_ne!(before, text(vcs.as_ref(), OutputMode::Fingerprint, false));
+    }
+
+    #[test]
+    fn fingerprint_tracks_comments_file_edits() {
+        if !available("git") {
+            return;
+        }
+        let t = git_repo();
+        let d = t.path();
+        let vcs = crate::vcs::detect(d).unwrap();
+        let base_fp = text(vcs.as_ref(), OutputMode::Fingerprint, false);
+
+        let comments_path = d.join(".git/comments.jsonl");
+        std::fs::write(&comments_path, r#"{"path":"g.txt","line":1,"body":"first"}"#).unwrap();
+        let with_first = text(vcs.as_ref(), OutputMode::Fingerprint, false);
+        assert_ne!(base_fp, with_first, "autodetected comments file should affect fingerprint");
+
+        std::fs::write(&comments_path, r#"{"path":"g.txt","line":1,"body":"second"}"#).unwrap();
+        let with_second = text(vcs.as_ref(), OutputMode::Fingerprint, false);
+        assert_ne!(with_first, with_second, "editing comments file should move fingerprint");
     }
 }

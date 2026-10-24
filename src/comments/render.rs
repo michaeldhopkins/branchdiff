@@ -5,18 +5,19 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::diff::content_display_width;
+use crate::diff::{DiffLine, LineSource, content_display_width};
 use crate::html::html_escape;
 use crate::ui::ScreenRowInfo;
-use crate::ui::wrapping::wrap_content;
+use crate::ui::wrapping::{wrap_content, wrapped_line_height};
 
 use super::AnchoredComments;
+use super::sanitize::printable;
 
 const COMMENT_HEADER_COLOR: Color = Color::Rgb(110, 200, 235);
 const COMMENT_BODY_COLOR: Color = Color::Rgb(225, 228, 234);
 const COMMENT_GUTTER_COLOR: Color = Color::Rgb(110, 200, 235);
 
-fn body_lines(body: &str) -> Vec<&str> {
+pub(super) fn body_lines(body: &str) -> Vec<&str> {
     if body.is_empty() { vec![""] } else { body.lines().collect() }
 }
 
@@ -48,13 +49,16 @@ pub fn tui_comment_rows_for_line(
 
 /// Parameters for rendering TUI comments below a diff line.
 pub struct TuiCommentRenderSpec<'a> {
+    pub diff_line: &'a DiffLine,
+    pub line_rows: usize,
     pub line_num_width: usize,
     pub prefix_width: usize,
     pub content_width: usize,
     pub screen_row_idx: usize,
     pub max_rows: usize,
     pub skip_rows: usize,
-    pub file_path: Option<&'a str>,
+    pub area_width: u16,
+    pub font_size: (u16, u16),
 }
 
 /// Render comments attached to `line_idx` into `all_lines` and `all_row_infos`,
@@ -73,17 +77,29 @@ pub fn render_tui_comments(
         return 0;
     }
 
+    let line_full_rows = if spec.diff_line.source == LineSource::FileHeader
+        || spec.diff_line.source == LineSource::Elided
+    {
+        1
+    } else {
+        wrapped_line_height(
+            spec.diff_line, spec.content_width, None, spec.area_width, spec.font_size,
+        )
+    };
+    let start_screen_row = spec.screen_row_idx + spec.line_rows;
+    let file_path = spec.diff_line.file_path.as_deref();
+
     let blank_prefix =
         if spec.line_num_width > 0 { " ".repeat(spec.line_num_width + 1) } else { String::new() };
     let gutter_style = Style::default().fg(COMMENT_GUTTER_COLOR);
     let header_style = Style::default().fg(COMMENT_HEADER_COLOR).add_modifier(Modifier::BOLD);
     let body_style = Style::default().fg(COMMENT_BODY_COLOR);
 
-    let mut remaining_skip = spec.skip_rows;
+    let mut remaining_skip = spec.skip_rows.saturating_sub(line_full_rows);
     let mut emitted = 0usize;
 
     let mut emit_piece = |text: String, gutter: &str, style: Style| {
-        if spec.screen_row_idx + emitted >= spec.max_rows {
+        if start_screen_row + emitted >= spec.max_rows {
             return;
         }
         let piece_rows = wrapped_rows_for_text(&text, spec.content_width);
@@ -91,7 +107,7 @@ pub fn render_tui_comments(
             remaining_skip -= piece_rows;
             return;
         }
-        let max_for_piece = spec.max_rows.saturating_sub(spec.screen_row_idx + emitted).max(1);
+        let max_for_piece = spec.max_rows.saturating_sub(start_screen_row + emitted).max(1);
         let (lines, mut infos) = wrap_content(
             vec![Span::styled(text.clone(), style)],
             &text,
@@ -105,7 +121,7 @@ pub fn render_tui_comments(
         );
         remaining_skip = 0;
         for info in &mut infos {
-            info.file_path = spec.file_path.map(str::to_string);
+            info.file_path = file_path.map(str::to_string);
         }
         emitted += lines.len();
         all_lines.extend(lines);
@@ -134,9 +150,10 @@ pub fn write_print_comments(
     };
     let indent = if line_num_width > 0 { " ".repeat(line_num_width + 1) } else { String::new() };
     for anchored in list {
-        writeln!(out, "{indent}\x1b[36m\x1b[1m  💬 {}\x1b[0m", anchored.header_label())?;
+        let header = anchored.header_label();
+        writeln!(out, "{indent}\x1b[36m\x1b[1m  💬 {}\x1b[0m", printable(&header))?;
         for raw in body_lines(&anchored.comment.body) {
-            writeln!(out, "{indent}\x1b[36m  │ \x1b[0m {raw}")?;
+            writeln!(out, "{indent}\x1b[36m  │ \x1b[0m {}", printable(raw))?;
         }
     }
     Ok(())
@@ -156,12 +173,44 @@ pub fn write_html_comments(
         let body = html_escape(&anchored.comment.body);
         writeln!(
             out,
-            "<tr class=\"comment-row\"><td colspan=\"3\" class=\"comment-cell\">\
-             <div class=\"review-comment\">\
+            "<tr class=\"comment-row\"><td class=\"ln\"></td><td class=\"gutter\"></td>\
+             <td class=\"comment-cell\"><div class=\"review-comment\">\
              <div class=\"comment-header\">💬 {header}</div>\
              <div class=\"comment-body\">{body}</div>\
              </div></td></tr>"
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::comments::{CommentSide, ReviewComment, anchor_comments};
+
+    #[test]
+    fn print_comments_strip_escape_sequences_from_body_and_author() {
+        let lines = vec![
+            DiffLine::file_header("a.rs"),
+            DiffLine::new(LineSource::Committed, "x".into(), '+', Some(1)).with_file_path("a.rs"),
+        ];
+        let anchored = anchor_comments(
+            &lines,
+            &[ReviewComment {
+                path: "a.rs".into(),
+                start_line: Some(1),
+                end_line: Some(1),
+                side: CommentSide::New,
+                body: "title \x1b]0;PWNED\x07 then \u{9b}2J".into(),
+                author: Some("eve\x1b[5m".into()),
+            }],
+        );
+        let mut buf = Vec::new();
+        write_print_comments(&mut buf, &anchored, 1, 1).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        let ours = out.replace("\x1b[36m", "").replace("\x1b[1m", "").replace("\x1b[0m", "");
+        assert!(ours.chars().all(|c| !c.is_control() || c == '\n'), "{out:?}");
+        assert!(ours.contains("@eve [5m · line 1 (+)"), "{out:?}");
+        assert!(ours.contains("title  ]0;PWNED  then  2J"), "{out:?}");
+    }
 }

@@ -5,6 +5,7 @@ use base64::Engine;
 use ratatui::style::Color;
 use rayon::prelude::*;
 
+use crate::comments::render::write_html_comments;
 use crate::diff::{DiffLine, LineSource};
 use crate::image_diff::{CachedImage, ImageCache};
 use crate::output::{OutputData, OutputFile};
@@ -311,13 +312,15 @@ fn write_file(
 
     let file_path = Some(file.path.as_str());
 
-    for line in &file.lines {
+    for (line_idx, line) in file.lines.iter().enumerate() {
         if line.source == LineSource::FileHeader {
+            write_html_comments(out, &file.comments, line_idx)?;
             continue;
         }
 
         if line.is_image_marker() {
             write_image(out, line, images)?;
+            write_html_comments(out, &file.comments, line_idx)?;
             continue;
         }
 
@@ -348,6 +351,7 @@ fn write_file(
         }
 
         writeln!(out, "</td></tr>")?;
+        write_html_comments(out, &file.comments, line_idx)?;
     }
 
     writeln!(out, "</table>")?;
@@ -591,6 +595,7 @@ mod tests {
                 additions: 1,
                 deletions: 1,
                 collapsed: false,
+                comments: Default::default(),
             }],
             total_additions: 1,
             total_deletions: 1,
@@ -636,7 +641,44 @@ mod tests {
             additions: body.len(),
             deletions: 0,
             collapsed: false,
+            comments: Default::default(),
         }
+    }
+
+    #[test]
+    fn html_comments_escape_tags_and_scripts_in_body_and_author() {
+        use crate::comments::{CommentSide, ReviewComment, anchor_comments};
+
+        let mut file = rust_file("src/xss.rs", &["let ok = true;"]);
+        file.lines[1].file_path = Some("src/xss.rs".into());
+        file.comments = anchor_comments(
+            &file.lines,
+            &[ReviewComment {
+                path: "src/xss.rs".into(),
+                start_line: Some(1),
+                end_line: Some(1),
+                side: CommentSide::New,
+                body: "<script>alert(\"xss\")</script> & <img onerror='boom'>".into(),
+                author: Some("evil<script>".into()),
+            }],
+        );
+        let data = OutputData {
+            repo_name: "r".into(),
+            to_label: "a".into(),
+            from_label: "b".into(),
+            files: vec![file],
+            total_additions: 1,
+            total_deletions: 0,
+        };
+        let mut buf = Vec::new();
+        render_html(&mut buf, &data, &ImageCache::new(), Refresh::Off).unwrap();
+        let html = String::from_utf8(buf).unwrap();
+
+        assert!(html.contains("&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;"), "{html}");
+        assert!(html.contains("&amp; &lt;img onerror=&#39;boom&#39;&gt;"), "{html}");
+        assert!(html.contains("@evil&lt;script&gt;"), "{html}");
+        assert!(!html.contains("<script>alert("), "{html}");
+        assert!(!html.contains("<img onerror="), "{html}");
     }
 
     /// The page as one serial walk over the files wrote it, with a single reset

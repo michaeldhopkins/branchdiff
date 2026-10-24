@@ -39,8 +39,17 @@ impl App {
     ) -> Vec<bool> {
         const CONTEXT_LINES: usize = 5;
 
-        let interesting: Vec<bool> =
-            self.lines.iter().map(|line| line.source.is_header() || is_interesting(line)).collect();
+        let has_comments = !self.view.comments.is_empty();
+        let interesting: Vec<bool> = self
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| {
+                line.source.is_header()
+                    || is_interesting(line)
+                    || (has_comments && self.view.comments.for_line(i).is_some())
+            })
+            .collect();
 
         let mut show = vec![false; self.lines.len()];
         for (i, &is_interesting) in interesting.iter().enumerate() {
@@ -294,25 +303,14 @@ impl App {
                     let file_path = line.file_path.as_ref().or(current_file.as_ref());
 
                     // Hide lines from collapsed files
-                    let should_show = if let Some(path) = file_path {
-                        !self.view.collapsed_files.contains(path)
-                    } else {
-                        true
-                    };
-
-                    if should_show {
+                    if file_path.is_none_or(|p| !self.view.collapsed_files.contains(p)) {
                         result.push(item);
                     }
                 }
                 DisplayableItem::Elided(_) => {
                     // Elided markers don't have file_path, use current_file
-                    let should_show = if let Some(ref path) = current_file {
-                        !self.view.collapsed_files.contains(path)
-                    } else {
-                        true
-                    };
-
-                    if should_show {
+                    if current_file.as_ref().is_none_or(|p| !self.view.collapsed_files.contains(p))
+                    {
                         result.push(item);
                     }
                 }

@@ -213,6 +213,10 @@ td {{ vertical-align: top; white-space: pre-wrap; word-break: break-all; }}
 .line-canceled td:first-child {{ border-left: 3px solid var(--c-canceled); }}
 .line-header td {{ padding: 8px 12px; color: var(--fg-em); font-weight: bold; }}
 .line-elided td {{ color: var(--fg-sec); padding: 2px 12px; font-style: italic; }}
+.comment-cell {{ padding: 4px 12px 6px 8px; }}
+.review-comment {{ border-left: 3px solid var(--cyan); background: var(--bg-hl); border-radius: 4px; padding: 6px 10px; }}
+.comment-header {{ color: var(--cyan); font-weight: 600; font-size: 12px; margin-bottom: 2px; }}
+.comment-body {{ color: var(--fg); white-space: pre-wrap; }}
 /* Word highlights outline rather than fill: the fill alternative — `background:
    <hue> at 0.35 alpha` — drops some token colours to 2.9-4.5:1 on the tint,
    while the outline and underline leave the tokens' own contrast intact. */
@@ -413,6 +417,15 @@ mod tests {
             assert!(
                 contrast_ratio(var("--fg-sec"), panel) >= 7.0,
                 "{theme}: --fg-sec on --panel is below 7:1"
+            );
+            let bg_hl = var("--bg-hl");
+            assert!(
+                contrast_ratio(var("--fg"), bg_hl) >= 4.5,
+                "{theme}: comment body (--fg) on --bg-hl is below 4.5:1"
+            );
+            assert!(
+                contrast_ratio(var("--c-staged"), bg_hl) >= 4.5,
+                "{theme}: comment header (--cyan) on --bg-hl is below 4.5:1"
             );
             for hue in [
                 "--c-added", "--c-staged", "--c-unstaged", "--c-deleted", "--c-moved",

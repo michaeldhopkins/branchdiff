@@ -41,6 +41,10 @@ pub(super) fn handle_file_change(
     let unique_paths: HashSet<_> =
         events.iter().filter(|e| e.kind == DebouncedEventKind::Any).map(|e| &e.path).collect();
 
+    if app.should_reload_comments_for(&unique_paths) && app.reload_comments_from_disk() {
+        result.needs_redraw = true;
+    }
+
     // Check for VCS lock events BEFORE filtering
     let has_lock_event = unique_paths.iter().any(|p| vcs.classify_event(p) == VcsEventType::Lock);
 

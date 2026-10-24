@@ -285,6 +285,7 @@ impl FrameContext {
                 DisplayableItem::Line(idx) => {
                     let line = &app.lines[*idx];
                     self.wrapped_line_height(line, app)
+                        + app.view.comments.rendered_height_for_line(*idx, self.content_width)
                 }
                 DisplayableItem::Elided(_) | DisplayableItem::Message(_) => 1,
             })

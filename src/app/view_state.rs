@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use crate::comments::{AnchoredComments, CommentsSource, ReviewComment};
 use crate::ui::ScreenRowInfo;
 
 use super::ViewMode;
@@ -56,6 +57,12 @@ pub struct ViewState {
     pub reviewed_files: HashMap<String, u64>,
     /// Flash effect: (file path, timestamp) when a file was just reviewed or un-reviewed.
     pub reviewed_flash: Option<(String, Instant)>,
+    /// Active comments source (autodetected, explicit file, or stdin).
+    pub comments_source: CommentsSource,
+    /// Unanchored review comments loaded from `comments_source`.
+    pub raw_comments: Vec<ReviewComment>,
+    /// Review comments anchored to the current `app.lines()` indices.
+    pub comments: AnchoredComments,
 
     // Dirty flags & UI timing
     pub needs_inline_spans: bool,
@@ -92,6 +99,9 @@ impl Default for ViewState {
             manually_toggled: HashSet::new(),
             reviewed_files: HashMap::new(),
             reviewed_flash: None,
+            comments_source: CommentsSource::default(),
+            raw_comments: Vec::new(),
+            comments: AnchoredComments::default(),
             needs_inline_spans: true,
             path_copied_at: None,
             status_flash: None,

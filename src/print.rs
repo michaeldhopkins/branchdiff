@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use anyhow::Result;
 use ratatui::style::{Color, Modifier, Style};
 
+use branchdiff::comments::render::write_print_comments;
 use branchdiff::diff::LineSource;
 use branchdiff::output::{OutputData, OutputFile};
 use branchdiff::ui::colors::print_line_style as line_style;
@@ -90,7 +91,7 @@ fn max_line_num_width(files: &[OutputFile]) -> usize {
 }
 
 fn print_file(stdout: &mut impl Write, file: &OutputFile, line_num_width: usize) -> Result<()> {
-    for line in &file.lines {
+    for (line_idx, line) in file.lines.iter().enumerate() {
         let is_moved = line.move_target.is_some();
         let style = if is_moved {
             // Moved lines use magenta (same as canceled — lateral changes)
@@ -113,6 +114,7 @@ fn print_file(stdout: &mut impl Write, file: &OutputFile, line_num_width: usize)
                 write!(stdout, "\x1b[90m{} {}", line_num_str, RESET)?;
             }
             writeln!(stdout, "{}── {} ──{}", ansi, line.content, RESET)?;
+            write_print_comments(stdout, &file.comments, line_idx, line_num_width)?;
             continue;
         }
 
@@ -145,6 +147,7 @@ fn print_file(stdout: &mut impl Write, file: &OutputFile, line_num_width: usize)
         } else {
             writeln!(stdout, "{}{}", line.content, RESET)?;
         }
+        write_print_comments(stdout, &file.comments, line_idx, line_num_width)?;
     }
 
     Ok(())
@@ -210,6 +213,7 @@ mod tests {
                 additions: 1,
                 deletions: 0,
                 collapsed: false,
+                comments: Default::default(),
             }],
             total_additions: 1,
             total_deletions: 0,
@@ -217,6 +221,72 @@ mod tests {
 
         let result = print_diff(&data);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_print_file_writes_comments_under_anchored_lines() {
+        use branchdiff::comments::{CommentSide, ReviewComment, anchor_comments};
+
+        let lines = vec![
+            DiffLine::file_header("src/lib.rs"),
+            DiffLine::new(LineSource::DeletedBase, "old_call()".to_string(), '-', None)
+                .with_old_line_number(4)
+                .with_file_path("src/lib.rs"),
+            DiffLine::new(LineSource::Committed, "new_call()".to_string(), '+', Some(4))
+                .with_file_path("src/lib.rs"),
+        ];
+        let comments = anchor_comments(
+            &lines,
+            &[
+                ReviewComment {
+                    path: "src/lib.rs".into(),
+                    start_line: None,
+                    end_line: None,
+                    side: CommentSide::New,
+                    body: "Header comment body".into(),
+                    author: Some("alice".into()),
+                },
+                ReviewComment {
+                    path: "src/lib.rs".into(),
+                    start_line: Some(4),
+                    end_line: Some(4),
+                    side: CommentSide::Old,
+                    body: "Deleted line comment".into(),
+                    author: None,
+                },
+                ReviewComment {
+                    path: "src/lib.rs".into(),
+                    start_line: Some(4),
+                    end_line: Some(4),
+                    side: CommentSide::New,
+                    body: "Added line comment".into(),
+                    author: Some("bob".into()),
+                },
+            ],
+        );
+        let file = OutputFile {
+            path: "src/lib.rs".into(),
+            lines,
+            additions: 1,
+            deletions: 1,
+            collapsed: false,
+            comments,
+        };
+
+        let mut buf = Vec::new();
+        print_file(&mut buf, &file, 1).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        let header_pos = out.find("── src/lib.rs ──").unwrap();
+        let file_comment_pos = out.find("Header comment body").unwrap();
+        let old_line_pos = out.find("old_call()").unwrap();
+        let old_comment_pos = out.find("Deleted line comment").unwrap();
+        let new_line_pos = out.find("new_call()").unwrap();
+        let new_comment_pos = out.find("Added line comment").unwrap();
+
+        assert!(header_pos < file_comment_pos && file_comment_pos < old_line_pos, "{out}");
+        assert!(old_line_pos < old_comment_pos && old_comment_pos < new_line_pos, "{out}");
+        assert!(new_line_pos < new_comment_pos, "{out}");
     }
 
     #[test]

@@ -17,6 +17,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, DisplayableItem, FrameContext, SearchState, Selection};
+use crate::comments::AnchoredComments;
+use crate::comments::render::{TuiCommentRenderSpec, render_tui_comments};
 use crate::diff::{DiffLine, LineSource};
 use crate::image_diff::{IMAGE_PANEL_OVERHEAD, ImageCache};
 use crate::syntax::{HighlightCache, SyntaxSegment};
@@ -65,6 +67,8 @@ pub struct DiffViewModel<'a> {
     pub top_sub_row: usize,
     /// Memoized syntax highlighting, keyed on indices into `lines`.
     pub highlight_cache: &'a RefCell<HighlightCache>,
+    /// Review comments anchored by line index.
+    pub comments: &'a AnchoredComments,
 }
 
 /// Position where an image should be rendered after text render
@@ -121,6 +125,7 @@ impl<'a> DiffViewModel<'a> {
             reviewed_files: &app.view.reviewed_files,
             top_sub_row,
             highlight_cache: &app.highlight_cache,
+            comments: &app.view.comments,
         }
     }
 
@@ -199,22 +204,14 @@ impl<'a> DiffViewModel<'a> {
             }
         }
 
-        let current_file = self.find_current_file();
         let title = if let Some(msg) = &self.status_flash {
             Line::from(vec![Span::styled(format!(" {msg} "), Style::default().fg(Color::Yellow))])
         } else if self.show_copied_flash {
             Line::from(vec![Span::styled(" ✓ Copied ", Style::default().fg(Color::Green))])
+        } else if let Some(file) = self.find_current_file() {
+            Line::from(vec![Span::styled(format!(" {file} "), Style::default().fg(Color::White))])
         } else {
-            match current_file {
-                Some(file) => Line::from(vec![Span::styled(
-                    format!(" {} ", file),
-                    Style::default().fg(Color::White),
-                )]),
-                None => Line::from(vec![Span::styled(
-                    " branchdiff ",
-                    Style::default().fg(Color::DarkGray),
-                )]),
-            }
+            Line::from(vec![Span::styled(" branchdiff ", Style::default().fg(Color::DarkGray))])
         };
 
         let block = Block::default()
@@ -345,38 +342,38 @@ impl<'a> DiffViewModel<'a> {
             String::new()
         };
 
-        // File header
-        if diff_line.source == LineSource::FileHeader {
-            return self
-                .render_file_header(diff_line, &prefix_str, style, all_lines, all_row_infos);
-        }
-
-        // Elided line (legacy path)
-        if diff_line.source == LineSource::Elided {
-            return self
-                .render_elided_line(diff_line, &prefix_str, style, all_lines, all_row_infos);
-        }
-
-        // Image marker (placeholder for actual image rendering)
-        if diff_line.is_image_marker() {
-            return self.render_image_marker(
+        let line_rows = if diff_line.source == LineSource::FileHeader {
+            self.render_file_header(diff_line, &prefix_str, style, all_lines, all_row_infos)
+        } else if diff_line.source == LineSource::Elided {
+            self.render_elided_line(diff_line, &prefix_str, style, all_lines, all_row_infos)
+        } else if diff_line.is_image_marker() {
+            self.render_image_marker(
                 diff_line, &prefix_str, screen_row_idx, all_lines, all_row_infos, image_positions,
-            );
-        }
-
-        // Lines with inline spans
-        if !diff_line.inline_spans.is_empty() {
-            return self.render_inline_spans(
+            )
+        } else if !diff_line.inline_spans.is_empty() {
+            self.render_inline_spans(
                 diff_line, line_idx, &prefix_str, style, prefix_width, content_width,
                 screen_row_idx, max_rows, skip_rows, all_lines, all_row_infos,
-            );
-        }
-
-        // Plain content
-        self.render_plain_content(
-            diff_line, line_idx, &prefix_str, style, prefix_width, content_width, screen_row_idx,
-            max_rows, skip_rows, all_lines, all_row_infos,
-        )
+            )
+        } else {
+            self.render_plain_content(
+                diff_line, line_idx, &prefix_str, style, prefix_width, content_width,
+                screen_row_idx, max_rows, skip_rows, all_lines, all_row_infos,
+            )
+        };
+        let spec = TuiCommentRenderSpec {
+            diff_line,
+            line_rows,
+            line_num_width,
+            prefix_width,
+            content_width,
+            screen_row_idx,
+            max_rows,
+            skip_rows,
+            area_width: self.area.width,
+            font_size: self.font_size,
+        };
+        line_rows + render_tui_comments(self.comments, line_idx, &spec, all_lines, all_row_infos)
     }
 
     fn render_file_header(
@@ -3067,5 +3064,92 @@ mod tests {
              characters, not the interleaved deletion text; got {:?}",
             highlighted
         );
+    }
+
+    #[test]
+    fn test_diff_view_renders_inline_and_file_level_comments() {
+        use crate::comments::{CommentSide, ReviewComment};
+        use crate::diff::{DiffInput, compute_four_way_diff};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let base = "line1\ndeleted_old\nline3\n";
+        let working = "line1\nadded_new\nline3\n";
+        let diff = compute_four_way_diff(DiffInput {
+            path: "src/lib.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+
+        let mut app = TestAppBuilder::new().with_files(vec![diff]).build();
+        app.set_comments(vec![
+            ReviewComment {
+                path: "src/lib.rs".into(),
+                start_line: None,
+                end_line: None,
+                side: CommentSide::New,
+                body: "File-level review note".into(),
+                author: Some("alice".into()),
+            },
+            ReviewComment {
+                path: "src/lib.rs".into(),
+                start_line: Some(2),
+                end_line: Some(2),
+                side: CommentSide::Old,
+                body: "Old deleted line comment".into(),
+                author: None,
+            },
+            ReviewComment {
+                path: "src/lib.rs".into(),
+                start_line: Some(2),
+                end_line: Some(2),
+                side: CommentSide::New,
+                body: "New added line comment".into(),
+                author: Some("bob".into()),
+            },
+            ReviewComment {
+                path: "src/lib.rs".into(),
+                start_line: Some(500),
+                end_line: Some(500),
+                side: CommentSide::New,
+                body: "Outside diff fallback comment".into(),
+                author: None,
+            },
+        ]);
+
+        let width: u16 = 90;
+        let height: u16 = 28;
+        app.set_viewport_height(height as usize - 2);
+        app.estimate_content_width(width);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let ctx = FrameContext::new(&app);
+                crate::ui::draw_with_frame(f, &mut app, &ctx);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let screen_text: String = (0..height)
+            .map(|y| {
+                let row: String = (0..width).map(|x| buf[(x, y)].symbol()).collect();
+                row.trim_end().to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(screen_text.contains("@alice · file-level"), "{screen_text}");
+        assert!(screen_text.contains("File-level review note"), "{screen_text}");
+        assert!(screen_text.contains("line 500 (+, outside diff)"), "{screen_text}");
+        assert!(screen_text.contains("Outside diff fallback comment"), "{screen_text}");
+        assert!(screen_text.contains("line 2 (-)"), "{screen_text}");
+        assert!(screen_text.contains("Old deleted line comment"), "{screen_text}");
+        assert!(screen_text.contains("@bob · line 2 (+)"), "{screen_text}");
+        assert!(screen_text.contains("New added line comment"), "{screen_text}");
     }
 }

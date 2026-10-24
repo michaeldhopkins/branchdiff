@@ -149,6 +149,7 @@ impl TestAppBuilder {
             pending_copy: None,
             status_bar_lines: Vec::new(),
             status_bar_screen_y: 0,
+            ..ViewState::default()
         };
         app
     }

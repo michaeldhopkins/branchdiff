@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::comments::{AnchoredComments, ReviewComment, anchor_comments, file_diff_matches_path};
 use crate::diff::{DiffLine, LineSource};
 
 /// A file prepared for non-interactive output, with view mode filtering
@@ -10,6 +11,8 @@ pub struct OutputFile {
     pub deletions: usize,
     /// Whether this file should be collapsed by default (e.g. lock files)
     pub collapsed: bool,
+    /// Review comments anchored to indices in `lines`.
+    pub comments: AnchoredComments,
 }
 
 /// Everything a non-interactive renderer needs, independent of output format.
@@ -26,14 +29,16 @@ const CONTEXT_LINES: usize = 5;
 
 /// Compute context visibility for a slice of lines.
 /// Returns a bool-per-line indicating whether it should be shown.
-fn context_visibility(lines: &[DiffLine]) -> Vec<bool> {
+fn context_visibility(lines: &[DiffLine], comments: Option<&AnchoredComments>) -> Vec<bool> {
     let interesting: Vec<bool> = lines
         .iter()
-        .map(|line| {
+        .enumerate()
+        .map(|(i, line)| {
             line.source.is_header()
                 || line.old_content.is_some()
                 || !line.inline_spans.is_empty()
                 || line.source.is_change()
+                || comments.is_some_and(|c| c.for_line(i).is_some())
         })
         .collect();
 
@@ -105,21 +110,40 @@ pub fn prepare(app: &mut App) -> OutputData {
                 .map(|l| l.content.clone())
                 .unwrap_or_default();
 
+            let file_comments: Vec<ReviewComment> = if app.view.raw_comments.is_empty() {
+                Vec::new()
+            } else {
+                app.view
+                    .raw_comments
+                    .iter()
+                    .filter(|c| file_diff_matches_path(file, &c.path))
+                    .cloned()
+                    .collect()
+            };
+
             // Drop files that carry no diff rows — except pure renames/moves,
-            // whose entire change *is* the header (old → new) with zero +/- lines.
+            // whose entire change *is* the header (old → new) with zero +/- lines,
+            // or files that have review comments attached.
             let has_content = file.lines.iter().any(|l| l.source != LineSource::FileHeader);
-            if !has_content && !file.is_rename() {
+            if !has_content && !file.is_rename() && file_comments.is_empty() {
                 return None;
             }
 
-            let filtered = apply_view_mode(&file.lines, &app.view.view_mode);
+            let pre_anchored =
+                (!file_comments.is_empty()).then(|| anchor_comments(&file.lines, &file_comments));
+            let filtered = apply_view_mode(&file.lines, &app.view.view_mode, pre_anchored.as_ref());
+            let comments = if file_comments.is_empty() {
+                AnchoredComments::default()
+            } else {
+                anchor_comments(&filtered, &file_comments)
+            };
 
             let additions = filtered.iter().filter(|l| l.is_addition()).count();
             let deletions = filtered.iter().filter(|l| l.is_deletion()).count();
 
             let collapsed = app.view.collapsed_files.contains(&path);
 
-            Some(OutputFile { path, lines: filtered, additions, deletions, collapsed })
+            Some(OutputFile { path, lines: filtered, additions, deletions, collapsed, comments })
         })
         .collect();
 
@@ -139,17 +163,16 @@ pub fn prepare(app: &mut App) -> OutputData {
     }
 }
 
-fn apply_view_mode(lines: &[DiffLine], view_mode: &crate::app::ViewMode) -> Vec<DiffLine> {
+fn apply_view_mode(
+    lines: &[DiffLine],
+    view_mode: &crate::app::ViewMode,
+    comments: Option<&AnchoredComments>,
+) -> Vec<DiffLine> {
     use crate::app::ViewMode;
     match view_mode {
         ViewMode::Full => lines.to_vec(),
-        ViewMode::Context => {
-            let show = context_visibility(lines);
-            filter_with_elided(lines, &show)
-        }
-        // CommitOnly and BookmarkOnly fall back to Context for non-interactive output
-        ViewMode::CommitOnly | ViewMode::BookmarkOnly => {
-            let show = context_visibility(lines);
+        ViewMode::Context | ViewMode::CommitOnly | ViewMode::BookmarkOnly => {
+            let show = context_visibility(lines, comments);
             filter_with_elided(lines, &show)
         }
     }
@@ -210,7 +233,7 @@ mod tests {
             lines.push(DiffLine::new(LineSource::Base, format!("line {i}"), ' ', Some(i + 1)));
         }
 
-        let show = context_visibility(&lines);
+        let show = context_visibility(&lines, None);
 
         // Lines 0-4 should be hidden (indices 0-4, more than 5 away from change at 10)
         assert!(!show[0], "line 0 should be hidden");
@@ -256,7 +279,7 @@ mod tests {
             DiffLine::new(LineSource::Base, "a".into(), ' ', Some(1)),
             DiffLine::new(LineSource::Committed, "b".into(), '+', Some(2)),
         ];
-        let result = apply_view_mode(&lines, &crate::app::ViewMode::Full);
+        let result = apply_view_mode(&lines, &crate::app::ViewMode::Full, None);
         assert_eq!(result.len(), 3);
     }
 }

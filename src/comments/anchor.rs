@@ -37,7 +37,7 @@ pub fn paths_match(diff_path: &str, comment_path: &str) -> bool {
     false
 }
 
-fn file_diff_matches_path(file: &FileDiff, comment_path: &str) -> bool {
+pub fn file_diff_matches_path(file: &FileDiff, comment_path: &str) -> bool {
     if let Some(ref old_path) = file.old_path
         && paths_match(old_path, comment_path)
     {
@@ -70,7 +70,12 @@ pub fn ensure_commented_files(files: &mut Vec<FileDiff>, comments: &[ReviewComme
             continue;
         }
         if !files.iter().any(|f| file_diff_matches_path(f, &comment.path)) {
-            files.push(FileDiff::new(vec![DiffLine::file_header(&comment.path)]));
+            // The header shows the path, which came from the comment file; the
+            // raw path stays in `file_path` so later comments still match it.
+            let shown = super::sanitize::printable(&comment.path).into_owned();
+            let mut header = DiffLine::new(LineSource::FileHeader, shown, ' ', None);
+            header.file_path = Some(comment.path.clone());
+            files.push(FileDiff::new(vec![header]));
         }
     }
 }
