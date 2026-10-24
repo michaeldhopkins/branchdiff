@@ -17,6 +17,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  JJ_VERSION: v0.45.1
+  JJ_USER: branchdiff-ci
+  JJ_EMAIL: ci@example.invalid
 
 jobs:
   ci:
@@ -27,6 +30,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Alloc pins were measured on the channel in rust-toolchain.toml.
       # @master is this action's branch. The toolchain input is the compiler.
@@ -38,6 +43,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install jj
+        run: |
+          set -euo pipefail
+          url="https://github.com/jj-vcs/jj/releases/download/${JJ_VERSION}/jj-${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          # Extract the whole archive and install the one file: the archive
+          # stores `./jj`, and whether a bare `jj` member matches differs between
+          # GNU tar and bsdtar.
+          tmp="$(mktemp -d)"
+          curl -fsSL "$url" | tar xz -C "$tmp"
+          mkdir -p "$HOME/.local/bin"
+          install -m755 "$tmp/jj" "$HOME/.local/bin/jj"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/jj" --version
+
       - name: cargo fmt
         run: cargo fmt --all --check
 
@@ -46,6 +65,9 @@ jobs:
 
       - name: cargo test
         run: cargo test --locked --lib --bins
+
+      - name: cargo test (performance budgets)
+        run: cargo test --locked --test perf_rules
 
       # The runner image ships Chrome; a missing browser fails this step.
       - name: cargo test (live page in headless Chrome)

@@ -49,3 +49,26 @@ fn alloc_ci_job_is_bounded_and_pins_the_toolchain() {
         "ci.yml must install {pin_line}, the channel in rust-toolchain.toml"
     );
 }
+
+#[test]
+fn ci_installs_pinned_jj_and_runs_perf_rules() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ci = read(&root.join(".github/workflows/ci.yml"));
+    let mutants = read(&root.join(".github/workflows/mutants.yml"));
+
+    for env_line in
+        ["JJ_VERSION: v0.45.1", "JJ_USER: branchdiff-ci", "JJ_EMAIL: ci@example.invalid"]
+    {
+        assert!(mutants.contains(env_line), "mutants.yml missing {env_line}");
+        assert!(ci.contains(env_line), "ci.yml must set {env_line} matching mutants.yml");
+    }
+    assert!(ci.contains("fetch-depth: 0"), "ci.yml must checkout full history for origin/main");
+    assert!(
+        ci.contains("jj-${JJ_VERSION}-x86_64-unknown-linux-musl.tar.gz"),
+        "ci.yml must install pinned jj binary from release archive"
+    );
+    assert!(
+        ci.contains("cargo test --locked --test perf_rules"),
+        "ci.yml must run cargo test --locked --test perf_rules"
+    );
+}
