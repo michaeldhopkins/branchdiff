@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "branchdiff"
-version = "0.77.3"
+version = "0.77.5"
 dependencies = [
  "anyhow",
  "arboard",

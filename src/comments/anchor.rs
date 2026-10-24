@@ -7,14 +7,18 @@ use super::{AnchoredComment, AnchoredComments, CommentSide, ReviewComment};
 const DIFF_CONTEXT_LINES: usize = 5;
 
 pub fn normalize_comment_path(raw: &str) -> String {
-    let mut s = raw.trim().replace('\\', "/");
-    while let Some(stripped) = s.strip_prefix("./") {
-        s = stripped.to_string();
+    let replaced = raw.replace('\\', "/");
+    let mut s = replaced.trim();
+    loop {
+        if let Some(rest) = s.strip_prefix("./") {
+            s = rest.trim_start();
+        } else if let Some(rest) = s.strip_prefix('/') {
+            s = rest.trim_start();
+        } else {
+            break;
+        }
     }
-    while let Some(stripped) = s.strip_prefix('/') {
-        s = stripped.to_string();
-    }
-    s
+    s.to_string()
 }
 
 pub fn paths_match(diff_path: &str, comment_path: &str) -> bool {

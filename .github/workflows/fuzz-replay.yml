@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false # one target regressing must not hide the others
       matrix:
-        target: [vcs_output, cat_file_batch, diff_patch]
+        target: [vcs_output, cat_file_batch, diff_patch, comments]
     steps:
       - uses: actions/checkout@v7
 

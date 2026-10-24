@@ -98,11 +98,16 @@ fn parse_header_line(rest: &str) -> Result<HeaderSpec, CommentError> {
 
 fn parse_line_spec(spec: &str) -> Option<(usize, usize)> {
     if let Some((a_str, b_str)) = spec.split_once('-') {
-        let a = a_str.parse::<usize>().ok().filter(|&n| n > 0)?;
-        let b = b_str.parse::<usize>().ok().filter(|&n| n > 0)?;
+        let a = parse_line_num(a_str)?;
+        let b = parse_line_num(b_str)?;
         Some((a.min(b), a.max(b)))
     } else {
-        let n = spec.parse::<usize>().ok().filter(|&n| n > 0)?;
+        let n = parse_line_num(spec)?;
         Some((n, n))
     }
+}
+
+fn parse_line_num(s: &str) -> Option<usize> {
+    let n = s.parse::<i64>().ok().filter(|&n| n > 0)?;
+    usize::try_from(n).ok()
 }

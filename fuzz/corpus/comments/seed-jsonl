@@ -1,0 +1,3 @@
+{"path":"src/lib.rs","line":2,"side":"new","body":"check new line","author":"alice"}
+{"path":"src/lib.rs","start_line":1,"end_line":2,"side":"old","body":"check old range"}
+{"path":"src/lib.rs","body":"file level note"}

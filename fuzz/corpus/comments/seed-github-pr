@@ -1,0 +1,1 @@
+[{"path":"src/lib.rs","line":2,"side":"RIGHT","body":"<script>alert(1)</script>","user":{"login":"octocat"}},{"path":"src/old.rs","original_line":1,"side":"LEFT","body":"old side note","user":{"login":"reviewer"}}]
