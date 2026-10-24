@@ -815,4 +815,90 @@ File-level summary note.
                 .contains("outdated")
         );
     }
+
+    #[test]
+    fn only_a_comments_file_is_watched() {
+        let path = std::path::PathBuf::from("/r/.branchdiff-comments.jsonl");
+        assert_eq!(CommentsSource::Auto(Some(path.clone())).watch_path(), Some(path.as_path()));
+        assert_eq!(CommentsSource::Explicit(path.clone()).watch_path(), Some(path.as_path()));
+        assert_eq!(CommentsSource::Auto(None).watch_path(), None);
+        assert_eq!(CommentsSource::Stdin.watch_path(), None);
+    }
+
+    #[test]
+    fn to_json_line_is_the_jsonl_encoding() {
+        let comment = ReviewComment {
+            path: "a.rs".into(),
+            start_line: Some(2),
+            end_line: Some(3),
+            side: CommentSide::Old,
+            body: "why".into(),
+            author: Some("eve".into()),
+            suggestion: Some("x".into()),
+            outdated: false,
+        };
+        assert_eq!(comment.to_json_line(), comment_to_json_line(&comment));
+        assert!(comment.to_json_line().contains("\"why\""), "{}", comment.to_json_line());
+    }
+
+    fn plain_comment(author: Option<&str>) -> AnchoredComment {
+        AnchoredComment {
+            comment: ReviewComment {
+                path: "a.rs".into(),
+                start_line: Some(2),
+                end_line: Some(2),
+                side: CommentSide::New,
+                body: "why".into(),
+                author: author.map(Into::into),
+                suggestion: None,
+                outdated: false,
+            },
+            outdated: false,
+            replaced: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_empty_author_is_left_out_of_the_header() {
+        let anchored = plain_comment(Some(""));
+        assert_eq!(anchored.header_label(), anchored.location_label());
+        assert!(!anchored.header_label().contains('@'));
+    }
+
+    #[test]
+    fn anchored_comments_know_when_they_hold_something() {
+        let mut anchored = AnchoredComments::default();
+        assert!(anchored.is_empty());
+        assert_eq!(anchored.rendered_height_for_line(3, 80), 0);
+        anchored.by_line.insert(3, vec![plain_comment(None)]);
+        assert!(!anchored.is_empty());
+        assert!(anchored.rendered_height_for_line(3, 80) > 0);
+        assert_eq!(anchored.rendered_height_for_line(4, 80), 0);
+    }
+
+    #[test]
+    fn only_the_autodetected_locations_count_as_default() {
+        let root = Path::new("/repo");
+        assert!(is_default_comment_path(root, Path::new("/repo/.jj/comments.jsonl")));
+        assert!(is_default_comment_path(root, Path::new("/repo/.git/comments")));
+        assert!(!is_default_comment_path(root, Path::new("/repo/review.jsonl")));
+        assert!(!is_default_comment_path(root, Path::new("/other/.jj/comments.jsonl")));
+    }
+
+    #[test]
+    fn a_dash_reads_stdin_and_any_other_path_is_used_as_given() {
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(resolve_comments_file(Some(Path::new("-")), empty.path()), None);
+        assert_eq!(
+            resolve_comments_file(Some(Path::new("r.jsonl")), empty.path()),
+            Some(PathBuf::from("r.jsonl"))
+        );
+        assert_eq!(resolve_comments_file(None, empty.path()), None);
+        std::fs::create_dir(empty.path().join(".jj")).unwrap();
+        std::fs::write(empty.path().join(".jj/comments.jsonl"), "").unwrap();
+        assert_eq!(
+            resolve_comments_file(None, empty.path()),
+            Some(empty.path().join(".jj/comments.jsonl"))
+        );
+    }
 }
