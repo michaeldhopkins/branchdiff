@@ -1,5 +1,6 @@
 pub(crate) mod changed_files;
 pub(crate) mod commands;
+mod content;
 mod fingerprint;
 pub(crate) mod parse;
 mod refresh;
@@ -14,13 +15,14 @@ use std::sync::atomic::AtomicBool;
 use anyhow::{Context, Result};
 
 use crate::diff::FileDiff;
-use crate::vcs::{ComparisonContext, RefreshResult, Vcs, VcsBackend};
+use crate::vcs::{ComparisonContext, RefreshResult, Vcs, VcsBackend, VcsOptions};
 
-pub use changed_files::{ChangedFile, get_all_changed_files};
+pub use changed_files::{ChangedFile, get_all_changed_files, get_changed_files_between};
 pub use commands::{
-    GitVersion, detect_base_branch, fetch_base_branch, get_binary_files, get_current_branch,
-    get_file_bytes_at_ref, get_git_version, get_merge_base_preferring_origin, get_repo_root,
-    get_working_tree_bytes, has_merge_conflicts, is_binary_file, is_index_locked,
+    GitVersion, detect_base_branch, fetch_base_branch, get_binary_files, get_binary_files_between,
+    get_current_branch, get_file_bytes_at_ref, get_git_version, get_merge_base_preferring_origin,
+    get_merge_base_preferring_origin_for, get_repo_root, get_working_tree_bytes,
+    has_merge_conflicts, is_binary_file, is_binary_file_between, is_index_locked,
 };
 
 /// Git backend for branchdiff.
@@ -34,10 +36,12 @@ pub struct GitVcs {
     /// `x (local)` when a local `x` and an `origin/x` disagreed and git's rule
     /// picked the local one — otherwise nothing on screen would reveal which.
     base_label: String,
+    /// Optional explicit `--head <REV>` as `(resolved_ref, display_label)`.
+    head_target: Option<(String, String)>,
     git_version: GitVersion,
 }
 
-/// Resolve an explicit `--base` the way git itself would, plus a label.
+/// Resolve an explicit `--base` or `--head` ref the way git itself would, plus a label.
 ///
 /// The detected-base path deliberately tries `origin/<name>` first, which is
 /// right for a *guessed* trunk. It is wrong for a ref the user named: `git
@@ -47,35 +51,41 @@ pub struct GitVcs {
 ///
 /// Returns `(ref_to_use, label)`. Anything that isn't a branch name — a tag, a
 /// SHA, an already-qualified ref — falls through to git's own resolution.
-fn resolve_explicit_base(repo_path: &Path, base: &str) -> Result<(String, String)> {
-    let local = format!("refs/heads/{base}");
-    let remote = format!("refs/remotes/origin/{base}");
+fn resolve_explicit_ref(repo_path: &Path, flag: &str, rev: &str) -> Result<(String, String)> {
+    let local = format!("refs/heads/{rev}");
+    let remote = format!("refs/remotes/origin/{rev}");
 
     match (commands::rev_id(repo_path, &local), commands::rev_id(repo_path, &remote)) {
         // Ambiguous: git resolves to the local branch. Say which we took.
-        (Some(l), Some(r)) if l != r => Ok((local, format!("{base} (local)"))),
-        (Some(_), _) => Ok((local, base.to_string())),
+        (Some(l), Some(r)) if l != r => Ok((local, format!("{rev} (local)"))),
+        (Some(_), _) => Ok((local, rev.to_string())),
         // Only the remote-tracking branch exists. Using it is the helpful
-        // reading of `--base develop`, but label it so it isn't mistaken for a
+        // reading of `<flag> develop`, but label it so it isn't mistaken for a
         // local branch of that name.
-        (None, Some(_)) => Ok((remote, format!("origin/{base}"))),
+        (None, Some(_)) => Ok((remote, format!("origin/{rev}"))),
         (None, None) => {
-            if commands::rev_id(repo_path, base).is_some() {
-                Ok((base.to_string(), base.to_string()))
+            if commands::rev_id(repo_path, rev).is_some() {
+                Ok((rev.to_string(), rev.to_string()))
             } else {
                 anyhow::bail!(
-                    "--base {base:?} is not a branch, tag or commit in this repo \
-                     (looked for {local}, {remote}, and {base})"
+                    "{flag} {rev:?} is not a branch, tag or commit in this repo \
+                     (looked for {local}, {remote}, and {rev})"
                 )
             }
         }
     }
 }
 
+struct ResolvedRefs {
+    base_branch: String,
+    base_label: String,
+    head_target: Option<(String, String)>,
+}
+
 impl GitVcs {
     /// Create a new GitVcs for the given repository.
     pub fn new(repo_path: PathBuf) -> Result<Self> {
-        Self::with_base(repo_path, None)
+        Self::with_options(repo_path, VcsOptions::default())
     }
 
     /// Create a backend, optionally overriding the base branch.
@@ -89,28 +99,41 @@ impl GitVcs {
     /// every refresh performs, so if it fails here it would fail on every
     /// refresh — but silently, rendering as "no changes" rather than an error.
     pub fn with_base(repo_path: PathBuf, base: Option<&str>) -> Result<Self> {
-        // `git --version` is independent of the base, so it runs alongside the
-        // lookups that resolve one.
-        let (resolved, git_version) = std::thread::scope(|scope| {
-            let version = scope.spawn(get_git_version);
-            let resolved = Self::resolve_base(&repo_path, base);
-            (resolved, version.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
-        });
-        let (base_branch, base_label) = resolved?;
-        let git_version = git_version.context("Failed to detect git version")?;
-        Ok(Self { repo_path, base_branch, base_label, git_version })
+        Self::with_options(repo_path, VcsOptions { base, ..VcsOptions::default() })
     }
 
-    /// The ref to compare against and its label, for `--base` or detected.
-    fn resolve_base(repo_path: &Path, base: Option<&str>) -> Result<(String, String)> {
-        Ok(match base {
+    /// Create a backend with explicit comparison options (`--base`, `--head`).
+    pub fn with_options(repo_path: PathBuf, options: VcsOptions<'_>) -> Result<Self> {
+        // `git --version` is independent of the refs, so it runs alongside the
+        // lookups that resolve them.
+        let (resolved, git_version) = std::thread::scope(|scope| {
+            let version = scope.spawn(get_git_version);
+            let resolved = Self::resolve_refs(&repo_path, options);
+            (resolved, version.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+        });
+        let ResolvedRefs { base_branch, base_label, head_target } = resolved?;
+        let git_version = git_version.context("Failed to detect git version")?;
+        Ok(Self { repo_path, base_branch, base_label, head_target, git_version })
+    }
+
+    /// Resolve `--base` (or detected trunk) and optional `--head`, verifying their merge-base.
+    fn resolve_refs(repo_path: &Path, options: VcsOptions<'_>) -> Result<ResolvedRefs> {
+        let head_target = match options.head {
+            Some(head) => Some(resolve_explicit_ref(repo_path, "--head", head)?),
+            None => None,
+        };
+        let head_ref = head_target.as_ref().map_or("HEAD", |(r, _)| r.as_str());
+        let (base_branch, base_label) = match options.base {
             Some(base) => {
-                let resolved = resolve_explicit_base(repo_path, base)?;
+                let resolved = resolve_explicit_ref(repo_path, "--base", base)?;
                 // Prove it can actually produce a merge-base: that is the lookup
                 // every refresh performs, and a failure here would otherwise
                 // surface as a silent "0 files" rather than an error.
-                get_merge_base_preferring_origin(repo_path, &resolved.0)
-                    .with_context(|| format!("--base {base:?} has no common ancestor with HEAD"))?;
+                get_merge_base_preferring_origin_for(repo_path, &resolved.0, head_ref)
+                    .with_context(|| {
+                        let target = options.head.unwrap_or("HEAD");
+                        format!("--base {base:?} has no common ancestor with {target}")
+                    })?;
                 resolved
             }
             // Deliberately not defaulted to "main": a base that doesn't exist
@@ -119,14 +142,25 @@ impl GitVcs {
             // something actionable instead.
             None => {
                 let detected = detect_base_branch(repo_path)?;
+                if let Some(head) = options.head {
+                    get_merge_base_preferring_origin_for(repo_path, &detected, head_ref)
+                        .with_context(|| {
+                            format!("--head {head:?} has no common ancestor with {detected}")
+                        })?;
+                }
                 (detected.clone(), detected)
             }
-        })
+        };
+        Ok(ResolvedRefs { base_branch, base_label, head_target })
     }
 
     /// The base branch name (e.g., "main" or "master").
     pub fn base_branch(&self) -> &str {
         &self.base_branch
+    }
+
+    fn head_ref(&self) -> &str {
+        self.head_target.as_ref().map_or("HEAD", |(r, _)| r.as_str())
     }
 }
 
@@ -136,8 +170,12 @@ impl Vcs for GitVcs {
     }
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
-        let current_branch = get_current_branch(&self.repo_path).unwrap_or(None);
-        let to_label = current_branch.unwrap_or_else(|| "HEAD".to_string());
+        let to_label = match &self.head_target {
+            Some((_, label)) => label.clone(),
+            None => {
+                get_current_branch(&self.repo_path).unwrap_or(None).unwrap_or_else(|| "HEAD".into())
+            }
+        };
 
         Ok(ComparisonContext {
             from_label: self.base_label.clone(),
@@ -150,35 +188,48 @@ impl Vcs for GitVcs {
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
+        let head_target = self.head_target.as_ref().map(|(r, l)| (r.as_str(), l.as_str()));
         refresh::git_compute_refresh(
-            &self.repo_path, &self.base_branch, &self.base_label, cancel_flag,
+            &self.repo_path, &self.base_branch, &self.base_label, head_target, cancel_flag,
         )
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {
-        let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
-            .unwrap_or_default();
-        let old_path = changed_files::find_rename_source(&self.repo_path, file_path, &merge_base);
+        let head_ref = self.head_ref();
+        let merge_base =
+            get_merge_base_preferring_origin_for(&self.repo_path, &self.base_branch, head_ref)
+                .unwrap_or_default();
+        let old_path = changed_files::find_rename_source_between(
+            &self.repo_path, file_path, &merge_base, head_ref,
+        );
         refresh::git_compute_single_file_diff(
             &self.repo_path,
             file_path,
             old_path.as_deref(),
             &merge_base,
+            self.head_target.as_ref().map(|(r, _)| r.as_str()),
         )
     }
 
     fn base_identifier(&self) -> Result<String> {
-        get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
+        get_merge_base_preferring_origin_for(&self.repo_path, &self.base_branch, self.head_ref())
     }
 
     fn base_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
-        let merge_base = get_merge_base_preferring_origin(&self.repo_path, &self.base_branch)
-            .unwrap_or_default();
+        let merge_base = get_merge_base_preferring_origin_for(
+            &self.repo_path,
+            &self.base_branch,
+            self.head_ref(),
+        )
+        .unwrap_or_default();
         get_file_bytes_at_ref(&self.repo_path, file_path, &merge_base)
     }
 
     fn working_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
-        get_working_tree_bytes(&self.repo_path, file_path)
+        match &self.head_target {
+            Some((head_ref, _)) => get_file_bytes_at_ref(&self.repo_path, file_path, head_ref),
+            None => get_working_tree_bytes(&self.repo_path, file_path),
+        }
     }
 
     fn fetch(&self) -> Result<()> {
@@ -230,7 +281,11 @@ impl Vcs for GitVcs {
     }
 
     fn fingerprint_inputs(&self) -> Result<crate::fingerprint::FingerprintInputs> {
-        fingerprint::inputs(&self.repo_path, &self.base_branch)
+        fingerprint::inputs(
+            &self.repo_path,
+            &self.base_branch,
+            self.head_target.as_ref().map(|(r, _)| r.as_str()),
+        )
     }
 
     fn backend(&self) -> VcsBackend {
@@ -240,7 +295,7 @@ impl Vcs for GitVcs {
     fn current_revision_id(&self) -> Result<String> {
         let output = vcs_runner::run_git_with_retry(
             &self.repo_path,
-            &["rev-parse", "--short", "HEAD"],
+            &["rev-parse", "--short", self.head_ref()],
             vcs_runner::is_transient_error,
         )?;
         Ok(output.stdout_lossy().trim().to_string())

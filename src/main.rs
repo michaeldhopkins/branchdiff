@@ -243,7 +243,7 @@ fn main() -> Result<()> {
     let repo_path = cli.path.canonicalize().context("Failed to resolve repository path")?;
 
     // Try to detect VCS - for non-TUI modes, fail immediately if not found
-    let detected = match vcs::detect_with_base(&repo_path, cli.base.as_deref()) {
+    let detected = match vcs::detect_with_options(&repo_path, cli.vcs_options()) {
         Ok(vcs) => Some(vcs),
         Err(e) => match startup::on_detect_failure(
             vcs::detect_repo_dir(&repo_path).is_some(),
@@ -406,7 +406,7 @@ fn run_waiting_for_vcs(path: &Path, cli: &Cli) -> Result<()> {
         // Phase 2: repo directory exists — try full detection with commands.
         if repo_found.is_some() && last_detect_attempt.elapsed() >= retry_delay {
             last_detect_attempt = Instant::now();
-            match vcs::detect_with_base(path, cli.base.as_deref()) {
+            match vcs::detect_with_options(path, cli.vcs_options()) {
                 Ok(detected) => {
                     let repo_root = detected.repo_path().to_path_buf();
                     // Restore before handing off; run_main_app installs its own guard.

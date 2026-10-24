@@ -243,16 +243,48 @@ pub(super) fn get_diff_transitions(
     Ok(transitions)
 }
 
-/// Check if file_path was renamed from another path in committed changes.
-pub(super) fn find_rename_source(
+/// Get files changed between two committed refs (`from..to`) with rename detection.
+pub fn get_changed_files_between(
+    repo_path: &Path,
+    from: &str,
+    to: &str,
+) -> Result<Vec<ChangedFile>> {
+    if from.is_empty() {
+        return Ok(Vec::new());
+    }
+    let transitions = get_diff_transitions(repo_path, from, to)?;
+    let mut files: HashMap<String, Option<String>> = HashMap::new();
+    for t in transitions {
+        match (t.to, t.from) {
+            (Some(to_path), Some(from_path)) if to_path != from_path => {
+                files.insert(to_path, Some(from_path));
+            }
+            (Some(to_path), _) => {
+                files.insert(to_path, None);
+            }
+            (None, Some(from_path)) => {
+                files.insert(from_path, None);
+            }
+            (None, None) => {}
+        }
+    }
+    let mut result: Vec<ChangedFile> =
+        files.into_iter().map(|(path, old_path)| ChangedFile { path, old_path }).collect();
+    result.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(result)
+}
+
+/// Check if file_path was renamed from another path in committed changes between `merge_base` and `head_ref`.
+pub(super) fn find_rename_source_between(
     repo_path: &Path,
     file_path: &str,
     merge_base: &str,
+    head_ref: &str,
 ) -> Option<String> {
     if merge_base.is_empty() {
         return None;
     }
-    let transitions = get_diff_transitions(repo_path, merge_base, "HEAD").ok()?;
+    let transitions = get_diff_transitions(repo_path, merge_base, head_ref).ok()?;
     transitions.into_iter().find_map(|t| {
         if t.to.as_deref() == Some(file_path) && t.from.as_deref() != Some(file_path) {
             t.from

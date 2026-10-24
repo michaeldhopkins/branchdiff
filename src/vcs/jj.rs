@@ -15,16 +15,26 @@ use super::jj_revset::{
     TRUNK_REMOTE_PREFERENCE, local_trunk_bookmark, pick_trunk_remote, revset_commit_count,
     revset_committer_epoch, revset_resolves,
 };
+mod bookmark;
 mod fingerprint;
+mod parse;
 mod refresh;
 mod stack;
 
 use super::shared::{FileProcessResult, assemble_results, process_files_parallel};
 #[cfg(test)]
+use bookmark::{boundary_revset, resolve_bookmark_boundary};
+use bookmark::{mark_bookmark_provenance, resolve_bookmark_boundary_for};
+#[cfg(any(test, fuzzing))]
+pub(crate) use parse::parse_rename;
+pub(crate) use parse::{ChangedFile, parse_binary_from_stat, parse_jj_summary, parse_rev_metadata};
+#[cfg(test)]
+use stack::resolve_fork_point;
+#[cfg(test)]
 use stack::resolve_orphaned_tip;
 use stack::{
     Anchors, compute_stack_position, get_change_id_static, joined, resolve_anchors,
-    resolve_fork_and_tips, resolve_fork_point, resolve_stack_tip,
+    resolve_fork_and_tips, resolve_stack_tip,
 };
 
 /// Prepend `--ignore-working-copy` to skip jj's auto-snapshot.
@@ -42,7 +52,7 @@ use crate::image_diff::is_image_file;
 use crate::limits::DiffMetrics;
 use crate::vcs::{
     ComparisonContext, DiffBase, RefreshResult, StackPosition, VcsBackend, VcsEventType,
-    VcsWatchPaths,
+    VcsOptions, VcsWatchPaths,
 };
 
 /// Jujutsu (jj) backend for branchdiff.
@@ -50,6 +60,8 @@ pub struct JjVcs {
     repo_path: PathBuf,
     /// Revset for the base of comparison: `trunk()` when available, `@-` otherwise.
     from_rev: String,
+    /// Optional explicit `--head <REV>` revision to diff up to instead of `@`.
+    head_rev: Option<String>,
     /// Whether to diff from the fork point or the trunk tip.
     /// Stored as AtomicU8 for interior mutability (Vcs trait uses &self).
     /// 0 = ForkPoint, 1 = TrunkTip.
@@ -211,7 +223,11 @@ fn trunk_remote(repo_path: &Path, cancel: &Arc<AtomicBool>) -> Option<String> {
 }
 
 /// The remote(s) holding a bookmark at `revset`, reduced to a single preferred one.
-fn remote_of(repo_path: &Path, revset: &str, cancel: &Arc<AtomicBool>) -> Option<String> {
+pub(super) fn remote_of(
+    repo_path: &Path,
+    revset: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<String> {
     let args = no_snapshot(&[
         "log",
         "-r",
@@ -226,139 +242,9 @@ fn remote_of(repo_path: &Path, revset: &str, cancel: &Arc<AtomicBool>) -> Option
     pick_trunk_remote(&output.stdout_lossy())
 }
 
-/// Build the revset that finds the bookmark boundary below `change_id`.
-///
-/// Remote bookmarks are scoped to `trunk_remote`. An unscoped
-/// `remote_bookmarks()` matches *every* remote, and because `latest()` picks by
-/// committer timestamp rather than by remote precedence, a bookmark on a deploy
-/// remote (heroku etc.) sitting inside the stack range can displace the real
-/// stack segment and truncate the current bookmark's file scope. With no known
-/// trunk remote, consider local bookmarks only.
-fn boundary_revset(change_id: &str, from_rev: &str, trunk_remote: Option<&str>) -> String {
-    let bookmarks = match trunk_remote {
-        Some(remote) => format!(r#"bookmarks() | remote_bookmarks(remote=exact:"{remote}")"#),
-        None => "bookmarks()".to_string(),
-    };
-    format!("latest((({from_rev})..\"{change_id}\"-) & ({bookmarks}))")
-}
-
-/// Info about the bookmark boundary for the current stack position.
-struct BookmarkBoundary {
-    /// Name of the current bookmark.
-    bookmark_name: String,
-    /// Files changed between the boundary and @, used to filter which files
-    /// belong to the current bookmark vs earlier bookmarks.
-    changed_files: HashSet<String>,
-}
-
-/// Find the bookmark boundary: the nearest ancestor bookmark below the current
-/// bookmark's scope. Returns the boundary revision and current bookmark name.
-///
-/// Strategy:
-/// 1. Find the bookmark at or above @ (the bookmark @ belongs to).
-/// 2. Find the nearest ancestor bookmark below that one.
-fn resolve_bookmark_boundary(
-    repo_path: &Path,
-    from_rev: &str,
-    cancel: &Arc<AtomicBool>,
-) -> Option<BookmarkBoundary> {
-    if !is_trunk_base(from_rev) {
-        return None;
-    }
-
-    // Step 1: Find the current bookmark — at @ or the nearest descendant with a bookmark
-    let template = r#"bookmarks.join(",") ++ "\0" ++ change_id.short(12)"#;
-    let args = no_snapshot(&[
-        "log",
-        "-r",
-        "latest((@:: | @) & bookmarks())",
-        "--no-graph",
-        "--limit",
-        "1",
-        "-T",
-        template,
-    ]);
-    let output = run_jj_cancellable(repo_path, &args, Arc::clone(cancel)).ok()?;
-    let stdout = output.stdout_lossy();
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let parts: Vec<&str> = trimmed.splitn(2, '\0').collect();
-    if parts.len() < 2 {
-        return None;
-    }
-    let bookmark_name = parts[0].trim().trim_end_matches('*').to_string();
-    let current_bm_id = parts[1].trim().to_string();
-
-    if bookmark_name.is_empty() {
-        return None;
-    }
-
-    // Step 2: Find the previous bookmark (nearest ancestor bookmark below the current one).
-    // Local bookmarks plus trunk's remote — stacks often have only remote-tracking
-    // bookmarks for already-pushed segments, but other remotes must not participate.
-    let remote = remote_of(repo_path, from_rev, cancel);
-    let revset = boundary_revset(&current_bm_id, from_rev, remote.as_deref());
-    let prev_args = no_snapshot(&[
-        "log", "-r", &revset, "--no-graph", "--limit", "1", "-T", "change_id.short(12)",
-    ]);
-    let boundary_id = run_jj_cancellable(repo_path, &prev_args, Arc::clone(cancel))
-        .ok()
-        .map(|o| o.stdout_lossy().trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| from_rev.to_string());
-
-    // Step 3: Get the list of files changed between boundary and @
-    let range = format!("\"{}\"..@", boundary_id);
-    let diff_args = no_snapshot(&["diff", "-r", &range, "--name-only"]);
-    let changed_files: HashSet<String> =
-        run_jj_cancellable(repo_path, &diff_args, Arc::clone(cancel))
-            .map(|o| {
-                o.stdout_lossy()
-                    .lines()
-                    .map(|l| l.trim().to_string())
-                    .filter(|l| !l.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-    Some(BookmarkBoundary { bookmark_name, changed_files })
-}
-
-/// Mark each DiffLine in a FileDiff with bookmark provenance.
-///
-/// Uses the file content at the bookmark boundary revision to determine which
-/// lines were introduced before vs. after the boundary.
-/// Mark each line's bookmark provenance based on whether the file was changed
-/// in the current bookmark's scope (between the previous bookmark and @).
-fn mark_bookmark_provenance(file_diff: &mut crate::diff::FileDiff, file_in_current_bookmark: bool) {
-    use crate::diff::LineSource;
-
-    for line in &mut file_diff.lines {
-        line.in_current_bookmark = Some(match line.source {
-            // Change lines: belong to the current bookmark only if the file was
-            // modified between the previous bookmark boundary and @.
-            LineSource::Committed
-            | LineSource::CanceledCommitted
-            | LineSource::DeletedBase
-            | LineSource::Staged
-            | LineSource::DeletedCommitted
-            | LineSource::CanceledStaged
-            | LineSource::Unstaged
-            | LineSource::DeletedStaged => file_in_current_bookmark,
-
-            LineSource::Base if line.change_source.is_some() => file_in_current_bookmark,
-
-            LineSource::Base | LineSource::FileHeader | LineSource::Elided => false,
-        });
-    }
-}
-
 impl JjVcs {
     pub fn new(repo_path: PathBuf) -> Result<Self> {
-        Self::with_base(repo_path, None)
+        Self::with_options(repo_path, VcsOptions::default())
     }
 
     /// Create a backend, optionally overriding the base revset.
@@ -376,7 +262,29 @@ impl JjVcs {
     ///   fails and the failure is swallowed into an empty base — `--base 'all()'`
     ///   rendered whole files as added, exit 0, empty stderr.
     pub fn with_base(repo_path: PathBuf, base: Option<&str>) -> Result<Self> {
-        let from_rev = match base {
+        Self::with_options(repo_path, VcsOptions { base, ..VcsOptions::default() })
+    }
+
+    /// Create a backend with explicit comparison options (`--base`, `--head`).
+    pub fn with_options(repo_path: PathBuf, options: VcsOptions<'_>) -> Result<Self> {
+        let head_rev = match options.head {
+            Some(head) => {
+                match revset_commit_count(&repo_path, head) {
+                    1 => {}
+                    0 => anyhow::bail!(
+                        "--head {head:?} does not resolve to a commit in this jj repo \
+                         (expected a revset, e.g. feature or @-)"
+                    ),
+                    _ => anyhow::bail!(
+                        "--head {head:?} resolves to more than one commit; it must name \
+                         exactly one (e.g. feature, or heads({head}))"
+                    ),
+                }
+                Some(head.to_string())
+            }
+            None => None,
+        };
+        let from_rev = match options.base {
             Some(base) => {
                 match revset_commit_count(&repo_path, base) {
                     1 => {}
@@ -410,11 +318,23 @@ impl JjVcs {
         Ok(Self {
             repo_path,
             from_rev,
+            head_rev,
             diff_base: AtomicU8::new(0),
             op_store_dir,
             disk_manifest: Mutex::new(DiskManifest::empty()),
             base_read_count: AtomicUsize::new(0),
         })
+    }
+
+    pub(super) fn target_rev(&self) -> &str {
+        self.head_rev.as_deref().unwrap_or("@")
+    }
+
+    pub(super) fn base_rev(&self) -> std::borrow::Cow<'_, str> {
+        match (&self.head_rev, self.from_rev.as_str()) {
+            (Some(head), PARENT_BASE) => std::borrow::Cow::Owned(format!("({head})-")),
+            _ => std::borrow::Cow::Borrowed(&self.from_rev),
+        }
     }
 
     fn load_diff_base(&self) -> DiffBase {
@@ -449,6 +369,23 @@ impl JjVcs {
         let output = run_jj_with_retry_cancellable(
             &self.repo_path,
             &["diff", "--from", from, "--to", effective_to, "--summary"],
+            is_transient_error,
+            Arc::clone(cancel),
+        )?;
+        Ok(parse_jj_summary(&output.stdout_lossy()))
+    }
+
+    /// Get changed files between two revisions without snapshotting the working copy.
+    fn get_changed_files_no_snapshot(
+        &self,
+        from: &str,
+        effective_to: &str,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<Vec<ChangedFile>> {
+        let args = no_snapshot(&["diff", "--from", from, "--to", effective_to, "--summary"]);
+        let output = run_jj_with_retry_cancellable(
+            &self.repo_path,
+            &args,
             is_transient_error,
             Arc::clone(cancel),
         )?;
@@ -791,29 +728,6 @@ impl JjVcs {
     }
 }
 
-/// Parse combined `bookmarks ++ "\0" ++ change_id ++ "\0" ++ shortest_id` template output.
-/// Returns (change_id, display_label) where label annotates bookmarks with the shortest
-/// unique change ID prefix: `"main (knmq)"`.
-pub(crate) fn parse_rev_metadata(raw: &str) -> (String, String) {
-    let raw = raw.trim();
-    let parts: Vec<&str> = raw.splitn(3, '\0').collect();
-    if parts.len() >= 2 {
-        let bookmarks = parts[0].trim().trim_end_matches('*');
-        let change_id = parts[1].trim().to_string();
-        let shortest_id = parts.get(2).map(|s| s.trim()).unwrap_or("");
-        let label = if bookmarks.is_empty() {
-            if shortest_id.is_empty() { change_id.clone() } else { shortest_id.to_string() }
-        } else if shortest_id.is_empty() {
-            bookmarks.to_string()
-        } else {
-            format!("{shortest_id} ({bookmarks})")
-        };
-        (change_id, label)
-    } else {
-        (raw.to_string(), raw.to_string())
-    }
-}
-
 /// Read file content at a revision without triggering auto-snapshot.
 /// Free function for use in parallel contexts (rayon).
 fn file_content_no_snapshot(
@@ -835,6 +749,7 @@ fn process_jj_file(
     binary_files: &HashSet<String>,
     tip_rev: Option<&str>,
     at_rev: &str,
+    read_from_disk: bool,
     bookmark_changed_files: Option<&HashSet<String>>,
     cancel: &Arc<AtomicBool>,
 ) -> FileProcessResult {
@@ -857,9 +772,9 @@ fn process_jj_file(
     // The base and parent reads are independent, so they run side by side. The
     // parent is for the committed/staged boundary: try the current path, fall back
     // to old_path for files renamed in the current commit. `at_rev` is `@`, or the
-    // re-anchored sibling tip when `@` is an orphaned empty commit (parent `<at_rev>-`).
+    // re-anchored sibling tip when `@` is an orphaned empty commit (parent `(<at_rev>)-`).
     let base_path = changed.old_path.as_deref().unwrap_or(&changed.path);
-    let at_parent = format!("{at_rev}-");
+    let at_parent = format!("({at_rev})-");
     // Scoped thread, not rayon::join: a serial run must not create rayon's global pool.
     let (base, parent) = std::thread::scope(|scope| {
         let base = scope.spawn(|| file_content_no_snapshot(repo_path, base_path, from_rev, cancel));
@@ -878,8 +793,8 @@ fn process_jj_file(
 
     // The working ("current") side of the diff comes from disk — no snapshot
     // required, so branchdiff never churns the oplog. A committed `at_rev` (the
-    // orphaned-tip / stack case) is still a WC-agnostic jj read.
-    let index = if at_rev == "@" {
+    // orphaned-tip / stack / `--head` case) is a WC-agnostic jj read.
+    let index = if read_from_disk {
         crate::vcs::shared::read_working_file(repo_path, &changed.path).ok().flatten()
     } else {
         file_content_no_snapshot(repo_path, &changed.path, at_rev, cancel)
@@ -934,7 +849,7 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn comparison_context(&self) -> Result<ComparisonContext> {
-        Ok(self.comparison_with(self.label_of(&self.from_rev), self.label_of("@")))
+        Ok(self.comparison_with(self.label_of(&self.base_rev()), self.label_of(self.target_rev())))
     }
 
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
@@ -954,21 +869,36 @@ impl crate::vcs::Vcs for JjVcs {
         // cancel flag so the subprocess calls compile against the cancellable
         // helpers. A future change can plumb a real cancel through if needed.
         let cancel = Arc::new(AtomicBool::new(false));
+        let base_rev = self.base_rev();
         // Mirror refresh()'s anchoring so an incremental update stays consistent
         // with a full refresh, including the orphaned-empty-@ re-anchor.
-        let (fork_point, stack_tip, orphaned) =
-            resolve_fork_and_tips(&self.repo_path, &self.from_rev, &cancel);
+        let (fork_point, stack_tip, orphaned) = resolve_fork_and_tips(
+            &self.repo_path,
+            &self.from_rev,
+            self.head_rev.as_deref(),
+            &cancel,
+        );
         let effective_from = match self.load_diff_base() {
-            DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(&self.from_rev),
-            DiffBase::TrunkTip => &self.from_rev,
+            DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(base_rev.as_ref()),
+            DiffBase::TrunkTip => base_rev.as_ref(),
         };
-        let at_rev = orphaned.as_ref().map(|t| t.change_id.as_str()).unwrap_or("@");
-        let effective_to =
-            stack_tip.as_ref().or(orphaned.as_ref()).map(|t| t.change_id.as_str()).unwrap_or("@");
+        let at_rev = self
+            .head_rev
+            .as_deref()
+            .or_else(|| orphaned.as_ref().map(|t| t.change_id.as_str()))
+            .unwrap_or("@");
+        let effective_to = self
+            .head_rev
+            .as_deref()
+            .or_else(|| stack_tip.as_ref().or(orphaned.as_ref()).map(|t| t.change_id.as_str()))
+            .unwrap_or("@");
+        let read_from_disk = self.head_rev.is_none() && effective_to == "@";
 
         // Discover from disk/git without snapshotting in the common case.
-        let changed_files = if effective_to == "@" {
+        let changed_files = if read_from_disk {
             self.discover_working_changes(effective_from, &cancel).ok()?
+        } else if self.head_rev.is_some() {
+            self.get_changed_files_no_snapshot(effective_from, effective_to, &cancel).ok()?
         } else {
             self.get_changed_files_with_from(effective_from, effective_to, &cancel).ok()?
         };
@@ -979,7 +909,7 @@ impl crate::vcs::Vcs for JjVcs {
         let base_path = old_path.unwrap_or(file_path);
         let base = file_content_no_snapshot(&self.repo_path, base_path, effective_from, &cancel);
 
-        let at_parent = format!("{at_rev}-");
+        let at_parent = format!("({at_rev})-");
         let parent = file_content_no_snapshot(&self.repo_path, file_path, &at_parent, &cancel)
             .or_else(|| {
                 old_path.and_then(|old| {
@@ -988,7 +918,7 @@ impl crate::vcs::Vcs for JjVcs {
             });
 
         // Working side from disk (see `process_jj_file`); committed `at_rev` via jj.
-        let index = if at_rev == "@" {
+        let index = if read_from_disk {
             crate::vcs::shared::read_working_file(&self.repo_path, file_path).ok().flatten()
         } else {
             file_content_no_snapshot(&self.repo_path, file_path, at_rev, &cancel)
@@ -1003,7 +933,7 @@ impl crate::vcs::Vcs for JjVcs {
             return None;
         }
 
-        let is_binary = if effective_to == "@" {
+        let is_binary = if read_from_disk {
             crate::vcs::shared::working_file_is_binary(&self.repo_path, file_path)
         } else {
             self.get_binary_files_set(effective_from, effective_to, &cancel).contains(file_path)
@@ -1024,8 +954,12 @@ impl crate::vcs::Vcs for JjVcs {
         });
 
         // Mark bookmark provenance for BookmarkOnly view mode
-        if let Some(boundary) = resolve_bookmark_boundary(&self.repo_path, &self.from_rev, &cancel)
-        {
+        if let Some(boundary) = resolve_bookmark_boundary_for(
+            &self.repo_path,
+            &self.from_rev,
+            self.target_rev(),
+            &cancel,
+        ) {
             let in_bookmark = boundary.changed_files.contains(file_path);
             mark_bookmark_provenance(&mut file_diff, in_bookmark);
         }
@@ -1034,22 +968,31 @@ impl crate::vcs::Vcs for JjVcs {
     }
 
     fn base_identifier(&self) -> Result<String> {
-        self.get_change_id(&self.from_rev)
+        self.get_change_id(&self.base_rev())
     }
 
     fn current_revision_id(&self) -> Result<String> {
-        self.run_jj(&[
-            "--ignore-working-copy", "log", "-r", "@", "--no-graph", "--limit", "1", "-T",
+        self.run_jj(&no_snapshot(&[
+            "log",
+            "-r",
+            self.target_rev(),
+            "--no-graph",
+            "--limit",
+            "1",
+            "-T",
             "change_id.short(12)",
-        ])
+        ]))
         .map(|s| s.trim().to_string())
     }
 
     fn base_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
-        self.get_file_bytes_at_rev(file_path, &self.from_rev)
+        self.get_file_bytes_at_rev(file_path, &self.base_rev())
     }
 
     fn working_file_bytes(&self, file_path: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(head) = &self.head_rev {
+            return self.run_jj_bytes(&no_snapshot(&["file", "show", "-r", head, file_path]));
+        }
         // The working copy is on disk — read it directly rather than snapshotting.
         crate::vcs::shared::read_working_file_bytes(&self.repo_path, file_path)
     }
@@ -1122,97 +1065,6 @@ impl crate::vcs::Vcs for JjVcs {
             }
         }
     }
-}
-
-/// Changed file from jj diff --summary output.
-#[derive(Debug, Clone)]
-pub(crate) struct ChangedFile {
-    path: String,
-    old_path: Option<String>,
-}
-
-/// Parse `jj diff --summary` output into changed files.
-///
-/// Renames use the format `R {old_path => new_path}`.
-pub(crate) fn parse_jj_summary(output: &str) -> Vec<ChangedFile> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() {
-                return None;
-            }
-            let first = line.chars().next()?;
-            if !matches!(first, 'M' | 'A' | 'D' | 'R' | 'C') {
-                return None;
-            }
-            let rest = line[1..].trim();
-            if rest.is_empty() {
-                return None;
-            }
-            if first == 'R' {
-                parse_rename(rest)
-            } else {
-                Some(ChangedFile { path: rest.to_string(), old_path: None })
-            }
-        })
-        .collect()
-}
-
-/// Parse a jj `--summary` rename entry into old/new paths.
-///
-/// jj factors the common directory prefix (and any common suffix) *outside* the
-/// brace, wrapping only the differing segment:
-///   `{old => new}`            (root)
-///   `sub/{old => new}`        (common prefix)
-///   `app/{old => new}/f.js`   (common prefix and suffix)
-/// The earlier parser anchored the brace at the start of the string and so
-/// matched only the root form, silently dropping every nested rename. jj always
-/// braces renames in `--summary`, so a string without a `{ … => … }` is treated
-/// as malformed and skipped.
-pub(crate) fn parse_rename(s: &str) -> Option<ChangedFile> {
-    let open = s.find('{')?;
-    let close = s.find('}')?;
-    if close < open {
-        return None;
-    }
-    let prefix = &s[..open];
-    let suffix = &s[close + 1..];
-    let (old, new) = s[open + 1..close].split_once(" => ")?;
-    let (old, new) = (old.trim(), new.trim());
-    if new.is_empty() {
-        return None;
-    }
-    Some(ChangedFile {
-        path: format!("{prefix}{new}{suffix}"),
-        old_path: Some(format!("{prefix}{old}{suffix}")),
-    })
-}
-
-/// Parse `jj diff --stat` output to find binary files (marked with "(binary)").
-///
-/// Handles renamed files: `{old => new} | (binary)` extracts just the new name.
-pub(crate) fn parse_binary_from_stat(output: &str) -> HashSet<String> {
-    output
-        .lines()
-        .filter(|line| line.contains("(binary)"))
-        .filter_map(|line| {
-            let raw_path = line.split('|').next()?.trim();
-            if raw_path.is_empty() {
-                return None;
-            }
-            // Renames show as "{old => new}" — extract the new name
-            let path =
-                if let Some(inner) = raw_path.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-                    inner.split(" => ").last().unwrap_or(inner).trim()
-                } else if raw_path.contains(" => ") {
-                    raw_path.split(" => ").last().unwrap_or(raw_path).trim()
-                } else {
-                    raw_path
-                };
-            if path.is_empty() { None } else { Some(path.to_string()) }
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -4494,6 +4346,94 @@ mod tests {
             op_count(repo),
             before,
             "an orphaned-@ refresh must not snapshot the working copy"
+        );
+    }
+
+    #[test]
+    fn head_flag_renders_target_revision_without_checking_it_out_or_snapshotting() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        // Create a `feature` bookmark commit off main.
+        std::fs::write(repo.join("file.txt"), "initial\nfeature work\n").unwrap();
+        std::fs::write(repo.join("feature_only.txt"), "only on feature\n").unwrap();
+        Command::new("jj")
+            .args(["bookmark", "create", "feature", "-r", "@"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        Command::new("jj")
+            .args(["commit", "-m", "feature commit"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+
+        // Move `@` back onto `main` and dirty the working copy without snapshotting.
+        Command::new("jj").args(["new", "main"]).current_dir(repo).output().unwrap();
+        std::fs::write(repo.join("file.txt"), "dirty working copy on main\n").unwrap();
+        std::fs::write(repo.join("untracked_dirty.txt"), "dirty untracked\n").unwrap();
+
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: Some("feature") },
+        )
+        .unwrap();
+
+        let before = op_count(repo);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (comparison, refresh) = vcs.comparison_and_refresh(&cancel).unwrap();
+        assert_eq!(op_count(repo), before, "--head refresh must never snapshot the working copy");
+        assert!(
+            comparison.to_label.contains("feature"),
+            "to_label should name feature, got: {}",
+            comparison.to_label
+        );
+        assert_eq!(refresh.files.len(), 2);
+        assert!(refresh.lines.iter().any(|l| l.content.contains("feature work")));
+        assert!(refresh.lines.iter().any(|l| l.content.contains("only on feature")));
+        assert!(!refresh.lines.iter().any(|l| l.content.contains("dirty")));
+
+        let single = vcs.single_file_diff("file.txt").expect("single file diff for feature");
+        assert!(single.lines.iter().any(|l| l.content.contains("feature work")));
+        assert!(!single.lines.iter().any(|l| l.content.contains("dirty")));
+
+        let bytes = vcs.working_file_bytes("feature_only.txt").unwrap();
+        assert_eq!(bytes.as_deref(), Some(b"only on feature\n".as_slice()));
+
+        let fp = vcs.fingerprint_inputs().unwrap();
+        assert_eq!(fp.changed, vec!["feature_only.txt".to_string(), "file.txt".to_string()]);
+    }
+
+    #[test]
+    fn head_flag_rejects_empty_or_multi_commit_revset() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+
+        let empty_err = match JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: Some("none()") },
+        ) {
+            Ok(_) => panic!("empty revset must fail"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(empty_err.contains("--head") && empty_err.contains("none()"), "got: {empty_err}");
+
+        let multi_err = match JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: Some("all()") },
+        ) {
+            Ok(_) => panic!("multi-commit revset must fail"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            multi_err.contains("--head") && multi_err.contains("more than one commit"),
+            "got: {multi_err}"
         );
     }
 }

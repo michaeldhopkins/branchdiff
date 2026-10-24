@@ -103,6 +103,13 @@ pub struct Cli {
     #[arg(long, value_name = "REV")]
     pub base: Option<String>,
 
+    /// Render the diff up to this revision instead of the working tree without checking it out.
+    ///
+    /// jj: any single-commit revset (e.g. `feature`, `@-`, a change id).
+    /// git: a branch name, `origin/`-qualified name, tag, or commit.
+    #[arg(long, value_name = "REV")]
+    pub head: Option<String>,
+
     /// Disable automatic fetching of base branch
     #[arg(long)]
     pub no_auto_fetch: bool,
@@ -132,6 +139,11 @@ impl Cli {
     /// Whether an `--html` page keeps itself current.
     pub fn refresh(&self) -> Refresh {
         self.output.html.unwrap_or(Refresh::Live)
+    }
+
+    /// Options for VCS backend detection and initialization.
+    pub fn vcs_options(&self) -> crate::vcs::VcsOptions<'_> {
+        crate::vcs::VcsOptions { base: self.base.as_deref(), head: self.head.as_deref() }
     }
 }
 
@@ -238,6 +250,16 @@ mod tests {
         let print = parse(&["--print", "--comments=notes.txt"]).unwrap();
         assert_eq!(print.comments, Some(PathBuf::from("notes.txt")));
         assert_eq!(print.output.mode(), OutputMode::Print);
+    }
+
+    #[test]
+    fn head_flag_parses_with_base_and_output_modes() {
+        let cli = parse(&["--base", "main", "--head", "feature", "--print"]).unwrap();
+        assert_eq!(cli.base.as_deref(), Some("main"));
+        assert_eq!(cli.head.as_deref(), Some("feature"));
+        assert_eq!(cli.vcs_options().base, Some("main"));
+        assert_eq!(cli.vcs_options().head, Some("feature"));
+        assert_eq!(cli.output.mode(), OutputMode::Print);
     }
 
     #[test]

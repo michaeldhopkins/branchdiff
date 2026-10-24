@@ -4,37 +4,56 @@ use super::*;
 
 impl JjVcs {
     pub(super) fn refresh_anchored(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult> {
+        let target_rev = self.target_rev();
+        let base_rev = self.base_rev();
         // The fork point (for divergence and fork-point mode), the stack tip (is
         // @ mid-stack? if not, an orphaned empty @ left by an abandon?) and the
         // bookmark boundary (for BookmarkOnly view mode).
         let Anchors { fork_point, divergence, stack_tip, orphaned, bookmark_boundary } =
-            resolve_anchors(&self.repo_path, &self.from_rev, cancel_flag, || {
-                resolve_bookmark_boundary(&self.repo_path, &self.from_rev, cancel_flag)
-            });
+            resolve_anchors(
+                &self.repo_path,
+                &self.from_rev,
+                self.head_rev.as_deref(),
+                cancel_flag,
+                || {
+                    resolve_bookmark_boundary_for(
+                        &self.repo_path, &self.from_rev, target_rev, cancel_flag,
+                    )
+                },
+            );
         let effective_from = match self.load_diff_base() {
-            DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(&self.from_rev),
-            DiffBase::TrunkTip => &self.from_rev,
+            DiffBase::ForkPoint => fork_point.as_deref().unwrap_or(base_rev.as_ref()),
+            DiffBase::TrunkTip => base_rev.as_ref(),
         };
         let orphaned_tip = orphaned.is_some();
 
         // The commit treated as the current commit (`@`). Normally literally `@`;
-        // for an orphaned empty `@` it's the sibling tip, so that tip's changes
-        // color as the current commit and show in the [commit] view.
-        let at_rev = orphaned.as_ref().map(|t| t.change_id.as_str()).unwrap_or("@");
+        // for an orphaned empty `@` it's the sibling tip, or `--head` when passed.
+        let at_rev = self
+            .head_rev
+            .as_deref()
+            .or_else(|| orphaned.as_ref().map(|t| t.change_id.as_str()))
+            .unwrap_or("@");
         // Visible tip to enumerate and diff against.
-        let effective_to =
-            stack_tip.as_ref().or(orphaned.as_ref()).map(|t| t.change_id.as_str()).unwrap_or("@");
+        let effective_to = self
+            .head_rev
+            .as_deref()
+            .or_else(|| stack_tip.as_ref().or(orphaned.as_ref()).map(|t| t.change_id.as_str()))
+            .unwrap_or("@");
         // The "above @" (Unstaged) layer only exists for a real stack tip above a
         // mid-stack @; an orphaned tip *is* the anchor, so nothing sits above it.
         let tip_rev = stack_tip.as_ref().map(|t| t.change_id.as_str());
+        let read_from_disk = self.head_rev.is_none() && effective_to == "@";
 
         let bookmark_changed_files = bookmark_boundary.as_ref().map(|b| &b.changed_files);
 
         // Discover changed files. When the working copy is the diff target (the
-        // common case), do it from disk/git without snapshotting. The stack /
-        // orphaned-tip cases target a committed rev and still use the jj summary.
-        let changed_files = if effective_to == "@" {
+        // common case), do it from disk/git without snapshotting. Explicit `--head`
+        // uses `--ignore-working-copy`; stack/orphaned-tip uses the jj summary.
+        let changed_files = if read_from_disk {
             self.discover_working_changes(effective_from, cancel_flag)?
+        } else if self.head_rev.is_some() {
+            self.get_changed_files_no_snapshot(effective_from, effective_to, cancel_flag)?
         } else {
             self.get_changed_files_with_from(effective_from, effective_to, cancel_flag)?
         };
@@ -44,8 +63,8 @@ impl JjVcs {
         }
 
         // Binary detection: from disk for the working target (no snapshot), else
-        // the committed-diff stat for the stack/orphaned cases.
-        let binary_files = if effective_to == "@" {
+        // the committed-diff stat for the stack/orphaned/`--head` cases.
+        let binary_files = if read_from_disk {
             self.working_binary_files(&changed_files)
         } else {
             self.get_binary_files_set(effective_from, effective_to, cancel_flag)
@@ -58,7 +77,13 @@ impl JjVcs {
         // Normally the "to" label is @ (where the working copy sits). When we
         // re-anchored to an orphaned sibling tip, @ is an empty throwaway commit,
         // so label the tip we actually diffed against instead.
-        let to_rev = if orphaned_tip { effective_to } else { "@" };
+        let to_rev = if let Some(head) = &self.head_rev {
+            head.as_str()
+        } else if orphaned_tip {
+            effective_to
+        } else {
+            "@"
+        };
         // The labels and stack position need only the revisions, so their jj
         // calls run while the files are read.
         let (results, ((base_identifier, base_label_str), (_, current_branch_str), stack_position)) =
@@ -76,7 +101,7 @@ impl JjVcs {
                 let results = process_files_parallel(&changed_files, cancel_flag, |changed| {
                     process_jj_file(
                         &self.repo_path, effective_from, changed, &binary_files, tip_rev, at_rev,
-                        bookmark_changed_files, cancel_flag,
+                        read_from_disk, bookmark_changed_files, cancel_flag,
                     )
                 });
                 (results, (joined(base), joined(to), joined(position)))
@@ -160,11 +185,11 @@ pub(super) fn comparison_and_refresh(
     let result = vcs.refresh_anchored(cancel_flag)?;
     let from_label = match &result.base_label {
         Some(label) => label.clone(),
-        None => vcs.label_of(&vcs.from_rev),
+        None => vcs.label_of(&vcs.base_rev()),
     };
     let to_label = match &result.current_branch {
         Some(label) => label.clone(),
-        None => vcs.label_of("@"),
+        None => vcs.label_of(vcs.target_rev()),
     };
     Ok((vcs.comparison_with(from_label, to_label), result))
 }

@@ -58,12 +58,19 @@ pub fn detect_repo_dir(path: &Path) -> Option<(&'static str, PathBuf)> {
     None
 }
 
+/// Options for VCS backend detection and initialization.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VcsOptions<'a> {
+    pub base: Option<&'a str>,
+    pub head: Option<&'a str>,
+}
+
 /// Detect the VCS backend for a given path.
 ///
 /// Checks jj first (takes precedence in colocated repos where both
 /// .jj/ and .git/ exist), then falls back to git.
 pub fn detect(path: &Path) -> Result<Box<dyn Vcs>> {
-    detect_with_base(path, None)
+    detect_with_options(path, VcsOptions::default())
 }
 
 /// Detect the VCS backend, optionally overriding the base to compare against.
@@ -72,21 +79,26 @@ pub fn detect(path: &Path) -> Result<Box<dyn Vcs>> {
 /// branch/ref for git. An unresolvable base is an error rather than an empty
 /// diff — see each backend's `with_base`.
 pub fn detect_with_base(path: &Path, base: Option<&str>) -> Result<Box<dyn Vcs>> {
+    detect_with_options(path, VcsOptions { base, ..VcsOptions::default() })
+}
+
+/// Detect the VCS backend with explicit comparison options (`--base`, `--head`).
+pub fn detect_with_options(path: &Path, options: VcsOptions<'_>) -> Result<Box<dyn Vcs>> {
     // jj first — in colocated repos, jj is the primary VCS.
     // Check the path itself, then walk up parent dirs.
     if path.join(".jj").is_dir()
         && let Ok(root) = jj::get_repo_root(path)
     {
-        return Ok(Box::new(jj::JjVcs::with_base(root, base)?));
+        return Ok(Box::new(jj::JjVcs::with_options(root, options)?));
     }
     if let Some(ancestor) = path.ancestors().find(|p| p.join(".jj").is_dir())
         && let Ok(root) = jj::get_repo_root(ancestor)
     {
-        return Ok(Box::new(jj::JjVcs::with_base(root, base)?));
+        return Ok(Box::new(jj::JjVcs::with_options(root, options)?));
     }
     // Fall back to git
     if let Ok(root) = git::get_repo_root(path) {
-        return Ok(Box::new(git::GitVcs::with_base(root, base)?));
+        return Ok(Box::new(git::GitVcs::with_options(root, options)?));
     }
     anyhow::bail!("Not a git or jj repository")
 }

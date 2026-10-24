@@ -807,7 +807,8 @@ fn test_find_rename_source_detects_committed_rename() {
     git_cmd(temp.path(), &["commit", "-m", "rename"]);
 
     let merge_base = get_merge_base_preferring_origin(temp.path(), "main").unwrap();
-    let old = changed_files::find_rename_source(temp.path(), "renamed.txt", &merge_base);
+    let old =
+        changed_files::find_rename_source_between(temp.path(), "renamed.txt", &merge_base, "HEAD");
     assert_eq!(old.as_deref(), Some("file.txt"));
 }
 
@@ -820,13 +821,14 @@ fn test_find_rename_source_returns_none_for_non_rename() {
     git_cmd(temp.path(), &["commit", "-m", "modify"]);
 
     let merge_base = get_merge_base_preferring_origin(temp.path(), "main").unwrap();
-    let old = changed_files::find_rename_source(temp.path(), "file.txt", &merge_base);
+    let old =
+        changed_files::find_rename_source_between(temp.path(), "file.txt", &merge_base, "HEAD");
     assert!(old.is_none());
 }
 
 #[test]
 fn test_find_rename_source_empty_merge_base() {
-    let old = changed_files::find_rename_source(Path::new("/tmp"), "file.txt", "");
+    let old = changed_files::find_rename_source_between(Path::new("/tmp"), "file.txt", "", "HEAD");
     assert!(old.is_none());
 }
 
@@ -880,6 +882,7 @@ fn classify(repo_path: &Path, relative: &str) -> VcsEventType {
         repo_path: repo_path.to_path_buf(),
         base_branch: "main".to_string(),
         base_label: "main".to_string(),
+        head_target: None,
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     vcs.classify_event(&repo_path.join(relative))
@@ -977,6 +980,7 @@ fn test_classify_path_outside_repo() {
         repo_path: repo.to_path_buf(),
         base_branch: "main".to_string(),
         base_label: "main".to_string(),
+        head_target: None,
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     // Path outside repo — strip_prefix fails, treated as source
@@ -993,6 +997,7 @@ fn test_watch_paths_includes_index_and_head() {
         repo_path: repo.to_path_buf(),
         base_branch: "main".to_string(),
         base_label: "main".to_string(),
+        head_target: None,
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     let paths = vcs.watch_paths();
@@ -1008,6 +1013,7 @@ fn test_watch_paths_includes_refs_dir() {
         repo_path: repo.to_path_buf(),
         base_branch: "main".to_string(),
         base_label: "main".to_string(),
+        head_target: None,
         git_version: GitVersion { major: 2, minor: 40, patch: 0 },
     };
     let paths = vcs.watch_paths();
@@ -1446,4 +1452,66 @@ fn test_git_ambiguous_base_label_survives_refresh() {
         Some("develop (local)"),
         "the refresh result carries the label that wins on screen"
     );
+}
+
+// === --head override tests ===
+
+#[test]
+fn test_git_explicit_head_renders_branch_without_checking_it_out() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "initial\nfeature line\n").unwrap();
+    fs::write(repo.join("feature_only.txt"), "from feature\n").unwrap();
+    git_cmd(repo, &["add", "."]);
+    git_cmd(repo, &["commit", "-m", "feature commit"]);
+
+    // Switch back to main and dirty the working tree and index.
+    git_cmd(repo, &["checkout", "main"]);
+    fs::write(repo.join("file.txt"), "dirty main edit\n").unwrap();
+    fs::write(repo.join("untracked_main.txt"), "dirty untracked\n").unwrap();
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: Some("feature") },
+    )
+    .unwrap();
+
+    let ctx = vcs.comparison_context().unwrap();
+    assert_eq!(ctx.from_label, "main");
+    assert_eq!(ctx.to_label, "feature");
+
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refresh = vcs.refresh(&cancel).unwrap();
+    assert_eq!(refresh.current_branch.as_deref(), Some("feature"));
+    assert_eq!(refresh.files.len(), 2);
+    assert!(refresh.lines.iter().any(|l| l.content.contains("feature line")));
+    assert!(refresh.lines.iter().any(|l| l.content.contains("from feature")));
+    assert!(!refresh.lines.iter().any(|l| l.content.contains("dirty")));
+
+    let single = vcs.single_file_diff("file.txt").expect("single file diff for feature");
+    assert!(single.lines.iter().any(|l| l.content.contains("feature line")));
+    assert!(!single.lines.iter().any(|l| l.content.contains("dirty")));
+
+    let bytes = vcs.working_file_bytes("feature_only.txt").unwrap();
+    assert_eq!(bytes.as_deref(), Some(b"from feature\n".as_slice()));
+
+    let fp = vcs.fingerprint_inputs().unwrap();
+    assert_eq!(fp.changed, vec!["feature_only.txt".to_string(), "file.txt".to_string()]);
+    assert!(fp.state.is_empty(), "--head fingerprint must ignore working tree status");
+}
+
+#[test]
+fn test_git_explicit_head_that_does_not_resolve_is_rejected() {
+    let temp = create_test_repo();
+    let result = GitVcs::with_options(
+        temp.path().to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: Some("no-such-head") },
+    );
+    let msg = match result {
+        Ok(_) => panic!("an unresolvable --head must be rejected"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(msg.contains("--head") && msg.contains("no-such-head"), "got: {msg}");
 }

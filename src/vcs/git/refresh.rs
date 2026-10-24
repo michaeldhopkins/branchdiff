@@ -12,10 +12,11 @@ use crate::limits::DiffMetrics;
 use crate::vcs::RefreshResult;
 use crate::vcs::shared::{FileProcessResult, assemble_results, process_files_parallel};
 
-use super::changed_files::get_all_changed_files;
+use super::changed_files::{get_all_changed_files, get_changed_files_between};
 use super::commands::{
-    batch_file_contents, compute_upstream_divergence, get_binary_files, get_current_branch,
-    get_file_at_ref, get_merge_base_preferring_origin, get_working_tree_file, is_binary_file,
+    batch_file_contents, compute_upstream_divergence, get_binary_files, get_binary_files_between,
+    get_current_branch, get_file_at_ref, get_merge_base_preferring_origin_for,
+    get_working_tree_file, is_binary_file, is_binary_file_between,
 };
 
 struct FileContents {
@@ -26,7 +27,13 @@ struct FileContents {
 }
 
 impl FileContents {
-    fn fetch(repo_path: &Path, file_path: &str, old_path: Option<&str>, merge_base: &str) -> Self {
+    fn fetch(
+        repo_path: &Path,
+        file_path: &str,
+        old_path: Option<&str>,
+        merge_base: &str,
+        head_ref: Option<&str>,
+    ) -> Self {
         let base_path = old_path.unwrap_or(file_path);
 
         let base = if merge_base.is_empty() {
@@ -34,6 +41,11 @@ impl FileContents {
         } else {
             get_file_at_ref(repo_path, base_path, merge_base).ok().flatten()
         };
+
+        if let Some(target_ref) = head_ref {
+            let head = get_file_at_ref(repo_path, file_path, target_ref).ok().flatten();
+            return Self { base, head: head.clone(), index: head.clone(), working: head };
+        }
 
         let head = get_file_at_ref(repo_path, file_path, "HEAD").ok().flatten().or_else(|| {
             old_path.and_then(|p| get_file_at_ref(repo_path, p, "HEAD").ok().flatten())
@@ -59,10 +71,16 @@ impl FileContents {
         head_contents: &HashMap<String, String>,
         index_contents: &HashMap<String, String>,
         repo_path: &Path,
+        working_from_head: bool,
     ) -> Self {
         let base_path = old_path.unwrap_or(file_path);
+        let base = base_contents.get(base_path).cloned();
+        if working_from_head {
+            let head = head_contents.get(file_path).cloned();
+            return Self { base, head: head.clone(), index: head.clone(), working: head };
+        }
         Self {
-            base: base_contents.get(base_path).cloned(),
+            base,
             head: head_contents
                 .get(file_path)
                 .cloned()
@@ -88,6 +106,7 @@ fn process_single_file_batched(
     base_contents: &HashMap<String, String>,
     head_contents: &HashMap<String, String>,
     index_contents: &HashMap<String, String>,
+    working_from_head: bool,
     cancel: &AtomicBool,
 ) -> FileProcessResult {
     if cancel.load(Ordering::Relaxed) {
@@ -103,6 +122,7 @@ fn process_single_file_batched(
 
     let contents = FileContents::from_batch(
         file_path, old_path, base_contents, head_contents, index_contents, repo_path,
+        working_from_head,
     );
     FileProcessResult::Diff(compute_four_way_diff_cancellable(
         DiffInput {
@@ -122,12 +142,17 @@ pub(super) fn git_compute_single_file_diff(
     file_path: &str,
     old_path: Option<&str>,
     merge_base: &str,
+    head_ref: Option<&str>,
 ) -> Option<FileDiff> {
-    if is_binary_file(repo_path, file_path) {
+    let is_binary = match head_ref {
+        Some(target_ref) => is_binary_file_between(repo_path, file_path, merge_base, target_ref),
+        None => is_binary_file(repo_path, file_path),
+    };
+    if is_binary {
         return None;
     }
 
-    let contents = FileContents::fetch(repo_path, file_path, old_path, merge_base);
+    let contents = FileContents::fetch(repo_path, file_path, old_path, merge_base, head_ref);
 
     if contents.all_equal() {
         return None;
@@ -168,17 +193,26 @@ pub(super) fn git_compute_refresh(
     repo_path: &Path,
     base_branch: &str,
     base_label: &str,
+    head_target: Option<(&str, &str)>,
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<RefreshResult> {
-    let merge_base = get_merge_base_preferring_origin(repo_path, base_branch).unwrap_or_default();
+    let head_ref = head_target.map_or("HEAD", |(r, _)| r);
+    let merge_base =
+        get_merge_base_preferring_origin_for(repo_path, base_branch, head_ref).unwrap_or_default();
 
     if cancel_flag.load(Ordering::Relaxed) {
         return Err(anyhow!("refresh cancelled"));
     }
 
     let (changed_files_result, binary_files) = std::thread::scope(|s| {
-        let changed_handle = s.spawn(|| get_all_changed_files(repo_path, &merge_base));
-        let binary_handle = s.spawn(|| get_binary_files(repo_path, &merge_base));
+        let changed_handle = s.spawn(|| match head_target {
+            Some((target_ref, _)) => get_changed_files_between(repo_path, &merge_base, target_ref),
+            None => get_all_changed_files(repo_path, &merge_base),
+        });
+        let binary_handle = s.spawn(|| match head_target {
+            Some((target_ref, _)) => get_binary_files_between(repo_path, &merge_base, target_ref),
+            None => get_binary_files(repo_path, &merge_base),
+        });
 
         (
             changed_handle.join().expect("changed files thread panicked"),
@@ -198,7 +232,10 @@ pub(super) fn git_compute_refresh(
     // their git calls run while the file contents are fetched.
     let (base_contents, head_contents, index_contents, current_branch, divergence) =
         std::thread::scope(|s| {
-            let branch_handle = s.spawn(|| get_current_branch(repo_path).unwrap_or(None));
+            let branch_handle = s.spawn(|| match head_target {
+                Some((_, label)) => Some(label.to_string()),
+                None => get_current_branch(repo_path).unwrap_or(None),
+            });
             let divergence_handle =
                 s.spawn(|| compute_upstream_divergence(repo_path, &merge_base, base_branch));
             let base_handle = s.spawn(|| {
@@ -208,8 +245,14 @@ pub(super) fn git_compute_refresh(
                     batch_file_contents(repo_path, &fetch_paths, &merge_base)
                 }
             });
-            let head_handle = s.spawn(|| batch_file_contents(repo_path, &fetch_paths, "HEAD"));
-            let index_handle = s.spawn(|| batch_file_contents(repo_path, &fetch_paths, ""));
+            let head_handle = s.spawn(|| batch_file_contents(repo_path, &fetch_paths, head_ref));
+            let index_handle = s.spawn(|| {
+                if head_target.is_some() {
+                    HashMap::new()
+                } else {
+                    batch_file_contents(repo_path, &fetch_paths, "")
+                }
+            });
 
             (
                 base_handle.join().expect("base batch thread panicked"),
@@ -220,6 +263,7 @@ pub(super) fn git_compute_refresh(
             )
         });
 
+    let working_from_head = head_target.is_some();
     let results = process_files_parallel(&changed_files, cancel_flag, |file| {
         process_single_file_batched(
             repo_path,
@@ -229,6 +273,7 @@ pub(super) fn git_compute_refresh(
             &base_contents,
             &head_contents,
             &index_contents,
+            working_from_head,
             cancel_flag,
         )
     });

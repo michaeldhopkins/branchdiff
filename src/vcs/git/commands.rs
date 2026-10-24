@@ -1,16 +1,16 @@
-use std::collections::{HashMap, HashSet};
-use std::io::{BufReader, BufWriter, Write};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow};
 
 use crate::vcs::UpstreamDivergence;
-use vcs_runner::{
-    Cmd, is_transient_error as vcs_is_transient, run_git, run_git_with_retry, run_git_with_timeout,
-};
+use vcs_runner::{Cmd, run_git, run_git_with_timeout};
 
-use super::parse::{parse_numstat_binaries, read_cat_file_batch};
+pub(super) use super::content::{batch_file_contents, get_file_at_ref, get_working_tree_file};
+pub use super::content::{
+    get_binary_files, get_binary_files_between, get_file_bytes_at_ref, get_working_tree_bytes,
+    is_binary_file, is_binary_file_between,
+};
 
 /// Git version required for merge-tree --write-tree (conflict detection)
 const MERGE_TREE_MIN_VERSION: (u32, u32) = (2, 38);
@@ -145,13 +145,33 @@ pub fn detect_base_branch(repo_path: &Path) -> Result<String> {
 
 /// Get the merge-base between HEAD and the base branch, preferring origin
 pub fn get_merge_base_preferring_origin(repo_path: &Path, base_branch: &str) -> Result<String> {
+    get_merge_base_preferring_origin_for(repo_path, base_branch, "HEAD")
+}
+
+/// Get the merge-base between `head_ref` and the base branch, preferring origin
+pub fn get_merge_base_preferring_origin_for(
+    repo_path: &Path,
+    base_branch: &str,
+    head_ref: &str,
+) -> Result<String> {
     let remote_ref = format!("origin/{}", base_branch);
-    get_merge_base(repo_path, &remote_ref).or_else(|_| get_merge_base(repo_path, base_branch))
+    get_merge_base_between(repo_path, &remote_ref, head_ref)
+        .or_else(|_| get_merge_base_between(repo_path, base_branch, head_ref))
 }
 
 /// Get the merge-base between the base branch and HEAD
+#[cfg(test)]
 pub(super) fn get_merge_base(repo_path: &Path, base_branch: &str) -> Result<String> {
-    let output = run_git(repo_path, &["merge-base", base_branch, "HEAD"])?;
+    get_merge_base_between(repo_path, base_branch, "HEAD")
+}
+
+/// Get the merge-base between `base_branch` and `head_ref`
+pub(super) fn get_merge_base_between(
+    repo_path: &Path,
+    base_branch: &str,
+    head_ref: &str,
+) -> Result<String> {
+    let output = run_git(repo_path, &["merge-base", base_branch, head_ref])?;
     Ok(output.stdout_lossy().trim().to_string())
 }
 
@@ -194,144 +214,6 @@ fn upstream_changed_files(repo_path: &Path, from: &str, to: &str) -> Result<Hash
     let range = format!("{}..{}", from, to);
     let output = run_git(repo_path, &["diff", "--name-only", &range])?;
     Ok(output.stdout_lossy().lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect())
-}
-
-/// Get file content at a specific ref (commit, branch, or index)
-/// Use `:path` for staged content (index)
-pub(super) fn get_file_at_ref(
-    repo_path: &Path,
-    file_path: &str,
-    git_ref: &str,
-) -> Result<Option<String>> {
-    let ref_path = if git_ref.is_empty() {
-        // Empty ref means index (staged)
-        format!(":{}", file_path)
-    } else {
-        format!("{}:{}", git_ref, file_path)
-    };
-
-    match run_git_with_retry(repo_path, &["show", &ref_path], vcs_is_transient) {
-        Ok(output) => Ok(Some(output.stdout_lossy().into_owned())),
-        Err(e) if e.is_non_zero_exit() => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Fetch content of multiple files at a given ref using `git cat-file --batch`.
-///
-/// Spawns a single `git cat-file --batch` process rather than N `git show` calls.
-/// For index (staged) content, pass an empty string as `git_ref`.
-/// Returns a map from file path to content for files that exist at the ref.
-///
-/// Responses arrive in the same order as specs, one per spec:
-/// - Blob: `<sha> blob <size>\n<content>\n`
-/// - Non-blob (tree/commit/tag): `<sha> <type> <size>\n<content>\n` — skipped
-/// - Missing/ambiguous/submodule: `<spec> missing\n` (2-field) — skipped
-pub(super) fn batch_file_contents(
-    repo_path: &Path,
-    file_paths: &[&str],
-    git_ref: &str,
-) -> HashMap<String, String> {
-    if file_paths.is_empty() {
-        return HashMap::new();
-    }
-
-    let mut child = match Command::new("git")
-        .args(["cat-file", "--batch"])
-        .current_dir(repo_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return HashMap::new(),
-    };
-
-    let child_stdin = child.stdin.take().expect("stdin was piped");
-    let child_stdout = child.stdout.take().expect("stdout was piped");
-
-    let specs: Vec<String> = file_paths
-        .iter()
-        .map(
-            |path| {
-                if git_ref.is_empty() { format!(":{path}") } else { format!("{git_ref}:{path}") }
-            },
-        )
-        .collect();
-
-    // Write all specs on a background thread to avoid deadlock when stdout
-    // buffer fills before we've finished writing to stdin.
-    let writer_handle = std::thread::spawn(move || {
-        let mut writer = BufWriter::new(child_stdin);
-        for spec in &specs {
-            let _ = writeln!(writer, "{spec}");
-        }
-        let _ = writer.flush();
-    });
-
-    let results = read_cat_file_batch(&mut BufReader::new(child_stdout), file_paths);
-
-    let _ = writer_handle.join();
-    let _ = child.wait();
-
-    results
-}
-
-/// Get working tree file content
-pub(super) fn get_working_tree_file(repo_path: &Path, file_path: &str) -> Result<Option<String>> {
-    crate::vcs::shared::read_working_file(repo_path, file_path)
-}
-
-/// Get file content as raw bytes at a specific ref (for binary files like images)
-/// Use `:path` for staged content (index)
-pub fn get_file_bytes_at_ref(
-    repo_path: &Path,
-    file_path: &str,
-    git_ref: &str,
-) -> Result<Option<Vec<u8>>> {
-    let ref_path = if git_ref.is_empty() {
-        // Empty ref means index (staged)
-        format!(":{}", file_path)
-    } else {
-        format!("{}:{}", git_ref, file_path)
-    };
-
-    match run_git_with_retry(repo_path, &["show", &ref_path], vcs_is_transient) {
-        Ok(output) => Ok(Some(output.stdout)),
-        Err(e) if e.is_non_zero_exit() => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Get working tree file content as raw bytes (for binary files like images)
-pub fn get_working_tree_bytes(repo_path: &Path, file_path: &str) -> Result<Option<Vec<u8>>> {
-    crate::vcs::shared::read_working_file_bytes(repo_path, file_path)
-}
-
-/// Check if a file is binary (single file check - prefer get_binary_files for batch operations)
-pub fn is_binary_file(repo_path: &Path, file_path: &str) -> bool {
-    run_git(repo_path, &["diff", "--numstat", "--", file_path])
-        .map(|o| o.stdout_lossy().starts_with("-\t-\t"))
-        .unwrap_or(false)
-}
-
-/// Get all binary files in the diff between merge_base and working tree.
-/// Returns a HashSet of file paths that are binary.
-/// This is more efficient than calling is_binary_file() for each file.
-pub fn get_binary_files(repo_path: &Path, merge_base: &str) -> HashSet<String> {
-    // Compare merge_base to working tree (covers committed + staged + unstaged changes)
-    // If merge_base is empty (new repo), check against empty tree
-    let base_ref = if merge_base.is_empty() {
-        "4b825dc642cb6eb9a060e54bf8d69288fbee4904" // git's empty tree SHA
-    } else {
-        merge_base
-    };
-
-    // git diff --numstat <ref> (with no second ref) compares ref to working tree
-    run_git(repo_path, &["diff", "--numstat", base_ref])
-        .map(|output| parse_numstat_binaries(&output.stdout_lossy()))
-        .unwrap_or_default()
 }
 
 pub fn fetch_base_branch(repo_path: &Path, base_branch: &str) -> Result<()> {

@@ -12,15 +12,26 @@ use crate::vcs::UpstreamDivergence;
 /// Find the fork point: the most recent common ancestor of trunk() and @.
 /// Returns None if @ is already on top of trunk (no divergence) or if
 /// from_rev isn't trunk().
+#[cfg(test)]
 pub(super) fn resolve_fork_point(
     repo_path: &Path,
     from_rev: &str,
     cancel: &Arc<AtomicBool>,
 ) -> Option<String> {
+    resolve_fork_point_for(repo_path, from_rev, "@", cancel)
+}
+
+/// Find the fork point: the most recent common ancestor of `from_rev` and `target_rev`.
+pub(super) fn resolve_fork_point_for(
+    repo_path: &Path,
+    from_rev: &str,
+    target_rev: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Option<String> {
     if !is_trunk_base(from_rev) {
         return None;
     }
-    let fork_revset = format!("heads(::({from_rev}) & ::@)");
+    let fork_revset = format!("heads(::({from_rev}) & ::({target_rev}))");
     let fork_args = no_snapshot(&[
         "log", "-r", &fork_revset, "--no-graph", "--limit", "1", "-T", "commit_id.short(12)",
     ]);
@@ -308,12 +319,14 @@ pub(super) struct Anchors<B> {
 pub(super) fn resolve_anchors<B: Send>(
     repo_path: &Path,
     from_rev: &str,
+    head_rev: Option<&str>,
     cancel: &Arc<AtomicBool>,
     bookmark_boundary: impl FnOnce() -> Option<B> + Send,
 ) -> Anchors<B> {
+    let target_rev = head_rev.unwrap_or("@");
     std::thread::scope(|scope| {
         let fork = scope.spawn(|| {
-            let fork_point = resolve_fork_point(repo_path, from_rev, cancel);
+            let fork_point = resolve_fork_point_for(repo_path, from_rev, target_rev, cancel);
             let divergence = fork_point
                 .as_deref()
                 .and_then(|fp| compute_jj_divergence(repo_path, fp, from_rev, cancel));
@@ -321,7 +334,11 @@ pub(super) fn resolve_anchors<B: Send>(
         });
         // The orphaned-tip check snapshots the working copy; the boundary
         // diff must read the tree after that, so it waits for the tips.
-        let (stack_tip, orphaned) = resolve_tips(repo_path, from_rev, cancel);
+        // With an explicit `--head`, skip `@`'s stack and orphaned tips.
+        let (stack_tip, orphaned) = match head_rev {
+            Some(_) => (None, None),
+            None => resolve_tips(repo_path, from_rev, cancel),
+        };
         let bookmark_boundary = bookmark_boundary();
         let (fork_point, divergence) = joined(fork);
         Anchors { fork_point, divergence, stack_tip, orphaned, bookmark_boundary }
@@ -333,11 +350,16 @@ pub(super) fn resolve_anchors<B: Send>(
 pub(super) fn resolve_fork_and_tips(
     repo_path: &Path,
     from_rev: &str,
+    head_rev: Option<&str>,
     cancel: &Arc<AtomicBool>,
 ) -> (Option<String>, Option<StackTip>, Option<StackTip>) {
+    let target_rev = head_rev.unwrap_or("@");
     std::thread::scope(|scope| {
-        let fork = scope.spawn(|| resolve_fork_point(repo_path, from_rev, cancel));
-        let (stack_tip, orphaned) = resolve_tips(repo_path, from_rev, cancel);
+        let fork = scope.spawn(|| resolve_fork_point_for(repo_path, from_rev, target_rev, cancel));
+        let (stack_tip, orphaned) = match head_rev {
+            Some(_) => (None, None),
+            None => resolve_tips(repo_path, from_rev, cancel),
+        };
         (joined(fork), stack_tip, orphaned)
     })
 }
