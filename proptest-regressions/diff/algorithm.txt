@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 80a689ecafe24ca900b625ff9d144d610cb8ddbb0b3b75a8bfbd82b33f6cc67f # shrinks to (base, head, index, working) = ("a\nd\ne", "a\nc\nd", "a\nd", "a\nd")
+cc d32434eb32e1e70bb25610db6284974fe406adf34fb832fec573e2226ef981b5 # shrinks to (base, head, index, working) = ("a\nd", "a\nd\nf", "a\nc\nd\nf", "a\nd")

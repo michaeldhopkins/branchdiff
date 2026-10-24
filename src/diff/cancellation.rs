@@ -31,13 +31,13 @@ pub(super) fn collect_canceled_simple(
     path: &str,
 ) -> Vec<DiffLine> {
     let mut result = Vec::new();
+    let mut next_head_idx = 0;
 
-    // Canceled committed: lines added in head but not in working
-    for (head_idx, head_line) in head_lines.iter().enumerate() {
-        if head_from_base.get(head_idx).copied().flatten().is_some() {
-            continue;
-        }
-        if !survives_chain(head_idx, index_from_head, working_from_index) {
+    let emit_canceled_committed = |head_idx: usize, result: &mut Vec<DiffLine>| {
+        if let Some(head_line) = head_lines.get(head_idx)
+            && head_from_base.get(head_idx).copied().flatten().is_none()
+            && !survives_chain(head_idx, index_from_head, working_from_index)
+        {
             result.push(
                 DiffLine::new(
                     LineSource::CanceledCommitted,
@@ -48,14 +48,15 @@ pub(super) fn collect_canceled_simple(
                 .with_file_path(path),
             );
         }
-    }
+    };
 
-    // Canceled staged: lines added in index but not in working
     for (index_idx, index_line) in index_lines.iter().enumerate() {
-        if index_from_head.get(index_idx).copied().flatten().is_some() {
-            continue;
-        }
-        if !survives_in(working_from_index, index_idx) {
+        if let Some(head_target) = index_from_head.get(index_idx).copied().flatten() {
+            while next_head_idx <= head_target {
+                emit_canceled_committed(next_head_idx, &mut result);
+                next_head_idx += 1;
+            }
+        } else if !survives_in(working_from_index, index_idx) {
             result.push(
                 DiffLine::new(
                     LineSource::CanceledStaged,
@@ -66,6 +67,11 @@ pub(super) fn collect_canceled_simple(
                 .with_file_path(path),
             );
         }
+    }
+
+    while next_head_idx < head_lines.len() {
+        emit_canceled_committed(next_head_idx, &mut result);
+        next_head_idx += 1;
     }
 
     result
@@ -319,6 +325,27 @@ mod tests {
         let sources: Vec<_> = result.iter().map(|l| l.source).collect();
         assert!(sources.contains(&LineSource::CanceledCommitted));
         assert!(sources.contains(&LineSource::CanceledStaged));
+    }
+
+    #[test]
+    fn test_collect_canceled_simple_orders_staged_before_later_committed() {
+        // base = "a\nd", head = "a\nd\nf", index = "a\nc\nd\nf", working = "a\nd"
+        let head_lines = vec!["a", "d", "f"];
+        let index_lines = vec!["a", "c", "d", "f"];
+        let head_from_base = vec![Some(0), Some(1), None];
+        let index_from_head = vec![Some(0), None, Some(1), Some(2)];
+        let working_from_index = vec![Some(0), Some(2)];
+
+        let result = collect_canceled_simple(
+            &head_lines, &index_lines, &head_from_base, &index_from_head, &working_from_index,
+            "test.txt",
+        );
+
+        let shown: Vec<_> = result.iter().map(|l| (l.source, l.content.as_str())).collect();
+        assert_eq!(
+            shown,
+            vec![(LineSource::CanceledStaged, "c"), (LineSource::CanceledCommitted, "f"),]
+        );
     }
 
     // ==================== collect_canceled_committed tests ====================
