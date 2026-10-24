@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 80a689ecafe24ca900b625ff9d144d610cb8ddbb0b3b75a8bfbd82b33f6cc67f # shrinks to (base, head, index, working) = ("a\nd\ne", "a\nc\nd", "a\nd", "a\nd")
 cc d32434eb32e1e70bb25610db6284974fe406adf34fb832fec573e2226ef981b5 # shrinks to (base, head, index, working) = ("a\nd", "a\nd\nf", "a\nc\nd\nf", "a\nd")
+cc 886edf56fa29581604a20b4473b382b939aa9946fe24a6868d24d22c5fcece6c # shrinks to (base, head, index, working) = ("b\ne\nf", "a\nb\ne", "b\ne", "b\ne")

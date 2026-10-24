@@ -135,7 +135,7 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
         return bail();
     }
 
-    let mut lines = vec![header.clone()];
+    let mut lines = Vec::new();
 
     let base = input.base.unwrap_or("");
     let head = input.head.unwrap_or(base);
@@ -155,11 +155,10 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
         let head_from_base = build_provenance_map(&base_lines, &head_lines);
         let index_from_head = build_provenance_map(&head_lines, &index_lines);
         let working_from_index = build_provenance_map(&index_lines, &working_lines);
-
+        lines.push(header);
         lines.extend(collect_canceled_simple(
             &head_lines, &index_lines, &head_from_base, &index_from_head, &working_from_index, path,
         ));
-
         return FileDiff::new(lines);
     }
 
@@ -289,7 +288,7 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
     };
 
     let mut next_base_deletion = 0usize;
-    let mut output_head_positions: Vec<Option<usize>> = vec![None];
+    let mut output_head_positions: Vec<Option<usize>> = Vec::new();
     let emit_deletions_before =
         |boundary: usize,
          next_base_deletion: &mut usize,
@@ -381,6 +380,7 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
         return bail();
     }
 
+    lines.insert(0, header);
     FileDiff::new(lines)
 }
 
@@ -1397,6 +1397,51 @@ fn brand_new() {\n    println!(\"new\");\n}";
         );
     }
 
+    #[test]
+    fn test_canceled_line_at_top_of_file_is_placed_right_after_header() {
+        let committed_top = compute_four_way_diff(DiffInput {
+            path: "f.txt",
+            base: Some("a\nb"),
+            head: Some("y\na\nb"),
+            index: Some("a\nb"),
+            working: Some("a\nc"),
+            old_path: None,
+        });
+        let shown_committed: Vec<_> =
+            committed_top.lines.iter().map(|l| (l.source, l.content.as_str())).collect();
+        assert_eq!(
+            shown_committed,
+            vec![
+                (LineSource::FileHeader, "f.txt"),
+                (LineSource::CanceledCommitted, "y"),
+                (LineSource::Base, "a"),
+                (LineSource::Unstaged, "c"),
+                (LineSource::DeletedStaged, "b"),
+            ]
+        );
+
+        let staged_top = compute_four_way_diff(DiffInput {
+            path: "f.txt",
+            base: Some("a\nb"),
+            head: Some("a\nb"),
+            index: Some("z\na\nb"),
+            working: Some("a\nc"),
+            old_path: None,
+        });
+        let shown_staged: Vec<_> =
+            staged_top.lines.iter().map(|l| (l.source, l.content.as_str())).collect();
+        assert_eq!(
+            shown_staged,
+            vec![
+                (LineSource::FileHeader, "f.txt"),
+                (LineSource::CanceledStaged, "z"),
+                (LineSource::Base, "a"),
+                (LineSource::Unstaged, "c"),
+                (LineSource::DeletedStaged, "b"),
+            ]
+        );
+    }
+
     use proptest::prelude::*;
 
     #[derive(Debug, Clone, Copy)]
@@ -1490,13 +1535,18 @@ fn brand_new() {\n    println!(\"new\");\n}";
             Just(InsertedFor::HeadAndIndex),
             Just(InsertedFor::IndexOnly),
         ];
-        (prop::collection::vec((deleted.clone(), inserted), 1..=3), (deleted, tail_inserted))
-            .prop_map(|(spans, (tail_del, tail_ins))| {
+        (
+            inserted.clone(),
+            prop::collection::vec((deleted.clone(), inserted), 1..=3),
+            (deleted, tail_inserted),
+        )
+            .prop_map(|(lead_ins, spans, (tail_del, tail_ins))| {
                 let mut names = ('a'..='z').map(|c| c.to_string());
                 let mut next_name = || names.next().expect("pool large enough");
                 let (mut base, mut head, mut index, mut working) =
                     (Vec::new(), Vec::new(), Vec::new(), Vec::new());
 
+                push_ins(next_name(), lead_ins, &mut head, &mut index, &mut working);
                 for (del, ins) in spans {
                     let anchor = next_name();
                     base.push(anchor.clone());

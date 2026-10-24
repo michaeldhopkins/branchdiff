@@ -145,7 +145,7 @@ pub(super) fn find_insertion_position(positions: &[Option<usize>], target_idx: u
             return i + 1;
         }
     }
-    positions.len()
+    0
 }
 
 /// Insert canceled lines at appropriate positions to maintain visual order.
@@ -226,9 +226,9 @@ mod tests {
 
     #[test]
     fn test_find_insertion_position_at_start() {
-        // Target 0 with all positions >= target, goes at end (no position < target)
+        // Target 0 with all positions >= target, goes at start (no position < target)
         let positions = vec![Some(1), Some(2), Some(3)];
-        assert_eq!(find_insertion_position(&positions, 0), 3);
+        assert_eq!(find_insertion_position(&positions, 0), 0);
     }
 
     #[test]
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_find_insertion_position_all_none() {
         let positions = vec![None, None, None];
-        assert_eq!(find_insertion_position(&positions, 5), 3);
+        assert_eq!(find_insertion_position(&positions, 5), 0);
     }
 
     // ==================== collect_canceled_simple tests ====================
