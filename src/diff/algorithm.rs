@@ -289,7 +289,7 @@ fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> b
     };
 
     let mut next_base_deletion = 0usize;
-    let mut output_head_positions: Vec<Option<usize>> = Vec::new();
+    let mut output_head_positions: Vec<Option<usize>> = vec![None];
     let emit_deletions_before =
         |boundary: usize,
          next_base_deletion: &mut usize,
@@ -1374,8 +1374,8 @@ fn brand_new() {\n    println!(\"new\");\n}";
     #[test]
     fn test_canceled_committed_line_stays_above_a_later_deleted_base_line() {
         // HEAD added `y` after `a` and the index took it out again; `c` is deleted
-        // in the working tree. `y` is ordered by its HEAD position, so it stays ahead
-        // of `b` and of the deleted `c` (whose HEAD position is after it).
+        // in the working tree. `y` is ordered by its HEAD position, so it lands
+        // after `a` and ahead of `b` and the deleted `c`.
         let diff = compute_four_way_diff(DiffInput {
             path: "f.txt",
             base: Some("a\nb\nc\n"),
@@ -1386,12 +1386,177 @@ fn brand_new() {\n    println!(\"new\");\n}";
         });
         let shown: Vec<_> =
             diff.lines.iter().skip(1).map(|l| (l.source, l.content.as_str())).collect();
-        let contents: Vec<_> = shown.iter().map(|(_, c)| *c).collect();
-        let at = |text: &str| contents.iter().position(|c| *c == text).unwrap();
-        assert_eq!(contents.len(), 4, "{shown:?}");
-        assert!(at("y") < at("b"), "y is placed by its HEAD position: {shown:?}");
-        assert!(at("b") < at("c"), "{shown:?}");
-        assert_eq!(shown[at("y")].0, LineSource::CanceledCommitted);
-        assert!(shown[at("c")].0.is_deletion(), "{shown:?}");
+        assert_eq!(
+            shown,
+            vec![
+                (LineSource::Base, "a"),
+                (LineSource::CanceledCommitted, "y"),
+                (LineSource::Base, "b"),
+                (LineSource::DeletedStaged, "c"),
+            ]
+        );
+    }
+
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone, Copy)]
+    enum DeletedAt {
+        Kept,
+        Head,
+        Index,
+        Working,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum InsertedFor {
+        None,
+        HeadOnly,
+        HeadAndIndex,
+        IndexOnly,
+        FromHead,
+        FromIndex,
+        WorkingOnly,
+    }
+
+    fn push_del(
+        name: String,
+        del: DeletedAt,
+        base: &mut Vec<String>,
+        head: &mut Vec<String>,
+        index: &mut Vec<String>,
+    ) {
+        match del {
+            DeletedAt::Kept => {}
+            DeletedAt::Head => base.push(name),
+            DeletedAt::Index => {
+                base.push(name.clone());
+                head.push(name);
+            }
+            DeletedAt::Working => {
+                base.push(name.clone());
+                head.push(name.clone());
+                index.push(name);
+            }
+        }
+    }
+
+    fn push_ins(
+        name: String,
+        ins: InsertedFor,
+        head: &mut Vec<String>,
+        index: &mut Vec<String>,
+        working: &mut Vec<String>,
+    ) {
+        match ins {
+            InsertedFor::None => {}
+            InsertedFor::HeadOnly => head.push(name),
+            InsertedFor::HeadAndIndex => {
+                head.push(name.clone());
+                index.push(name);
+            }
+            InsertedFor::IndexOnly => index.push(name),
+            InsertedFor::FromHead => {
+                head.push(name.clone());
+                index.push(name.clone());
+                working.push(name);
+            }
+            InsertedFor::FromIndex => {
+                index.push(name.clone());
+                working.push(name);
+            }
+            InsertedFor::WorkingOnly => working.push(name),
+        }
+    }
+
+    fn arb_four_way_inputs() -> impl Strategy<Value = (String, String, String, String)> {
+        let deleted = prop_oneof![
+            Just(DeletedAt::Kept),
+            Just(DeletedAt::Head),
+            Just(DeletedAt::Index),
+            Just(DeletedAt::Working),
+        ];
+        let inserted = prop_oneof![
+            Just(InsertedFor::None),
+            Just(InsertedFor::HeadOnly),
+            Just(InsertedFor::HeadAndIndex),
+            Just(InsertedFor::IndexOnly),
+            Just(InsertedFor::FromHead),
+            Just(InsertedFor::FromIndex),
+            Just(InsertedFor::WorkingOnly),
+        ];
+        let tail_inserted = prop_oneof![
+            Just(InsertedFor::None),
+            Just(InsertedFor::HeadOnly),
+            Just(InsertedFor::HeadAndIndex),
+            Just(InsertedFor::IndexOnly),
+        ];
+        (prop::collection::vec((deleted.clone(), inserted), 1..=3), (deleted, tail_inserted))
+            .prop_map(|(spans, (tail_del, tail_ins))| {
+                let mut names = ('a'..='z').map(|c| c.to_string());
+                let mut next_name = || names.next().expect("pool large enough");
+                let (mut base, mut head, mut index, mut working) =
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+
+                for (del, ins) in spans {
+                    let anchor = next_name();
+                    base.push(anchor.clone());
+                    head.push(anchor.clone());
+                    index.push(anchor.clone());
+                    working.push(anchor);
+                    push_del(next_name(), del, &mut base, &mut head, &mut index);
+                    push_ins(next_name(), ins, &mut head, &mut index, &mut working);
+                }
+                let last = next_name();
+                base.push(last.clone());
+                head.push(last.clone());
+                index.push(last.clone());
+                working.push(last);
+                push_del(next_name(), tail_del, &mut base, &mut head, &mut index);
+                push_ins(next_name(), tail_ins, &mut head, &mut index, &mut working);
+
+                (base.join("\n"), head.join("\n"), index.join("\n"), working.join("\n"))
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn shown_lines_of_each_side_appear_in_that_sides_order(
+            (base, head, index, working) in arb_four_way_inputs()
+        ) {
+            let diff = compute_four_way_diff(DiffInput {
+                path: "f.txt",
+                base: Some(&base),
+                head: Some(&head),
+                index: Some(&index),
+                working: Some(&working),
+                old_path: None,
+            });
+            for (label, side) in [
+                ("base", &base),
+                ("head", &head),
+                ("index", &index),
+                ("working", &working),
+            ] {
+                let side_lines: Vec<&str> = side.lines().collect();
+                let shown_from_side: Vec<&str> = diff
+                    .lines
+                    .iter()
+                    .skip(1)
+                    .map(|l| l.content.as_str())
+                    .filter(|c| side_lines.contains(c))
+                    .collect();
+                let expected: Vec<&str> = side_lines
+                    .into_iter()
+                    .filter(|c| shown_from_side.contains(c))
+                    .collect();
+                prop_assert_eq!(
+                    shown_from_side,
+                    expected,
+                    "{} lines out of order in diff {:?}",
+                    label,
+                    diff.lines.iter().skip(1).map(|l| (l.source, &l.content)).collect::<Vec<_>>()
+                );
+            }
+        }
     }
 }
