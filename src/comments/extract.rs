@@ -86,8 +86,13 @@ fn extract_from_object(
     let (start_line, end_line) = if is_file_subject {
         (None, None)
     } else {
-        let end = current_end.or_else(|| number("original_line"));
-        let start = if outdated {
+        // An outdated comment may still carry the current numbers of a line it
+        // no longer sits on; the label says "original line", so prefer those.
+        let original_end = if outdated { number("original_line") } else { None };
+        let end = original_end.or(current_end).or_else(|| number("original_line"));
+        let start = if original_end.is_some() {
+            number("original_start_line")
+        } else if outdated {
             number("start_line").or_else(|| number("original_start_line"))
         } else {
             number("start_line")
@@ -224,5 +229,19 @@ mod tests {
         }
         let err = side("middle").unwrap_err().to_string();
         assert!(err.contains("unknown comment side 'middle'"), "{err}");
+    }
+
+    #[test]
+    fn an_outdated_comment_keeps_its_original_line_numbers_over_current_ones() {
+        let comments = parse(
+            r#"{"path":"a.rs","body":"x","outdated":true,"line":40,"start_line":38,"original_line":12,"original_start_line":10}"#,
+        )
+        .unwrap();
+        assert_eq!((comments[0].start_line, comments[0].end_line), (Some(10), Some(12)));
+        assert!(comments[0].outdated);
+        let single =
+            parse(r#"{"path":"a.rs","body":"x","outdated":true,"line":40,"original_line":12}"#)
+                .unwrap();
+        assert_eq!((single[0].start_line, single[0].end_line), (Some(12), Some(12)));
     }
 }
