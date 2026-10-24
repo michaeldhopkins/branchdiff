@@ -22,17 +22,10 @@ use branchdiff::vcs::{
     ComparisonContext, RefreshResult, Vcs, VcsBackend, VcsEventType, VcsWatchPaths,
 };
 
-const FRAME_MARKERS: [&str; 9] = [
-    "requestAnimationFrame",
-    "requestVideoFrameCallback",
-    "<canvas",
-    "createElement('canvas')",
-    "createElement(\"canvas\")",
-    ".getContext(",
-    "CADisplayLink",
-    "TimelineView",
-    "MTKView",
-];
+#[path = "../support/frame_scan.rs"]
+mod frame_scan;
+
+use frame_scan::{per_frame_work, production};
 
 pub(super) fn operations() -> BTreeSet<String> {
     let commands = command_ids();
@@ -277,18 +270,18 @@ fn walk_frames_and_routes(dir: &Path, ops: &mut BTreeSet<String>) {
         if path.extension().is_some_and(|ext| ext == "rs") {
             let raw = std::fs::read_to_string(&path)
                 .unwrap_or_else(|err| panic!("read {} failed: {err}", path.display()));
-            let prod = strip_inline_test_mod(&raw);
-            if FRAME_MARKERS.iter().any(|marker| prod.contains(marker)) {
-                let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("page");
-                ops.insert(format!("frame:{}", normalize(stem)));
-            }
-            push_fetch_routes(prod, ops);
+            scan_source_file(&path, &raw, ops);
         }
     }
 }
 
-fn strip_inline_test_mod(text: &str) -> &str {
-    text.find("#[cfg(test)]").map_or(text, |idx| &text[..idx])
+fn scan_source_file(path: &Path, raw: &str, ops: &mut BTreeSet<String>) {
+    if per_frame_work(raw).is_some() {
+        let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("page");
+        ops.insert(format!("frame:{}", normalize(stem)));
+    }
+    let prod = production(raw);
+    push_fetch_routes(&prod, ops);
 }
 
 fn push_fetch_routes(text: &str, ops: &mut BTreeSet<String>) {
@@ -588,5 +581,38 @@ mod tests {
             Path::new("/nonexistent/branchdiff-perf-surface-missing-dir"),
             &mut ops,
         );
+    }
+
+    #[test]
+    fn raf_or_short_timer_added_to_src_html_rs_fails_the_guard() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let manifest = fs::read_to_string(root.join("tests/perf.toml")).expect("read perf.toml");
+        let html_rs = fs::read_to_string(root.join("src/html.rs")).expect("read src/html.rs");
+        let mut tests = BTreeSet::new();
+        super::super::guard::collect_test_names(&root.join("tests"), &mut tests);
+        super::super::guard::collect_test_names(&root.join("src"), &mut tests);
+        let bench_text =
+            fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
+        let benches = super::super::guard::recorded_benches(&bench_text);
+
+        for snippet in [
+            "const RAF: &str = \"requestAnimationFrame(step)\";",
+            "const TIMER: &str = \"setInterval(step, 16)\";",
+        ] {
+            let mut surface = operations();
+            let modified = format!("{html_rs}\n{snippet}\n");
+            scan_source_file(&root.join("src/html.rs"), &modified, &mut surface);
+            let errors = super::super::guard::check(&super::super::guard::Input {
+                manifest: &manifest,
+                surface: &surface,
+                tests: &tests,
+                baseline: None,
+                benches: &benches,
+            });
+            assert!(
+                errors.iter().any(|err| err.contains("frame:html") && err.contains("no budget")),
+                "snippet `{snippet}` in src/html.rs must fail the guard: {errors:?}"
+            );
+        }
     }
 }
