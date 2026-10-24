@@ -715,6 +715,26 @@ mod tests {
         assert!(!html.contains("ln-old"), "{html}");
     }
 
+    #[test]
+    fn an_image_not_yet_loaded_spans_every_column_as_a_placeholder() {
+        let file = OutputFile {
+            path: "logo.png".into(),
+            lines: vec![DiffLine::file_header("logo.png"), DiffLine::image_marker("logo.png")],
+            additions: 0,
+            deletions: 0,
+            collapsed: false,
+            comments: Default::default(),
+        };
+        let mut buf = Vec::new();
+        let gutter = Gutter::measure(&file.lines, None);
+        let columns = gutter.ln_cells() + 2;
+        write_file(&mut buf, 0, &file, &ImageCache::new(), gutter).unwrap();
+        let html = String::from_utf8(buf).unwrap();
+        let placeholder =
+            format!("<tr><td colspan=\"{columns}\" class=\"content\">[image: logo.png]</td></tr>");
+        assert!(html.contains(&placeholder), "{html}");
+    }
+
     fn rust_file(path: &str, body: &[&str]) -> OutputFile {
         let mut lines = vec![DiffLine::file_header(path)];
         for (n, text) in body.iter().enumerate() {
