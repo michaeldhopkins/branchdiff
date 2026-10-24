@@ -5,6 +5,58 @@
 - *(diff)* Retain old line numbers on deleted and base-derived lines
 - *(comments)* Add multi-format review comment parser, loader, and anchoring
 - *(comments)* Render inline review comments in TUI, --print, --diff, and --html
+- *(ui)* Show old and new line numbers in two columns
+- *(comments)* Label comment locations with the side in words
+- *(comments)* Show suggested changes as a small diff
+
+### Bug Fixes
+
+- *(comments)* Show GitHub comments with a null line outside the diff
+- *(fuzz)* Let the comments harness accept the suggestion colours, and replay its seeds in cargo test
+- *(comments)* Show a suggestion off the diff's lines as written, and keep control characters out of HTML comments
+- *(comments)* Show an off-diff suggestion field in place of the body's fence, in a fence longer than its backticks
+
+### Documentation
+
+- Document review comments and bump version to 0.78.0
+
+### Testing
+
+- *(fuzz)* Add comments fuzz target and corpus seeds
+## [0.77.5] - 2026-10-20
+
+### Bug Fixes
+
+- *(html)* Keep each changed-word highlight in its own span so box seams stay
+- *(html)* Keep the reader's place across a live refresh, and bind the theme toggle when localStorage throws
+- *(tui)* Query a Windows console with no TERM, drop the unreachable failure memory, keep the public API additive, pool seam for the alloc bench
+- *(html)* Anchor a live refresh by file path, leave a reader at the top alone, and keep the sideways scroll
+- *(html)* Stop a stale or interrupted settle chain, and budget the settle loop's frames
+- *(html)* End the settle only on keys that scroll, and on a pointer press
+- *(html)* A scroll key ends the live-page settle whatever modifiers are held
+
+### Performance
+
+- *(html)* Apply the stored theme from the page head before first paint
+- *(html)* Let off-screen open file sections skip layout with content-visibility, and build the stylesheet once
+- *(html)* Join neighbouring highlighted spans of the same style into one
+- *(tui)* Do not query a dumb terminal for its image protocol
+- *(html)* Build each page script once, and pin the html alloc blocks at the idle measurement
+
+### Testing
+
+- *(html)* Pin the highlight span style choice
+- *(tui)* Run the dumb-terminal PTY tests with a cleared environment, and cover an unset TERM
+- *(html)* Drive the live page in headless Chrome in real time, behind a browser-tests feature
+- *(browser)* Fail clearly when the Chrome override names no file
+- *(html)* Scan the whole file and parse timer calls in the per-frame guard
+- *(html)* Join Rust line continuations before reading a timer call and its delay
+
+### Miscellaneous
+
+- Lint the browser-test code too, with clippy on all features
+- *(release)* 0.77.5
+## [0.77.4] - 2026-10-20
 
 ### Bug Fixes
 
@@ -13,13 +65,6 @@
 - *(docs)* Make the rustdoc build pass with warnings denied
 - *(jj)* Resolve the bookmark boundary after the tips are known
 - *(ci)* Add the target to the pinned toolchain before the release build
-- *(html)* Keep each changed-word highlight in its own span so box seams stay
-- *(html)* Keep the reader's place across a live refresh, and bind the theme toggle when localStorage throws
-- *(tui)* Query a Windows console with no TERM, drop the unreachable failure memory, keep the public API additive, pool seam for the alloc bench
-- *(html)* Anchor a live refresh by file path, leave a reader at the top alone, and keep the sideways scroll
-- *(html)* Stop a stale or interrupted settle chain, and budget the settle loop's frames
-- *(html)* End the settle only on keys that scroll, and on a pointer press
-- *(html)* A scroll key ends the live-page settle whatever modifiers are held
 
 ### Other
 
@@ -34,10 +79,6 @@
 - *(app)* Split modules back under the file-length pins
 - *(html)* Move the HTML renderer into the library
 
-### Documentation
-
-- Document review comments and bump version to 0.78.0
-
 ### Performance
 
 - *(html)* Write rows without intermediate strings
@@ -50,11 +91,6 @@
 - *(html)* The live page skips work when the page has not changed
 - *(jj)* Build the one-shot comparison from the refresh's own labels
 - *(jj)* Read a file's base and parent on a scoped thread
-- *(html)* Apply the stored theme from the page head before first paint
-- *(html)* Let off-screen open file sections skip layout with content-visibility, and build the stylesheet once
-- *(html)* Join neighbouring highlighted spans of the same style into one
-- *(tui)* Do not query a dumb terminal for its image protocol
-- *(html)* Build each page script once, and pin the html alloc blocks at the idle measurement
 
 ### Styling
 
@@ -73,13 +109,6 @@
 - *(limits)* Pin the warning thresholds at their boundaries
 - *(integration)* Answer the app's terminal status query
 - *(integration)* Answer a split status query once and before keys go out
-- *(html)* Pin the highlight span style choice
-- *(tui)* Run the dumb-terminal PTY tests with a cleared environment, and cover an unset TERM
-- *(html)* Drive the live page in headless Chrome in real time, behind a browser-tests feature
-- *(browser)* Fail clearly when the Chrome override names no file
-- *(html)* Scan the whole file and parse timer calls in the per-frame guard
-- *(html)* Join Rust line continuations before reading a timer call and its delay
-- *(fuzz)* Add comments fuzz target and corpus seeds
 
 ### Miscellaneous
 
@@ -88,8 +117,6 @@
 - Add rustfmt.toml at the default width, matched to the code's compact style
 - Record in rustfmt.toml why its style was chosen and what the reformat still grows
 - *(release)* 0.77.4
-- Lint the browser-test code too, with clippy on all features
-- *(release)* 0.77.5
 ## [0.77.3] - 2026-10-12
 
 ### Testing

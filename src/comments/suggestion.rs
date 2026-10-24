@@ -61,22 +61,40 @@ pub fn split_body<'a>(body: &'a str, explicit: Option<&'a str>) -> BodyParts<'a>
     BodyParts { text, suggestion }
 }
 
+/// Sixty-four backticks, then `suggestion`: the fences `unsplit_body` writes are
+/// slices of it, so they can borrow like the rest of the text.
+const FENCE: &str =
+    concat!("````````````````````````````````", "````````````````````````````````", "suggestion");
+const FENCE_TICKS: usize = 64;
+
+/// The fence length GitHub would use around `s`: one more backtick than its
+/// longest run, and at least three.
+fn fence_ticks(s: &str) -> usize {
+    let longest = s.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    (longest + 1).clamp(3, FENCE_TICKS)
+}
+
 /// `body` as written, for a comment whose lines are not in the diff: with
 /// nothing to show as replaced, a suggestion would read as an insertion (or,
-/// for a deletion, as an empty change), so its fence stays in the text, and an
-/// explicit `suggestion` is shown as the fence GitHub would have written.
+/// for a deletion, as an empty change). So its fence stays in the text, and an
+/// explicit `suggestion`, which wins over a fence as in `split_body`, is shown
+/// in place of it as the fence GitHub would have written.
 pub fn unsplit_body<'a>(body: &'a str, explicit: Option<&'a str>) -> BodyParts<'a> {
-    let mut text: Vec<&str> = body.lines().collect();
-    if let Some(s) = explicit {
-        while text.last().is_some_and(|l| l.trim().is_empty()) {
-            text.pop();
+    let Some(s) = explicit else {
+        let mut text: Vec<&str> = body.lines().collect();
+        if text.is_empty() {
+            text.push("");
         }
-        text.push("```suggestion");
-        text.extend(s.lines());
-        text.push("```");
-    } else if text.is_empty() {
-        text.push("");
+        return BodyParts { text, suggestion: None };
+    };
+    let mut text = split_body(body, None).text;
+    while text.last().is_some_and(|l| l.trim().is_empty()) {
+        text.pop();
     }
+    let ticks = fence_ticks(s);
+    text.push(&FENCE[FENCE_TICKS - ticks..]);
+    text.extend(s.lines());
+    text.push(&FENCE[..ticks]);
     BodyParts { text, suggestion: None }
 }
 
@@ -177,5 +195,21 @@ mod tests {
             ["Hm.", "```suggestion", "a", "b", "```"]
         );
         assert_eq!(unsplit_body("", Some("")).text, ["```suggestion", "```"]);
+    }
+
+    #[test]
+    fn unsplit_shows_the_field_in_place_of_a_fence_as_split_body_does() {
+        let text = unsplit_body("Hm\n```suggestion\nfenced\n```\nthen", Some("field")).text;
+        assert_eq!(text, ["Hm", "then", "```suggestion", "field", "```"]);
+    }
+
+    #[test]
+    fn unsplit_fences_a_field_with_backticks_in_a_longer_fence() {
+        assert_eq!(fence_ticks("a"), 3);
+        assert_eq!(fence_ticks("a\n```\nb"), 4);
+        assert_eq!(fence_ticks("x ````` y ``"), 6);
+        assert_eq!(fence_ticks(&"`".repeat(200)), FENCE_TICKS);
+        let text = unsplit_body("", Some("a\n```\nb")).text;
+        assert_eq!(text, ["````suggestion", "a", "```", "b", "````"]);
     }
 }

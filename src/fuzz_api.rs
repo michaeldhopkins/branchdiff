@@ -1,6 +1,7 @@
 //! Entry points for the fuzz targets in `fuzz/`, compiled only under `cargo fuzz`
-//! (which passes `--cfg fuzzing`) and under `cargo test`, which replays the committed seeds. The parsers they wrap are crate-private; this
-//! module reaches them without making them part of the published library API.
+//! (which passes `--cfg fuzzing`) and under `cargo test`, which replays the
+//! committed seeds. The parsers they wrap are crate-private; this module reaches
+//! them without making them part of the published library API.
 
 use std::collections::HashMap;
 
