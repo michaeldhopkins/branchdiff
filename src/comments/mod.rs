@@ -77,6 +77,10 @@ pub struct ReviewComment {
     /// Replacement text for the lines this comment covers (the JSON `suggestion` field).
     /// A GitHub suggestion fence in `body` means the same; see `suggestion::split_body`.
     pub suggestion: Option<String>,
+    /// The line numbers refer to an older revision of the file (a GitHub comment whose
+    /// `line` is null keeps only `original_line`), so they never anchor to the current
+    /// diff: the comment shows under the file header, outside the diff.
+    pub outdated: bool,
 }
 
 impl ReviewComment {
@@ -327,16 +331,20 @@ mod tests {
         let body = "[a-zA-Z0-9 _.,!?:;'\"\\\\/\\n\\t<>&é你]{0,80}";
         let author = prop::option::of("[a-zA-Z0-9_-]{1,16}");
         let suggestion = prop::option::of("[a-zA-Z0-9 \\n]{0,30}");
+        let outdated = any::<bool>();
 
-        (path, line_spec, side, body, author, suggestion).prop_map(
-            |(path, (start_line, end_line), side, body, author, suggestion)| ReviewComment {
-                path,
-                start_line,
-                end_line,
-                side,
-                body,
-                author,
-                suggestion,
+        (path, line_spec, side, body, author, suggestion, outdated).prop_map(
+            |(path, (start_line, end_line), side, body, author, suggestion, outdated)| {
+                ReviewComment {
+                    path,
+                    start_line,
+                    end_line,
+                    side,
+                    body,
+                    author,
+                    suggestion,
+                    outdated,
+                }
             },
         )
     }
@@ -370,6 +378,7 @@ mod tests {
                 body: "Consider returning a Result here".into(),
                 author: Some("alice".into()),
                 suggestion: None,
+                outdated: false,
             }
         );
         assert_eq!(
@@ -382,6 +391,7 @@ mod tests {
                 body: "Why was this block removed?".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             }
         );
         assert_eq!(
@@ -394,6 +404,7 @@ mod tests {
                 body: "Update example flags".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             }
         );
     }
@@ -560,6 +571,7 @@ File-level summary note.
                 body: "On added line 2".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
             ReviewComment {
                 path: "src/demo.rs".into(),
@@ -569,6 +581,7 @@ File-level summary note.
                 body: "On deleted line 2".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
             ReviewComment {
                 path: "src/demo.rs".into(),
@@ -578,6 +591,7 @@ File-level summary note.
                 body: "On added range 2-3".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
             ReviewComment {
                 path: "src/demo.rs".into(),
@@ -587,6 +601,7 @@ File-level summary note.
                 body: "File-level note".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
             ReviewComment {
                 path: "src/demo.rs".into(),
@@ -596,6 +611,7 @@ File-level summary note.
                 body: "Out-of-diff line 999".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
             ReviewComment {
                 path: "src/untouched.rs".into(),
@@ -605,6 +621,7 @@ File-level summary note.
                 body: "Comment on file not in diff".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
         ];
 
@@ -735,5 +752,60 @@ File-level summary note.
         let comments = parse_comments(input).unwrap();
         assert_eq!(comments[0].suggestion, None);
         assert!(suggestion::has_suggestion(&comments[0].body, None));
+    }
+
+    /// P822: GitHub sends `line: null` for a comment whose line is gone from the PR head,
+    /// keeping only `original_line`, a number from the old revision. It must not
+    /// land on whatever line now has that number.
+    #[test]
+    fn a_github_comment_with_a_null_line_shows_under_the_file_header_outside_the_diff() {
+        use crate::diff::{DiffInput, compute_four_way_diff};
+        let input = r#"[
+          {"path":"a.rs","line":null,"original_line":2,"side":"RIGHT","body":"stale","user":{"login":"amy"}},
+          {"path":"a.rs","line":3,"original_line":9,"side":"RIGHT","body":"current","user":{"login":"amy"}}
+        ]"#;
+        let comments = parse_comments(input).unwrap();
+        assert!(comments[0].outdated, "{comments:?}");
+        assert_eq!((comments[0].start_line, comments[0].end_line), (Some(2), Some(2)));
+        assert!(!comments[1].outdated);
+        assert_eq!((comments[1].start_line, comments[1].end_line), (Some(3), Some(3)));
+
+        let base = "one\ntwo\nthree\n";
+        let diff = compute_four_way_diff(DiffInput {
+            path: "a.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some("one\nTWO\nthree\n"),
+            old_path: None,
+        });
+        let anchored = anchor_comments(&diff.lines, &comments);
+        let header = anchored.for_line(0).expect("stale comment sits under the file header");
+        assert_eq!(header.len(), 1);
+        assert!(header[0].outdated);
+        assert_eq!(header[0].header_label(), "@amy · new line 2, outside diff");
+        let on_line = (1..diff.lines.len()).find_map(|i| anchored.for_line(i)).unwrap();
+        assert_eq!(on_line[0].header_label(), "@amy · new line 3");
+    }
+
+    #[test]
+    fn an_outdated_comment_survives_the_jsonl_roundtrip() {
+        let comments = vec![ReviewComment {
+            path: "a.rs".into(),
+            start_line: Some(4),
+            end_line: Some(6),
+            side: CommentSide::Old,
+            body: "was here".into(),
+            author: None,
+            suggestion: None,
+            outdated: true,
+        }];
+        let jsonl = to_jsonl(&comments);
+        assert!(jsonl.contains(r#""outdated":true"#), "{jsonl}");
+        assert_eq!(parse_comments(&jsonl).unwrap(), comments);
+        assert!(
+            !to_jsonl(&[ReviewComment { outdated: false, ..comments[0].clone() }])
+                .contains("outdated")
+        );
     }
 }

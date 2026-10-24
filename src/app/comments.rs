@@ -122,6 +122,7 @@ mod tests {
                 body: "on line 1".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
             ReviewComment {
                 path: "src/b.rs".into(),
@@ -131,6 +132,7 @@ mod tests {
                 body: "untouched file".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
         ]);
 

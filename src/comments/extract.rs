@@ -76,19 +76,23 @@ fn extract_from_object(
         .and_then(JsonVal::as_str)
         .is_some_and(|s| s.eq_ignore_ascii_case("file"));
 
+    let number = |key: &str| val.get(key).and_then(JsonVal::as_usize);
+    let current_end = number("end_line").or_else(|| number("line"));
+    // GitHub sends `line: null` once the line is gone from the PR head and keeps
+    // only the numbers from the revision commented on; those never anchor.
+    let outdated = !is_file_subject
+        && (val.get("outdated") == Some(&JsonVal::Bool(true))
+            || (current_end.is_none() && number("original_line").is_some()));
     let (start_line, end_line) = if is_file_subject {
         (None, None)
     } else {
-        let end = val
-            .get("end_line")
-            .and_then(JsonVal::as_usize)
-            .or_else(|| val.get("line").and_then(JsonVal::as_usize))
-            .or_else(|| val.get("original_line").and_then(JsonVal::as_usize));
-        let start = val
-            .get("start_line")
-            .and_then(JsonVal::as_usize)
-            .or_else(|| val.get("original_start_line").and_then(JsonVal::as_usize))
-            .or(end);
+        let end = current_end.or_else(|| number("original_line"));
+        let start = if outdated {
+            number("start_line").or_else(|| number("original_start_line"))
+        } else {
+            number("start_line")
+        }
+        .or(end);
         match (start, end) {
             (Some(s), Some(e)) => (Some(s.min(e)), Some(s.max(e))),
             (Some(s), None) => (Some(s), Some(s)),
@@ -106,7 +110,16 @@ fn extract_from_object(
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    out.push(ReviewComment { path, start_line, end_line, side, body, author, suggestion });
+    out.push(ReviewComment {
+        path,
+        start_line,
+        end_line,
+        side,
+        body,
+        author,
+        suggestion,
+        outdated,
+    });
     Ok(())
 }
 
@@ -163,5 +176,6 @@ fn extract_reviewdog_diagnostic(
         body,
         author,
         suggestion: None,
+        outdated: false,
     })
 }

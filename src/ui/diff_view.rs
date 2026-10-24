@@ -3089,6 +3089,7 @@ mod tests {
                 body: "File-level review note".into(),
                 author: Some("alice".into()),
                 suggestion: None,
+                outdated: false,
             },
             ReviewComment {
                 path: "src/lib.rs".into(),
@@ -3098,6 +3099,7 @@ mod tests {
                 body: "Old deleted line comment".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
             ReviewComment {
                 path: "src/lib.rs".into(),
@@ -3107,6 +3109,7 @@ mod tests {
                 body: "New added line comment".into(),
                 author: Some("bob".into()),
                 suggestion: None,
+                outdated: false,
             },
             ReviewComment {
                 path: "src/lib.rs".into(),
@@ -3116,6 +3119,7 @@ mod tests {
                 body: "Outside diff fallback comment".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             },
         ]);
 
@@ -3236,6 +3240,7 @@ mod tests {
             body: "Better name.\n```suggestion\nrenamed\n```".into(),
             author: Some("bob".into()),
             suggestion: None,
+            outdated: false,
         }]);
         let rows = screen_of(&mut app, 90, 16);
         let at = |needle: &str| {

@@ -85,6 +85,7 @@ mod tests {
             body: body.into(),
             author: None,
             suggestion: None,
+            outdated: false,
         }
     }
 

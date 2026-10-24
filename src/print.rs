@@ -232,6 +232,7 @@ mod tests {
                     body: "Header comment body".into(),
                     author: Some("alice".into()),
                     suggestion: None,
+                    outdated: false,
                 },
                 ReviewComment {
                     path: "src/lib.rs".into(),
@@ -241,6 +242,7 @@ mod tests {
                     body: "Deleted line comment".into(),
                     author: None,
                     suggestion: None,
+                    outdated: false,
                 },
                 ReviewComment {
                     path: "src/lib.rs".into(),
@@ -250,6 +252,7 @@ mod tests {
                     body: "Added line comment".into(),
                     author: Some("bob".into()),
                     suggestion: None,
+                    outdated: false,
                 },
             ],
         );

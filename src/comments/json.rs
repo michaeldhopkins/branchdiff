@@ -324,6 +324,9 @@ pub fn comment_to_json_line(comment: &ReviewComment) -> String {
         out.push_str(",\"suggestion\":");
         push_json_str(&mut out, suggestion);
     }
+    if comment.outdated {
+        out.push_str(",\"outdated\":true");
+    }
     out.push('}');
     out
 }

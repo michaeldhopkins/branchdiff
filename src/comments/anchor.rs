@@ -269,6 +269,7 @@ pub fn anchor_comments(lines: &[DiffLine], comments: &[ReviewComment]) -> Anchor
 
         let (line_idx, outdated, replaced) = match matched_span {
             Some(span) if is_file_level => (span.header_idx, false, Vec::new()),
+            Some(span) if comment.outdated => (span.header_idx, true, Vec::new()),
             Some(span) => match find_anchor_in_span(lines, span, comment) {
                 Some(idx) => (idx, false, replaced_lines(lines, span, comment)),
                 None => (span.header_idx, true, Vec::new()),

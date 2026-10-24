@@ -74,6 +74,7 @@ mod tests {
             body: String::new(),
             author: None,
             suggestion: None,
+            outdated: false,
         }
     }
 

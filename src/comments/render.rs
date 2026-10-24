@@ -264,6 +264,7 @@ mod tests {
                 body: "note".into(),
                 author: None,
                 suggestion: None,
+                outdated: false,
             }],
         );
         for (cells, expected) in [(1, 1), (2, 2)] {
@@ -290,6 +291,7 @@ mod tests {
                 body: "title \x1b]0;PWNED\x07 then \u{9b}2J".into(),
                 author: Some("eve\x1b[5m".into()),
                 suggestion: None,
+                outdated: false,
             }],
         );
         let mut buf = Vec::new();
@@ -325,6 +327,7 @@ mod tests {
             body: body.into(),
             author: None,
             suggestion: suggestion.map(str::to_string),
+            outdated: false,
         };
         let anchored = anchor_comments(&diff.lines, &[comment]);
         (diff.lines, anchored)

@@ -746,6 +746,7 @@ mod tests {
                 body: "<script>alert(\"xss\")</script> & <img onerror='boom'>".into(),
                 author: Some("evil<script>".into()),
                 suggestion: None,
+                outdated: false,
             }],
         );
         let data = OutputData {

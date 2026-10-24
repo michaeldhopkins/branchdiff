@@ -123,7 +123,7 @@ Four formats are detected from file content:
 
 The gutter shows two line-number columns, old then new, like GitHub and GitLab: a deleted line shows only its old number, an added line only its new one, and a context line both. In a terminal too narrow to leave 40 columns for code, the TUI shows the single new-number column instead. `--print` and `--html` always show both.
 
-Each comment names its location with the side in words: `old line 2`, `new lines 3-5`, `file-level`. Comments whose target line is outside the current diff are shown under the file header with their original line number and `outside diff`.
+Each comment names its location with the side in words: `old line 2`, `new lines 3-5`, `file-level`. Comments whose target line is outside the current diff are shown under the file header with their original line number and `outside diff`. That includes GitHub comments whose `line` is `null`: they keep only `original_line`, a number from an older revision, so they are never matched to a line by number.
 
 A comment body with a GitHub-style fenced `suggestion` block, or a JSON lines `suggestion` field, is shown under the comment as a small diff labelled `Suggested change`: the lines it replaces as `-`, the suggestion as `+`. Suggestions are only shown, never applied.
 
