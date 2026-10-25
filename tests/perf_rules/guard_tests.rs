@@ -26,7 +26,6 @@ fn run(case: Case<'_>) -> Vec<String> {
         tests: &tests,
         baseline: case.baseline,
         benches: &benches,
-        baseline_benches: None,
     })
 }
 
@@ -39,6 +38,7 @@ fixture = "one file"
 test = "tests/counts.rs::counts"
 processes = 2
 floor = "max"
+floor_reason = "Single benchmark bounds the operation."
 wall_floor_us = 40000
 target_us = 40000
 derivation = "One external call plus the class margin."
@@ -315,7 +315,7 @@ fn a_derivation_must_be_one_non_empty_line() {
 #[test]
 fn a_new_operation_absent_from_the_baseline_is_allowed_when_measured_and_refused_when_owed() {
     let live_measured = format!(
-        "{HAPPY}\n[[op]]\nid = \"command:help\"\nclass = \"command\"\nfixture = \"none\"\ntest = \"tests/counts.rs::counts\"\nprocesses = 0\nfloor = \"max\"\nwall_floor_us = 40000\ntarget_us = 40000\nderivation = \"Measured against bench-a.\"\nbenches = [\"bench-a\"]\n"
+        "{HAPPY}\n[[op]]\nid = \"command:help\"\nclass = \"command\"\nfixture = \"none\"\ntest = \"tests/counts.rs::counts\"\nprocesses = 0\nfloor = \"max\"\nfloor_reason = \"Single benchmark bounds help.\"\nwall_floor_us = 40000\ntarget_us = 40000\nderivation = \"Measured against bench-a.\"\nbenches = [\"bench-a\"]\n"
     );
     let errors = run(Case {
         manifest: &live_measured,
@@ -385,6 +385,7 @@ test = "tests/counts.rs::counts"
 processes = 11
 benches = ["refresh/fingerprint/500f_25c"]
 floor = "max"
+floor_reason = "Single benchmark bounds fingerprint."
 wall_floor_us = 40000
 target_us = 40000
 derivation = "Floor is refresh/fingerprint/500f_25c (40000 us)."
@@ -425,6 +426,7 @@ test = "tests/counts.rs::counts"
 processes = 5
 benches = ["bench-a", "bench-b"]
 floor = "sum"
+floor_reason = "bench-a and bench-b run sequentially."
 wall_floor_us = 40000
 target_us = 40000
 derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
@@ -476,35 +478,147 @@ derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
 }
 
 #[test]
-fn baseline_benches_ratchet_rejects_raised_or_deleted_medians() {
-    let surface = names(&["command:print"]);
-    let tests = names(&["tests/counts.rs::counts"]);
-    let baseline_benches = bench_map(&[("bench-a", 40_000)]);
-    let raised_benches = bench_map(&[("bench-a", 45_000)]);
-    let raised_manifest = HAPPY.replace("wall_floor_us = 40000", "wall_floor_us = 45000");
-    let errors = check(&Input {
-        manifest: &raised_manifest,
-        surface: &surface,
-        tests: &tests,
-        baseline: None,
-        benches: &raised_benches,
-        baseline_benches: Some(&baseline_benches),
-    });
-    assert!(
-        errors.iter().any(|err| err.contains("bench `bench-a`") && err.contains("looser")),
-        "raised baseline bench must fail: {errors:?}"
+fn baseline_medians_ratchet_rejects_raised_or_missing_benches_and_allows_documented_removal() {
+    let base_toml = concat!(
+        "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 73175330\n",
+        "[[bench]]\nid = \"refresh/old\"\nref_median_ns = 1000000\n",
     );
-
-    let mut median_errors = Vec::new();
-    let base_toml = "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 73175330\n";
-    let raised_toml =
-        "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 130000000\n";
-    check_baseline_medians(raised_toml, Some(base_toml), &mut median_errors);
+    let raised_toml = concat!(
+        "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 130000000\n",
+        "[[bench]]\nid = \"refresh/old\"\nref_median_ns = 1000000\n",
+    );
+    let mut raised_errors = Vec::new();
+    check_baseline_medians(raised_toml, Some(base_toml), &mut raised_errors);
     assert!(
-        median_errors.iter().any(|err| err.contains("refresh/non_colocated/50f_10c")
+        raised_errors.iter().any(|err| err.contains("refresh/non_colocated/50f_10c")
             && err.contains("130000000")
             && err.contains("73175330")),
-        "raised ref_median_ns must fail: {median_errors:?}"
+        "raised ref_median_ns must fail: {raised_errors:?}"
+    );
+
+    // Undocumented removal from baselines.toml must fail with `was in the baseline but is missing`.
+    let missing_toml =
+        "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 73175330\n";
+    let mut missing_errors = Vec::new();
+    check_baseline_medians(missing_toml, Some(base_toml), &mut missing_errors);
+    assert_eq!(
+        missing_errors,
+        vec!["bench `refresh/old` was in the baseline but is missing"],
+        "missing baseline bench must fail: {missing_errors:?}"
+    );
+
+    // Documented removal with `removed = "<reason>"` is allowed and excluded from active benches.
+    let documented_removal = concat!(
+        "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 73175330\n",
+        "[[bench]]\nid = \"refresh/old\"\nremoved = \"Superseded by refresh/non_colocated/50f_10c.\"\n",
+    );
+    let mut removed_errors = Vec::new();
+    check_baseline_medians(documented_removal, Some(base_toml), &mut removed_errors);
+    assert!(removed_errors.is_empty(), "documented removal must pass: {removed_errors:?}");
+    assert!(!recorded_benches(documented_removal).contains_key("refresh/old"));
+
+    // Empty `removed = ""` or combining `removed` with `ref_median_ns` must fail.
+    let empty_removed = concat!(
+        "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 73175330\n",
+        "[[bench]]\nid = \"refresh/old\"\nremoved = \"\"\n",
+    );
+    let mut empty_errors = Vec::new();
+    check_baseline_medians(empty_removed, Some(base_toml), &mut empty_errors);
+    assert!(
+        empty_errors
+            .iter()
+            .any(|err| err.contains("refresh/old") && err.contains("one non-empty line")),
+        "empty removed reason must fail: {empty_errors:?}"
+    );
+
+    let both_set = concat!(
+        "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 73175330\n",
+        "[[bench]]\nid = \"refresh/old\"\nref_median_ns = 1000000\nremoved = \"reason\"\n",
+    );
+    let mut both_errors = Vec::new();
+    check_baseline_medians(both_set, Some(base_toml), &mut both_errors);
+    assert!(
+        both_errors.iter().any(
+            |err| err.contains("refresh/old") && err.contains("both ref_median_ns and removed")
+        ),
+        "setting both ref_median_ns and removed must fail: {both_errors:?}"
+    );
+}
+
+#[test]
+fn changing_floor_from_sum_to_max_or_dropping_a_bench_from_baseline_fails() {
+    let baseline_sum = HAPPY.replace("floor = \"max\"", "floor = \"sum\"");
+    let sum_to_max_errors = run(Case {
+        manifest: HAPPY,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(&baseline_sum),
+        benches: &[("bench-a", 40_000)],
+    });
+    assert_eq!(
+        sum_to_max_errors,
+        vec!["operation `command:print` floor changed from `sum` to `max` against the baseline"],
+        "changing floor from sum to max must fail: {sum_to_max_errors:?}"
+    );
+
+    let baseline_two_benches =
+        HAPPY.replace("benches = [\"bench-a\"]", "benches = [\"bench-a\", \"bench-b\"]");
+    let dropped_errors = run(Case {
+        manifest: HAPPY,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(&baseline_two_benches),
+        benches: &[("bench-a", 40_000)],
+    });
+    assert_eq!(
+        dropped_errors,
+        vec!["operation `command:print` dropped bench `bench-b` from the baseline"],
+        "dropping a bench from baseline without removed reason must fail: {dropped_errors:?}"
+    );
+
+    let documented_drop = format!("{HAPPY}removed = \"bench-b was folded into bench-a.\"\n");
+    let documented_ok = run(Case {
+        manifest: &documented_drop,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(&baseline_two_benches),
+        benches: &[("bench-a", 40_000)],
+    });
+    assert!(
+        documented_ok.is_empty(),
+        "dropping a bench with a one-line removed reason must pass: {documented_ok:?}"
+    );
+}
+
+#[test]
+fn every_measured_entry_requires_a_one_line_floor_reason_and_owed_entries_forbid_it() {
+    let missing_reason =
+        HAPPY.replace("floor_reason = \"Single benchmark bounds the operation.\"\n", "");
+    let errors = run(happy_manifest(&missing_reason));
+    assert_eq!(
+        errors,
+        vec!["operation `command:print` must set a one-line floor_reason for floor `max`"],
+        "measured entry without floor_reason must fail: {errors:?}"
+    );
+
+    let owed_with_reason = format!(
+        "{}\nowed = true\nfloor_reason = \"Not allowed on owed.\"\n",
+        HAPPY
+            .replace("benches = [\"bench-a\"]\n", "")
+            .replace("floor = \"max\"\n", "")
+            .replace("floor_reason = \"Single benchmark bounds the operation.\"\n", "")
+    );
+    let owed_errors = run(Case {
+        manifest: &owed_with_reason,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[],
+    });
+    assert_eq!(
+        owed_errors,
+        vec!["operation `command:print` is owed but sets floor_reason"],
+        "owed entry with floor_reason must fail: {owed_errors:?}"
     );
 }
 

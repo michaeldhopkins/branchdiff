@@ -36,14 +36,12 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
     let benches = guard::recorded_benches(&bench_text);
     let baseline = surface::committed_baseline();
     let baseline_bench_text = surface::committed_baseline_benches();
-    let baseline_benches = baseline_bench_text.as_deref().map(guard::recorded_benches);
     let mut errors = guard::check(&guard::Input {
         manifest: &manifest,
         surface: &surface,
         tests: &tests,
         baseline: baseline.as_deref(),
         benches: &benches,
-        baseline_benches: baseline_benches.as_ref(),
     });
     guard::check_baseline_medians(&bench_text, baseline_bench_text.as_deref(), &mut errors);
     assert!(
@@ -118,7 +116,6 @@ fn fingerprint_speedup_to_40ms_without_proposal_passes_and_10_percent_above_benc
         tests: &tests,
         baseline: Some(&manifest),
         benches: &benches,
-        baseline_benches: Some(&baseline_benches),
     });
     assert!(errors.is_empty(), "40 ms fingerprint with no proposal must pass: {errors:?}");
 
@@ -132,7 +129,6 @@ fn fingerprint_speedup_to_40ms_without_proposal_passes_and_10_percent_above_benc
         tests: &tests,
         baseline: Some(&manifest),
         benches: &benches,
-        baseline_benches: Some(&baseline_benches),
     });
     assert!(
         errors.iter().any(|err| err.contains("command:fingerprint") && err.contains("44000")),
@@ -163,7 +159,6 @@ fn raising_non_colocated_bench_median_or_deleting_files_bench_from_derivation_fa
         tests: &tests,
         baseline: Some(&manifest),
         benches: &raised_benches,
-        baseline_benches: Some(&benches),
     });
     guard::check_baseline_medians(&raised_bench_text, Some(&bench_text), &mut raised_errors);
     assert!(
@@ -187,7 +182,6 @@ fn raising_non_colocated_bench_median_or_deleting_files_bench_from_derivation_fa
         tests: &tests,
         baseline: Some(&manifest),
         benches: &benches,
-        baseline_benches: Some(&benches),
     });
     assert!(
         files_errors.iter().any(|err| err.contains("command:files")

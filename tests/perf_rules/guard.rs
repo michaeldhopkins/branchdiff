@@ -29,7 +29,6 @@ pub struct Input<'a> {
     pub tests: &'a BTreeSet<String>,
     pub baseline: Option<&'a str>,
     pub benches: &'a BTreeMap<String, u64>,
-    pub baseline_benches: Option<&'a BTreeMap<String, u64>>,
 }
 
 /// One budgeted operation.
@@ -42,10 +41,12 @@ pub struct Op {
     pub processes: u64,
     pub owed: bool,
     pub floor: String,
+    pub floor_reason: String,
     pub wall_floor_us: u64,
     pub target_us: u64,
     pub derivation: String,
     pub proposal: String,
+    pub removed: String,
     pub benches: Vec<String>,
 }
 
@@ -80,7 +81,7 @@ pub fn check(input: &Input<'_>) -> Vec<String> {
     for op in &ops {
         check_entry(op, input.tests, &mut errors);
     }
-    check_benches(&ops, input.benches, input.baseline_benches, &mut errors);
+    check_benches(&ops, input.benches, &mut errors);
     if let Some(baseline) = input.baseline {
         match parse_operations(baseline) {
             Ok(previous) => looseness(&ops, &previous, &mut errors),
@@ -94,7 +95,8 @@ pub fn check(input: &Input<'_>) -> Vec<String> {
     errors
 }
 
-/// `[[bench]]` records mapped to `ref_median_ns` in nanoseconds.
+/// Active `[[bench]]` records mapped to `ref_median_ns` in nanoseconds.
+/// Entries marked `removed = "<reason>"` are excluded.
 pub fn recorded_medians_ns(text: &str) -> BTreeMap<String, u64> {
     let mut benches = BTreeMap::new();
     let mut current_id: Option<String> = None;
@@ -107,6 +109,12 @@ pub fn recorded_medians_ns(text: &str) -> BTreeMap<String, u64> {
         if let Some(id) = id_assignment(line) {
             benches.entry(id.clone()).or_insert(0);
             current_id = Some(id);
+            continue;
+        }
+        if key_assignment(line, "removed").is_some()
+            && let Some(id) = current_id.as_ref()
+        {
+            benches.remove(id);
             continue;
         }
         if let Some(ns) = number_assignment(line, "ref_median_ns")
@@ -124,13 +132,16 @@ pub fn recorded_benches(text: &str) -> BTreeMap<String, u64> {
 }
 
 /// Fail when any `ref_median_ns` in `benches/baselines.toml` rises above or
-/// disappears from the baseline revision's copy.
+/// disappears without `removed = "<reason>"` from the baseline revision's copy.
 pub fn check_baseline_medians(
     live_text: &str,
     baseline_text: Option<&str>,
     errors: &mut Vec<String>,
 ) {
+    let removed = collect_removed_benches(live_text, errors);
     let Some(baseline_text) = baseline_text else {
+        errors.sort();
+        errors.dedup();
         return;
     };
     let live = recorded_medians_ns(live_text);
@@ -142,7 +153,7 @@ pub fn check_baseline_medians(
                     "bench `{bench}` ref_median_ns {live_ns} is looser than the baseline {before_ns}"
                 ));
             }
-            None => {
+            None if !removed.contains(&bench) => {
                 errors.push(format!("bench `{bench}` was in the baseline but is missing"));
             }
             _ => {}
@@ -150,6 +161,58 @@ pub fn check_baseline_medians(
     }
     errors.sort();
     errors.dedup();
+}
+
+fn collect_removed_benches(text: &str, errors: &mut Vec<String>) -> BTreeSet<String> {
+    let mut removed = BTreeSet::new();
+    let mut current_id: Option<String> = None;
+    let mut has_median = false;
+    let mut has_removed = false;
+    for raw in text.lines() {
+        let line = strip_comment(raw).trim();
+        if line == "[[bench]]" {
+            current_id = None;
+            has_median = false;
+            has_removed = false;
+            continue;
+        }
+        if let Some(id) = id_assignment(line) {
+            current_id = Some(id);
+            continue;
+        }
+        if number_assignment(line, "ref_median_ns").is_some()
+            && let Some(id) = current_id.as_ref()
+        {
+            has_median = true;
+            if has_removed {
+                errors.push(format!("bench `{id}` sets both ref_median_ns and removed"));
+                removed.remove(id);
+            }
+            continue;
+        }
+        if let Some(raw_val) = key_assignment(line, "removed")
+            && let Some(id) = current_id.as_ref()
+        {
+            has_removed = true;
+            match parse_string(raw_val, 0) {
+                Ok(reason)
+                    if !reason.trim().is_empty()
+                        && !reason.contains('\n')
+                        && !reason.contains('\r') =>
+                {
+                    if has_median {
+                        errors.push(format!("bench `{id}` sets both ref_median_ns and removed"));
+                    } else {
+                        removed.insert(id.clone());
+                    }
+                }
+                _ => {
+                    errors.push(format!("bench `{id}` removed must be one non-empty line"));
+                }
+            }
+        }
+    }
+    removed
 }
 
 /// Record every `#[test]` function under `dir` as `<file.rs>::<name>`.
@@ -357,10 +420,12 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
     let processes = require_number(&mut fields, "processes", &mut local);
     let owed = optional_bool(&mut fields, "owed", &mut local);
     let floor = optional_one_line(&mut fields, "floor", &mut local);
+    let floor_reason = optional_one_line(&mut fields, "floor_reason", &mut local);
     let wall_floor_us = require_number(&mut fields, "wall_floor_us", &mut local);
     let target_us = require_number(&mut fields, "target_us", &mut local);
     let derivation = require_one_line(&mut fields, "derivation", &mut local);
     let proposal = optional_one_line(&mut fields, "proposal", &mut local);
+    let removed = optional_one_line(&mut fields, "removed", &mut local);
     let benches = optional_list(&mut fields, "benches", &mut local);
     let label = id.clone().unwrap_or_else(|| "?".to_string());
     for key in fields.keys() {
@@ -380,10 +445,12 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
         processes: processes.unwrap_or_default(),
         owed: owed.unwrap_or_default(),
         floor: floor.unwrap_or_default(),
+        floor_reason: floor_reason.unwrap_or_default(),
         wall_floor_us: wall_floor_us.unwrap_or_default(),
         target_us: target_us.unwrap_or_default(),
         derivation: derivation.unwrap_or_default(),
         proposal: proposal.unwrap_or_default(),
+        removed: removed.unwrap_or_default(),
         benches: benches.unwrap_or_default(),
     })
 }
@@ -535,12 +602,24 @@ fn check_entry(op: &Op, tests: &BTreeSet<String>, errors: &mut Vec<String>) {
     if op.owed && !op.floor.is_empty() {
         errors.push(format!("operation `{}` is owed but sets floor `{}`", op.id, op.floor));
     }
+    if op.owed && !op.floor_reason.is_empty() {
+        errors.push(format!("operation `{}` is owed but sets floor_reason", op.id));
+    }
+    if op.owed && !op.removed.is_empty() {
+        errors.push(format!("operation `{}` is owed but sets removed", op.id));
+    }
     if !op.owed && op.benches.is_empty() {
         errors.push(format!("operation `{}` is not owed and names no benches", op.id));
     }
     if !op.owed && !matches!(op.floor.as_str(), "sum" | "max") {
         errors.push(format!(
             "operation `{}` must set floor = \"sum\" or \"max\" (got `{}`)",
+            op.id, op.floor
+        ));
+    }
+    if !op.owed && op.floor_reason.is_empty() {
+        errors.push(format!(
+            "operation `{}` must set a one-line floor_reason for floor `{}`",
             op.id, op.floor
         ));
     }
@@ -569,12 +648,7 @@ fn check_entry(op: &Op, tests: &BTreeSet<String>, errors: &mut Vec<String>) {
     }
 }
 
-fn check_benches(
-    ops: &[Op],
-    benches: &BTreeMap<String, u64>,
-    baseline_benches: Option<&BTreeMap<String, u64>>,
-    errors: &mut Vec<String>,
-) {
+fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<String>) {
     let mut named = BTreeSet::new();
     for op in ops {
         let mut all_known = !op.benches.is_empty();
@@ -626,21 +700,6 @@ fn check_benches(
             errors.push(format!("bench `{bench}` is not named by any operation"));
         }
     }
-    if let Some(prior_benches) = baseline_benches {
-        for (bench, &before) in prior_benches {
-            match benches.get(bench) {
-                Some(&live) if live > before => {
-                    errors.push(format!(
-                        "bench `{bench}` ref_median_ns {live} is looser than the baseline {before}"
-                    ));
-                }
-                None => {
-                    errors.push(format!("bench `{bench}` was in the baseline but is missing"));
-                }
-                _ => {}
-            }
-        }
-    }
 }
 
 fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
@@ -665,7 +724,7 @@ fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
             ));
         }
         for bench in &before.benches {
-            if !op.benches.contains(bench) {
+            if !op.benches.contains(bench) && op.removed.is_empty() {
                 errors.push(format!(
                     "operation `{}` dropped bench `{bench}` from the baseline",
                     op.id
@@ -704,21 +763,19 @@ fn strip_comment(line: &str) -> &str {
 }
 
 fn id_assignment(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("id")?;
-    if !matches!(rest.chars().next(), Some(' ' | '\t' | '=')) {
-        return None;
-    }
-    let rest = rest.trim_start().strip_prefix('=')?.trim_start();
-    parse_string(rest, 0).ok()
+    parse_string(key_assignment(line, "id")?, 0).ok()
 }
 
-fn number_assignment(line: &str, key: &str) -> Option<u64> {
+fn key_assignment<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let rest = line.strip_prefix(key)?;
     if !matches!(rest.chars().next(), Some(' ' | '\t' | '=')) {
         return None;
     }
-    let rest = rest.trim_start().strip_prefix('=')?.trim();
-    rest.parse::<u64>().ok()
+    Some(rest.trim_start().strip_prefix('=')?.trim())
+}
+
+fn number_assignment(line: &str, key: &str) -> Option<u64> {
+    key_assignment(line, key)?.parse::<u64>().ok()
 }
 
 fn push_test_names(rel_path: &str, source: &str, out: &mut BTreeSet<String>) {

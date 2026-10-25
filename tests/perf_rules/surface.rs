@@ -791,7 +791,6 @@ mod tests {
                         tests: &tests,
                         baseline: baseline.as_deref(),
                         benches: &benches,
-                        baseline_benches: None,
                     });
                     assert!(
                         errors.is_empty(),
@@ -1047,7 +1046,6 @@ mod tests {
                 tests: &tests,
                 baseline: None,
                 benches: &benches,
-                baseline_benches: None,
             });
             assert!(
                 errors.iter().any(|err| err.contains("frame:html") && err.contains("no budget")),
