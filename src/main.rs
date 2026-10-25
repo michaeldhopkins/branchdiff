@@ -525,9 +525,9 @@ fn run_benchmark(
 
     eprintln!("Loading diff from {}...", repo_root.display());
     let load_start = Instant::now();
-    let comparison = detected.comparison_context()?;
     let cancel_flag = Arc::new(AtomicBool::new(false));
-    let initial = detected.refresh(&cancel_flag)?;
+    let (comparison, initial) =
+        branchdiff::startup_load::load_comparison_and_refresh(detected.as_ref(), &cancel_flag)?;
     let mut app = App::new(repo_root, comparison, initial);
     let load_time = load_start.elapsed();
     eprintln!(
@@ -599,22 +599,9 @@ fn spawn_single_file_refresh(
 /// fixing the condition. Now the TUI comes up, the watcher is wired, and an
 /// external fix (or pressing the recovery key) auto-recovers without restart.
 fn build_initial_app(vcs: &dyn Vcs, repo_root: PathBuf) -> App {
-    // Fallback labels if comparison_context itself fails (e.g. jj is stale and
-    // even the log query bails). The first successful refresh replaces these.
-    let comparison = vcs.comparison_context().unwrap_or_else(|_| ComparisonContext {
-        from_label: "base".to_string(),
-        to_label: "working copy".to_string(),
-        stack_position: None,
-        vcs_backend: vcs.backend(),
-        bookmark_name: None,
-        divergence: None,
-    });
     let cancel_flag = Arc::new(AtomicBool::new(false));
-    apply_initial_refresh(
-        vcs.refresh(&cancel_flag).map_err(|e| format!("{e:#}")),
-        repo_root,
-        comparison,
-    )
+    let (comparison, initial) = branchdiff::startup_load::load_initial_for_tui(vcs, &cancel_flag);
+    apply_initial_refresh(initial, repo_root, comparison)
 }
 
 /// Pure helper that maps an initial-refresh outcome to an `App` — extracted

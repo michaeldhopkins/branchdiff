@@ -8,7 +8,7 @@ suppressions = 9
 "src/app/selection.rs" = 772
 "src/app/view_mode.rs" = 447
 "src/diff/algorithm.rs" = 437
-"src/main.rs" = 1092
+"src/main.rs" = 1079
 "src/ui/diff_view.rs" = 942
 "src/vcs/jj.rs" = 944
 

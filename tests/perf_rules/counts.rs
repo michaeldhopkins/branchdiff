@@ -680,7 +680,7 @@ fn counted_children_run_without_controlling_tty_and_never_spawn_tput() {
 
     let args = vec!["--benchmark".to_string(), "1".to_string(), "--no-auto-fetch".to_string()];
     let count = run_counted("command:branchdiff", &args, Some(&repo), &stub, home.path(), &config);
-    assert_eq!(count, 63, "command:branchdiff with no controlling tty must match its floor");
+    assert_eq!(count, 61, "command:branchdiff with no controlling tty must match its floor");
 
     let counts = home.path().join("counts-custom-size.txt");
     fs::write(&counts, "").expect("init custom counts");
@@ -695,5 +695,5 @@ fn counted_children_run_without_controlling_tty_and_never_spawn_tput() {
         unexpected_spawns(&counts).is_empty(),
         "injected COLUMNS/LINES benchmark spawned unexpected program(s)"
     );
-    assert_eq!(count_spawns(&counts), 63);
+    assert_eq!(count_spawns(&counts), 61);
 }

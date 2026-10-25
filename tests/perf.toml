@@ -15,14 +15,14 @@ id = "command:branchdiff"
 class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::command_process_counts_match_their_floors"
-processes = 63
+processes = 61
 benches = ["update/handle_tick", "refresh/colocated/500f_25c"]
 floor = "max"
 floor_reason = "refresh/colocated/500f_25c dominates startup while update/handle_tick is an independent TUI tick microbenchmark."
 wall_floor_us = 131542
 target_us = 50000
 derivation = "Startup loads the same diff as print; one batched jj log plus the first frame fits in the 50 ms command budget. Floor is the max across refresh/colocated/500f_25c (131542 us) and update/handle_tick (1 us). Measured through --benchmark 1 because the interactive loop does not exit."
-proposal = "50 of the 63 subprocesses are per-file jj file show spawns in process_jj_file (2 per changed file for base and @-), 11 are serial revision/anchor/status lookups, and 2 are duplicate jj log label queries in build_initial_app before refresh(). Resolve base, parent, fork-point, stack-tip, and labels in one templated jj log via load_comparison_and_refresh and stream the 50 historical blobs from the backing Git store through two git cat-file --batch pipes (matching GitVcs::batch_file_contents), cutting 63 spawns to 6 and wall time from ~132 ms to ~25 ms (~107 ms saved) at the cost of mapping jj revisions to git commit OIDs with a jj file show fallback for non-Git backends."
+proposal = "50 of the 61 subprocesses are per-file jj file show spawns in process_jj_file (2 per changed file for base and @-) and 11 are serial revision/anchor/status lookups. Resolve base, parent, fork-point, stack-tip, and labels in one templated jj log and stream the 50 historical blobs from the backing Git store through two git cat-file --batch pipes (matching GitVcs::batch_file_contents), cutting 61 spawns to 6 and wall time from ~132 ms to ~22 ms (~110 ms saved) at the cost of mapping jj revisions to git commit OIDs with a jj file show fallback for non-Git backends."
 
 [[op]]
 id = "command:print"
@@ -141,14 +141,14 @@ id = "command:benchmark"
 class = "command"
 fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::command_process_counts_match_their_floors"
-processes = 63
+processes = 61
 benches = ["refresh/colocated/500f_25c"]
 floor = "max"
 floor_reason = "Single benchmark (refresh/colocated/500f_25c) dominates the diff load before rendering one headless frame."
 wall_floor_us = 131542
 target_us = 50000
 derivation = "The stress run loads the diff once, then renders in process; the load is one batched jj log and 1 frame fits in the 50 ms command budget."
-proposal = "run_benchmark calls detected.comparison_context() (2 jj log label spawns) and detected.refresh() (59 spawns, including 50 per-file jj file show calls) after vcs::detect (2 spawns), spending 131.5 ms in 63 subprocesses before rendering 1 frame (~100 us). Switch run_benchmark to load_comparison_and_refresh (eliminating the 2 extra label spawns), consolidate revision/anchor discovery into one jj log, and read base/parent blobs via two git cat-file --batch pipes, cutting spawns from 63 to 6 and wall time for --benchmark 1 from ~132 ms to ~22 ms (~110 ms saved)."
+proposal = "run_benchmark calls load_comparison_and_refresh (59 spawns, including 50 per-file jj file show calls) after vcs::detect (2 spawns), spending 131.5 ms in 61 subprocesses before rendering 1 frame (~100 us). Consolidate revision/anchor discovery into one jj log and read base/parent blobs via two git cat-file --batch pipes, cutting spawns from 61 to 6 and wall time for --benchmark 1 from ~132 ms to ~22 ms (~110 ms saved)."
 
 [[op]]
 id = "command:version"
