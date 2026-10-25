@@ -339,10 +339,12 @@ class = "keystroke"
 fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
-owed = true
-wall_floor_us = 8000
-target_us = 1000
-derivation = "A jump to the first row, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+benches = ["navigation/go_to_bottom"]
+floor = "max"
+floor_reason = "Single benchmark (navigation/go_to_bottom) upper-bounds the symmetric top jump and frame context build."
+wall_floor_us = 49
+target_us = 49
+derivation = "Same bound as go-to-bottom; the ceiling of navigation/go_to_bottom (48649 ns on 2026-10-18) is 49 us, under the 8 ms cap."
 
 [[op]]
 id = "key:go-to-bottom"

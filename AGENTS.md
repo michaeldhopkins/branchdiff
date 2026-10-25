@@ -153,8 +153,8 @@ to `main` runs `--in-diff` over the changed code, skipped with a warning above
 73 tests in `src/vcs/jj.rs` return early without it and their mutants would
 come back missed, and sets `JJ_USER`/`JJ_EMAIL`: with no jj identity (an
 empty `JJ_CONFIG` and `HOME`, as on a runner) ten of those tests fail, the
-baseline fails, and cargo-mutants exits 4 having tested nothing. ci.yml never
-installs jj, so these tests have not run in CI before. There is no whole-tree
+baseline fails, and cargo-mutants exits 4 having tested nothing. Keep the
+pinned `JJ_VERSION` and identity in sync with `ci.yml`. There is no whole-tree
 sweep.
 
 **Choosing N (2026-09-27).** The tree has 3,124 mutants. Slice `0/100` (32
@@ -398,4 +398,4 @@ The only code that runs on animation frames is the settle loop in `src/html_page
 
 ## Performance budgets
 
-`tests/perf.toml` is the performance-budget manifest covering every discovered CLI command, TUI keystroke, HTML page, and per-frame callback, gated by `cargo test --test perf_rules`. Process-count floors (`processes`), wall floors (`wall_floor_us`, matching the `ref_median_ns` ceilings of `benches` in `benches/baselines.toml`, or marked `owed = true` while unbenched), and targets (`target_us`) may only tighten against the baseline revision (`PERF_BASELINE_REV` in CI, `main@origin` / `main` locally). When a change reduces subprocess spawns or bench medians, tighten the corresponding `processes` or `wall_floor_us` in `tests/perf.toml` (and `ref_median_ns` in `benches/baselines.toml`) so the guard locks in the win; any entry whose `wall_floor_us` exceeds its class cap must carry a one-paragraph `proposal` explaining where the time goes and the batched structure that removes it.
+`tests/perf.toml` is the performance-budget manifest covering every discovered CLI command, TUI keystroke, HTML page, and per-frame callback, gated by `cargo test --test perf_rules`. Process-count floors (`processes`), allocation pins (`max_blocks`, `max_bytes`, `max_bytes_x86_64` in `benches/baselines.toml`), wall floors (`wall_floor_us`, matching the `ref_median_ns` ceilings of `benches` in `benches/baselines.toml`, or marked `owed = true` while unbenched), and targets (`target_us`) may only tighten against the baseline revision (`PERF_BASELINE_REV` in CI, `main@origin` / `main` locally). When a change reduces subprocess spawns, allocations, or bench medians, tighten the corresponding `processes` or `wall_floor_us` in `tests/perf.toml` (and `max_blocks`, `max_bytes`, or `ref_median_ns` in `benches/baselines.toml`) so the guard locks in the win; any entry whose `wall_floor_us` exceeds its class cap must carry a one-paragraph `proposal` explaining where the time goes and the batched structure that removes it.
