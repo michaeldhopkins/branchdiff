@@ -543,6 +543,41 @@ fn baseline_medians_ratchet_rejects_raised_or_missing_benches_and_allows_documen
         ),
         "setting both ref_median_ns and removed must fail: {both_errors:?}"
     );
+
+    let removed_first = concat!(
+        "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 73175330\n",
+        "[[bench]]\nid = \"refresh/old\"\nremoved = \"reason\"\nref_median_ns = 1000000\n",
+    );
+    assert!(
+        !recorded_benches(removed_first).contains_key("refresh/old"),
+        "removed bench must stay excluded even when ref_median_ns follows removed"
+    );
+
+    // Raising or dropping max_blocks, max_bytes, or max_bytes_x86_64 against the baseline must fail.
+    let alloc_base = "[[bench]]\nid = \"html/render/50_lines\"\nmax_blocks = 10\nmax_bytes = 200\nmax_bytes_x86_64 = 220\nref_median_ns = 1000\n";
+    let alloc_raised = "[[bench]]\nid = \"html/render/50_lines\"\nmax_blocks = 11\nmax_bytes = 201\nmax_bytes_x86_64 = 225\nref_median_ns = 1000\n";
+    let mut alloc_raised_errors = Vec::new();
+    check_baseline_medians(alloc_raised, Some(alloc_base), &mut alloc_raised_errors);
+    assert_eq!(
+        alloc_raised_errors,
+        vec![
+            "bench `html/render/50_lines` max_blocks 11 is looser than the baseline 10",
+            "bench `html/render/50_lines` max_bytes 201 is looser than the baseline 200",
+            "bench `html/render/50_lines` max_bytes_x86_64 225 is looser than the baseline 220",
+        ]
+    );
+
+    let alloc_dropped = "[[bench]]\nid = \"html/render/50_lines\"\nref_median_ns = 1000\n";
+    let mut alloc_dropped_errors = Vec::new();
+    check_baseline_medians(alloc_dropped, Some(alloc_base), &mut alloc_dropped_errors);
+    assert_eq!(
+        alloc_dropped_errors,
+        vec![
+            "bench `html/render/50_lines` dropped max_blocks from the baseline",
+            "bench `html/render/50_lines` dropped max_bytes from the baseline",
+            "bench `html/render/50_lines` dropped max_bytes_x86_64 from the baseline",
+        ]
+    );
 }
 
 #[test]
@@ -587,6 +622,19 @@ fn changing_floor_from_sum_to_max_or_dropping_a_bench_from_baseline_fails() {
     assert!(
         documented_ok.is_empty(),
         "dropping a bench with a one-line removed reason must pass: {documented_ok:?}"
+    );
+
+    let unused_removed = run(Case {
+        manifest: &documented_drop,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(HAPPY),
+        benches: &[("bench-a", 40_000)],
+    });
+    assert_eq!(
+        unused_removed,
+        vec!["operation `command:print` sets removed without dropping a bench from the baseline"],
+        "setting removed without dropping a bench from the baseline must fail: {unused_removed:?}"
     );
 }
 

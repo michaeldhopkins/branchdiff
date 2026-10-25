@@ -100,24 +100,30 @@ pub fn check(input: &Input<'_>) -> Vec<String> {
 pub fn recorded_medians_ns(text: &str) -> BTreeMap<String, u64> {
     let mut benches = BTreeMap::new();
     let mut current_id: Option<String> = None;
+    let mut current_removed = false;
     for raw in text.lines() {
         let line = strip_comment(raw).trim();
         if line == "[[bench]]" {
             current_id = None;
+            current_removed = false;
             continue;
         }
         if let Some(id) = id_assignment(line) {
-            benches.entry(id.clone()).or_insert(0);
+            if !current_removed {
+                benches.entry(id.clone()).or_insert(0);
+            }
             current_id = Some(id);
             continue;
         }
-        if key_assignment(line, "removed").is_some()
-            && let Some(id) = current_id.as_ref()
-        {
-            benches.remove(id);
+        if key_assignment(line, "removed").is_some() {
+            current_removed = true;
+            if let Some(id) = current_id.as_ref() {
+                benches.remove(id);
+            }
             continue;
         }
         if let Some(ns) = number_assignment(line, "ref_median_ns")
+            && !current_removed
             && let Some(id) = current_id.as_ref()
         {
             benches.insert(id.clone(), ns);
@@ -131,8 +137,9 @@ pub fn recorded_benches(text: &str) -> BTreeMap<String, u64> {
     recorded_medians_ns(text).into_iter().map(|(id, ns)| (id, ns.div_ceil(1_000))).collect()
 }
 
-/// Fail when any `ref_median_ns` in `benches/baselines.toml` rises above or
-/// disappears without `removed = "<reason>"` from the baseline revision's copy.
+/// Fail when any `ref_median_ns`, `max_blocks`, `max_bytes`, or
+/// `max_bytes_x86_64` in `benches/baselines.toml` rises above or disappears
+/// without `removed = "<reason>"` from the baseline revision's copy.
 pub fn check_baseline_medians(
     live_text: &str,
     baseline_text: Option<&str>,
@@ -159,20 +166,72 @@ pub fn check_baseline_medians(
             _ => {}
         }
     }
+    for key in ["max_blocks", "max_bytes", "max_bytes_x86_64"] {
+        let live_pins = recorded_pin_field(live_text, key);
+        let prior_pins = recorded_pin_field(baseline_text, key);
+        for (bench, before_val) in prior_pins {
+            if removed.contains(&bench) || !live.contains_key(&bench) {
+                continue;
+            }
+            match live_pins.get(&bench) {
+                Some(&live_val) if live_val > before_val => {
+                    errors.push(format!(
+                        "bench `{bench}` {key} {live_val} is looser than the baseline {before_val}"
+                    ));
+                }
+                None => {
+                    errors.push(format!("bench `{bench}` dropped {key} from the baseline"));
+                }
+                _ => {}
+            }
+        }
+    }
     errors.sort();
     errors.dedup();
+}
+
+fn recorded_pin_field(text: &str, key: &str) -> BTreeMap<String, u64> {
+    let mut pins = BTreeMap::new();
+    let mut current_id: Option<String> = None;
+    let mut current_removed = false;
+    for raw in text.lines() {
+        let line = strip_comment(raw).trim();
+        if line == "[[bench]]" {
+            current_id = None;
+            current_removed = false;
+            continue;
+        }
+        if let Some(id) = id_assignment(line) {
+            current_id = Some(id);
+            continue;
+        }
+        if key_assignment(line, "removed").is_some() {
+            current_removed = true;
+            if let Some(id) = current_id.as_ref() {
+                pins.remove(id);
+            }
+            continue;
+        }
+        if let Some(val) = number_assignment(line, key)
+            && !current_removed
+            && let Some(id) = current_id.as_ref()
+        {
+            pins.insert(id.clone(), val);
+        }
+    }
+    pins
 }
 
 fn collect_removed_benches(text: &str, errors: &mut Vec<String>) -> BTreeSet<String> {
     let mut removed = BTreeSet::new();
     let mut current_id: Option<String> = None;
-    let mut has_median = false;
+    let mut has_pin = false;
     let mut has_removed = false;
     for raw in text.lines() {
         let line = strip_comment(raw).trim();
         if line == "[[bench]]" {
             current_id = None;
-            has_median = false;
+            has_pin = false;
             has_removed = false;
             continue;
         }
@@ -180,10 +239,11 @@ fn collect_removed_benches(text: &str, errors: &mut Vec<String>) -> BTreeSet<Str
             current_id = Some(id);
             continue;
         }
-        if number_assignment(line, "ref_median_ns").is_some()
-            && let Some(id) = current_id.as_ref()
-        {
-            has_median = true;
+        let is_pin = ["ref_median_ns", "max_blocks", "max_bytes", "max_bytes_x86_64"]
+            .iter()
+            .any(|key| number_assignment(line, key).is_some());
+        if is_pin && let Some(id) = current_id.as_ref() {
+            has_pin = true;
             if has_removed {
                 errors.push(format!("bench `{id}` sets both ref_median_ns and removed"));
                 removed.remove(id);
@@ -200,7 +260,7 @@ fn collect_removed_benches(text: &str, errors: &mut Vec<String>) -> BTreeSet<Str
                         && !reason.contains('\n')
                         && !reason.contains('\r') =>
                 {
-                    if has_median {
+                    if has_pin {
                         errors.push(format!("bench `{id}` sets both ref_median_ns and removed"));
                     } else {
                         removed.insert(id.clone());
@@ -709,6 +769,12 @@ fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
             if op.owed {
                 errors.push(format!("operation `{}` is owed and absent from the baseline", op.id));
             }
+            if !op.removed.is_empty() {
+                errors.push(format!(
+                    "operation `{}` sets removed without dropping a bench from the baseline",
+                    op.id
+                ));
+            }
             continue;
         };
         looser(&op.id, "processes", op.processes, before.processes, errors);
@@ -723,13 +789,23 @@ fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
                 op.id
             ));
         }
+        let mut dropped_any = false;
         for bench in &before.benches {
-            if !op.benches.contains(bench) && op.removed.is_empty() {
-                errors.push(format!(
-                    "operation `{}` dropped bench `{bench}` from the baseline",
-                    op.id
-                ));
+            if !op.benches.contains(bench) {
+                dropped_any = true;
+                if op.removed.is_empty() {
+                    errors.push(format!(
+                        "operation `{}` dropped bench `{bench}` from the baseline",
+                        op.id
+                    ));
+                }
             }
+        }
+        if !dropped_any && !op.removed.is_empty() {
+            errors.push(format!(
+                "operation `{}` sets removed without dropping a bench from the baseline",
+                op.id
+            ));
         }
     }
 }

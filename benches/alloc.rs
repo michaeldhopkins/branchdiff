@@ -40,6 +40,7 @@ struct Sample {
 }
 
 fn main() {
+    verify_parse_pins();
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/baselines.toml");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|err| {
         eprintln!("alloc: cannot read {}: {err}", path.display());
@@ -335,26 +336,39 @@ fn measure_update(samples: &mut Vec<Sample>) {
 }
 
 /// The subset of `baselines.toml` this bench reads: `[[bench]]` records that set
-/// `max_blocks` and `max_bytes`. Records with only `ref_median_ns` are the
-/// wall-clock pins and are ignored here.
+/// `max_blocks` and `max_bytes`. Records with only `ref_median_ns` or `removed`
+/// are ignored here; combining `removed` with any pin field is rejected.
 fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
     let mut pins = Vec::new();
     let mut id: Option<String> = None;
     let mut max_blocks: Option<u64> = None;
     let mut max_bytes: Option<u64> = None;
     let mut arch_bytes: Option<u64> = None;
+    let mut has_median = false;
+    let mut removed: Option<String> = None;
     let mut in_record = false;
 
     let finish = |pins: &mut Vec<Pin>,
                   id: &mut Option<String>,
                   blocks: &mut Option<u64>,
-                  bytes: &mut Option<u64>|
+                  bytes: &mut Option<u64>,
+                  has_median: &mut bool,
+                  removed: &mut Option<String>|
      -> Result<(), String> {
         let Some(id) = id.take() else {
             return Err("baselines.toml: a [[bench]] record has no id".to_string());
         };
         if id.is_empty() {
             return Err("baselines.toml: a bench id is empty".to_string());
+        }
+        if removed.take().is_some() {
+            if blocks.is_some() || bytes.is_some() || *has_median {
+                return Err(format!("baselines.toml: {id} sets removed alongside pin fields"));
+            }
+            *blocks = None;
+            *bytes = None;
+            *has_median = false;
+            return Ok(());
         }
         match (*blocks, *bytes) {
             (Some(max_blocks), Some(max_bytes)) => pins.push(Pin { id, max_blocks, max_bytes }),
@@ -367,6 +381,7 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
         }
         *blocks = None;
         *bytes = None;
+        *has_median = false;
         Ok(())
     };
 
@@ -379,13 +394,18 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
         if line == "[[bench]]" {
             if in_record {
                 max_bytes = arch_bytes.take().or(max_bytes);
-                finish(&mut pins, &mut id, &mut max_blocks, &mut max_bytes)?;
+                finish(
+                    &mut pins, &mut id, &mut max_blocks, &mut max_bytes, &mut has_median,
+                    &mut removed,
+                )?;
             }
             in_record = true;
             id = None;
             max_blocks = None;
             max_bytes = None;
             arch_bytes = None;
+            has_median = false;
+            removed = None;
             continue;
         }
         if !in_record {
@@ -410,6 +430,16 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
             }
             "ref_median_ns" => {
                 let _ = parse_u64(value, line_no)?;
+                has_median = true;
+            }
+            "removed" => {
+                let reason = unquote(value, line_no)?;
+                if reason.trim().is_empty() || reason.contains('\n') || reason.contains('\r') {
+                    return Err(format!(
+                        "baselines.toml:{line_no}: removed must be one non-empty line"
+                    ));
+                }
+                removed = Some(reason);
             }
             other => {
                 return Err(format!("baselines.toml:{line_no}: unknown key {other}"));
@@ -418,9 +448,29 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
     }
     if in_record {
         max_bytes = arch_bytes.take().or(max_bytes);
-        finish(&mut pins, &mut id, &mut max_blocks, &mut max_bytes)?;
+        finish(&mut pins, &mut id, &mut max_blocks, &mut max_bytes, &mut has_median, &mut removed)?;
     }
     Ok(pins)
+}
+
+fn verify_parse_pins() {
+    let ok = concat!(
+        "[[bench]]\nid = \"active\"\nmax_blocks = 2\nmax_bytes = 64\nref_median_ns = 100\n",
+        "[[bench]]\nid = \"retired\"\nremoved = \"Folded into active.\"\n",
+    );
+    let pins = parse_pins(ok).expect("documented removed bench must parse");
+    assert_eq!(pins.len(), 1);
+    assert_eq!(pins[0].id, "active");
+
+    let empty = "[[bench]]\nid = \"retired\"\nremoved = \"   \"\n";
+    assert!(parse_pins(empty).is_err(), "empty removed reason must fail");
+
+    let with_blocks =
+        "[[bench]]\nid = \"retired\"\nmax_blocks = 1\nmax_bytes = 8\nremoved = \"no\"\n";
+    assert!(parse_pins(with_blocks).is_err(), "removed with allocation pins must fail");
+
+    let with_median = "[[bench]]\nid = \"retired\"\nref_median_ns = 10\nremoved = \"no\"\n";
+    assert!(parse_pins(with_median).is_err(), "removed with ref_median_ns must fail");
 }
 
 fn unquote(value: &str, line_no: usize) -> Result<String, String> {
