@@ -67,16 +67,9 @@ jobs:
 
       - name: cargo test (performance budgets)
         env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF: ${{ github.ref }}
           PERF_BASELINE_REV: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          if [ "$GITHUB_REF" != "refs/heads/main" ] && { [ "$GITHUB_EVENT_NAME" != "pull_request" ] || [ -z "$PERF_BASELINE_REV" ] || [ "$PERF_BASELINE_REV" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "${PERF_BASELINE_REV}^{commit}" 2>/dev/null; }; then
-            PERF_BASELINE_REV="$(git merge-base HEAD origin/main)"
-          fi
-          export PERF_BASELINE_REV
-          cargo test --locked --test perf_rules --test ci_alloc_job
+        run: cargo test --locked --test perf_rules --test ci_alloc_job
 
       # The runner image ships Chrome; a missing browser fails this step.
       - name: cargo test (live page in headless Chrome)

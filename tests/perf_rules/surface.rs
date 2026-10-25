@@ -122,6 +122,13 @@ fn committed_baseline_jj(
             panic!("PERF_BASELINE_REV `{rev}` did not resolve in jj repository {}", root.display())
         });
     }
+    if !on_main {
+        for revset in ["heads(::@ & ::main@origin)", "heads(::@ & ::main)"] {
+            if let Some(found) = read_jj_file_at(root, repo, revset, rel_path) {
+                return found;
+            }
+        }
+    }
     for rev in ["main@origin", "main"] {
         if let Some(found) = read_jj_file_at(root, repo, rev, rel_path) {
             return found;
@@ -135,24 +142,29 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
         .current_dir(root)
         .args([
             "--ignore-working-copy", "--repository", repo, "log", "--no-graph", "-r", rev, "-T",
-            "commit_id",
+            "commit_id ++ \"\\n\"",
         ])
         .output()
         .unwrap_or_else(|err| panic!("jj log failed to start: {err}"));
-    if !resolved.status.success() || String::from_utf8_lossy(&resolved.stdout).trim().is_empty() {
+    if !resolved.status.success() {
         return None;
     }
+    let stdout = String::from_utf8_lossy(&resolved.stdout);
+    let mut commits: Vec<&str> = stdout.lines().map(str::trim).filter(|s| !s.is_empty()).collect();
+    commits.sort_unstable();
+    let commit_id = *commits.first()?;
     let root_pattern = format!("root:\"{rel_path}\"");
     let listed = Command::new("jj")
         .current_dir(root)
         .args([
-            "--ignore-working-copy", "--repository", repo, "file", "list", "-r", rev, &root_pattern,
+            "--ignore-working-copy", "--repository", repo, "file", "list", "-r", commit_id,
+            &root_pattern,
         ])
         .output()
         .unwrap_or_else(|err| panic!("jj file list failed to start: {err}"));
     assert!(
         listed.status.success(),
-        "jj file list -r {rev} {rel_path} failed: {}",
+        "jj file list -r {commit_id} {rel_path} failed: {}",
         String::from_utf8_lossy(&listed.stderr)
     );
     if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
@@ -161,13 +173,14 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
     let shown = Command::new("jj")
         .current_dir(root)
         .args([
-            "--ignore-working-copy", "--repository", repo, "file", "show", "-r", rev, &root_pattern,
+            "--ignore-working-copy", "--repository", repo, "file", "show", "-r", commit_id,
+            &root_pattern,
         ])
         .output()
         .unwrap_or_else(|err| panic!("jj file show failed to start: {err}"));
     assert!(
         shown.status.success(),
-        "jj file show -r {rev} {rel_path} failed: {}",
+        "jj file show -r {commit_id} {rel_path} failed: {}",
         String::from_utf8_lossy(&shown.stderr)
     );
     Some(Some(String::from_utf8(shown.stdout).expect("baseline is utf-8")))
@@ -992,6 +1005,83 @@ mod tests {
             Some("# origin-main-baseline\n"),
             "feature branch push must baseline against merge-base with origin/main"
         );
+
+        // PR with reachable base.sha uses base.sha directly; unreachable base.sha falls back to merge-base.
+        assert_eq!(
+            committed_baseline_file_in(
+                tmp.path(),
+                Some(&feature_1_sha),
+                Some("refs/pull/1/merge"),
+                "tests/perf.toml"
+            )
+            .as_deref(),
+            Some("# feature-commit-1\n"),
+            "PR with reachable base.sha must use that revision"
+        );
+        assert_eq!(
+            committed_baseline_file_in(
+                tmp.path(),
+                Some(unreachable_sha),
+                Some("refs/pull/1/merge"),
+                "tests/perf.toml"
+            )
+            .as_deref(),
+            Some("# origin-main-baseline\n"),
+            "PR with unreachable base.sha must fall back to merge-base with origin/main"
+        );
+    }
+
+    #[test]
+    fn jj_criss_cross_merge_with_multiple_merge_base_heads_picks_one_deterministically() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_cmd(tmp.path(), "jj", &["git", "init", "--colocate"]);
+        fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
+        fs::write(tmp.path().join("tests/perf.toml"), "# root\n").expect("write root");
+        run_cmd(tmp.path(), "jj", &["commit", "-m", "root"]);
+
+        // Two diverging commits A and B above root, both with the same baseline file.
+        run_cmd(tmp.path(), "jj", &["new", "@-", "-m", "A"]);
+        fs::write(tmp.path().join("a.txt"), "a\n").expect("write a");
+        fs::write(tmp.path().join("tests/perf.toml"), "# criss-cross-base\n")
+            .expect("write perf A");
+        run_cmd(tmp.path(), "jj", &["bookmark", "create", "branch-a", "-r", "@"]);
+
+        run_cmd(tmp.path(), "jj", &["new", "description(substring:\"root\")", "-m", "B"]);
+        fs::write(tmp.path().join("b.txt"), "b\n").expect("write b");
+        fs::write(tmp.path().join("tests/perf.toml"), "# criss-cross-base\n")
+            .expect("write perf B");
+        run_cmd(tmp.path(), "jj", &["bookmark", "create", "branch-b", "-r", "@"]);
+
+        // Merge 1 (`main` bookmark): parents branch-a and branch-b.
+        run_cmd(tmp.path(), "jj", &["new", "branch-a", "branch-b", "-m", "main merge"]);
+        fs::write(tmp.path().join("m1.txt"), "m1\n").expect("write m1");
+        run_cmd(tmp.path(), "jj", &["bookmark", "create", "main", "-r", "@"]);
+
+        // Merge 2 (`@` feature): also parents branch-a and branch-b -> criss-cross!
+        run_cmd(tmp.path(), "jj", &["new", "branch-a", "branch-b", "-m", "feature merge"]);
+        fs::write(tmp.path().join("m2.txt"), "m2\n").expect("write m2");
+
+        // Verify `heads(::@ & ::main)` returns 2 revisions (branch-a and branch-b).
+        let heads_out = Command::new("jj")
+            .current_dir(tmp.path())
+            .args([
+                "--ignore-working-copy", "log", "--no-graph", "-r", "heads(::@ & ::main)", "-T",
+                "commit_id ++ \"\\n\"",
+            ])
+            .output()
+            .expect("jj log heads");
+        let heads_stdout = String::from_utf8_lossy(&heads_out.stdout);
+        let heads: Vec<_> = heads_stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(heads.len(), 2, "criss-cross merge must produce 2 heads: {heads:?}");
+
+        // committed_baseline_file_in must deterministically resolve one head without failing `jj file list`.
+        let resolved = committed_baseline_file_in(
+            tmp.path(),
+            Some("0000000000000000000000000000000000000000"),
+            Some("refs/heads/feature"),
+            "tests/perf.toml",
+        );
+        assert_eq!(resolved.as_deref(), Some("# criss-cross-base\n"));
     }
 
     #[test]
