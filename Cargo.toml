@@ -19,7 +19,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 similar = { version = "2", features = ["inline"] }
 imara-diff = "0.1"
-arboard = "2"
+arboard = { version = "3", default-features = false }
 rayon = "1.10"
 ignore = "0.4"
 tempfile = "3"
