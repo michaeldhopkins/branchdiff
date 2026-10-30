@@ -92,6 +92,7 @@ pub(crate) fn cached_stylesheet() -> &'static str {
 // `details[open]` below: content-visibility lets a section scrolled out of view skip
 // layout and paint, and `auto` in contain-intrinsic-size remembers the height it had
 // once rendered. Anchors, find-in-page and focus still reach it.
+#[allow(clippy::too_many_lines)]
 fn build_stylesheet() -> String {
     format!(
         r#":root {{

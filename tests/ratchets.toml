@@ -1,5 +1,8 @@
 # Declarative quality ratchet manifest.
 
+# Lint suppressions (#[allow]/#[expect]) across src/ and tests/; the count may only fall.
+suppressions = 9
+
 [rust_pinned]
 "src/app/mod.rs" = 621
 "src/app/selection.rs" = 772
@@ -8,3 +11,7 @@
 "src/main.rs" = 1094
 "src/ui/diff_view.rs" = 1114
 "src/vcs/jj.rs" = 1194
+
+# clippy.toml thresholds still above clippy default; each may only move toward it.
+[pinned_thresholds]
+"too-many-arguments-threshold" = 16

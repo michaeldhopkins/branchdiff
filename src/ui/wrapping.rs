@@ -131,6 +131,7 @@ fn display_width_split(s: &str, max_width: usize) -> usize {
 /// renders as a continuation); `max_rows` caps how many are produced (pass
 /// `usize::MAX` for no cap). Together they keep output O(viewport) even scrolled
 /// deep into a huge line: skipped rows are advanced through but never allocated.
+#[allow(clippy::too_many_lines)]
 pub fn wrap_content(
     content_spans: Vec<Span<'static>>,
     content: &str,

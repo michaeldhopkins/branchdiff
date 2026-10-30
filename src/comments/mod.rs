@@ -555,21 +555,9 @@ File-level summary note.
         assert_eq!(comments[2].author.as_deref(), Some("lead"));
     }
 
-    #[test]
-    fn test_anchoring_new_old_range_file_and_out_of_diff() {
-        let base = "line1\ndeleted_old_2\nline3\nline4";
-        let working = "line1\nadded_new_2\nadded_new_3\nline3\nline4";
-        let diff = compute_four_way_diff(DiffInput {
-            path: "src/demo.rs",
-            base: Some(base),
-            head: Some(base),
-            index: Some(base),
-            working: Some(working),
-            old_path: None,
-        });
-        let mut files = vec![diff];
-
-        let comments = vec![
+    /// Comments for `test_anchoring_new_old_range_file_and_out_of_diff`: one per anchor kind.
+    fn anchoring_fixture_comments() -> Vec<ReviewComment> {
+        vec![
             ReviewComment {
                 path: "src/demo.rs".into(),
                 start_line: Some(2),
@@ -630,7 +618,24 @@ File-level summary note.
                 suggestion: None,
                 outdated: false,
             },
-        ];
+        ]
+    }
+
+    #[test]
+    fn test_anchoring_new_old_range_file_and_out_of_diff() {
+        let base = "line1\ndeleted_old_2\nline3\nline4";
+        let working = "line1\nadded_new_2\nadded_new_3\nline3\nline4";
+        let diff = compute_four_way_diff(DiffInput {
+            path: "src/demo.rs",
+            base: Some(base),
+            head: Some(base),
+            index: Some(base),
+            working: Some(working),
+            old_path: None,
+        });
+        let mut files = vec![diff];
+
+        let comments = anchoring_fixture_comments();
 
         ensure_commented_files(&mut files, &comments);
         assert_eq!(files.len(), 2, "untouched file should get a header stub");

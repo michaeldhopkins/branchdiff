@@ -540,6 +540,7 @@ impl<'a> DiffViewModel<'a> {
         1
     }
 
+    #[allow(clippy::too_many_lines)]
     fn render_inline_spans(
         &self,
         diff_line: &DiffLine,
@@ -575,9 +576,8 @@ impl<'a> DiffViewModel<'a> {
                 &diff_line.inline_spans, del_source, &del_segments,
             );
 
-            // Split the skip window across the concatenated del ++ ins rows. The
-            // del count uses the same div_ceil as `wrapped_line_height` so the
-            // boundary lines up with the scroll engine.
+            // Split the skip window across the concatenated del ++ ins rows. The del count
+            // uses the same div_ceil as `wrapped_line_height` so the boundary matches the scroll engine.
             let del_width = content_display_width(old_content);
             let del_full_rows = if del_spans.is_empty() || del_width == 0 {
                 0

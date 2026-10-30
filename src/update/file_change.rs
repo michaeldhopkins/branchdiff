@@ -26,6 +26,29 @@ fn is_noisy_path(path_str: &str) -> bool {
         || path_str.ends_with(".lock")
 }
 
+/// Drop events that are noise (build output, lockfiles) or gitignored, keeping
+/// every VCS-relevant event.
+fn filter_noise<'a>(
+    unique_paths: HashSet<&'a PathBuf>,
+    app: &App,
+    vcs: &dyn Vcs,
+) -> Vec<&'a PathBuf> {
+    let repo_root = vcs.repo_path();
+    unique_paths
+        .into_iter()
+        .filter(|p| {
+            // VCS-relevant events (commits, branch moves, a shared op_store that
+            // may live outside this worktree in a jj workspace) must never be
+            // dropped as "noise" or gitignored away — the backend classifies them.
+            if vcs.classify_event(p) != VcsEventType::Source {
+                return true;
+            }
+            let relative = p.strip_prefix(repo_root).unwrap_or(p);
+            !is_noisy_path(&relative.to_string_lossy()) && !app.gitignore_filter.is_ignored(p)
+        })
+        .collect()
+}
+
 /// Handle file system change events.
 pub(super) fn handle_file_change(
     events: Vec<DebouncedEvent>,
@@ -69,20 +92,7 @@ pub(super) fn handle_file_change(
         app.gitignore_filter.rebuild();
     }
 
-    let repo_root = vcs.repo_path();
-    let filtered_paths: Vec<_> = unique_paths
-        .into_iter()
-        .filter(|p| {
-            // VCS-relevant events (commits, branch moves, a shared op_store that
-            // may live outside this worktree in a jj workspace) must never be
-            // dropped as "noise" or gitignored away — the backend classifies them.
-            if vcs.classify_event(p) != VcsEventType::Source {
-                return true;
-            }
-            let relative = p.strip_prefix(repo_root).unwrap_or(p);
-            !is_noisy_path(&relative.to_string_lossy()) && !app.gitignore_filter.is_ignored(p)
-        })
-        .collect();
+    let filtered_paths = filter_noise(unique_paths, app, vcs);
 
     let mut should_refresh = false;
     let mut has_vcs_change = false;

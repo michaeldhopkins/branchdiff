@@ -102,11 +102,10 @@ pub fn compute_four_way_diff_cancellable(input: DiffInput<'_>, cancel: &AtomicBo
     compute_four_way_diff_with_predicate(input, &|| cancel.load(Ordering::Relaxed))
 }
 
-/// Predicate-based cancellable diff. The predicate is polled at the boundaries
-/// between the heavy phases (line collection, provenance + modification map
-/// builds, the main output loop) and inside loops that are O(N) or worse, so
-/// a stuck refresh on a 73 MB file can be aborted promptly. Returns a
-/// header-only stub when the predicate trips.
+/// Predicate-based cancellable diff. The predicate is polled between the heavy phases
+/// (line collection, provenance + modification map builds, the main output loop) and
+/// inside loops that are O(N) or worse, so a stuck refresh on a 73 MB file can be
+/// aborted promptly. Returns a header-only stub when the predicate trips.
 pub fn compute_four_way_diff_with_predicate(
     input: DiffInput<'_>,
     is_cancelled: &dyn Fn() -> bool,
@@ -119,6 +118,7 @@ pub fn compute_four_way_diff_with_predicate(
     diff
 }
 
+#[allow(clippy::too_many_lines)]
 fn compute_four_way_diff_body(input: DiffInput<'_>, is_cancelled: &dyn Fn() -> bool) -> FileDiff {
     if let Some(deletion_diff) = check_file_deletion(&input) {
         return deletion_diff;

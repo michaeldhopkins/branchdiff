@@ -47,6 +47,7 @@ fn color_labels(backend: VcsBackend) -> ColorLabels {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn draw_help_modal(frame: &mut Frame, area: Rect, app: &App) {
     let modal_width = 54u16;
     let modal_height = 54u16;

@@ -63,6 +63,7 @@ fn html_mode_writes_a_page_naming_the_changed_file() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn cli_comments_flag_stdin_and_autodetect_work_across_print_html_and_fingerprint() {
     use std::io::Write;
     use std::process::Stdio;

@@ -7,11 +7,11 @@ max-struct-bools = 2
 # Max bool params in a function before suggesting an enum
 max-fn-params-bools = 2
 
-# Cognitive complexity threshold (default is 25)
-cognitive-complexity-threshold = 30
+# Cognitive complexity threshold (clippy default); no function currently exceeds it
+cognitive-complexity-threshold = 25
 
-# Max lines in a function - set above current max (259) to catch growth
-too-many-lines-threshold = 275
+# Max lines in a function (clippy default); longer functions carry a counted #[allow] (tests/ratchets.toml)
+too-many-lines-threshold = 100
 
 # Max function arguments - set above current max (15) to catch growth
 too-many-arguments-threshold = 16
