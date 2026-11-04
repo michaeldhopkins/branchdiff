@@ -374,7 +374,10 @@ fn every_named_bench_has_to_exist_and_wall_floor_must_equal_its_bench_or_derived
         below_bench.iter().any(|error| error.contains("below bench `bench-a` ceiling 60000")),
         "{below_bench:?}"
     );
+}
 
+#[test]
+fn fingerprint_floor_must_equal_its_single_bench() {
     // A 40 ms fingerprint bench with floor 40000 and no proposal passes.
     let fp_40ms = r#"
 [[op]]
@@ -414,7 +417,10 @@ derivation = "Floor is refresh/fingerprint/500f_25c (40000 us)."
             .any(|error| error.contains("wall_floor_us 44000") && error.contains("40000")),
         "floor 10% above bench must fail: {floated:?}"
     );
+}
 
+#[test]
+fn sum_floor_must_equal_the_sum_of_all_named_benches() {
     // When floor = "sum", wall_floor_us must equal the sum of all named benches,
     // regardless of what the derivation prose says.
     let summed = r#"

@@ -780,42 +780,56 @@ mod tests {
         assert_eq!(frame_ops.len(), 2, "two mod.rs files must not collide: {frame_ops:?}");
     }
 
+    fn baseline_child(repo_os: std::ffi::OsString) {
+        let repo = PathBuf::from(repo_os);
+        let mode = std::env::var("BRANCHDIFF_TEST_BASELINE_MODE").expect("mode");
+        let baseline = committed_baseline();
+        match mode.as_str() {
+            "tighter" => {
+                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                let manifest =
+                    fs::read_to_string(repo.join("tests/perf.toml")).expect("read manifest");
+                let surface = operations();
+                let mut tests = BTreeSet::new();
+                super::super::guard::collect_test_names(&root.join("tests"), &mut tests);
+                super::super::guard::collect_test_names(&root.join("src"), &mut tests);
+                let bench_text = fs::read_to_string(root.join("benches/baselines.toml"))
+                    .expect("read baselines");
+                let benches = super::super::guard::recorded_benches(&bench_text);
+                let errors = super::super::guard::check(&super::super::guard::Input {
+                    manifest: &manifest,
+                    surface: &surface,
+                    tests: &tests,
+                    baseline: baseline.as_deref(),
+                    benches: &benches,
+                });
+                assert!(errors.is_empty(), "manifest looser than baseline:\n{}", errors.join("\n"));
+            }
+            "new_zero" => {
+                assert_eq!(baseline, None, "all-zero SHA on a new manifest must return None");
+            }
+            _ => unreachable!("unknown mode {mode}"),
+        }
+    }
+
+    fn spawn_baseline_child(repo: &Path, mode: &str, rev: &str) -> std::process::Output {
+        Command::new(std::env::current_exe().expect("current_exe"))
+            .args([
+                "--exact",
+                "surface::tests::perf_baseline_rev_env_var_tighter_commit_fails_and_all_zero_checks_manifest_history",
+                "--nocapture",
+            ])
+            .env("BRANCHDIFF_TEST_BASELINE_REPO", repo)
+            .env("BRANCHDIFF_TEST_BASELINE_MODE", mode)
+            .env("PERF_BASELINE_REV", rev)
+            .output()
+            .expect("spawn baseline child")
+    }
+
     #[test]
     fn perf_baseline_rev_env_var_tighter_commit_fails_and_all_zero_checks_manifest_history() {
         if let Some(repo_os) = std::env::var_os("BRANCHDIFF_TEST_BASELINE_REPO") {
-            let repo = PathBuf::from(repo_os);
-            let mode = std::env::var("BRANCHDIFF_TEST_BASELINE_MODE").expect("mode");
-            let baseline = committed_baseline();
-            match mode.as_str() {
-                "tighter" => {
-                    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                    let manifest =
-                        fs::read_to_string(repo.join("tests/perf.toml")).expect("read manifest");
-                    let surface = operations();
-                    let mut tests = BTreeSet::new();
-                    super::super::guard::collect_test_names(&root.join("tests"), &mut tests);
-                    super::super::guard::collect_test_names(&root.join("src"), &mut tests);
-                    let bench_text = fs::read_to_string(root.join("benches/baselines.toml"))
-                        .expect("read baselines");
-                    let benches = super::super::guard::recorded_benches(&bench_text);
-                    let errors = super::super::guard::check(&super::super::guard::Input {
-                        manifest: &manifest,
-                        surface: &surface,
-                        tests: &tests,
-                        baseline: baseline.as_deref(),
-                        benches: &benches,
-                    });
-                    assert!(
-                        errors.is_empty(),
-                        "manifest looser than baseline:\n{}",
-                        errors.join("\n")
-                    );
-                }
-                "new_zero" => {
-                    assert_eq!(baseline, None, "all-zero SHA on a new manifest must return None");
-                }
-                _ => unreachable!("unknown mode {mode}"),
-            }
+            baseline_child(repo_os);
             return;
         }
 
@@ -838,17 +852,7 @@ mod tests {
         let tighter_sha = git_head(tmp.path());
 
         let zero = "0000000000000000000000000000000000000000";
-        let new_zero = Command::new(std::env::current_exe().expect("current_exe"))
-            .args([
-                "--exact",
-                "surface::tests::perf_baseline_rev_env_var_tighter_commit_fails_and_all_zero_checks_manifest_history",
-                "--nocapture",
-            ])
-            .env("BRANCHDIFF_TEST_BASELINE_REPO", tmp.path())
-            .env("BRANCHDIFF_TEST_BASELINE_MODE", "new_zero")
-            .env("PERF_BASELINE_REV", zero)
-            .output()
-            .expect("spawn new_zero child");
+        let new_zero = spawn_baseline_child(tmp.path(), "new_zero", zero);
         assert!(
             new_zero.status.success(),
             "all-zero SHA when manifest is new must pass:\n{}",
@@ -860,17 +864,7 @@ mod tests {
         run_cmd(tmp.path(), "git", &["add", "."]);
         run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "loosen perf.toml"]);
 
-        let tighter_out = Command::new(std::env::current_exe().expect("current_exe"))
-            .args([
-                "--exact",
-                "surface::tests::perf_baseline_rev_env_var_tighter_commit_fails_and_all_zero_checks_manifest_history",
-                "--nocapture",
-            ])
-            .env("BRANCHDIFF_TEST_BASELINE_REPO", tmp.path())
-            .env("BRANCHDIFF_TEST_BASELINE_MODE", "tighter")
-            .env("PERF_BASELINE_REV", &tighter_sha)
-            .output()
-            .expect("spawn tighter child");
+        let tighter_out = spawn_baseline_child(tmp.path(), "tighter", &tighter_sha);
         assert!(!tighter_out.status.success(), "tighter PERF_BASELINE_REV must fail the child");
         let combined = format!(
             "{}\n{}",
@@ -882,17 +876,7 @@ mod tests {
             "expected looser-than-baseline error, got:\n{combined}"
         );
 
-        let existing_zero = Command::new(std::env::current_exe().expect("current_exe"))
-            .args([
-                "--exact",
-                "surface::tests::perf_baseline_rev_env_var_tighter_commit_fails_and_all_zero_checks_manifest_history",
-                "--nocapture",
-            ])
-            .env("BRANCHDIFF_TEST_BASELINE_REPO", tmp.path())
-            .env("BRANCHDIFF_TEST_BASELINE_MODE", "new_zero")
-            .env("PERF_BASELINE_REV", zero)
-            .output()
-            .expect("spawn existing_zero child");
+        let existing_zero = spawn_baseline_child(tmp.path(), "new_zero", zero);
         assert!(
             !existing_zero.status.success(),
             "all-zero SHA when manifest already existed in parent must fail loudly"

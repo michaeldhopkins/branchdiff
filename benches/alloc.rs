@@ -335,42 +335,32 @@ fn measure_update(samples: &mut Vec<Sample>) {
     });
 }
 
-/// The subset of `baselines.toml` this bench reads: `[[bench]]` records that set
-/// `max_blocks` and `max_bytes`. Records with only `ref_median_ns` or `removed`
-/// are ignored here; combining `removed` with any pin field is rejected.
-fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
-    let mut pins = Vec::new();
-    let mut id: Option<String> = None;
-    let mut max_blocks: Option<u64> = None;
-    let mut max_bytes: Option<u64> = None;
-    let mut arch_bytes: Option<u64> = None;
-    let mut has_median = false;
-    let mut removed: Option<String> = None;
-    let mut in_record = false;
+#[derive(Default)]
+struct Record {
+    id: Option<String>,
+    max_blocks: Option<u64>,
+    max_bytes: Option<u64>,
+    arch_bytes: Option<u64>,
+    has_median: bool,
+    removed: Option<String>,
+}
 
-    let finish = |pins: &mut Vec<Pin>,
-                  id: &mut Option<String>,
-                  blocks: &mut Option<u64>,
-                  bytes: &mut Option<u64>,
-                  has_median: &mut bool,
-                  removed: &mut Option<String>|
-     -> Result<(), String> {
-        let Some(id) = id.take() else {
+impl Record {
+    fn finish(mut self, pins: &mut Vec<Pin>) -> Result<(), String> {
+        self.max_bytes = self.arch_bytes.take().or(self.max_bytes);
+        let Some(id) = self.id.take() else {
             return Err("baselines.toml: a [[bench]] record has no id".to_string());
         };
         if id.is_empty() {
             return Err("baselines.toml: a bench id is empty".to_string());
         }
-        if removed.take().is_some() {
-            if blocks.is_some() || bytes.is_some() || *has_median {
+        if self.removed.is_some() {
+            if self.max_blocks.is_some() || self.max_bytes.is_some() || self.has_median {
                 return Err(format!("baselines.toml: {id} sets removed alongside pin fields"));
             }
-            *blocks = None;
-            *bytes = None;
-            *has_median = false;
             return Ok(());
         }
-        match (*blocks, *bytes) {
+        match (self.max_blocks, self.max_bytes) {
             (Some(max_blocks), Some(max_bytes)) => pins.push(Pin { id, max_blocks, max_bytes }),
             (None, None) => {}
             _ => {
@@ -379,58 +369,23 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
                 ));
             }
         }
-        *blocks = None;
-        *bytes = None;
-        *has_median = false;
         Ok(())
-    };
+    }
 
-    for (number, raw) in text.lines().enumerate() {
-        let line_no = number + 1;
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line == "[[bench]]" {
-            if in_record {
-                max_bytes = arch_bytes.take().or(max_bytes);
-                finish(
-                    &mut pins, &mut id, &mut max_blocks, &mut max_bytes, &mut has_median,
-                    &mut removed,
-                )?;
-            }
-            in_record = true;
-            id = None;
-            max_blocks = None;
-            max_bytes = None;
-            arch_bytes = None;
-            has_median = false;
-            removed = None;
-            continue;
-        }
-        if !in_record {
-            return Err(format!("baselines.toml:{line_no}: expected [[bench]]"));
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(format!("baselines.toml:{line_no}: expected key = value"));
-        };
-        let key = key.trim();
-        let value = value.trim();
+    fn set(&mut self, key: &str, value: &str, line_no: usize) -> Result<(), String> {
         match key {
-            "id" => {
-                id = Some(unquote(value, line_no)?);
-            }
-            "max_blocks" => max_blocks = Some(parse_u64(value, line_no)?),
-            "max_bytes" => max_bytes = Some(parse_u64(value, line_no)?),
+            "id" => self.id = Some(unquote(value, line_no)?),
+            "max_blocks" => self.max_blocks = Some(parse_u64(value, line_no)?),
+            "max_bytes" => self.max_bytes = Some(parse_u64(value, line_no)?),
             "max_bytes_x86_64" => {
                 let bytes = parse_u64(value, line_no)?;
                 if cfg!(target_arch = "x86_64") {
-                    arch_bytes = Some(bytes);
+                    self.arch_bytes = Some(bytes);
                 }
             }
             "ref_median_ns" => {
                 let _ = parse_u64(value, line_no)?;
-                has_median = true;
+                self.has_median = true;
             }
             "removed" => {
                 let reason = unquote(value, line_no)?;
@@ -439,16 +394,42 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
                         "baselines.toml:{line_no}: removed must be one non-empty line"
                     ));
                 }
-                removed = Some(reason);
+                self.removed = Some(reason);
             }
-            other => {
-                return Err(format!("baselines.toml:{line_no}: unknown key {other}"));
-            }
+            other => return Err(format!("baselines.toml:{line_no}: unknown key {other}")),
         }
+        Ok(())
     }
-    if in_record {
-        max_bytes = arch_bytes.take().or(max_bytes);
-        finish(&mut pins, &mut id, &mut max_blocks, &mut max_bytes, &mut has_median, &mut removed)?;
+}
+
+/// The subset of `baselines.toml` this bench reads: `[[bench]]` records that set
+/// `max_blocks` and `max_bytes`. Records with only `ref_median_ns` or `removed`
+/// are ignored here; combining `removed` with any pin field is rejected.
+fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
+    let mut pins = Vec::new();
+    let mut current: Option<Record> = None;
+    for (number, raw) in text.lines().enumerate() {
+        let line_no = number + 1;
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "[[bench]]" {
+            if let Some(record) = current.replace(Record::default()) {
+                record.finish(&mut pins)?;
+            }
+            continue;
+        }
+        let Some(record) = current.as_mut() else {
+            return Err(format!("baselines.toml:{line_no}: expected [[bench]]"));
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!("baselines.toml:{line_no}: expected key = value"));
+        };
+        record.set(key.trim(), value.trim(), line_no)?;
+    }
+    if let Some(record) = current {
+        record.finish(&mut pins)?;
     }
     Ok(pins)
 }
