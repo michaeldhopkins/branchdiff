@@ -118,17 +118,27 @@ pub trait Vcs: Send + Sync {
     /// Compute a full refresh of all diffs.
     fn refresh(&self, cancel_flag: &Arc<AtomicBool>) -> Result<RefreshResult>;
 
-    /// The comparison labels and a full refresh, as a one-shot run needs them.
+    /// The comparison labels and a full refresh, each with its own outcome.
     ///
     /// The two do not depend on each other, so by default they run side by
     /// side; a backend that can share work between them overrides this. A
-    /// failed comparison is reported before a failed refresh.
+    /// caller that can use one half without the other (the TUI shows a
+    /// refresh under fallback labels) reads this directly.
+    fn comparison_and_refresh_parts(
+        &self,
+        cancel_flag: &Arc<AtomicBool>,
+    ) -> (Result<ComparisonContext>, Result<RefreshResult>) {
+        vcs_thread_pool()
+            .install(|| rayon::join(|| self.comparison_context(), || self.refresh(cancel_flag)))
+    }
+
+    /// The comparison labels and a full refresh, as a one-shot run needs them.
+    /// A failed comparison is reported before a failed refresh.
     fn comparison_and_refresh(
         &self,
         cancel_flag: &Arc<AtomicBool>,
     ) -> Result<(ComparisonContext, RefreshResult)> {
-        let (comparison, refresh) = vcs_thread_pool()
-            .install(|| rayon::join(|| self.comparison_context(), || self.refresh(cancel_flag)));
+        let (comparison, refresh) = self.comparison_and_refresh_parts(cancel_flag);
         Ok((comparison?, refresh?))
     }
 

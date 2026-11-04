@@ -858,11 +858,14 @@ impl crate::vcs::Vcs for JjVcs {
         self.refresh_anchored(cancel_flag)
     }
 
-    fn comparison_and_refresh(
+    fn comparison_and_refresh_parts(
         &self,
         cancel_flag: &Arc<AtomicBool>,
-    ) -> Result<(ComparisonContext, RefreshResult)> {
-        refresh::comparison_and_refresh(self, cancel_flag)
+    ) -> (Result<ComparisonContext>, Result<RefreshResult>) {
+        match refresh::comparison_and_refresh(self, cancel_flag) {
+            Ok((comparison, result)) => (Ok(comparison), Ok(result)),
+            Err(e) => (self.comparison_context(), Err(e)),
+        }
     }
 
     fn single_file_diff(&self, file_path: &str) -> Option<FileDiff> {

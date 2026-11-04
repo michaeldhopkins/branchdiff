@@ -15,27 +15,23 @@ pub fn load_comparison_and_refresh(
     vcs.comparison_and_refresh(cancel_flag)
 }
 
-/// The labels and initial refresh a TUI session starts with, reusing
-/// `comparison_and_refresh` on the happy path and falling back to
-/// `comparison_context()` (or default labels) only when the combined load fails.
+/// The labels and initial refresh a TUI session starts with. Each half stands
+/// alone: a refresh that loaded is kept under fallback labels when only the
+/// labels failed, and labels that loaded are kept when only the refresh failed.
 pub fn load_initial_for_tui(
     vcs: &dyn Vcs,
     cancel_flag: &Arc<AtomicBool>,
 ) -> (ComparisonContext, std::result::Result<RefreshResult, String>) {
-    match vcs.comparison_and_refresh(cancel_flag) {
-        Ok((comparison, result)) => (comparison, Ok(result)),
-        Err(e) => {
-            let comparison = vcs.comparison_context().unwrap_or_else(|_| ComparisonContext {
-                from_label: "base".to_string(),
-                to_label: "working copy".to_string(),
-                stack_position: None,
-                vcs_backend: vcs.backend(),
-                bookmark_name: None,
-                divergence: None,
-            });
-            (comparison, Err(format!("{e:#}")))
-        }
-    }
+    let (comparison, refresh) = vcs.comparison_and_refresh_parts(cancel_flag);
+    let comparison = comparison.unwrap_or_else(|_| ComparisonContext {
+        from_label: "base".to_string(),
+        to_label: "working copy".to_string(),
+        stack_position: None,
+        vcs_backend: vcs.backend(),
+        bookmark_name: None,
+        divergence: None,
+    });
+    (comparison, refresh.map_err(|e| format!("{e:#}")))
 }
 
 #[cfg(test)]
@@ -168,6 +164,16 @@ mod tests {
         assert_eq!(comparison.from_label, "base");
         assert_eq!(comparison.to_label, "working copy");
         assert_eq!(comparison.vcs_backend, VcsBackend::Git);
-        assert_eq!(result.unwrap_err(), "comparison failed");
+        assert_eq!(result.unwrap_err(), "refresh failed");
+    }
+
+    #[test]
+    fn tui_initial_load_keeps_the_refresh_when_only_the_comparison_fails() {
+        let vcs =
+            Scripted { path: PathBuf::from("/repo"), comparison_fails: true, refresh_fails: false };
+        let (comparison, result) = load_initial_for_tui(&vcs, &Arc::new(AtomicBool::new(false)));
+        assert_eq!(comparison.from_label, "base");
+        assert_eq!(comparison.to_label, "working copy");
+        assert_eq!(result.expect("refresh kept").base_identifier, "abc123");
     }
 }
