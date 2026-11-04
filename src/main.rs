@@ -239,18 +239,14 @@ impl AnyDebouncer {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let (cols, lines) = (std::env::var("COLUMNS").ok(), std::env::var("LINES").ok());
-    let has_tty = std::fs::File::open("/dev/tty").is_ok();
+
     let headless = cli.benchmark.is_some() || startup::is_one_shot(cli.output.mode());
-    if let Some((c, r)) =
-        startup::pin_headless_size_env(headless, cols.as_deref(), lines.as_deref(), has_tty)
-    {
-        // SAFETY: `main` has not spawned any threads yet.
-        unsafe { std::env::set_var("COLUMNS", c.to_string()) };
-        unsafe { std::env::set_var("LINES", r.to_string()) };
-    }
-    let bench_size = startup::benchmark_size(cols.as_deref(), lines.as_deref());
+    // SAFETY: `main` has not spawned any threads yet.
+    let bench_size = unsafe { startup::pin_headless_env(headless) };
+
     let repo_path = cli.path.canonicalize().context("Failed to resolve repository path")?;
+
+    // Try to detect VCS - for non-TUI modes, fail immediately if not found
     let detected = match vcs::detect_with_options(&repo_path, cli.vcs_options()) {
         Ok(vcs) => Some(vcs),
         Err(e) => match startup::on_detect_failure(
@@ -262,6 +258,8 @@ fn main() -> Result<()> {
             DetectFailure::WaitForRepo => None,
         },
     };
+
+    // Non-interactive modes (detected is always Some here due to bail above)
     if let Some(vcs) = &detected {
         let mode = cli.output.mode();
         if startup::is_one_shot(mode) {
@@ -279,11 +277,13 @@ fn main() -> Result<()> {
                 branchdiff::startup_load::load_comparison_and_refresh(vcs.as_ref(), &cancel_flag)?;
             let mut app = app::App::new(repo_root, comparison, initial);
             app.load_comments_from(cli.comments.as_deref())?;
+
             match mode {
                 OutputMode::Diff => print!("{}", app.patch_with_comments()),
                 OutputMode::Print | OutputMode::Html => {
                     app.view.view_mode = startup::view_mode_for(mode);
                     let data = branchdiff::output::prepare(&mut app);
+
                     for path in startup::images_to_preload(mode, &data, &app.image_cache) {
                         if let Some(state) =
                             branchdiff::image_diff::load_image_diff(vcs.as_ref(), &path)
@@ -291,6 +291,7 @@ fn main() -> Result<()> {
                             app.image_cache.insert(path, state);
                         }
                     }
+
                     match mode {
                         OutputMode::Print => print::print_diff(&data)?,
                         OutputMode::Html => print_html(&data, &app.image_cache, cli.refresh())?,
@@ -299,9 +300,12 @@ fn main() -> Result<()> {
                 }
                 OutputMode::Tui | OutputMode::Files | OutputMode::Fingerprint => unreachable!(),
             }
+
             return Ok(());
         }
     }
+
+    // TUI mode
     match detected {
         Some(vcs) => {
             let repo_root = vcs.repo_path().to_path_buf();
@@ -550,8 +554,10 @@ fn run_benchmark(
 
     eprintln!("Running {} frames...", frames);
     let bench_start = Instant::now();
+
     for frame_num in 0..frames {
         app.bench_step(frame_num);
+
         let items = if app.needs_inline_spans() {
             let items = app.ensure_inline_spans_for_visible(visible_height);
             app.clear_needs_inline_spans();
@@ -559,6 +565,7 @@ fn run_benchmark(
         } else {
             None
         };
+
         terminal.draw(|f| {
             let frame_ctx = match items {
                 Some(items) => FrameContext::with_items(items, &app),
@@ -567,13 +574,16 @@ fn run_benchmark(
             ui::draw_with_frame(f, &mut app, &frame_ctx)
         })?;
     }
+
     let bench_time = bench_start.elapsed();
     let avg_frame = bench_time.as_micros() as f64 / frames as f64;
+
     eprintln!("\nResults:");
     eprintln!("  Total time:     {:?}", bench_time);
     eprintln!("  Frames:         {}", frames);
     eprintln!("  Avg frame:      {:.1} µs", avg_frame);
     eprintln!("  Throughput:     {:.0} fps", 1_000_000.0 / avg_frame);
+
     Ok(())
 }
 

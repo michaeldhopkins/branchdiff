@@ -106,6 +106,25 @@ pub fn pin_headless_size_env(
     }
 }
 
+/// Pins `COLUMNS`/`LINES` for child processes when this run is headless and
+/// has no controlling terminal, and returns the size `--benchmark` renders at.
+///
+/// # Safety
+///
+/// Writes the process environment: call it before any thread is spawned.
+pub unsafe fn pin_headless_env(headless: bool) -> (u16, u16) {
+    let (columns, lines) = (std::env::var("COLUMNS").ok(), std::env::var("LINES").ok());
+    let has_controlling_tty = std::fs::File::open("/dev/tty").is_ok();
+    if let Some((cols, rows)) =
+        pin_headless_size_env(headless, columns.as_deref(), lines.as_deref(), has_controlling_tty)
+    {
+        // SAFETY: the caller guarantees no other thread reads the environment.
+        unsafe { std::env::set_var("COLUMNS", cols.to_string()) };
+        unsafe { std::env::set_var("LINES", rows.to_string()) };
+    }
+    benchmark_size(columns.as_deref(), lines.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -23,6 +23,8 @@ pub fn load_initial_for_tui(
     cancel_flag: &Arc<AtomicBool>,
 ) -> (ComparisonContext, std::result::Result<RefreshResult, String>) {
     let (comparison, refresh) = vcs.comparison_and_refresh_parts(cancel_flag);
+    // Fallback labels if comparison_context itself fails (e.g. jj is stale and
+    // even the log query bails). The first successful refresh replaces these.
     let comparison = comparison.unwrap_or_else(|_| ComparisonContext {
         from_label: "base".to_string(),
         to_label: "working copy".to_string(),

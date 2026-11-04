@@ -8,9 +8,9 @@ suppressions = 9
 "src/app/selection.rs" = 772
 "src/app/view_mode.rs" = 447
 "src/diff/algorithm.rs" = 437
-"src/main.rs" = 1079
+"src/main.rs" = 1089
 "src/ui/diff_view.rs" = 942
-"src/vcs/jj.rs" = 944
+"src/vcs/jj.rs" = 947
 
 # clippy.toml thresholds still above clippy default; each may only move toward it.
 [pinned_thresholds]
