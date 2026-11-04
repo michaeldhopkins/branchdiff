@@ -2123,7 +2123,8 @@ fn test_git_highlight_excludes_base_and_root_commits_and_preserves_deletions() {
 
     // Even when `merge_base` is empty, a single root commit with no parents resolves to an empty range.
     let root_spec = super::highlight::resolve_highlight_spec(repo, "root_commit").unwrap();
-    let (from_shas, to_sha) = root_spec.resolve_for_head(repo, "", Some("feature")).unwrap();
+    let (from_shas, to_sha) =
+        root_spec.resolve_for_head(repo, "", Some("feature")).unwrap().unwrap();
     assert_eq!(from_shas, vec![to_sha]);
 
     // An unsupported git range form like `tA^!` names the accepted range forms in the error.
@@ -2182,4 +2183,20 @@ fn test_git_highlight_surfaces_git_failures_but_drops_deleted_refs() {
     assert!(format!("{err:#}").contains("--highlight"), "got: {err:#}");
     let kept = vcs.single_file_diff("file.txt").expect("the file stays when marks fail");
     assert_eq!(kept.highlight.line_count(), 0);
+}
+
+#[test]
+fn test_highlight_ancestry_separates_not_an_ancestor_from_git_failure() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "initial\nmore\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "more"]);
+
+    assert!(highlight_range::is_ancestor(repo, "main", "feature").unwrap());
+    assert!(!highlight_range::is_ancestor(repo, "feature", "main").unwrap());
+    assert!(
+        highlight_range::is_ancestor(repo, "not-a-ref", "main").is_err(),
+        "an unknown object is a git failure, not 'not an ancestor'"
+    );
 }

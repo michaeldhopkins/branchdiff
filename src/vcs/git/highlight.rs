@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use vcs_runner::run_git;
 
 use crate::diff::FileDiff;
 use crate::highlight::{FileHighlight, HighlightSpan, compute_file_highlight_spans};
 
 use super::changed_files::{ChangedFile, get_changed_files_between};
 use super::commands::{batch_file_contents, get_file_at_ref, get_merge_base_between, rev_id};
+use super::highlight_range::{clamp_range, commit_parents, is_ancestor};
 use super::resolve_explicit_ref;
 
 /// Parsed `--highlight <REVSET>` revision expression for a git repository.
@@ -29,101 +29,65 @@ pub(crate) struct GitHighlightSpec {
     pub kind: GitHighlightKind,
 }
 
-fn is_ancestor(repo_path: &Path, ancestor: &str, descendant: &str) -> bool {
-    run_git(repo_path, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
-}
-
-fn commit_parents(repo_path: &Path, commit_sha: &str) -> Vec<String> {
-    let Ok(out) = run_git(repo_path, &["rev-list", "--parents", "-n", "1", commit_sha]) else {
-        return Vec::new();
-    };
-    let line = out.stdout_lossy();
-    line.lines().next().unwrap_or_default().split_whitespace().skip(1).map(String::from).collect()
-}
-
-fn clamp_range(
-    repo_path: &Path,
-    from_sha: &str,
-    to_ref: &str,
-    merge_base: &str,
-    effective_head: &str,
-) -> (String, String) {
-    let to_sha = rev_id(repo_path, to_ref).unwrap_or_else(|| to_ref.to_string());
-    let to_sha = if is_ancestor(repo_path, &to_sha, effective_head) {
-        to_sha
-    } else if let Ok(mb) = get_merge_base_between(repo_path, &to_sha, effective_head)
-        && is_ancestor(repo_path, from_sha, &mb)
-    {
-        mb
-    } else {
-        from_sha.to_string()
-    };
-    if !merge_base.is_empty() {
-        if is_ancestor(repo_path, &to_sha, merge_base) {
-            return (to_sha.clone(), to_sha);
-        }
-        if is_ancestor(repo_path, from_sha, merge_base)
-            && is_ancestor(repo_path, merge_base, &to_sha)
-        {
-            return (merge_base.to_string(), to_sha);
-        }
-    }
-    (from_sha.to_string(), to_sha)
-}
-
 pub(super) fn unhighlighted(label: &str) -> FileHighlight {
     FileHighlight { label: Some(label.to_string()), ..FileHighlight::default() }
 }
 
-fn resolve_pair(repo_path: &Path, left: &str, right: &str) -> Result<(String, String)> {
-    let left_ref = resolve_explicit_ref(repo_path, "--highlight", left)?.0;
-    let right_ref = resolve_explicit_ref(repo_path, "--highlight", right)?.0;
-    Ok((left_ref, right_ref))
+/// `None` when a ref no longer resolves (a deleted branch); that is the only
+/// resolution failure `resolve_explicit_ref` reports.
+fn resolve_pair(repo_path: &Path, left: &str, right: &str) -> Option<(String, String)> {
+    let left_ref = resolve_explicit_ref(repo_path, "--highlight", left).ok()?.0;
+    let right_ref = resolve_explicit_ref(repo_path, "--highlight", right).ok()?.0;
+    Some((left_ref, right_ref))
 }
 
 impl GitHighlightSpec {
     /// Resolve `(from_shas, to_sha)` for this specification, clamped to
     /// `(merge_base..=effective_head]` and excluding root commits.
     /// Holds multiple SHAs when highlighting a merge commit.
+    /// `Ok(None)` means a named ref is gone or the two sides share no
+    /// ancestor, so nothing can be marked; any git failure is an `Err`.
     pub fn resolve_for_head(
         &self,
         repo_path: &Path,
         merge_base: &str,
         head_ref: Option<&str>,
-    ) -> Result<(Vec<String>, String)> {
+    ) -> Result<Option<(Vec<String>, String)>> {
         let effective_head = head_ref.unwrap_or("HEAD");
         match &self.kind {
             GitHighlightKind::TripleDot { left, right } => {
-                let (left_ref, to_ref) = resolve_pair(repo_path, left, right)?;
-                let mb =
-                    get_merge_base_between(repo_path, &left_ref, &to_ref).with_context(|| {
-                        format!(
-                            "--highlight {:?} has no common ancestor between {left} and {right}",
-                            self.label
-                        )
-                    })?;
+                let Some((left_ref, to_ref)) = resolve_pair(repo_path, left, right) else {
+                    return Ok(None);
+                };
+                let Ok(mb) = get_merge_base_between(repo_path, &left_ref, &to_ref) else {
+                    return Ok(None);
+                };
                 let (from_sha, to_sha) =
-                    clamp_range(repo_path, &mb, &to_ref, merge_base, effective_head);
-                Ok((vec![from_sha], to_sha))
+                    clamp_range(repo_path, &mb, &to_ref, merge_base, effective_head)?;
+                Ok(Some((vec![from_sha], to_sha)))
             }
             GitHighlightKind::DoubleDot { left, right } => {
-                let (left_ref, to_ref) = resolve_pair(repo_path, left, right)?;
+                let Some((left_ref, to_ref)) = resolve_pair(repo_path, left, right) else {
+                    return Ok(None);
+                };
                 let raw_from = get_merge_base_between(repo_path, &left_ref, &to_ref)
                     .ok()
                     .or_else(|| rev_id(repo_path, &left_ref))
                     .unwrap_or(left_ref);
                 let (from_sha, to_sha) =
-                    clamp_range(repo_path, &raw_from, &to_ref, merge_base, effective_head);
-                Ok((vec![from_sha], to_sha))
+                    clamp_range(repo_path, &raw_from, &to_ref, merge_base, effective_head)?;
+                Ok(Some((vec![from_sha], to_sha)))
             }
             GitHighlightKind::Single { rev } => {
-                let (to_ref, _) = resolve_explicit_ref(repo_path, "--highlight", rev)?;
+                let Ok((to_ref, _)) = resolve_explicit_ref(repo_path, "--highlight", rev) else {
+                    return Ok(None);
+                };
                 let to_sha = rev_id(repo_path, &to_ref).unwrap_or(to_ref);
-                let in_window = is_ancestor(repo_path, &to_sha, effective_head)
-                    && (merge_base.is_empty() || !is_ancestor(repo_path, &to_sha, merge_base));
-                let parents = if in_window { commit_parents(repo_path, &to_sha) } else { vec![] };
+                let in_window = is_ancestor(repo_path, &to_sha, effective_head)?
+                    && (merge_base.is_empty() || !is_ancestor(repo_path, &to_sha, merge_base)?);
+                let parents = if in_window { commit_parents(repo_path, &to_sha)? } else { vec![] };
                 let from_shas = if parents.is_empty() { vec![to_sha.clone()] } else { parents };
-                Ok((from_shas, to_sha))
+                Ok(Some((from_shas, to_sha)))
             }
         }
     }
@@ -144,6 +108,28 @@ pub(crate) fn resolve_highlight_spec(repo_path: &Path, spec: &str) -> Result<Git
         GitHighlightKind::Single { rev: trimmed.to_string() }
     };
     let parsed = GitHighlightSpec { label: spec.to_string(), kind };
+    // Startup reports each failure; a later refresh treats them as "nothing to mark".
+    match &parsed.kind {
+        GitHighlightKind::TripleDot { left, right } => {
+            let (left_ref, to_ref) = (
+                resolve_explicit_ref(repo_path, "--highlight", left)?.0,
+                resolve_explicit_ref(repo_path, "--highlight", right)?.0,
+            );
+            get_merge_base_between(repo_path, &left_ref, &to_ref).with_context(|| {
+                format!(
+                    "--highlight {:?} has no common ancestor between {left} and {right}",
+                    parsed.label
+                )
+            })?;
+        }
+        GitHighlightKind::DoubleDot { left, right } => {
+            resolve_explicit_ref(repo_path, "--highlight", left)?;
+            resolve_explicit_ref(repo_path, "--highlight", right)?;
+        }
+        GitHighlightKind::Single { rev } => {
+            resolve_explicit_ref(repo_path, "--highlight", rev)?;
+        }
+    }
     parsed.resolve_for_head(repo_path, "", None)?;
     Ok(parsed)
 }
@@ -218,7 +204,8 @@ impl GitHighlightBatch {
     ) -> Result<Self> {
         // Only a ref that no longer resolves (a deleted branch) drops the marks;
         // any other git failure is returned so the refresh reports it.
-        let Ok((from_shas, to_sha)) = spec.resolve_for_head(repo_path, merge_base, head_ref) else {
+        let Some((from_shas, to_sha)) = spec.resolve_for_head(repo_path, merge_base, head_ref)?
+        else {
             return Ok(Self::empty(&spec.label));
         };
         if from_shas.is_empty() || (from_shas.len() == 1 && from_shas[0] == to_sha) {
@@ -349,7 +336,7 @@ pub(crate) fn compute_single_file_highlight(
     (file_path, old_path): (&str, Option<&str>),
     (base_content, working_content): (Option<&str>, Option<&str>),
 ) -> Result<FileHighlight> {
-    let Ok((from_shas, to_sha)) = spec.resolve_for_head(repo_path, merge_base, head_ref) else {
+    let Some((from_shas, to_sha)) = spec.resolve_for_head(repo_path, merge_base, head_ref)? else {
         return Ok(unhighlighted(&spec.label));
     };
     if from_shas.is_empty() || (from_shas.len() == 1 && from_shas[0] == to_sha) {

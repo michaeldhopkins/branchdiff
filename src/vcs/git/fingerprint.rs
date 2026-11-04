@@ -27,10 +27,10 @@ pub(super) fn inputs(
     let head = run(&["rev-parse", target_ref]).unwrap_or_default();
     let highlight_state = match highlight_spec {
         Some(spec) => match spec.resolve_for_head(repo_path, &base, head_ref) {
-            Ok((from_shas, to_sha)) => {
+            Ok(Some((from_shas, to_sha))) => {
                 format!("\n#highlight\n{}..{}\n", from_shas.join(","), to_sha)
             }
-            Err(_) => String::from("\n#highlight\n"),
+            Ok(None) | Err(_) => String::from("\n#highlight\n"),
         },
         None => String::new(),
     };

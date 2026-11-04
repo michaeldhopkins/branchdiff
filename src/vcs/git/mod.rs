@@ -3,6 +3,7 @@ pub(crate) mod commands;
 mod content;
 mod fingerprint;
 pub(crate) mod highlight;
+mod highlight_range;
 pub(crate) mod parse;
 mod refresh;
 
