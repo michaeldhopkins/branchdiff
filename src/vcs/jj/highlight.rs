@@ -4,19 +4,22 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-use vcs_runner::{run_jj, run_jj_cancellable};
+use vcs_runner::run_jj;
 
 use crate::diff::FileDiff;
 use crate::highlight::{FileHighlight, HighlightSpan, compute_file_highlight_spans};
 
 use super::super::jj_revset::jj_error_detail;
 use super::fingerprint::op_head_key;
+#[path = "highlight_run.rs"]
+pub(super) mod highlight_run;
 use super::parse::{
     ChangedFile, HighlightLogEntry, SpanTarget, coalesce_highlight_entries,
     parse_batched_file_show, parse_highlight_log,
 };
 use super::stack::joined;
 use super::{JjVcs, no_snapshot};
+use highlight_run::run_highlight_jj;
 
 /// Template used by `query_highlight_log` and the versioned fixture tests.
 pub(super) const HIGHLIGHT_LOG_TEMPLATE: &str = r#"commit_id ++ "\t" ++ if(self.contained_in("@"), "@", ".") ++ "\t" ++ parents.map(|p| p.commit_id()).join(",") ++ "\n""#;
@@ -100,13 +103,10 @@ pub(super) fn query_highlight_log(
     repo_path: &Path,
     scoped_revset: &str,
     cancel: &Arc<AtomicBool>,
-) -> Vec<HighlightLogEntry> {
+) -> Result<Vec<HighlightLogEntry>> {
     let args =
         no_snapshot(&["log", "-r", scoped_revset, "--no-graph", "-T", HIGHLIGHT_LOG_TEMPLATE]);
-    run_jj_cancellable(repo_path, &args, Arc::clone(cancel))
-        .ok()
-        .map(|o| parse_highlight_log(&o.stdout_lossy()))
-        .unwrap_or_default()
+    Ok(parse_highlight_log(&run_highlight_jj(repo_path, &args, cancel)?))
 }
 
 fn span_changed_files(
@@ -116,7 +116,7 @@ fn span_changed_files(
     branch_changed_files: &[ChangedFile],
     spawns: &std::sync::atomic::AtomicUsize,
     cancel: &Arc<AtomicBool>,
-) -> HashMap<String, Option<String>> {
+) -> Result<HashMap<String, Option<String>>> {
     let mut map = HashMap::new();
     let to_rev = match to_target {
         SpanTarget::Revision(r) => r.as_str(),
@@ -127,7 +127,7 @@ fn span_changed_files(
                 && let Ok(git_files) =
                     crate::vcs::git::get_all_changed_files(&vcs.repo_path, &from_revs[0])
             {
-                return git_files.into_iter().map(|f| (f.path, f.old_path)).collect();
+                return Ok(git_files.into_iter().map(|f| (f.path, f.old_path)).collect());
             }
             for f in branch_changed_files {
                 map.insert(f.path.clone(), f.old_path.clone());
@@ -137,10 +137,9 @@ fn span_changed_files(
     };
     spawns.fetch_add(1, Ordering::Relaxed);
     let from = from_revs.first().map_or("root()", String::as_str);
-    if let Ok(files) = vcs.get_changed_files_no_snapshot(from, to_rev, cancel) {
-        map.extend(files.into_iter().map(|f| (f.path, f.old_path)));
-    }
-    map
+    let files = vcs.get_changed_files_no_snapshot(from, to_rev, cancel)?;
+    map.extend(files.into_iter().map(|f| (f.path, f.old_path)));
+    Ok(map)
 }
 
 fn span_post_renames(
@@ -150,23 +149,23 @@ fn span_post_renames(
     read_from_disk: bool,
     spawns: &std::sync::atomic::AtomicUsize,
     cancel: &Arc<AtomicBool>,
-) -> HashMap<String, String> {
+) -> Result<HashMap<String, String>> {
     let SpanTarget::Revision(to_rev) = to_target else {
-        return HashMap::new();
+        return Ok(HashMap::new());
     };
     if read_from_disk
         && vcs.is_colocated()
         && !is_root_commit_id(to_rev)
         && let Ok(git_files) = crate::vcs::git::get_all_changed_files(&vcs.repo_path, to_rev)
     {
-        return git_files.into_iter().filter_map(|f| Some((f.path, f.old_path?))).collect();
+        return Ok(git_files.into_iter().filter_map(|f| Some((f.path, f.old_path?))).collect());
     }
     spawns.fetch_add(1, Ordering::Relaxed);
-    vcs.get_changed_files_no_snapshot(to_rev, effective_to, cancel)
-        .unwrap_or_default()
+    Ok(vcs
+        .get_changed_files_no_snapshot(to_rev, effective_to, cancel)?
         .into_iter()
         .filter_map(|f| Some((f.path, f.old_path?)))
-        .collect()
+        .collect())
 }
 
 fn batch_jj_file_contents(
@@ -175,20 +174,33 @@ fn batch_jj_file_contents(
     paths: &[String],
     spawns: &std::sync::atomic::AtomicUsize,
     cancel: &Arc<AtomicBool>,
-) -> HashMap<String, String> {
+) -> Result<HashMap<String, String>> {
     if paths.is_empty() || is_root_commit_id(rev) {
-        return HashMap::new();
+        return Ok(HashMap::new());
     }
+    // `file show` fails on a path the revision lacks (an added or deleted
+    // file), which is expected here; list first so only real failures error.
     let filesets: Vec<String> = paths.iter().map(|p| format!("root-file:{p:?}")).collect();
-    let mut raw_args: Vec<&str> = Vec::with_capacity(filesets.len() + 6);
+    let mut list_args: Vec<&str> = Vec::with_capacity(filesets.len() + 6);
+    list_args.extend_from_slice(&["file", "list", "-r", rev, "-T", r#"path.display() ++ "\n""#]);
+    list_args.extend(filesets.iter().map(String::as_str));
+    spawns.fetch_add(1, Ordering::Relaxed);
+    let listing = run_highlight_jj(&vcs.repo_path, &no_snapshot(&list_args), cancel)?;
+    let present: HashSet<&str> = listing.lines().collect();
+    let existing: Vec<String> = paths
+        .iter()
+        .filter(|p| present.contains(p.as_str()))
+        .map(|p| format!("root-file:{p:?}"))
+        .collect();
+    if existing.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut raw_args: Vec<&str> = Vec::with_capacity(existing.len() + 6);
     raw_args.extend_from_slice(&["file", "show", "-r", rev, "-T", FILE_SHOW_TEMPLATE]);
-    raw_args.extend(filesets.iter().map(String::as_str));
+    raw_args.extend(existing.iter().map(String::as_str));
     let args = no_snapshot(&raw_args);
     spawns.fetch_add(1, Ordering::Relaxed);
-    run_jj_cancellable(&vcs.repo_path, &args, Arc::clone(cancel))
-        .ok()
-        .map(|o| parse_batched_file_show(&o.stdout_lossy()))
-        .unwrap_or_default()
+    Ok(parse_batched_file_show(&run_highlight_jj(&vcs.repo_path, &args, cancel)?))
 }
 
 impl JjHighlightPlan {
@@ -212,9 +224,17 @@ impl JjHighlightPlan {
         {
             return Some(Arc::clone(plan));
         }
-        let plan = Arc::new(Self::build(
+        let built = match Self::build(
             vcs, revset, effective_from, effective_to, read_from_disk, branch_changed_files, cancel,
-        ));
+        ) {
+            Ok(b) => b,
+            Err(_) => {
+                // A plan built from a failed jj call is partial: show no marks for
+                // this refresh, but do not cache it, so the next refresh tries again.
+                return Some(Arc::new(Self::without_marks(revset)));
+            }
+        };
+        let plan = Arc::new(built);
         if let Some(k) = key
             && !cancel.load(Ordering::Relaxed)
         {
@@ -222,6 +242,17 @@ impl JjHighlightPlan {
                 Some((k, Arc::clone(&plan)));
         }
         Some(plan)
+    }
+
+    fn without_marks(revset: &str) -> Self {
+        Self {
+            label: revset.to_string(),
+            spans: Vec::new(),
+            changed_paths: HashSet::new(),
+            rev_contents: HashMap::new(),
+            #[cfg(test)]
+            spawn_count: 0,
+        }
     }
 
     fn build(
@@ -232,10 +263,10 @@ impl JjHighlightPlan {
         read_from_disk: bool,
         branch_changed_files: &[ChangedFile],
         cancel: &Arc<AtomicBool>,
-    ) -> Self {
+    ) -> Result<Self> {
         let spawns = std::sync::atomic::AtomicUsize::new(1);
         let scoped = format!("({revset}) & ({effective_from})..({effective_to})");
-        let entries = query_highlight_log(&vcs.repo_path, &scoped, cancel);
+        let entries = query_highlight_log(&vcs.repo_path, &scoped, cancel)?;
         let raw_spans = coalesce_highlight_entries(&entries, read_from_disk);
 
         let mut spans = Vec::with_capacity(raw_spans.len());
@@ -245,9 +276,9 @@ impl JjHighlightPlan {
         for (from_revs, to_target) in raw_spans {
             let changed_files = span_changed_files(
                 vcs, &from_revs, &to_target, branch_changed_files, &spawns, cancel,
-            );
+            )?;
             let post_renames =
-                span_post_renames(vcs, &to_target, effective_to, read_from_disk, &spawns, cancel);
+                span_post_renames(vcs, &to_target, effective_to, read_from_disk, &spawns, cancel)?;
 
             for (path, old_path) in &changed_files {
                 changed_paths.insert(path.clone());
@@ -282,27 +313,30 @@ impl JjHighlightPlan {
                 (rev, ps)
             })
             .collect();
-        let rev_contents: HashMap<String, HashMap<String, String>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = rev_list
-                .iter()
-                .map(|(rev, ps)| {
-                    let spawns_ref = &spawns;
-                    scope.spawn(move || {
-                        (rev.clone(), batch_jj_file_contents(vcs, rev, ps, spawns_ref, cancel))
+        let rev_results: Vec<Result<(String, HashMap<String, String>)>> =
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = rev_list
+                    .iter()
+                    .map(|(rev, ps)| {
+                        let spawns_ref = &spawns;
+                        scope.spawn(move || {
+                            batch_jj_file_contents(vcs, rev, ps, spawns_ref, cancel)
+                                .map(|contents| (rev.clone(), contents))
+                        })
                     })
-                })
-                .collect();
-            handles.into_iter().map(joined).collect()
-        });
+                    .collect();
+                handles.into_iter().map(joined).collect()
+            });
+        let rev_contents = rev_results.into_iter().collect::<Result<HashMap<_, _>>>()?;
 
-        Self {
+        Ok(Self {
             label: revset.to_string(),
             spans,
             changed_paths,
             rev_contents,
             #[cfg(test)]
             spawn_count: spawns.load(Ordering::Relaxed),
-        }
+        })
     }
 
     pub(super) fn compute_for_file(

@@ -4862,6 +4862,39 @@ mod tests {
     }
 
     #[test]
+    fn highlight_plan_is_not_cached_when_a_jj_call_fails() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        let out =
+            Command::new("jj").args(["describe", "-m", "work"]).current_dir(repo).output().unwrap();
+        assert!(out.status.success());
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: None, highlight: Some("@") },
+        )
+        .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let changed = vcs.discover_working_changes("main", &cancel).unwrap();
+
+        highlight::highlight_run::inject_failures(repo, 1);
+        let failed = JjHighlightPlan::resolve(&vcs, "main", "@", true, &changed, &cancel).unwrap();
+        assert!(failed.changed_paths.is_empty(), "a failed jj call yields no marks");
+        assert!(
+            vcs.disk_manifest.lock().unwrap().highlight_cache.is_none(),
+            "a plan built from a failed call must not be cached"
+        );
+
+        let retried = JjHighlightPlan::resolve(&vcs, "main", "@", true, &changed, &cancel).unwrap();
+        assert!(retried.changed_paths.contains("a.txt"), "next resolve rebuilds the plan");
+        assert!(vcs.disk_manifest.lock().unwrap().highlight_cache.is_some());
+    }
+
+    #[test]
     fn highlight_batches_jj_file_reads_across_20_files() {
         if !jj_available() {
             return;

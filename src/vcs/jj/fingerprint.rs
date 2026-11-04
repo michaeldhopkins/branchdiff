@@ -75,7 +75,7 @@ pub(super) fn highlight_fingerprint_state(
 ) -> String {
     let scoped = format!("({revset}) & ({effective_from})..({effective_to})");
     let mut state = String::from("\n#highlight\n");
-    for entry in highlight::query_highlight_log(repo_path, &scoped, cancel) {
+    for entry in highlight::query_highlight_log(repo_path, &scoped, cancel).unwrap_or_default() {
         state.push_str(&entry.commit_id);
         state.push(':');
         state.push_str(&entry.parents.join(","));
