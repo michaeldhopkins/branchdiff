@@ -301,11 +301,13 @@ impl HighlightMarks {
             hunk_indices.extend(hl.highlighted_hunk_lines.iter().map(|&rel| offset + rel));
             offset += file.lines.len() + 1;
         }
-        assert_eq!(
+        debug_assert_eq!(
             offset, total_lines,
             "HighlightMarks::from_files: flattened line count ({total_lines}) disagrees with files + separator rows ({offset})"
         );
-
+        if offset != total_lines {
+            return Self::default();
+        }
         Self {
             label,
             line_indices,
@@ -498,6 +500,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "disagrees with files + separator rows")]
     fn from_files_panics_when_total_lines_omits_separator_rows() {
         let base = "a\nb\n";
@@ -519,6 +522,31 @@ mod tests {
         );
         let unseparated_len = diff.lines.len();
         let _ = HighlightMarks::from_files(&[diff], unseparated_len);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn from_files_yields_no_marks_when_total_lines_omits_separator_rows() {
+        let work = "a\nB\n";
+        let mut diff = compute_four_way_diff(DiffInput {
+            path: "a.txt",
+            base: Some("a\nb\n"),
+            head: Some(work),
+            index: Some(work),
+            working: Some(work),
+            old_path: None,
+        });
+        diff.highlight = compute_file_highlight(
+            &diff,
+            Some("a\nb\n"),
+            Some(work),
+            "c1",
+            &[HighlightPair { before: Some("a\nb\n"), after: Some(work) }],
+        );
+        let unseparated_len = diff.lines.len();
+        let marks = HighlightMarks::from_files(&[diff], unseparated_len);
+        assert_eq!(marks.total_highlighted_lines, 0);
+        assert!(marks.line_indices.is_empty());
     }
 
     proptest! {
