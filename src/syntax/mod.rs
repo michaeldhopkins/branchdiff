@@ -342,4 +342,38 @@ mod tests {
             line2
         );
     }
+
+    /// An open block comment colours the next line of the same file. Resetting
+    /// must drop that state. A different path would start a fresh highlighter
+    /// on its own, so the line after the reset uses the same path, and the
+    /// clean colours come from a path change rather than from reset.
+    #[test]
+    fn reset_highlight_state_clears_an_open_block_comment() {
+        let path = Some("a.rs");
+        let ordinary = "fn main() {}";
+        let colours = |segments: &[SyntaxSegment]| {
+            segments.iter().map(|s| (s.text.clone(), s.fg_color)).collect::<Vec<_>>()
+        };
+
+        reset_highlight_state();
+        highlight_line("/* open", path);
+        let still_open = highlight_line(ordinary, path);
+        let alone = highlight_line(ordinary, Some("fresh.rs"));
+
+        assert_ne!(
+            colours(&still_open),
+            colours(&alone),
+            "an open block comment did not colour the next line, so a no-op reset would still pass"
+        );
+
+        highlight_line("/* open", path);
+        reset_highlight_state();
+        let after_reset = highlight_line(ordinary, path);
+
+        assert_eq!(
+            colours(&after_reset),
+            colours(&alone),
+            "reset left the next line inside the open block comment: {after_reset:?}"
+        );
+    }
 }
