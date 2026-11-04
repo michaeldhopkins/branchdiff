@@ -96,7 +96,7 @@ pub fn entries(files: &[FileDiff]) -> Vec<FileEntry> {
                     .highlight
                     .label
                     .is_some()
-                    .then_some(!file.highlight.highlighted_lines.is_empty()),
+                    .then_some(file.highlight.is_highlighted()),
             })
         })
         .collect()
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn json_computes_highlighted_from_marked_lines_not_touched() {
+    fn json_counts_a_touched_file_as_highlighted_like_the_badge() {
         let mut touched_only = diff("t.rs", Some("a\n"), Some("a\nb\n"), Some("a\nb\n"), None);
         touched_only.highlight.label = Some("c1..c2".into());
         touched_only.highlight.touched = true;
@@ -296,10 +296,10 @@ mod tests {
             head: "h".into(),
             files: entries(&[touched_only, marked]),
         };
-        assert_eq!(l.files[0].highlighted, Some(false));
+        assert_eq!(l.files[0].highlighted, Some(true));
         assert_eq!(l.files[1].highlighted, Some(true));
         let v: serde_json::Value = serde_json::from_str(&render_json(&l)).unwrap();
-        assert_eq!(v["files"][0]["highlighted"], false);
+        assert_eq!(v["files"][0]["highlighted"], true);
         assert_eq!(v["files"][1]["highlighted"], true);
     }
 
