@@ -48,6 +48,7 @@ pub struct Op {
     pub proposal: String,
     pub removed: String,
     pub benches: Vec<String>,
+    pub alternatives: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -487,6 +488,7 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
     let proposal = optional_one_line(&mut fields, "proposal", &mut local);
     let removed = optional_one_line(&mut fields, "removed", &mut local);
     let benches = optional_list(&mut fields, "benches", &mut local);
+    let alternatives = optional_list(&mut fields, "alternatives", &mut local);
     let label = id.clone().unwrap_or_else(|| "?".to_string());
     for key in fields.keys() {
         local.push(format!("unknown key `{key}`"));
@@ -512,6 +514,7 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
         proposal: proposal.unwrap_or_default(),
         removed: removed.unwrap_or_default(),
         benches: benches.unwrap_or_default(),
+        alternatives: alternatives.unwrap_or_default(),
     })
 }
 
@@ -754,11 +757,63 @@ fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<S
                 ));
             }
         }
+        check_max_floor(op, benches, errors);
     }
     for bench in benches.keys() {
         if !named.contains(bench.as_str()) {
             errors.push(format!("bench `{bench}` is not named by any operation"));
         }
+    }
+}
+
+/// Extra benches an op's `max` floor may carry before a `sum` would be the
+/// honest floor, as a share of the dominant bench (percent).
+const MAX_NEGLIGIBLE_PERCENT: u64 = 10;
+
+/// `floor = "max"` over several benches discards every bench but the largest.
+/// That is honest only when the others are measurably negligible next to it
+/// (their sum within `MAX_NEGLIGIBLE_PERCENT` of the dominant) or declared in
+/// `alternatives`: other fixtures of the same stage, never the dominant one.
+fn check_max_floor(op: &Op, benches: &BTreeMap<String, u64>, errors: &mut Vec<String>) {
+    if op.floor != "max" {
+        if !op.alternatives.is_empty() {
+            errors
+                .push(format!("operation `{}` lists alternatives without floor = \"max\"", op.id));
+        }
+        return;
+    }
+    for alternative in &op.alternatives {
+        if !op.benches.contains(alternative) {
+            errors.push(format!(
+                "operation `{}` alternative `{alternative}` is not one of its benches",
+                op.id
+            ));
+        }
+    }
+    let values: Vec<(&String, u64)> =
+        op.benches.iter().filter_map(|b| benches.get(b).map(|v| (b, *v))).collect();
+    if values.len() != op.benches.len() || values.len() < 2 {
+        return;
+    }
+    let (dominant, dominant_us) =
+        values.iter().copied().max_by_key(|(_, v)| *v).expect("two or more benches");
+    if op.alternatives.contains(dominant) {
+        errors.push(format!(
+            "operation `{}` alternative `{dominant}` sets the max floor; an alternative cannot",
+            op.id
+        ));
+        return;
+    }
+    let rest: u64 = values
+        .iter()
+        .filter(|(b, _)| *b != dominant && !op.alternatives.contains(*b))
+        .map(|(_, v)| *v)
+        .sum();
+    if rest * 100 > dominant_us * MAX_NEGLIGIBLE_PERCENT {
+        errors.push(format!(
+            "operation `{}` uses floor = \"max\" but its other benches add {rest} us to `{dominant}` ({dominant_us} us): use \"sum\" or declare the alternative fixtures in `alternatives`",
+            op.id
+        ));
     }
 }
 
@@ -788,6 +843,14 @@ fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
                 "operation `{}` floor changed from `sum` to `max` against the baseline",
                 op.id
             ));
+        }
+        for alternative in &op.alternatives {
+            if !before.alternatives.contains(alternative) {
+                errors.push(format!(
+                    "operation `{}` adds alternative `{alternative}` not in the baseline",
+                    op.id
+                ));
+            }
         }
         let mut dropped_any = false;
         for bench in &before.benches {

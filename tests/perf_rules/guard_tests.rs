@@ -793,3 +793,137 @@ fn test_names_come_only_from_test_attributed_functions() {
         vec!["src/lib.rs::alpha", "src/lib.rs::beta"]
     );
 }
+
+fn owed_case(extra: &str) -> Vec<String> {
+    let manifest = format!(
+        "[[op]]\nid = \"command:print\"\nclass = \"command\"\nfixture = \"n\"\ntest = \"tests/counts.rs::counts\"\nprocesses = 1\nowed = true\nwall_floor_us = 1000\ntarget_us = 1000\nderivation = \"Owed.\"\n{extra}"
+    );
+    run(Case {
+        manifest: &manifest,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[],
+    })
+}
+
+#[test]
+fn an_owed_entry_may_not_set_a_floor_and_a_measured_one_must_set_sum_or_max() {
+    assert!(owed_case("").is_empty());
+    assert_eq!(
+        owed_case("floor = \"max\"\n"),
+        vec!["operation `command:print` is owed but sets floor `max`"]
+    );
+    let no_floor = HAPPY.replace("floor = \"max\"\n", "");
+    assert_eq!(
+        run(happy_manifest(&no_floor)),
+        vec!["operation `command:print` must set floor = \"sum\" or \"max\" (got ``)"]
+    );
+    let odd_floor = HAPPY.replace("floor = \"max\"", "floor = \"min\"");
+    assert!(
+        run(happy_manifest(&odd_floor))
+            .iter()
+            .any(|error| error.contains("must set floor = \"sum\" or \"max\" (got `min`)"))
+    );
+}
+
+#[test]
+fn a_bench_that_is_removed_may_not_keep_any_pin() {
+    for pin in ["ref_median_ns = 5", "max_blocks = 5", "max_bytes = 5", "max_bytes_x86_64 = 5"] {
+        for text in [
+            format!("[[bench]]\nid = \"x\"\n{pin}\nremoved = \"reason\"\n"),
+            format!("[[bench]]\nid = \"x\"\nremoved = \"reason\"\n{pin}\n"),
+        ] {
+            let mut errors = Vec::new();
+            check_baseline_medians(&text, None, &mut errors);
+            assert!(
+                errors.iter().any(|error| error.contains("bench `x` sets both")),
+                "`{pin}` beside removed must fail: {errors:?}"
+            );
+        }
+    }
+    let mut errors = Vec::new();
+    check_baseline_medians("[[bench]]\nid = \"x\"\nremoved = \"reason\"\n", None, &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn an_operation_absent_from_the_baseline_may_not_set_removed() {
+    let live = format!("{HAPPY}removed = \"dropped it\"\n");
+    let baseline = "";
+    let errors = run(Case {
+        manifest: &live,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(baseline),
+        benches: &[("bench-a", 40_000)],
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("command:print")
+            && error.contains("sets removed without dropping a bench")),
+        "{errors:?}"
+    );
+}
+
+fn max_case(benches: &[(&str, u64)], alternatives: &str, floor: u64) -> Vec<String> {
+    let names: Vec<String> = benches.iter().map(|(id, _)| format!("\"{id}\"")).collect();
+    let manifest = HAPPY
+        .replace("benches = [\"bench-a\"]", &format!("benches = [{}]", names.join(", ")))
+        .replace("wall_floor_us = 40000", &format!("wall_floor_us = {floor}"))
+        .replace("target_us = 40000", &format!("target_us = {floor}"))
+        + alternatives;
+    run(Case {
+        manifest: &manifest,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches,
+    })
+}
+
+#[test]
+fn a_max_floor_over_several_benches_needs_the_others_negligible_or_declared_alternatives() {
+    // 4_000 us beside 40_000 us is exactly the 10% allowance.
+    assert!(max_case(&[("bench-a", 40_000), ("bench-b", 4_000)], "", 40_000).is_empty());
+    let errors = max_case(&[("bench-a", 40_000), ("bench-b", 4_001)], "", 40_000);
+    assert!(
+        errors.iter().any(|error| error.contains("floor = \"max\"")
+            && error.contains("bench-a")
+            && error.contains("alternatives")),
+        "{errors:?}"
+    );
+    let both = [("bench-a", 40_000), ("bench-b", 30_000)];
+    assert!(max_case(&both, "alternatives = [\"bench-b\"]\n", 40_000).is_empty());
+    let stray = max_case(&both, "alternatives = [\"bench-z\"]\n", 40_000);
+    assert!(stray.iter().any(|error| error.contains("`bench-z` is not one of its benches")));
+    let dominant = max_case(&both, "alternatives = [\"bench-a\"]\n", 40_000);
+    assert!(dominant.iter().any(|error| error.contains("cannot")), "{dominant:?}");
+}
+
+#[test]
+fn alternatives_need_a_max_floor_and_cannot_grow_against_the_baseline() {
+    let with_sum =
+        HAPPY.replace("floor = \"max\"", "floor = \"sum\"") + "alternatives = [\"bench-a\"]\n";
+    let errors = run(happy_manifest(&with_sum));
+    assert!(errors.iter().any(|error| error.contains("alternatives without floor")), "{errors:?}");
+
+    let two = HAPPY.replace("benches = [\"bench-a\"]", "benches = [\"bench-a\", \"bench-b\"]");
+    let baseline = two.clone();
+    let live = format!("{two}alternatives = [\"bench-b\"]\n");
+    let errors = run(Case {
+        manifest: &live,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(&baseline),
+        benches: &[("bench-a", 40_000), ("bench-b", 30_000)],
+    });
+    assert!(errors.iter().any(|error| error.contains("adds alternative `bench-b`")), "{errors:?}");
+    let errors = run(Case {
+        manifest: &live,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(&live),
+        benches: &[("bench-a", 40_000), ("bench-b", 30_000)],
+    });
+    assert!(errors.is_empty(), "{errors:?}");
+}
