@@ -151,8 +151,35 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
     }
     let stdout = String::from_utf8_lossy(&resolved.stdout);
     let mut commits: Vec<&str> = stdout.lines().map(str::trim).filter(|s| !s.is_empty()).collect();
+    if commits.is_empty() {
+        return None;
+    }
     commits.sort_unstable();
-    let commit_id = *commits.first()?;
+    commits.dedup();
+    let mut best: Option<(u64, String)> = None;
+    for commit_id in commits {
+        if let Some(text) = jj_file_at_commit(root, repo, commit_id, rel_path) {
+            let tightness = strictness(&text);
+            if best.as_ref().is_none_or(|(known, _)| tightness < *known) {
+                best = Some((tightness, text));
+            }
+        }
+    }
+    Some(best.map(|(_, text)| text))
+}
+
+/// How loose a baseline file is: the sum of its integer assignments. Several
+/// heads (a criss-cross history) hold different copies, and the tightest copy
+/// is the one a change must not loosen; ties keep the lowest commit id.
+fn strictness(text: &str) -> u64 {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| line.split_once('=')?.1.trim().parse::<u64>().ok())
+        .fold(0, u64::saturating_add)
+}
+
+/// The file at one commit, or `None` when the commit does not hold it.
+fn jj_file_at_commit(root: &Path, repo: &str, commit_id: &str, rel_path: &str) -> Option<String> {
     let root_pattern = format!("root:\"{rel_path}\"");
     let listed = Command::new("jj")
         .current_dir(root)
@@ -168,7 +195,7 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
         String::from_utf8_lossy(&listed.stderr)
     );
     if String::from_utf8_lossy(&listed.stdout).trim().is_empty() {
-        return Some(None);
+        return None;
     }
     let shown = Command::new("jj")
         .current_dir(root)
@@ -183,7 +210,7 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
         "jj file show -r {commit_id} {rel_path} failed: {}",
         String::from_utf8_lossy(&shown.stderr)
     );
-    Some(Some(String::from_utf8(shown.stdout).expect("baseline is utf-8")))
+    Some(String::from_utf8(shown.stdout).expect("baseline is utf-8"))
 }
 
 fn is_on_main_git(repo: &str, github_ref: Option<&str>) -> bool {
@@ -1126,5 +1153,131 @@ mod tests {
                 "snippet `{snippet}` in src/html.rs must fail the guard: {errors:?}"
             );
         }
+    }
+
+    fn jj_commit_id(dir: &Path, rev: &str) -> String {
+        let out = Command::new("jj")
+            .current_dir(dir)
+            .args(["--ignore-working-copy", "log", "--no-graph", "-r", rev, "-T", "commit_id"])
+            .output()
+            .expect("jj log");
+        assert!(out.status.success(), "jj log {rev}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+    }
+
+    /// A jj repo where `main` has moved on since a feature branch forked:
+    /// fork point R ("# fork"), `main` at M ("# main-tip"), feature F
+    /// ("# feature") and `@` above F. Returns F's commit id.
+    fn jj_repo_with_diverged_main(dir: &Path) -> String {
+        run_cmd(dir, "jj", &["git", "init", "--colocate"]);
+        fs::create_dir_all(dir.join("tests")).expect("mkdir tests");
+        fs::write(dir.join("tests/perf.toml"), "# fork\n").expect("write fork");
+        run_cmd(dir, "jj", &["commit", "-m", "fork"]);
+        run_cmd(dir, "jj", &["new", "@-", "-m", "main tip"]);
+        fs::write(dir.join("tests/perf.toml"), "# main-tip\n").expect("write main tip");
+        run_cmd(dir, "jj", &["bookmark", "create", "main", "-r", "@"]);
+        run_cmd(dir, "jj", &["new", "description(exact:\"fork\n\")", "-m", "feature"]);
+        fs::write(dir.join("tests/perf.toml"), "# feature\n").expect("write feature");
+        run_cmd(dir, "jj", &["bookmark", "create", "feature", "-r", "@"]);
+        let feature = jj_commit_id(dir, "feature");
+        run_cmd(dir, "jj", &["new", "feature", "-m", "work"]);
+        feature
+    }
+
+    #[test]
+    fn jj_non_main_ref_without_an_override_baselines_against_the_fork_point() {
+        let tmp = TempDir::new().expect("tempdir");
+        jj_repo_with_diverged_main(tmp.path());
+        let resolved = committed_baseline_file_in(
+            tmp.path(),
+            None,
+            Some("refs/heads/feature"),
+            "tests/perf.toml",
+        );
+        assert_eq!(resolved.as_deref(), Some("# fork\n"), "not main's tip");
+        let on_main = committed_baseline_file_in(
+            tmp.path(),
+            None,
+            Some("refs/heads/main"),
+            "tests/perf.toml",
+        );
+        assert_eq!(on_main.as_deref(), Some("# main-tip\n"));
+    }
+
+    #[test]
+    fn jj_pull_request_baselines_against_its_base_sha_and_a_push_against_the_fork_point() {
+        let tmp = TempDir::new().expect("tempdir");
+        let feature = jj_repo_with_diverged_main(tmp.path());
+        let pull = committed_baseline_file_in(
+            tmp.path(),
+            Some(&feature),
+            Some("refs/pull/7/merge"),
+            "tests/perf.toml",
+        );
+        assert_eq!(pull.as_deref(), Some("# feature\n"), "a PR uses its base.sha");
+        let zero = "0000000000000000000000000000000000000000";
+        let new_pull = committed_baseline_file_in(
+            tmp.path(),
+            Some(zero),
+            Some("refs/pull/7/merge"),
+            "tests/perf.toml",
+        );
+        assert_eq!(new_pull.as_deref(), Some("# fork\n"), "an all-zero base is not a revision");
+        let push = committed_baseline_file_in(
+            tmp.path(),
+            Some(&feature),
+            Some("refs/heads/feature"),
+            "tests/perf.toml",
+        );
+        assert_eq!(push.as_deref(), Some("# fork\n"), "a push is not a PR");
+    }
+
+    #[test]
+    fn strictness_sums_integer_assignments_only() {
+        assert_eq!(strictness("a = 3\nb = \"x\"\n# c = 9\nd = 4\n"), 7);
+        assert_eq!(strictness("# nothing\n"), 0);
+        assert_eq!(strictness("a = 18446744073709551615\nb = 5\n"), u64::MAX);
+    }
+
+    /// Two merges over the same pair of branches (a criss-cross) leave two
+    /// merge-base heads holding different baselines. Commit ids are random, so
+    /// the tight copy is put on each side in turn: one of the two orders has the
+    /// loose head sorting first.
+    fn criss_cross_resolves_to_the_tight_head(tight_on_a: bool) {
+        let tmp = TempDir::new().expect("tempdir");
+        let dir = tmp.path();
+        run_cmd(dir, "jj", &["git", "init", "--colocate"]);
+        fs::create_dir_all(dir.join("tests")).expect("mkdir tests");
+        fs::write(dir.join("tests/perf.toml"), "wall = 50\n").expect("write root");
+        run_cmd(dir, "jj", &["commit", "-m", "root"]);
+        let (a, b) = if tight_on_a {
+            ("wall = 10\n", "wall = 90\n")
+        } else {
+            ("wall = 90\n", "wall = 10\n")
+        };
+        run_cmd(dir, "jj", &["new", "@-", "-m", "A"]);
+        fs::write(dir.join("tests/perf.toml"), a).expect("write a");
+        run_cmd(dir, "jj", &["bookmark", "create", "branch-a", "-r", "@"]);
+        run_cmd(dir, "jj", &["new", "description(substring:\"root\")", "-m", "B"]);
+        fs::write(dir.join("tests/perf.toml"), b).expect("write b");
+        run_cmd(dir, "jj", &["bookmark", "create", "branch-b", "-r", "@"]);
+        run_cmd(dir, "jj", &["new", "branch-a", "branch-b", "-m", "main merge"]);
+        fs::write(dir.join("tests/perf.toml"), "wall = 50\n").expect("resolve main");
+        run_cmd(dir, "jj", &["bookmark", "create", "main", "-r", "@"]);
+        run_cmd(dir, "jj", &["new", "branch-a", "branch-b", "-m", "feature merge"]);
+        fs::write(dir.join("tests/perf.toml"), "wall = 50\n").expect("resolve feature");
+        let resolved = committed_baseline_file_in(
+            dir,
+            Some("0000000000000000000000000000000000000000"),
+            Some("refs/heads/feature"),
+            "tests/perf.toml",
+        );
+        assert_eq!(resolved.as_deref(), Some("wall = 10\n"), "tight_on_a = {tight_on_a}");
+    }
+
+    #[test]
+    fn jj_criss_cross_picks_the_strictest_head_whichever_id_sorts_first() {
+        criss_cross_resolves_to_the_tight_head(true);
+        criss_cross_resolves_to_the_tight_head(false);
     }
 }
