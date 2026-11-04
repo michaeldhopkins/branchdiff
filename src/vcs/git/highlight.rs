@@ -71,7 +71,7 @@ fn clamp_range(
     (from_sha.to_string(), to_sha)
 }
 
-fn unhighlighted(label: &str) -> FileHighlight {
+pub(super) fn unhighlighted(label: &str) -> FileHighlight {
     FileHighlight { label: Some(label.to_string()), ..FileHighlight::default() }
 }
 

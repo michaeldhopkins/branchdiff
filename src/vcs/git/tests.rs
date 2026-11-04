@@ -852,6 +852,31 @@ fn test_single_file_diff_returns_diff_for_modified_file() {
 }
 
 #[test]
+fn test_single_file_diff_keeps_file_when_highlight_lookup_fails() {
+    let temp = create_test_repo();
+    git_cmd(temp.path(), &["checkout", "-b", "feature"]);
+    fs::write(temp.path().join("file.txt"), "modified\n").unwrap();
+    git_cmd(temp.path(), &["add", "file.txt"]);
+    git_cmd(temp.path(), &["commit", "-m", "modify"]);
+
+    let mut vcs = GitVcs::new(temp.path().to_path_buf()).unwrap();
+    // A blob id resolves as an object but is not a commit, so diffing the
+    // highlight range fails after resolution succeeds.
+    let out = vcs_runner::run_git(temp.path(), &["rev-parse", "HEAD:file.txt"]).unwrap();
+    let blob = out.stdout_lossy();
+    vcs.highlight_spec = Some(highlight::GitHighlightSpec {
+        label: "broken".to_string(),
+        kind: highlight::GitHighlightKind::DoubleDot {
+            left: blob.trim().to_string(),
+            right: "feature".to_string(),
+        },
+    });
+
+    let diff = vcs.single_file_diff("file.txt").expect("file must stay when highlight fails");
+    assert_eq!(diff.highlight.line_count(), 0);
+}
+
+#[test]
 fn test_single_file_diff_handles_rename() {
     // Use multi-line content so git's rename detection (>50% similarity) works
     let temp = create_test_repo_with_content("line1\nline2\nline3\nline4\n");
@@ -2155,5 +2180,6 @@ fn test_git_highlight_surfaces_git_failures_but_drops_deleted_refs() {
 
     let err = vcs.refresh(&cancel).expect_err("a git failure must not read as zero marked lines");
     assert!(format!("{err:#}").contains("--highlight"), "got: {err:#}");
-    assert!(vcs.single_file_diff("file.txt").is_none());
+    let kept = vcs.single_file_diff("file.txt").expect("the file stays when marks fail");
+    assert_eq!(kept.highlight.line_count(), 0);
 }

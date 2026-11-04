@@ -188,7 +188,7 @@ pub(super) fn git_compute_single_file_diff(
             (file_path, old_path),
             (contents.base.as_deref(), contents.working.as_deref()),
         )
-        .ok()?;
+        .unwrap_or_else(|_| super::highlight::unhighlighted(&spec.label));
     }
     Some(file_diff)
 }
