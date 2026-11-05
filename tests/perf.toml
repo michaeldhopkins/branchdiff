@@ -584,3 +584,31 @@ owed = true
 wall_floor_us = 8000
 target_us = 1000
 derivation = "Drops the query, aimed at 1 ms. No bench, so the wall floor is the 8 ms cap."
+
+[[op]]
+id = "command:head"
+class = "command"
+fixture = "--head @- on the 500-file fixture: the base commit that adds all 500 files, so the diff is 500 added files, not the 25 changed"
+test = "tests/perf_rules/counts.rs::command_process_counts_match_their_floors"
+processes = 1511
+benches = ["refresh/head/500f_25c"]
+floor = "max"
+floor_reason = "One detection plus one refresh of the revision named by --head; a single bench covers the whole command."
+wall_floor_us = 1598386
+target_us = 50000
+derivation = "--head @- renders the commit that adds all 500 files against the trunk base, so the diff is 500 added files; the 50 ms command budget is the aim, and the floor is refresh/head/500f_25c (1598385980 ns)."
+proposal = "--head @- on this fixture diffs 500 added files and spawns 1511 jj and git processes (about three per file: a file show for each side plus per-file diff queries) in refresh/head/500f_25c (1.60 s). Batch every file read at the two commits through one git cat-file --batch stream each and take names, statuses and line counts from one git diff --numstat and --name-status call, which cuts the spawns from 1511 to about 8 and the wall time to a few hundred ms; reaching 50 ms for 500 files needs the in-process diff to be parallel as well."
+
+[[op]]
+id = "command:highlight"
+class = "command"
+fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_25c, baselines 2026-10-18"
+test = "tests/perf_rules/counts.rs::command_process_counts_match_their_floors"
+processes = 63
+benches = ["refresh/highlight/500f_25c"]
+floor = "max"
+floor_reason = "One detection plus one refresh with the --highlight plan; a single bench covers the whole command."
+wall_floor_us = 194011
+target_us = 50000
+derivation = "--highlight @- marks the lines of one revset during the same refresh as --print; the 50 ms command budget is the aim, and the floor is refresh/highlight/500f_25c (194010493 ns)."
+proposal = "--highlight @- spawns 63 processes in refresh/highlight/500f_25c (194.0 ms), two more than --print: the highlight plan is built from jj log and jj diff calls made after the 61-process refresh. Build the plan from the revisions and changed-path list the startup jj log already returns, and batch the 50 per-file jj file show calls through git cat-file --batch as the --print proposal does, cutting the spawns from 63 to about 7 and the wall time to ~25 ms."

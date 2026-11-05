@@ -169,3 +169,12 @@ ref_median_ns = 28294000
 [[bench]]
 id = "refresh/comments_load/500f_25c"
 ref_median_ns = 99470
+
+# --head and --highlight, measured 2026-11-05 on the 500f_25c fixture: detection plus one refresh.
+[[bench]]
+id = "refresh/head/500f_25c"
+ref_median_ns = 1598385980
+
+[[bench]]
+id = "refresh/highlight/500f_25c"
+ref_median_ns = 194010493

@@ -185,6 +185,8 @@ fn args_for(id: &str, comments: &Path) -> Option<Vec<String>> {
         "command:json" => &["--files", "--json", "--no-auto-fetch"],
         "command:fingerprint" => &["--fingerprint", "--no-auto-fetch"],
         "command:base" => &["--print", "--base", "@-", "--no-auto-fetch"],
+        "command:head" => &["--print", "--head", "@-", "--no-auto-fetch"],
+        "command:highlight" => &["--print", "--highlight", "@-", "--no-auto-fetch"],
         "command:comments" => {
             return Some(vec![
                 "--print".to_string(),

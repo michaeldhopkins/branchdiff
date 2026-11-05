@@ -475,6 +475,29 @@ fn bench_refresh(c: &mut Criterion) {
         });
     });
 
+    // `--head @-` renders the commit that adds all 500 files; `--highlight @-` marks it
+    // over the usual 25-file working copy. Each runs detection and one refresh, as a command does.
+    let head_options =
+        branchdiff::vcs::VcsOptions { head: Some("@-"), ..branchdiff::vcs::VcsOptions::default() };
+    group.bench_function(BenchmarkId::new("head", "500f_25c"), |b| {
+        b.iter(|| {
+            let vcs = branchdiff::vcs::detect_with_options(tmp_500.path(), head_options)
+                .expect("detect --head");
+            black_box(vcs.refresh(&cancel).expect("refresh --head"))
+        });
+    });
+    let highlight_options = branchdiff::vcs::VcsOptions {
+        highlight: Some("@-"),
+        ..branchdiff::vcs::VcsOptions::default()
+    };
+    group.bench_function(BenchmarkId::new("highlight", "500f_25c"), |b| {
+        b.iter(|| {
+            let vcs = branchdiff::vcs::detect_with_options(tmp_500.path(), highlight_options)
+                .expect("detect --highlight");
+            black_box(vcs.refresh(&cancel).expect("refresh --highlight"))
+        });
+    });
+
     let comments_dir = tempfile::tempdir().expect("comments tempdir");
     let comments_path = comments_dir.path().join("comments.jsonl");
     let mut jsonl = String::new();
