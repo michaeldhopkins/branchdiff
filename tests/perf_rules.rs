@@ -190,3 +190,22 @@ fn raising_non_colocated_bench_median_or_deleting_files_bench_from_derivation_fa
         "deleting a bench from command:files' derivation while lowering its floor must fail: {files_errors:?}"
     );
 }
+
+/// A keystroke that has a bench of its own must name that bench, not borrow a
+/// sibling's median. `key:go-to-top` once bound `navigation/go_to_bottom` on an
+/// unmeasured claim of symmetry.
+#[test]
+fn keystrokes_with_their_own_bench_are_bound_to_it() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = fs::read_to_string(root.join("tests/perf.toml")).expect("read tests/perf.toml");
+    let ops = guard::parse_operations(&manifest).expect("manifest parses");
+    for (id, bench) in [
+        ("key:go-to-top", "navigation/go_to_top"),
+        ("key:go-to-bottom", "navigation/go_to_bottom"),
+        ("key:next-file", "navigation/next_file"),
+    ] {
+        let op = ops.iter().find(|op| op.id == id).unwrap_or_else(|| panic!("{id} is budgeted"));
+        assert!(!op.owed, "{id} must be measured");
+        assert_eq!(op.benches, vec![bench.to_string()], "{id} must be bound to its own bench");
+    }
+}

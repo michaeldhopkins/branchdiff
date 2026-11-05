@@ -218,6 +218,14 @@ fn measure_navigation(samples: &mut Vec<Sample>) {
         black_box(app.view.scroll_offset);
     });
 
+    let mut app = App::new_for_bench(diff.clone());
+    app.view.viewport_height = 50;
+    measure(samples, "navigation/go_to_top", || {
+        app.view.scroll_offset = black_box(100);
+        black_box(&mut app).go_to_top();
+        black_box(app.view.scroll_offset);
+    });
+
     let mut app = App::new_for_bench(diff);
     app.view.viewport_height = 50;
     measure(samples, "navigation/next_file", || {

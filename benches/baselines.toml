@@ -6,7 +6,7 @@
 # ref_median_ns is the median point estimate in nanoseconds, rounded, measured
 # 2026-10-18 on the reference machine. The printed Criterion "time:" line is the
 # slope when outliers pull it away from the median; the pin is the median.
-# The same-machine comparison does not read these medians. A local fallback does.
+# tests/wall_medians.rs compares measured medians to these pins in CI, relative to the runner speed.
 # The refresh group has no allocation pin: it shells out to jj.
 
 [[bench]]
@@ -68,6 +68,12 @@ id = "navigation/go_to_bottom"
 max_blocks = 3
 max_bytes = 362408
 ref_median_ns = 48649
+
+[[bench]]
+id = "navigation/go_to_top"
+max_blocks = 0
+max_bytes = 0
+ref_median_ns = 2
 
 [[bench]]
 id = "navigation/next_file"

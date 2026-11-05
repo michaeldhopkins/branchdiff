@@ -167,6 +167,20 @@ fn bench_navigation(c: &mut Criterion) {
         });
     }
 
+    // go_to_top (resets scroll and sub_row, then invalidates the view)
+    {
+        let mut app = App::new_for_bench(diff.clone());
+        app.view.viewport_height = 50;
+
+        group.bench_function("go_to_top", |b| {
+            b.iter(|| {
+                app.view.scroll_offset = black_box(100);
+                black_box(&mut app).go_to_top();
+                black_box(app.view.scroll_offset)
+            })
+        });
+    }
+
     // Next/prev file navigation
     {
         let mut app = App::new_for_bench(diff.clone());
