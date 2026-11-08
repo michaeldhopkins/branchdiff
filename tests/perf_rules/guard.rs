@@ -474,8 +474,8 @@ fn unescape(inner: &str, line_no: usize) -> Result<String, String> {
 
 fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Option<Op> {
     let mut local = Vec::new();
-    let id = require_text(&mut fields, "id", &mut local);
-    let class = require_text(&mut fields, "class", &mut local);
+    let id = require_one_line(&mut fields, "id", &mut local);
+    let class = require_one_line(&mut fields, "class", &mut local);
     let fixture = require_one_line(&mut fields, "fixture", &mut local);
     let test = require_one_line(&mut fields, "test", &mut local);
     let processes = require_number(&mut fields, "processes", &mut local);
@@ -518,13 +518,17 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
     })
 }
 
-fn require_text(
+fn require_one_line(
     fields: &mut BTreeMap<String, Value>,
     key: &str,
     errors: &mut Vec<String>,
 ) -> Option<String> {
     match fields.remove(key) {
-        Some(Value::Text(text)) if !text.trim().is_empty() => Some(text),
+        Some(Value::Text(text))
+            if !text.trim().is_empty() && !text.contains('\n') && !text.contains('\r') =>
+        {
+            Some(text)
+        }
         Some(Value::Text(_)) => {
             errors.push(format!("`{key}` must be one non-empty line"));
             None
@@ -537,20 +541,6 @@ fn require_text(
             errors.push(format!("missing `{key}`"));
             None
         }
-    }
-}
-
-fn require_one_line(
-    fields: &mut BTreeMap<String, Value>,
-    key: &str,
-    errors: &mut Vec<String>,
-) -> Option<String> {
-    let text = require_text(fields, key, errors)?;
-    if text.contains('\n') || text.contains('\r') {
-        errors.push(format!("`{key}` must be one non-empty line"));
-        None
-    } else {
-        Some(text)
     }
 }
 

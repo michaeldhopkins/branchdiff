@@ -111,7 +111,7 @@ fn keystrokes_reduce_and_render_without_spawning() {
                     exercise_clipboard_prep(&mut app, &op.id);
                 } else {
                     let result = apply_input(&mut app, action);
-                    record_effect(&op.id, &result, &mut recorded_effects);
+                    record_effect(&op.id, &app, &result, &mut recorded_effects);
                 }
             }
             Drive::Search(event) => {
@@ -125,8 +125,21 @@ fn keystrokes_reduce_and_render_without_spawning() {
     }
     assert!(rendered > 0, "the manifest has no keystrokes");
     for expected in [
-        "key:quit", "key:copy-or-quit", "key:force-repaint", "key:resize", "key:toggle-diff-base",
-        "key:open-editor", "key:open-repo", "key:run-recovery",
+        "key:quit",
+        "key:copy-or-quit",
+        "key:force-repaint",
+        "key:resize",
+        "key:toggle-diff-base",
+        "key:open-editor",
+        "key:open-repo",
+        "key:run-recovery",
+        "key:toggle-reviewed",
+        "key:toggle-all-reviewed",
+        "key:next-file",
+        "key:prev-file",
+        "key:start-selection",
+        "key:update-selection",
+        "key:end-selection",
     ] {
         assert!(
             recorded_effects.contains(expected),
@@ -135,7 +148,7 @@ fn keystrokes_reduce_and_render_without_spawning() {
     }
 }
 
-fn record_effect(id: &str, result: &UpdateResult, recorded: &mut BTreeSet<String>) {
+fn record_effect(id: &str, app: &App, result: &UpdateResult, recorded: &mut BTreeSet<String>) {
     match id {
         "key:quit" | "key:copy-or-quit" => {
             assert_eq!(result.loop_action, LoopAction::Quit, "{id}");
@@ -164,6 +177,37 @@ fn record_effect(id: &str, result: &UpdateResult, recorded: &mut BTreeSet<String
         }
         "key:run-recovery" => {
             assert!(result.trigger_recovery.is_some(), "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:toggle-reviewed" => {
+            assert_eq!(app.view.reviewed_files.len(), 1, "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:toggle-all-reviewed" => {
+            assert_eq!(app.view.reviewed_files.len(), 30, "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:next-file" => {
+            assert!(app.view.scroll_offset > 100, "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:prev-file" => {
+            assert!(app.view.scroll_offset < 100, "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:start-selection" => {
+            assert!(app.view.selection.as_ref().is_some_and(|s| s.active), "{id}");
+            recorded.insert(id.to_string());
+        }
+        "key:update-selection" => {
+            assert!(
+                app.view.selection.as_ref().is_some_and(|s| s.active && s.start != s.end),
+                "{id}"
+            );
+            recorded.insert(id.to_string());
+        }
+        "key:end-selection" => {
+            assert!(app.view.selection.as_ref().is_some_and(|s| !s.active), "{id}");
             recorded.insert(id.to_string());
         }
         _ => {}

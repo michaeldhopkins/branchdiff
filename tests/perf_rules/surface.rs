@@ -1202,6 +1202,22 @@ mod tests {
             "tests/perf.toml",
         );
         assert_eq!(on_main.as_deref(), Some("# main-tip\n"));
+
+        // Moving local `main` forward to `@` before pushing still baselines against `main@origin`.
+        let remote = TempDir::new().expect("remote");
+        run_cmd(remote.path(), "git", &["init", "-q", "--bare"]);
+        let remote_url = remote.path().to_str().expect("remote path");
+        run_cmd(tmp.path(), "jj", &["git", "remote", "add", "origin", remote_url]);
+        run_cmd(tmp.path(), "jj", &["git", "push", "--bookmark", "main"]);
+        run_cmd(tmp.path(), "jj", &["new", "main", "-m", "next on main"]);
+        fs::write(tmp.path().join("tests/perf.toml"), "# moved-local-main\n")
+            .expect("write moved main");
+        run_cmd(tmp.path(), "jj", &["bookmark", "set", "main", "-r", "@"]);
+        assert_eq!(
+            committed_baseline_in(tmp.path(), None).as_deref(),
+            Some("# main-tip\n"),
+            "moving local main bookmark must still baseline against main@origin"
+        );
     }
 
     #[test]

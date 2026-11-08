@@ -278,38 +278,38 @@ fn target_above_wall_floor_or_zero_budget_fails() {
 
 #[test]
 fn a_derivation_must_be_one_non_empty_line() {
-    let empty = HAPPY
-        .replace("derivation = \"One external call plus the class margin.\"", "derivation = \"\"");
-    let errors = run(Case {
-        manifest: &empty,
-        surface: &["command:print"],
-        tests: &["tests/counts.rs::counts"],
-        baseline: None,
-        benches: &[("bench-a", 100)],
-    });
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("derivation") && error.contains("one non-empty line"))
-    );
-
-    let split = HAPPY.replace(
-        "derivation = \"One external call plus the class margin.\"",
-        "derivation = \"first\\nsecond\"",
-    );
-    let errors = run(Case {
-        manifest: &split,
-        surface: &["command:print"],
-        tests: &["tests/counts.rs::counts"],
-        baseline: None,
-        benches: &[("bench-a", 100)],
-    });
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("derivation") && error.contains("one non-empty line")),
-        "{errors:?}"
-    );
+    for (field, current) in [
+        ("id", "id = \"command:print\""),
+        ("class", "class = \"command\""),
+        ("fixture", "fixture = \"one file\""),
+        ("test", "test = \"tests/counts.rs::counts\""),
+        ("floor", "floor = \"max\""),
+        ("floor_reason", "floor_reason = \"Single benchmark bounds the operation.\""),
+        ("derivation", "derivation = \"One external call plus the class margin.\""),
+    ] {
+        for bad in ["\"\"", "\"first\\nsecond\"", "\"first\\rsecond\""] {
+            let edited = HAPPY.replace(current, &format!("{field} = {bad}"));
+            let errors = run(happy_manifest(&edited));
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains(field) && error.contains("one non-empty line")),
+                "{field} = {bad}: {errors:?}"
+            );
+        }
+    }
+    for optional in ["proposal", "removed"] {
+        for bad in ["\"\"", "\"first\\nsecond\"", "\"first\\rsecond\""] {
+            let edited = format!("{HAPPY}{optional} = {bad}\n");
+            let errors = run(happy_manifest(&edited));
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains(optional) && error.contains("one non-empty line")),
+                "{optional} = {bad}: {errors:?}"
+            );
+        }
+    }
 }
 
 #[test]
