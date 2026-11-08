@@ -20,7 +20,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use tempfile::TempDir;
 
-use branchdiff::app::{App, FrameContext};
+use branchdiff::app::{App, FrameContext, ViewMode};
 use branchdiff::diff::{DiffLine, FileDiff, LineSource};
 use branchdiff::input::{AppAction, handle_event};
 use branchdiff::message::{LoopAction, OpenTarget, RefreshTrigger, Repaint, UpdateResult};
@@ -124,94 +124,112 @@ fn keystrokes_reduce_and_render_without_spawning() {
         rendered += 1;
     }
     assert!(rendered > 0, "the manifest has no keystrokes");
-    for expected in [
-        "key:quit",
-        "key:copy-or-quit",
-        "key:force-repaint",
-        "key:resize",
-        "key:toggle-diff-base",
-        "key:open-editor",
-        "key:open-repo",
-        "key:run-recovery",
-        "key:toggle-reviewed",
-        "key:toggle-all-reviewed",
-        "key:next-file",
-        "key:prev-file",
-        "key:start-selection",
-        "key:update-selection",
-        "key:end-selection",
-    ] {
+    for op in manifest_ops().iter().filter(|op| op.class == "keystroke") {
+        if op.id.starts_with("key:search-") || skips_reducer(&op.id) {
+            continue;
+        }
         assert!(
-            recorded_effects.contains(expected),
-            "effect runner did not observe expected effect for {expected}"
+            recorded_effects.contains(&op.id),
+            "effect runner did not observe expected effect for {}",
+            op.id
         );
     }
 }
 
 fn record_effect(id: &str, app: &App, result: &UpdateResult, recorded: &mut BTreeSet<String>) {
+    let _ =
+        record_command_effect(id, app, result, recorded) || record_motion_effect(id, app, recorded);
+}
+
+fn record_command_effect(
+    id: &str,
+    app: &App,
+    result: &UpdateResult,
+    recorded: &mut BTreeSet<String>,
+) -> bool {
     match id {
         "key:quit" | "key:copy-or-quit" => {
             assert_eq!(result.loop_action, LoopAction::Quit, "{id}");
-            recorded.insert(id.to_string());
         }
         "key:force-repaint" => {
             assert_eq!(result.repaint, Repaint::Full, "{id}");
             assert!(result.needs_redraw, "{id}");
-            recorded.insert(id.to_string());
         }
         "key:resize" => {
             assert!(result.needs_redraw, "{id}");
-            recorded.insert(id.to_string());
         }
         "key:toggle-diff-base" => {
             assert_eq!(result.refresh, RefreshTrigger::Full, "{id}");
-            recorded.insert(id.to_string());
         }
         "key:open-editor" => {
             assert!(matches!(result.open_editor, Some(OpenTarget::File(_))), "{id}");
-            recorded.insert(id.to_string());
         }
         "key:open-repo" => {
             assert_eq!(result.open_editor, Some(OpenTarget::Repo), "{id}");
-            recorded.insert(id.to_string());
         }
         "key:run-recovery" => {
             assert!(result.trigger_recovery.is_some(), "{id}");
-            recorded.insert(id.to_string());
         }
         "key:toggle-reviewed" => {
             assert_eq!(app.view.reviewed_files.len(), 1, "{id}");
-            recorded.insert(id.to_string());
         }
         "key:toggle-all-reviewed" => {
             assert_eq!(app.view.reviewed_files.len(), 30, "{id}");
-            recorded.insert(id.to_string());
         }
+        "key:toggle-help" => {
+            assert!(app.view.show_help, "{id}");
+            assert!(result.needs_redraw, "{id}");
+        }
+        "key:open-search" => {
+            assert!(app.is_search_input_active(), "{id}");
+        }
+        _ => return false,
+    }
+    recorded.insert(id.to_string());
+    true
+}
+
+fn record_motion_effect(id: &str, app: &App, recorded: &mut BTreeSet<String>) -> bool {
+    match id {
         "key:next-file" => {
             assert!(app.view.scroll_offset > 100, "{id}");
-            recorded.insert(id.to_string());
         }
         "key:prev-file" => {
             assert!(app.view.scroll_offset < 100, "{id}");
-            recorded.insert(id.to_string());
+        }
+        "key:scroll-down" | "key:page-down" | "key:go-to-bottom" => {
+            assert!(app.view.scroll_offset > 100, "{id}");
+            assert!(app.needs_inline_spans(), "{id}");
+        }
+        "key:scroll-up" | "key:page-up" => {
+            assert!(app.view.scroll_offset < 100, "{id}");
+            assert!(app.needs_inline_spans(), "{id}");
+        }
+        "key:go-to-top" => {
+            assert_eq!(app.view.scroll_offset, 0, "{id}");
+            assert_eq!(app.view.sub_row, 0, "{id}");
+            assert!(app.needs_inline_spans(), "{id}");
+        }
+        "key:cycle-view-mode" => {
+            assert_eq!(app.view.view_mode, ViewMode::Context, "{id}");
+            assert!(app.needs_inline_spans(), "{id}");
         }
         "key:start-selection" => {
             assert!(app.view.selection.as_ref().is_some_and(|s| s.active), "{id}");
-            recorded.insert(id.to_string());
         }
         "key:update-selection" => {
             assert!(
                 app.view.selection.as_ref().is_some_and(|s| s.active && s.start != s.end),
                 "{id}"
             );
-            recorded.insert(id.to_string());
         }
         "key:end-selection" => {
             assert!(app.view.selection.as_ref().is_some_and(|s| !s.active), "{id}");
-            recorded.insert(id.to_string());
         }
-        _ => {}
+        _ => return false,
     }
+    recorded.insert(id.to_string());
+    true
 }
 
 fn manifest_ops() -> Vec<Op> {
@@ -554,6 +572,9 @@ fn prepare(files: &[FileDiff], id: &str) -> App {
             app.view.last_click = Some((Instant::now(), 10, 5, 1));
         }
     }
+    // A new app starts dirty. Clear it so a motion assertion sees the key set
+    // the flag, rather than the constructor.
+    app.clear_needs_inline_spans();
     app
 }
 

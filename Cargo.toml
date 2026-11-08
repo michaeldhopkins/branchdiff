@@ -43,8 +43,10 @@ libc = "0.2"
 
 [dev-dependencies]
 proptest = "1.5"
-# Oracle for the --files JSON output: it must parse back to what was written.
+# serde: the --files JSON oracle, and (with toml) the benches/baselines.toml reader.
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "1"
 # syn + proc-macro2: tests/file_length.rs parses the crate's own source to leave tests out of
 # each file's count; a text scan is fooled by strings and comments. `span-locations` gives it
 # exact line spans.

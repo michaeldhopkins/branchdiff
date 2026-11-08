@@ -521,7 +521,8 @@ fn baseline_medians_ratchet_rejects_raised_or_missing_benches_and_allows_documen
     let mut removed_errors = Vec::new();
     check_baseline_medians(documented_removal, Some(base_toml), &mut removed_errors);
     assert!(removed_errors.is_empty(), "documented removal must pass: {removed_errors:?}");
-    assert!(!recorded_benches(documented_removal).contains_key("refresh/old"));
+    let active = recorded_benches(documented_removal).expect("documented removal parses");
+    assert!(!active.contains_key("refresh/old"));
 
     // Empty `removed = ""` or combining `removed` with `ref_median_ns` must fail.
     let empty_removed = concat!(
@@ -554,9 +555,13 @@ fn baseline_medians_ratchet_rejects_raised_or_missing_benches_and_allows_documen
         "[[bench]]\nid = \"refresh/non_colocated/50f_10c\"\nref_median_ns = 73175330\n",
         "[[bench]]\nid = \"refresh/old\"\nremoved = \"reason\"\nref_median_ns = 1000000\n",
     );
+    let removed_first_errors =
+        recorded_benches(removed_first).expect_err("a pin beside removed is an error");
     assert!(
-        !recorded_benches(removed_first).contains_key("refresh/old"),
-        "removed bench must stay excluded even when ref_median_ns follows removed"
+        removed_first_errors
+            .iter()
+            .any(|err| err.contains("refresh/old") && err.contains("sets both")),
+        "a pin after removed must fail closed, not drop the bench: {removed_first_errors:?}"
     );
 
     // Raising or dropping max_blocks, max_bytes, or max_bytes_x86_64 against the baseline must fail.
@@ -758,11 +763,29 @@ fn happy_manifest<'a>(manifest: &'a str) -> Case<'a> {
 
 #[test]
 fn recorded_benches_parse_ids_and_ceiling_medians() {
-    let text =
+    let late = "[[bench]]\nref_median_ns = 5000\nid = \"late\"\n";
+    let benches = recorded_benches(late).expect("field order must not matter");
+    assert_eq!(benches.get("late"), Some(&5));
+
+    let tight = "[[bench]]\nid=\"spaced\"\nref_median_ns=1500\n";
+    let benches = recorded_benches(tight).expect("spaces around = are optional");
+    assert_eq!(benches.get("spaced"), Some(&2));
+
+    let commented = "[[bench]]\nid = \"c\" # name\nref_median_ns = 1000 # ns\n";
+    let benches = recorded_benches(commented).expect("inline comments parse");
+    assert_eq!(benches.get("c"), Some(&1));
+
+    let unknown =
         "# id = \"nope\"\n[[bench]]\nidentity = \"nope\"\nid = \"real\"\nref_median_ns = 3513\n";
-    let benches = recorded_benches(text);
-    assert_eq!(benches.get("real"), Some(&4));
-    assert_eq!(benches.len(), 1);
+    let errors = recorded_benches(unknown).expect_err("unknown field must not be dropped");
+    assert!(errors.iter().any(|err| err.contains("unknown field")), "{errors:?}");
+
+    let duplicate = concat!(
+        "[[bench]]\nid = \"a\"\nref_median_ns = 1000\n",
+        "[[bench]]\nid = \"a\"\nref_median_ns = 2000\n",
+    );
+    let errors = recorded_benches(duplicate).expect_err("duplicate id");
+    assert!(errors.iter().any(|err| err.contains("more than once")), "{errors:?}");
 }
 
 #[test]
@@ -882,15 +905,19 @@ fn max_case(benches: &[(&str, u64)], alternatives: &str, floor: u64) -> Vec<Stri
 }
 
 #[test]
-fn a_max_floor_over_several_benches_needs_the_others_negligible_or_declared_alternatives() {
-    // 4_000 us beside 40_000 us is exactly the 10% allowance.
-    assert!(max_case(&[("bench-a", 40_000), ("bench-b", 4_000)], "", 40_000).is_empty());
-    let errors = max_case(&[("bench-a", 40_000), ("bench-b", 4_001)], "", 40_000);
+fn a_max_floor_keeps_every_sequential_stage() {
+    // A smaller bench still runs. No percentage drops it.
+    let dropped = max_case(&[("bench-a", 40_000), ("bench-b", 4_000)], "", 40_000);
     assert!(
-        errors.iter().any(|error| error.contains("floor = \"max\"")
-            && error.contains("bench-a")
-            && error.contains("alternatives")),
-        "{errors:?}"
+        dropped
+            .iter()
+            .any(|error| error.contains("bench-b") && error.contains("use floor = \"sum\"")),
+        "{dropped:?}"
+    );
+    let also_dropped = max_case(&[("bench-a", 40_000), ("bench-b", 4_001)], "", 40_000);
+    assert!(
+        also_dropped.iter().any(|error| error.contains("use floor = \"sum\"")),
+        "{also_dropped:?}"
     );
     let both = [("bench-a", 40_000), ("bench-b", 30_000)];
     assert!(max_case(&both, "alternatives = [\"bench-b\"]\n", 40_000).is_empty());
@@ -901,11 +928,19 @@ fn a_max_floor_over_several_benches_needs_the_others_negligible_or_declared_alte
 }
 
 #[test]
-fn alternatives_need_a_max_floor_and_cannot_grow_against_the_baseline() {
-    let with_sum =
-        HAPPY.replace("floor = \"max\"", "floor = \"sum\"") + "alternatives = [\"bench-a\"]\n";
-    let errors = run(happy_manifest(&with_sum));
+fn alternatives_replace_a_stage_and_cannot_grow_against_a_measured_baseline() {
+    let odd =
+        HAPPY.replace("floor = \"max\"", "floor = \"min\"") + "alternatives = [\"bench-a\"]\n";
+    let errors = run(happy_manifest(&odd));
     assert!(errors.iter().any(|error| error.contains("alternatives without floor")), "{errors:?}");
+
+    let only =
+        HAPPY.replace("floor = \"max\"", "floor = \"sum\"") + "alternatives = [\"bench-a\"]\n";
+    let errors = run(happy_manifest(&only));
+    assert!(
+        errors.iter().any(|error| error.contains("only alternatives") || error.contains("cannot")),
+        "{errors:?}"
+    );
 
     let two = HAPPY.replace("benches = [\"bench-a\"]", "benches = [\"bench-a\", \"bench-b\"]");
     let baseline = two.clone();
@@ -926,4 +961,146 @@ fn alternatives_need_a_max_floor_and_cannot_grow_against_the_baseline() {
         benches: &[("bench-a", 40_000), ("bench-b", 30_000)],
     });
     assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn paying_off_an_owed_op_may_introduce_alternatives() {
+    let owed = r#"
+[[op]]
+id = "command:print"
+class = "command"
+fixture = "one file"
+test = "tests/counts.rs::counts"
+processes = 2
+owed = true
+wall_floor_us = 40000
+target_us = 40000
+derivation = "Owed until measured."
+"#;
+    let paid = r#"
+[[op]]
+id = "command:print"
+class = "command"
+fixture = "one file"
+test = "tests/counts.rs::counts"
+processes = 2
+benches = ["op/1k", "op/10k"]
+floor = "max"
+alternatives = ["op/1k"]
+floor_reason = "The 1k fixture replaces the 10k fixture."
+wall_floor_us = 40000
+target_us = 40000
+derivation = "Measured."
+"#;
+    let errors = run(Case {
+        manifest: paid,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(owed),
+        benches: &[("op/1k", 10_000), ("op/10k", 40_000)],
+    });
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let measured = paid.replace("alternatives = [\"op/1k\"]\n", "");
+    let errors = run(Case {
+        manifest: paid,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(&measured),
+        benches: &[("op/1k", 10_000), ("op/10k", 40_000)],
+    });
+    assert!(errors.iter().any(|error| error.contains("adds alternative `op/1k`")), "{errors:?}");
+}
+
+#[test]
+fn a_single_bench_cannot_be_its_own_alternative() {
+    let errors = max_case(&[("bench-a", 40_000)], "alternatives = [\"bench-a\"]\n", 40_000);
+    assert!(errors.iter().any(|error| error.contains("cannot")), "{errors:?}");
+}
+
+#[test]
+fn tied_dominant_benches_fail_whichever_side_is_the_alternative() {
+    let tied = [("bench-a", 40_000), ("bench-b", 40_000)];
+    for alternative in ["bench-a", "bench-b"] {
+        let errors = max_case(&tied, &format!("alternatives = [\"{alternative}\"]\n"), 40_000);
+        assert!(
+            errors.iter().any(|error| error.contains("ties")),
+            "alternative `{alternative}` must fail: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_alternatives_are_rejected() {
+    let errors = max_case(
+        &[("bench-a", 40_000), ("bench-b", 30_000)],
+        "alternatives = [\"bench-b\", \"bench-b\"]\n",
+        40_000,
+    );
+    assert!(errors.iter().any(|error| error.contains("more than once")), "{errors:?}");
+}
+
+#[test]
+fn a_sum_floor_adds_stages_and_rejects_a_larger_hidden_fixture() {
+    let summed = r#"
+[[op]]
+id = "command:files"
+class = "command"
+fixture = "500 files"
+test = "tests/counts.rs::counts"
+processes = 5
+benches = ["bench-a", "bench-b", "bench-c"]
+floor = "sum"
+alternatives = ["bench-c"]
+floor_reason = "bench-a and bench-b run sequentially; bench-c replaces bench-b."
+wall_floor_us = 40000
+target_us = 40000
+derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
+"#;
+    let ok = run(Case {
+        manifest: summed,
+        surface: &["command:files"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 30_000), ("bench-b", 10_000), ("bench-c", 1_000)],
+    });
+    assert!(ok.is_empty(), "{ok:?}");
+
+    let dropped_small = summed.replace("wall_floor_us = 40000", "wall_floor_us = 30000");
+    let errors = run(Case {
+        manifest: &dropped_small,
+        surface: &["command:files"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 30_000), ("bench-b", 10_000), ("bench-c", 1_000)],
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("does not match") && error.contains("40000")),
+        "{errors:?}"
+    );
+
+    let hidden = run(Case {
+        manifest: summed,
+        surface: &["command:files"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 30_000), ("bench-b", 10_000), ("bench-c", 20_000)],
+    });
+    assert!(
+        hidden.iter().any(|error| error.contains("bench-c") && error.contains("larger fixture")),
+        "{hidden:?}"
+    );
+
+    // Equal to the smallest stage is still not a smaller fixture.
+    let tied = run(Case {
+        manifest: summed,
+        surface: &["command:files"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 30_000), ("bench-b", 10_000), ("bench-c", 10_000)],
+    });
+    assert!(
+        tied.iter().any(|error| error.contains("bench-c") && error.contains("not smaller")),
+        "{tied:?}"
+    );
 }

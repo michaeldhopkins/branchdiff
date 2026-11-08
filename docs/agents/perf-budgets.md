@@ -8,14 +8,18 @@ Process-count floors (`processes`), allocation pins (`max_blocks`, `max_bytes`, 
 
 A keystroke that has its own bench must bind it: `keystrokes_with_their_own_bench_are_bound_to_it` (`tests/perf_rules.rs`) fails when a `[[bench]]` named `navigation/<key>` exists but the key's op does not list it in `benches`.
 
-## `floor = "max"` and `alternatives`
+## Floors
 
-A max floor over several benches discards every bench but the largest. That is honest only when the others are negligible or are other fixtures of the same stage:
+A floor sums every stage that runs in sequence. `alternatives` are only other fixtures of a stage already counted: they replace that stage and are not added.
 
-- the other benches together add at most 10% of the dominant bench, or
-- the op declares them in `alternatives = [...]`: benches that are alternative fixtures (50-file against 500-file repo), not stages that run one after another.
+- `floor = "sum"` is the sum of the benches that are not in `alternatives`.
+- `floor = "max"` is one stage. Every other bench is an alternative. No percentage drops a bench.
+- An alternative cannot tie the largest bench. Equal stages are summed.
+- Duplicate alternative names are rejected, and every alternative must be one of the op's benches.
+- On a sum, an alternative must be strictly smaller than every stage that runs. A larger fixture belongs in the sum.
+- Paying off an owed operation may introduce alternatives. A measured operation may not add one.
 
-Rules (`check_max_floor` in `tests/perf_rules/guard.rs`): `alternatives` needs `floor = "max"`; each entry must be one of the op's `benches`; the dominant bench can never be an alternative; and the list may not grow against the baseline, so a regression cannot be hidden by declaring its bench an alternative. If the stages run in sequence, use `floor = "sum"`.
+The checks are `check_stage_floor` in `tests/perf_rules/guard.rs`.
 
 ## Wall medians are checked in CI
 

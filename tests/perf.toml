@@ -18,7 +18,8 @@ test = "tests/perf_rules/counts.rs::command_process_counts_match_their_floors"
 processes = 61
 benches = ["update/handle_tick", "refresh/colocated/500f_25c"]
 floor = "max"
-floor_reason = "refresh/colocated/500f_25c dominates startup while update/handle_tick is an independent TUI tick microbenchmark."
+alternatives = ["update/handle_tick"]
+floor_reason = "Startup and --benchmark load the diff and do not run the idle TUI tick, so update/handle_tick is not a sequential stage and is not added."
 wall_floor_us = 131542
 target_us = 50000
 derivation = "Startup loads the same diff as print; one batched jj log plus the first frame fits in the 50 ms command budget. Floor is the max across refresh/colocated/500f_25c (131542 us) and update/handle_tick (1 us). Measured through --benchmark 1 because the interactive loop does not exit."
@@ -180,12 +181,13 @@ fixture = "500 files, 25 changed, 5 lines each; scale of refresh/colocated/500f_
 test = "tests/perf_rules/counts.rs::command_process_counts_match_their_floors"
 processes = 61
 benches = ["html/render/500_lines", "html/render/200_lines", "refresh/colocated/500f_25c"]
-floor = "max"
-floor_reason = "html/render/500_lines and html/render/200_lines are alternative fixture sizes dominated by refresh/colocated/500f_25c."
-wall_floor_us = 131542
+floor = "sum"
+alternatives = ["html/render/200_lines"]
+floor_reason = "load_comparison_and_refresh runs, then html::render of the 500-line page. html/render/200_lines is a smaller fixture of that same render and is not added."
+wall_floor_us = 136950
 target_us = 50000
-derivation = "Main content is the diff; one batched jj log at 40 ms plus the render is the unavoidable work, and the target stays inside the 100 ms page cap. Floor is the max across refresh/colocated/500f_25c (131542 us), html/render/500_lines (5408 us), and html/render/200_lines (2820 us). Measured as CLI output from --html."
-proposal = "Rendering the 500-line and 200-line HTML documents with syntax highlighting takes 5.4 ms (html/render/500_lines) and 2.8 ms (html/render/200_lines), while loading the 25 changed files via load_comparison_and_refresh takes 131.5 ms across 61 subprocesses (50 per-file jj file show calls plus 11 jj/git metadata calls), pushing the bench floor to 131.5 ms (above the 100 ms page cap). Batch the 50 base and parent blob reads in process_jj_file into two git cat-file --batch streams and fold the 8 jj log revision/bookmark/label queries into one templated call, reducing spawns from 61 to 6 and total --html generation time from ~132 ms to ~28 ms (~104 ms saved, inside the 100 ms page cap and 50 ms target)."
+derivation = "Main content is the diff; one batched jj log at 40 ms plus the render is the unavoidable work, and the target stays inside the 100 ms page cap. Floor is refresh/colocated/500f_25c (131542 us) plus html/render/500_lines (5408 us). html/render/200_lines (2820 us) is a smaller fixture of the same render and is not added. Measured as CLI output from --html."
+proposal = "Rendering the live HTML document with syntax highlighting takes 5.4 ms (html/render/500_lines; the 200-line fixture is 2.8 ms and is not a second render), while loading the 25 changed files via load_comparison_and_refresh takes 131.5 ms across 61 subprocesses (50 per-file jj file show calls plus 11 jj/git metadata calls), pushing the bench floor to 137.0 ms (above the 100 ms page cap). Batch the 50 base and parent blob reads in process_jj_file into two git cat-file --batch streams and fold the 8 jj log revision/bookmark/label queries into one templated call, reducing spawns from 61 to 6 and total --html generation time from ~137 ms to ~28 ms (~109 ms saved, inside the 100 ms page cap and 50 ms target)."
 
 [[op]]
 id = "page:html-static"
@@ -263,12 +265,12 @@ fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_c
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
 benches = ["navigation/scroll_down_10", "update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines", "inline_spans/ensure_visible_1200_candidates"]
-floor = "max"
-alternatives = ["update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines", "inline_spans/ensure_visible_1200_candidates"]
-floor_reason = "Lists alternative fixture sizes (1k vs 10k lines) and sub-step microbenchmarks whose composite is bounded by navigation/scroll_down_10."
-wall_floor_us = 98
-target_us = 98
-derivation = "Same benches as scroll-down; the ceiling of navigation/scroll_down_10 (97505 ns on 2026-10-18) is 98 us, under the 8 ms cap."
+floor = "sum"
+alternatives = ["update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines"]
+floor_reason = "scroll marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw. frame_context sizes and handle_scroll_input replace the scroll bench."
+wall_floor_us = 178
+target_us = 178
+derivation = "Same stages as scroll-down: navigation/scroll_down_10 (97505 ns, 98 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 178 us, under the 8 ms cap."
 
 [[op]]
 id = "key:scroll-down"
@@ -277,12 +279,12 @@ fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_c
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
 benches = ["navigation/scroll_down_10", "update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines", "inline_spans/ensure_visible_1200_candidates"]
-floor = "max"
-alternatives = ["update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines", "inline_spans/ensure_visible_1200_candidates"]
-floor_reason = "navigation/scroll_down_10 already includes scroll state update and frame context build across the listed sub-benches and fixture sizes."
-wall_floor_us = 98
-target_us = 98
-derivation = "Ceiling of navigation/scroll_down_10 (97505 ns on 2026-10-18) is 98 us, and the keystroke cannot be cheaper than the frame it builds."
+floor = "sum"
+alternatives = ["update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines"]
+floor_reason = "scroll_down marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw. frame_context sizes and handle_scroll_input replace the scroll bench."
+wall_floor_us = 178
+target_us = 178
+derivation = "navigation/scroll_down_10 (97505 ns, 98 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 178 us, under the 8 ms cap."
 
 [[op]]
 id = "key:next-file"

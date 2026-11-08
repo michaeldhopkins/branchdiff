@@ -33,7 +33,7 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
     assert!(!tests.is_empty(), "collected test names must not be empty");
     let bench_text =
         fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
-    let benches = guard::recorded_benches(&bench_text);
+    let benches = guard::must_recorded_benches(&bench_text);
     let baseline = surface::committed_baseline();
     let baseline_bench_text = surface::committed_baseline_benches();
     let mut errors = guard::check(&guard::Input {
@@ -96,7 +96,7 @@ fn fingerprint_speedup_to_40ms_without_proposal_passes_and_10_percent_above_benc
     guard::collect_test_names(&root.join("src"), &mut tests);
     let bench_text =
         fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
-    let baseline_benches = guard::recorded_benches(&bench_text);
+    let baseline_benches = guard::must_recorded_benches(&bench_text);
     let mut benches = baseline_benches.clone();
     benches.insert("refresh/fingerprint/500f_25c".to_string(), 40_000);
 
@@ -146,13 +146,13 @@ fn raising_non_colocated_bench_median_or_deleting_files_bench_from_derivation_fa
     guard::collect_test_names(&root.join("src"), &mut tests);
     let bench_text =
         fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
-    let benches = guard::recorded_benches(&bench_text);
+    let benches = guard::must_recorded_benches(&bench_text);
 
     // 1. Raising refresh/non_colocated/50f_10c ref_median_ns 73175330 -> 130000000 must fail.
     let raised_bench_text =
         bench_text.replace("ref_median_ns = 73175330", "ref_median_ns = 130000000");
     assert_ne!(raised_bench_text, bench_text, "refresh/non_colocated/50f_10c median must exist");
-    let raised_benches = guard::recorded_benches(&raised_bench_text);
+    let raised_benches = guard::must_recorded_benches(&raised_bench_text);
     let mut raised_errors = guard::check(&guard::Input {
         manifest: &manifest,
         surface: &surface,

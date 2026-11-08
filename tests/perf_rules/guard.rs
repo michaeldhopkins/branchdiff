@@ -9,6 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+#[path = "../../benches/support/baselines.rs"]
+pub mod baselines;
+
 /// One CLI command, in microseconds.
 pub const COMMAND_US: u64 = 50_000;
 /// Keystroke, to the next paint.
@@ -97,183 +100,106 @@ pub fn check(input: &Input<'_>) -> Vec<String> {
 }
 
 /// Active `[[bench]]` records mapped to `ref_median_ns` in nanoseconds.
-/// Entries marked `removed = "<reason>"` are excluded.
-pub fn recorded_medians_ns(text: &str) -> BTreeMap<String, u64> {
-    let mut benches = BTreeMap::new();
-    let mut current_id: Option<String> = None;
-    let mut current_removed = false;
-    for raw in text.lines() {
-        let line = strip_comment(raw).trim();
-        if line == "[[bench]]" {
-            current_id = None;
-            current_removed = false;
-            continue;
-        }
-        if let Some(id) = id_assignment(line) {
-            if !current_removed {
-                benches.entry(id.clone()).or_insert(0);
-            }
-            current_id = Some(id);
-            continue;
-        }
-        if key_assignment(line, "removed").is_some() {
-            current_removed = true;
-            if let Some(id) = current_id.as_ref() {
-                benches.remove(id);
-            }
-            continue;
-        }
-        if let Some(ns) = number_assignment(line, "ref_median_ns")
-            && !current_removed
-            && let Some(id) = current_id.as_ref()
-        {
-            benches.insert(id.clone(), ns);
-        }
-    }
-    benches
+/// Entries marked `removed = "<reason>"` are excluded. A file that does not
+/// parse is an error: returning an empty map would drop every bench.
+pub fn recorded_medians_ns(text: &str) -> Result<BTreeMap<String, u64>, Vec<String>> {
+    let records = baselines::parse(text)?;
+    Ok(records
+        .into_iter()
+        .filter(|record| record.removed.is_none())
+        .filter_map(|record| record.ref_median_ns.map(|ns| (record.id, ns)))
+        .collect())
 }
 
 /// `[[bench]]` records mapped to `ref_median_ns.div_ceil(1_000)` in microseconds.
-pub fn recorded_benches(text: &str) -> BTreeMap<String, u64> {
-    recorded_medians_ns(text).into_iter().map(|(id, ns)| (id, ns.div_ceil(1_000))).collect()
+pub fn recorded_benches(text: &str) -> Result<BTreeMap<String, u64>, Vec<String>> {
+    Ok(recorded_medians_ns(text)?.into_iter().map(|(id, ns)| (id, ns.div_ceil(1_000))).collect())
 }
 
-/// Fail when any `ref_median_ns`, `max_blocks`, `max_bytes`, or
-/// `max_bytes_x86_64` in `benches/baselines.toml` rises above or disappears
-/// without `removed = "<reason>"` from the baseline revision's copy.
+/// Bench ceilings for a file that must parse. Callers that want the errors
+/// as data use [`recorded_benches`].
+pub fn must_recorded_benches(text: &str) -> BTreeMap<String, u64> {
+    match recorded_benches(text) {
+        Ok(benches) => benches,
+        Err(errors) => panic!("{}", errors.join("\n")),
+    }
+}
+
+/// Fail when `benches/baselines.toml` fails validation or when any
+/// `ref_median_ns`, `max_blocks`, `max_bytes`, or `max_bytes_x86_64` rises
+/// above or disappears without `removed = "<reason>"` from the baseline
+/// revision's copy.
 pub fn check_baseline_medians(
     live_text: &str,
     baseline_text: Option<&str>,
     errors: &mut Vec<String>,
 ) {
-    let removed = collect_removed_benches(live_text, errors);
+    let live_records = match baselines::parse(live_text) {
+        Ok(records) => records,
+        Err(parse_errors) => {
+            errors.extend(parse_errors);
+            errors.sort();
+            errors.dedup();
+            return;
+        }
+    };
     let Some(baseline_text) = baseline_text else {
         errors.sort();
         errors.dedup();
         return;
     };
-    let live = recorded_medians_ns(live_text);
-    let prior = recorded_medians_ns(baseline_text);
-    for (bench, before_ns) in prior {
-        match live.get(&bench) {
-            Some(&live_ns) if live_ns > before_ns => {
-                errors.push(format!(
-                    "bench `{bench}` ref_median_ns {live_ns} is looser than the baseline {before_ns}"
-                ));
-            }
-            None if !removed.contains(&bench) => {
-                errors.push(format!("bench `{bench}` was in the baseline but is missing"));
-            }
-            _ => {}
+    let prior_records = match baselines::parse(baseline_text) {
+        Ok(records) => records,
+        Err(parse_errors) => {
+            errors.push(format!("baseline benches: {}", parse_errors.join("; ")));
+            errors.sort();
+            errors.dedup();
+            return;
         }
-    }
-    for key in ["max_blocks", "max_bytes", "max_bytes_x86_64"] {
-        let live_pins = recorded_pin_field(live_text, key);
-        let prior_pins = recorded_pin_field(baseline_text, key);
-        for (bench, before_val) in prior_pins {
-            if removed.contains(&bench) || !live.contains_key(&bench) {
-                continue;
-            }
-            match live_pins.get(&bench) {
-                Some(&live_val) if live_val > before_val => {
-                    errors.push(format!(
-                        "bench `{bench}` {key} {live_val} is looser than the baseline {before_val}"
-                    ));
-                }
-                None => {
-                    errors.push(format!("bench `{bench}` dropped {key} from the baseline"));
-                }
-                _ => {}
-            }
+    };
+    let live_by_id: BTreeMap<&str, &baselines::BenchRecord> =
+        live_records.iter().map(|r| (r.id.as_str(), r)).collect();
+    for before in prior_records.iter().filter(|r| r.removed.is_none()) {
+        let bench = before.id.as_str();
+        let Some(live) = live_by_id.get(bench) else {
+            errors.push(format!("bench `{bench}` was in the baseline but is missing"));
+            continue;
+        };
+        if live.removed.is_some() {
+            continue;
         }
+        check_pin_field(bench, "ref_median_ns", live.ref_median_ns, before.ref_median_ns, errors);
+        check_pin_field(bench, "max_blocks", live.max_blocks, before.max_blocks, errors);
+        check_pin_field(bench, "max_bytes", live.max_bytes, before.max_bytes, errors);
+        check_pin_field(
+            bench, "max_bytes_x86_64", live.max_bytes_x86_64, before.max_bytes_x86_64, errors,
+        );
     }
     errors.sort();
     errors.dedup();
 }
 
-fn recorded_pin_field(text: &str, key: &str) -> BTreeMap<String, u64> {
-    let mut pins = BTreeMap::new();
-    let mut current_id: Option<String> = None;
-    let mut current_removed = false;
-    for raw in text.lines() {
-        let line = strip_comment(raw).trim();
-        if line == "[[bench]]" {
-            current_id = None;
-            current_removed = false;
-            continue;
+fn check_pin_field(
+    bench: &str,
+    key: &str,
+    live: Option<u64>,
+    before: Option<u64>,
+    errors: &mut Vec<String>,
+) {
+    let Some(before_val) = before else {
+        return;
+    };
+    match live {
+        Some(live_val) if live_val > before_val => {
+            errors.push(format!(
+                "bench `{bench}` {key} {live_val} is looser than the baseline {before_val}"
+            ));
         }
-        if let Some(id) = id_assignment(line) {
-            current_id = Some(id);
-            continue;
+        None => {
+            errors.push(format!("bench `{bench}` dropped {key} from the baseline"));
         }
-        if key_assignment(line, "removed").is_some() {
-            current_removed = true;
-            if let Some(id) = current_id.as_ref() {
-                pins.remove(id);
-            }
-            continue;
-        }
-        if let Some(val) = number_assignment(line, key)
-            && !current_removed
-            && let Some(id) = current_id.as_ref()
-        {
-            pins.insert(id.clone(), val);
-        }
+        _ => {}
     }
-    pins
-}
-
-fn collect_removed_benches(text: &str, errors: &mut Vec<String>) -> BTreeSet<String> {
-    let mut removed = BTreeSet::new();
-    let mut current_id: Option<String> = None;
-    let mut has_pin = false;
-    let mut has_removed = false;
-    for raw in text.lines() {
-        let line = strip_comment(raw).trim();
-        if line == "[[bench]]" {
-            current_id = None;
-            has_pin = false;
-            has_removed = false;
-            continue;
-        }
-        if let Some(id) = id_assignment(line) {
-            current_id = Some(id);
-            continue;
-        }
-        let is_pin = ["ref_median_ns", "max_blocks", "max_bytes", "max_bytes_x86_64"]
-            .iter()
-            .any(|key| number_assignment(line, key).is_some());
-        if is_pin && let Some(id) = current_id.as_ref() {
-            has_pin = true;
-            if has_removed {
-                errors.push(format!("bench `{id}` sets both ref_median_ns and removed"));
-                removed.remove(id);
-            }
-            continue;
-        }
-        if let Some(raw_val) = key_assignment(line, "removed")
-            && let Some(id) = current_id.as_ref()
-        {
-            has_removed = true;
-            match parse_string(raw_val, 0) {
-                Ok(reason)
-                    if !reason.trim().is_empty()
-                        && !reason.contains('\n')
-                        && !reason.contains('\r') =>
-                {
-                    if has_pin {
-                        errors.push(format!("bench `{id}` sets both ref_median_ns and removed"));
-                    } else {
-                        removed.insert(id.clone());
-                    }
-                }
-                _ => {
-                    errors.push(format!("bench `{id}` removed must be one non-empty line"));
-                }
-            }
-        }
-    }
-    removed
 }
 
 /// Record every `#[test]` function under `dir` as `<file.rs>::<name>`.
@@ -733,13 +659,7 @@ fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<S
             named.insert(bench.as_str());
         }
         if all_known && matches!(op.floor.as_str(), "sum" | "max") {
-            let expected_floor: u64 = match op.floor.as_str() {
-                "sum" => op.benches.iter().filter_map(|b| benches.get(b).copied()).sum(),
-                "max" => {
-                    op.benches.iter().filter_map(|b| benches.get(b).copied()).max().unwrap_or(0)
-                }
-                _ => 0,
-            };
+            let expected_floor = expected_floor(op, benches);
             if op.wall_floor_us != expected_floor {
                 errors.push(format!(
                     "operation `{}` wall_floor_us {} does not match {} bench floor {expected_floor}",
@@ -747,7 +667,7 @@ fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<S
                 ));
             }
         }
-        check_max_floor(op, benches, errors);
+        check_stage_floor(op, benches, errors);
     }
     for bench in benches.keys() {
         if !named.contains(bench.as_str()) {
@@ -756,23 +676,49 @@ fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<S
     }
 }
 
-/// Extra benches an op's `max` floor may carry before a `sum` would be the
-/// honest floor, as a share of the dominant bench (percent).
-const MAX_NEGLIGIBLE_PERCENT: u64 = 10;
+fn is_alternative(op: &Op, bench: &str) -> bool {
+    op.alternatives.iter().any(|alternative| alternative == bench)
+}
 
-/// `floor = "max"` over several benches discards every bench but the largest.
-/// That is honest only when the others are measurably negligible next to it
-/// (their sum within `MAX_NEGLIGIBLE_PERCENT` of the dominant) or declared in
-/// `alternatives`: other fixtures of the same stage, never the dominant one.
-fn check_max_floor(op: &Op, benches: &BTreeMap<String, u64>, errors: &mut Vec<String>) {
-    if op.floor != "max" {
+/// Stages that run, in manifest order. An `alternatives` entry replaces one of
+/// these and is not included.
+fn stages(op: &Op) -> impl Iterator<Item = &String> {
+    op.benches.iter().filter(|bench| !is_alternative(op, bench))
+}
+
+/// `sum` adds every stage that runs. `max` is the one-stage case: the floor is
+/// the largest bench, and every other bench is an alternative.
+fn expected_floor(op: &Op, benches: &BTreeMap<String, u64>) -> u64 {
+    match op.floor.as_str() {
+        "sum" => stages(op).filter_map(|bench| benches.get(bench)).copied().sum(),
+        "max" => {
+            op.benches.iter().filter_map(|bench| benches.get(bench)).copied().max().unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+/// A floor sums every stage that runs in sequence. `alternatives` are only
+/// stages that replace each other: another fixture of a stage already counted,
+/// never the bench that sets the floor, and never a second stage that also runs.
+fn check_stage_floor(op: &Op, benches: &BTreeMap<String, u64>, errors: &mut Vec<String>) {
+    if !matches!(op.floor.as_str(), "sum" | "max") {
         if !op.alternatives.is_empty() {
-            errors
-                .push(format!("operation `{}` lists alternatives without floor = \"max\"", op.id));
+            errors.push(format!(
+                "operation `{}` lists alternatives without floor = \"sum\" or \"max\"",
+                op.id
+            ));
         }
         return;
     }
+    let mut seen_alternatives = BTreeSet::new();
     for alternative in &op.alternatives {
+        if !seen_alternatives.insert(alternative.as_str()) {
+            errors.push(format!(
+                "operation `{}` lists alternative `{alternative}` more than once",
+                op.id
+            ));
+        }
         if !op.benches.contains(alternative) {
             errors.push(format!(
                 "operation `{}` alternative `{alternative}` is not one of its benches",
@@ -780,30 +726,62 @@ fn check_max_floor(op: &Op, benches: &BTreeMap<String, u64>, errors: &mut Vec<St
             ));
         }
     }
-    let values: Vec<(&String, u64)> =
-        op.benches.iter().filter_map(|b| benches.get(b).map(|v| (b, *v))).collect();
-    if values.len() != op.benches.len() || values.len() < 2 {
-        return;
-    }
-    let (dominant, dominant_us) =
-        values.iter().copied().max_by_key(|(_, v)| *v).expect("two or more benches");
-    if op.alternatives.contains(dominant) {
-        errors.push(format!(
-            "operation `{}` alternative `{dominant}` sets the max floor; an alternative cannot",
-            op.id
-        ));
-        return;
-    }
-    let rest: u64 = values
+    let values: Vec<(&str, u64)> = op
+        .benches
         .iter()
-        .filter(|(b, _)| *b != dominant && !op.alternatives.contains(*b))
-        .map(|(_, v)| *v)
-        .sum();
-    if rest * 100 > dominant_us * MAX_NEGLIGIBLE_PERCENT {
-        errors.push(format!(
-            "operation `{}` uses floor = \"max\" but its other benches add {rest} us to `{dominant}` ({dominant_us} us): use \"sum\" or declare the alternative fixtures in `alternatives`",
-            op.id
-        ));
+        .filter_map(|bench| benches.get(bench).map(|value| (bench.as_str(), *value)))
+        .collect();
+    if values.len() != op.benches.len() || values.is_empty() {
+        return;
+    }
+    let max_us = values.iter().map(|(_, value)| *value).max().expect("at least one bench");
+    let at_max: Vec<&str> =
+        values.iter().filter(|(_, value)| *value == max_us).map(|(name, _)| *name).collect();
+    for name in &at_max {
+        if is_alternative(op, name) {
+            errors.push(format!(
+                "operation `{}` alternative `{name}` sets the max floor; an alternative cannot",
+                op.id
+            ));
+        }
+    }
+    if op.floor == "max" {
+        if at_max.len() != 1 {
+            errors.push(format!(
+                "operation `{}` floor = \"max\" ties at {max_us} us between {}; equal stages are summed",
+                op.id,
+                at_max.join(", ")
+            ));
+        }
+        if let Some(dominant) = at_max.first().copied() {
+            for (name, _) in &values {
+                if *name != dominant && !is_alternative(op, name) {
+                    errors.push(format!(
+                        "operation `{}` bench `{name}` runs in sequence with the max floor; use floor = \"sum\"",
+                        op.id
+                    ));
+                }
+            }
+        }
+        return;
+    }
+    let stage_values: Vec<u64> = values
+        .iter()
+        .filter(|(name, _)| !is_alternative(op, name))
+        .map(|(_, value)| *value)
+        .collect();
+    if stage_values.is_empty() {
+        errors.push(format!("operation `{}` floor = \"sum\" lists only alternatives", op.id));
+        return;
+    }
+    let smallest = stage_values.iter().copied().min().expect("at least one stage");
+    for (name, value) in &values {
+        if is_alternative(op, name) && *value >= smallest {
+            errors.push(format!(
+                "operation `{}` alternative `{name}` ({value} us) is not smaller than every stage that runs (smallest {smallest} us); a larger fixture belongs in the sum",
+                op.id
+            ));
+        }
     }
 }
 
@@ -834,12 +812,16 @@ fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
                 op.id
             ));
         }
-        for alternative in &op.alternatives {
-            if !before.alternatives.contains(alternative) {
-                errors.push(format!(
-                    "operation `{}` adds alternative `{alternative}` not in the baseline",
-                    op.id
-                ));
+        // An owed baseline forbids alternatives, so paying it off is the first
+        // time the measured entry may name the fixtures that replace each other.
+        if !before.owed {
+            for alternative in &op.alternatives {
+                if !before.alternatives.contains(alternative) {
+                    errors.push(format!(
+                        "operation `{}` adds alternative `{alternative}` not in the baseline",
+                        op.id
+                    ));
+                }
             }
         }
         let mut dropped_any = false;
@@ -889,22 +871,6 @@ fn strip_comment(line: &str) -> &str {
         }
     }
     line
-}
-
-fn id_assignment(line: &str) -> Option<String> {
-    parse_string(key_assignment(line, "id")?, 0).ok()
-}
-
-fn key_assignment<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    let rest = line.strip_prefix(key)?;
-    if !matches!(rest.chars().next(), Some(' ' | '\t' | '=')) {
-        return None;
-    }
-    Some(rest.trim_start().strip_prefix('=')?.trim())
-}
-
-fn number_assignment(line: &str, key: &str) -> Option<u64> {
-    key_assignment(line, key)?.parse::<u64>().ok()
 }
 
 fn push_test_names(rel_path: &str, source: &str, out: &mut BTreeSet<String>) {

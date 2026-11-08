@@ -21,6 +21,8 @@ use branchdiff::input::AppAction;
 use branchdiff::message::Message;
 use branchdiff::update::{RefreshState, Timers, UpdateConfig, update};
 
+#[path = "support/baselines.rs"]
+mod baselines;
 #[path = "support/html_fixture.rs"]
 mod html_fixture;
 
@@ -343,101 +345,24 @@ fn measure_update(samples: &mut Vec<Sample>) {
     });
 }
 
-#[derive(Default)]
-struct Record {
-    id: Option<String>,
-    max_blocks: Option<u64>,
-    max_bytes: Option<u64>,
-    arch_bytes: Option<u64>,
-    has_median: bool,
-    removed: Option<String>,
-}
-
-impl Record {
-    fn finish(mut self, pins: &mut Vec<Pin>) -> Result<(), String> {
-        self.max_bytes = self.arch_bytes.take().or(self.max_bytes);
-        let Some(id) = self.id.take() else {
-            return Err("baselines.toml: a [[bench]] record has no id".to_string());
-        };
-        if id.is_empty() {
-            return Err("baselines.toml: a bench id is empty".to_string());
-        }
-        if self.removed.is_some() {
-            if self.max_blocks.is_some() || self.max_bytes.is_some() || self.has_median {
-                return Err(format!("baselines.toml: {id} sets removed alongside pin fields"));
-            }
-            return Ok(());
-        }
-        match (self.max_blocks, self.max_bytes) {
-            (Some(max_blocks), Some(max_bytes)) => pins.push(Pin { id, max_blocks, max_bytes }),
-            (None, None) => {}
-            _ => {
-                return Err(format!(
-                    "baselines.toml: {id} sets only one of max_blocks and max_bytes"
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn set(&mut self, key: &str, value: &str, line_no: usize) -> Result<(), String> {
-        match key {
-            "id" => self.id = Some(unquote(value, line_no)?),
-            "max_blocks" => self.max_blocks = Some(parse_u64(value, line_no)?),
-            "max_bytes" => self.max_bytes = Some(parse_u64(value, line_no)?),
-            "max_bytes_x86_64" => {
-                let bytes = parse_u64(value, line_no)?;
-                if cfg!(target_arch = "x86_64") {
-                    self.arch_bytes = Some(bytes);
-                }
-            }
-            "ref_median_ns" => {
-                let _ = parse_u64(value, line_no)?;
-                self.has_median = true;
-            }
-            "removed" => {
-                let reason = unquote(value, line_no)?;
-                if reason.trim().is_empty() || reason.contains('\n') || reason.contains('\r') {
-                    return Err(format!(
-                        "baselines.toml:{line_no}: removed must be one non-empty line"
-                    ));
-                }
-                self.removed = Some(reason);
-            }
-            other => return Err(format!("baselines.toml:{line_no}: unknown key {other}")),
-        }
-        Ok(())
-    }
-}
-
 /// The subset of `baselines.toml` this bench reads: `[[bench]]` records that set
 /// `max_blocks` and `max_bytes`. Records with only `ref_median_ns` or `removed`
 /// are ignored here; combining `removed` with any pin field is rejected.
 fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
+    let records = baselines::parse(text).map_err(|errs| errs.join("; "))?;
     let mut pins = Vec::new();
-    let mut current: Option<Record> = None;
-    for (number, raw) in text.lines().enumerate() {
-        let line_no = number + 1;
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
+    for record in records {
+        if record.removed.is_some() {
             continue;
         }
-        if line == "[[bench]]" {
-            if let Some(record) = current.replace(Record::default()) {
-                record.finish(&mut pins)?;
-            }
-            continue;
+        if let (Some(max_blocks), Some(base_bytes)) = (record.max_blocks, record.max_bytes) {
+            let max_bytes = if cfg!(target_arch = "x86_64") {
+                record.max_bytes_x86_64.unwrap_or(base_bytes)
+            } else {
+                base_bytes
+            };
+            pins.push(Pin { id: record.id, max_blocks, max_bytes });
         }
-        let Some(record) = current.as_mut() else {
-            return Err(format!("baselines.toml:{line_no}: expected [[bench]]"));
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(format!("baselines.toml:{line_no}: expected key = value"));
-        };
-        record.set(key.trim(), value.trim(), line_no)?;
-    }
-    if let Some(record) = current {
-        record.finish(&mut pins)?;
     }
     Ok(pins)
 }
@@ -445,7 +370,7 @@ fn parse_pins(text: &str) -> Result<Vec<Pin>, String> {
 fn verify_parse_pins() {
     let ok = concat!(
         "[[bench]]\nid = \"active\"\nmax_blocks = 2\nmax_bytes = 64\nref_median_ns = 100\n",
-        "[[bench]]\nid = \"retired\"\nremoved = \"Folded into active.\"\n",
+        "[[bench]]\nid = \"retired\"\nremoved = \"Folded into active with # hash.\"\n",
     );
     let pins = parse_pins(ok).expect("documented removed bench must parse");
     assert_eq!(pins.len(), 1);
@@ -460,19 +385,12 @@ fn verify_parse_pins() {
 
     let with_median = "[[bench]]\nid = \"retired\"\nref_median_ns = 10\nremoved = \"no\"\n";
     assert!(parse_pins(with_median).is_err(), "removed with ref_median_ns must fail");
-}
 
-fn unquote(value: &str, line_no: usize) -> Result<String, String> {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2 && bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"' {
-        Ok(value[1..value.len() - 1].to_string())
-    } else {
-        Err(format!("baselines.toml:{line_no}: id must be a quoted string"))
-    }
-}
+    let unknown = "[[bench]]\nid = \"active\"\nmax_blocks = 1\nmax_bytes = 8\nextra = 1\n";
+    assert!(parse_pins(unknown).is_err(), "unknown field must fail");
 
-fn parse_u64(value: &str, line_no: usize) -> Result<u64, String> {
-    value.parse::<u64>().map_err(|_| format!("baselines.toml:{line_no}: expected a whole number"))
+    let arch_only = "[[bench]]\nid = \"active\"\nmax_bytes_x86_64 = 8\nref_median_ns = 10\n";
+    assert!(parse_pins(arch_only).is_err(), "max_bytes_x86_64 without max_bytes must fail");
 }
 
 fn measure_html(samples: &mut Vec<Sample>) {

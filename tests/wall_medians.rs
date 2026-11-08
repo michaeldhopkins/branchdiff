@@ -18,6 +18,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "../benches/support/baselines.rs"]
+mod baselines;
+
 /// How far past the machine-normalised pin a bench may measure. Microbenchmarks
 /// on a shared runner swing by tens of percent; a doubling is a regression.
 const WALL_TOLERANCE_PERCENT: u64 = 100;
@@ -214,28 +217,13 @@ fn measured_wall_medians_hold_the_pins() {
 
 /// `ref_median_ns` per bench id, leaving out records marked `removed`.
 fn recorded_pins(text: &str) -> BTreeMap<String, u64> {
-    let mut pins = BTreeMap::new();
-    let mut id: Option<String> = None;
-    let mut removed = false;
-    for line in text.lines().map(str::trim) {
-        if line == "[[bench]]" {
-            id = None;
-            removed = false;
-        } else if let Some(value) = line.strip_prefix("id = ") {
-            id = Some(value.trim_matches('"').to_string());
-        } else if line.starts_with("removed =") {
-            removed = true;
-            if let Some(id) = &id {
-                pins.remove(id);
-            }
-        } else if let Some(value) = line.strip_prefix("ref_median_ns = ")
-            && !removed
-            && let (Some(id), Ok(ns)) = (&id, value.trim().parse::<u64>())
-        {
-            pins.insert(id.clone(), ns);
-        }
-    }
-    pins
+    let records = baselines::parse(text)
+        .unwrap_or_else(|errs| panic!("invalid baselines.toml:\n{}", errs.join("\n")));
+    records
+        .into_iter()
+        .filter(|record| record.removed.is_none())
+        .filter_map(|record| record.ref_median_ns.map(|ns| (record.id, ns)))
+        .collect()
 }
 
 #[test]
@@ -250,9 +238,36 @@ fn ci_runs_the_wall_bench_and_its_comparison_as_blocking_steps() {
 
 #[test]
 fn pins_are_read_from_baselines_and_removed_records_are_left_out() {
-    let text = "[[bench]]\nid = \"a/b\"\nref_median_ns = 5\n\n[[bench]]\nid = \"gone\"\nref_median_ns = 9\nremoved = \"why\"\n\n[[bench]]\nid = \"alloc/only\"\nmax_blocks = 1\n";
+    let text = concat!(
+        "[[bench]]\nid = \"a/b\" # inline comment\nref_median_ns = 5 # inline comment\n\n",
+        "[[bench]]\nid = \"gone\"\nremoved = \"why\"\n\n",
+        "[[bench]]\nid = \"alloc/only\"\nmax_blocks = 1\nmax_bytes = 8\n",
+    );
     assert_eq!(recorded_pins(text), pins(&[("a/b", 5)]));
     let real =
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/benches/baselines.toml")).unwrap();
     assert!(recorded_pins(&real).len() >= MIN_BENCHES);
+}
+
+#[test]
+fn baselines_reader_accepts_any_field_order() {
+    let text = "[[bench]]\nref_median_ns=5000 # ns\nid=\"late\"\n";
+    let records = baselines::parse(text).expect("parse");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].id, "late");
+    assert_eq!(records[0].ref_median_ns, Some(5000));
+}
+
+#[test]
+fn baselines_reader_rejects_unknown_fields_duplicates_and_malformed_records() {
+    for bad in [
+        "[[bench]]\nid = \"a\"\nref_median_ns = 5\nextra = 1\n",
+        "[[bench]]\nid = \"a\"\nref_median_ns = \"five\"\n",
+        "[[bench]]\nid = \"a\"\nref_median_ns = 5\n[[bench]]\nid = \"a\"\nref_median_ns = 6\n",
+        "[[bench]]\nid = \"a\"\nref_median_ns = 5\nremoved = \"gone\"\n",
+        "[[bench]]\nid = \"a\"\nmax_blocks = 1\n",
+        "[[bench]]\nid = \"a\"\n",
+    ] {
+        assert!(baselines::parse(bad).is_err(), "expected error for:\n{bad}");
+    }
 }

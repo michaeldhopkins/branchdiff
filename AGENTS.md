@@ -398,4 +398,4 @@ The only code that runs on animation frames is the settle loop in `src/html_page
 
 ## Performance budgets
 
-`tests/perf.toml` is the performance-budget manifest covering every discovered CLI command, TUI keystroke, HTML page and per-frame callback, gated by `cargo test --test perf_rules`. Floors and targets may only tighten against the baseline revision; when a change reduces spawns, allocations or bench medians, tighten the matching entries so the guard locks in the win. Full rules, `floor = "max"` with `alternatives`, and the CI wall-median check: `docs/agents/perf-budgets.md`.
+`tests/perf.toml` is the performance-budget manifest covering every discovered CLI command, TUI keystroke, HTML page and per-frame callback, gated by `cargo test --test perf_rules`. Floors and targets may only tighten against the baseline revision; when a change reduces spawns, allocations or bench medians, tighten the matching entries so the guard locks in the win. A floor sums every stage that runs in sequence; alternatives replace a stage and are not added. Full rules and the CI wall-median check: `docs/agents/perf-budgets.md`.

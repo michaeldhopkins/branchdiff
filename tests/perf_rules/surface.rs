@@ -90,7 +90,7 @@ fn committed_baseline_jj(
     rel_path: &str,
 ) -> Option<String> {
     let repo = root.to_str().expect("repo path");
-    let on_main = github_ref.is_none_or(|gref| gref == "refs/heads/main" || gref == "main");
+    let on_main = is_on_main_jj(root, repo, github_ref);
     if let Some(rev) = rev_override {
         if !on_main {
             let is_pr = github_ref.is_some_and(|gref| gref.starts_with("refs/pull/"));
@@ -156,11 +156,11 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
     }
     commits.sort_unstable();
     commits.dedup();
-    let mut best: Option<(u64, String)> = None;
+    let mut best: Option<(Strictness, String)> = None;
     for commit_id in commits {
         if let Some(text) = jj_file_at_commit(root, repo, commit_id, rel_path) {
             let tightness = strictness(&text);
-            if best.as_ref().is_none_or(|(known, _)| tightness < *known) {
+            if best.as_ref().is_none_or(|(known, _)| is_stricter(tightness, *known)) {
                 best = Some((tightness, text));
             }
         }
@@ -168,14 +168,75 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
     Some(best.map(|(_, text)| text))
 }
 
-/// How loose a baseline file is: the sum of its integer assignments. Several
-/// heads (a criss-cross history) hold different copies, and the tightest copy
-/// is the one a change must not loosen; ties keep the lowest commit id.
-fn strictness(text: &str) -> u64 {
-    text.lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .filter_map(|line| line.split_once('=')?.1.trim().parse::<u64>().ok())
-        .fold(0, u64::saturating_add)
+/// How tight a baseline file is. More integer assignments means more of the
+/// budget still exists; among equal counts, the smaller sum is tighter. A
+/// criss-cross history holds several copies, and the tightest is the one a
+/// change must not loosen. Ties keep the lowest commit id.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Strictness {
+    entries: u64,
+    sum: u64,
+}
+
+fn is_stricter(candidate: Strictness, current: Strictness) -> bool {
+    candidate.entries > current.entries
+        || (candidate.entries == current.entries && candidate.sum < current.sum)
+}
+
+fn strictness(text: &str) -> Strictness {
+    let mut entries = 0u64;
+    let mut sum = 0u64;
+    for line in text.lines() {
+        let code = strip_unquoted_comment(line);
+        let Some((_, rhs)) = code.split_once('=') else {
+            continue;
+        };
+        if let Ok(value) = rhs.trim().parse::<u64>() {
+            entries = entries.saturating_add(1);
+            sum = sum.saturating_add(value);
+        }
+    }
+    Strictness { entries, sum }
+}
+
+/// Drop an unquoted `#` comment. A `#` inside a quoted string stays.
+fn strip_unquoted_comment(line: &str) -> &str {
+    let mut in_string = false;
+    let mut escaped = false;
+    for (idx, ch) in line.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+        } else if ch == '"' {
+            in_string = true;
+        } else if ch == '#' {
+            return &line[..idx];
+        }
+    }
+    line
+}
+
+/// On main when CI names `main`, or, with `GITHUB_REF` unset, when the
+/// working-copy commit is the `main` bookmark. A descendant of `main` is not
+/// on main: it baselines at the fork, the way `is_on_main_git` reads `HEAD`.
+fn is_on_main_jj(root: &Path, repo: &str, github_ref: Option<&str>) -> bool {
+    if let Some(gref) = github_ref {
+        return gref == "refs/heads/main" || gref == "main";
+    }
+    let out = Command::new("jj")
+        .current_dir(root)
+        .args([
+            "--ignore-working-copy", "--repository", repo, "log", "--no-graph", "-r", "@ & main",
+            "-T", "commit_id",
+        ])
+        .output()
+        .unwrap_or_else(|err| panic!("jj log failed to start: {err}"));
+    out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty()
 }
 
 /// The file at one commit, or `None` when the commit does not hold it.
@@ -822,7 +883,7 @@ mod tests {
                 super::super::guard::collect_test_names(&root.join("src"), &mut tests);
                 let bench_text = fs::read_to_string(root.join("benches/baselines.toml"))
                     .expect("read baselines");
-                let benches = super::super::guard::recorded_benches(&bench_text);
+                let benches = super::super::guard::must_recorded_benches(&bench_text);
                 let errors = super::super::guard::check(&super::super::guard::Input {
                     manifest: &manifest,
                     surface: &surface,
@@ -1132,7 +1193,7 @@ mod tests {
         super::super::guard::collect_test_names(&root.join("src"), &mut tests);
         let bench_text =
             fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
-        let benches = super::super::guard::recorded_benches(&bench_text);
+        let benches = super::super::guard::must_recorded_benches(&bench_text);
 
         for snippet in [
             "const RAF: &str = \"requestAnimationFrame(step)\";",
@@ -1202,6 +1263,11 @@ mod tests {
             "tests/perf.toml",
         );
         assert_eq!(on_main.as_deref(), Some("# main-tip\n"));
+        assert_eq!(
+            committed_baseline_in(tmp.path(), None).as_deref(),
+            Some("# fork\n"),
+            "GITHUB_REF unset and @ off main baselines at the fork, not main's tip"
+        );
 
         // Moving local `main` forward to `@` before pushing still baselines against `main@origin`.
         let remote = TempDir::new().expect("remote");
@@ -1249,28 +1315,42 @@ mod tests {
     }
 
     #[test]
-    fn strictness_sums_integer_assignments_only() {
-        assert_eq!(strictness("a = 3\nb = \"x\"\n# c = 9\nd = 4\n"), 7);
-        assert_eq!(strictness("# nothing\n"), 0);
-        assert_eq!(strictness("a = 18446744073709551615\nb = 5\n"), u64::MAX);
+    fn strictness_counts_entries_and_ignores_unquoted_comments() {
+        assert_eq!(
+            strictness("a = 3\nb = \"x\"\n# c = 9\nd = 4\n"),
+            Strictness { entries: 2, sum: 7 }
+        );
+        assert_eq!(strictness("# nothing\n"), Strictness { entries: 0, sum: 0 });
+        assert_eq!(
+            strictness("a = 18446744073709551615\nb = 5\n"),
+            Strictness { entries: 2, sum: u64::MAX }
+        );
+        let commented = strictness("wall_floor_us = 500000 # comment\n");
+        assert_eq!(commented, strictness("wall_floor_us = 500000\n"));
+        assert_eq!(commented, Strictness { entries: 1, sum: 500_000 });
+        // A `#` inside a quoted value is not a comment, and the value is not an integer.
+        assert_eq!(
+            strictness("floor_reason = \"hash # stays\"\nwall_floor_us = 3 # 100\n"),
+            Strictness { entries: 1, sum: 3 }
+        );
+        let few = strictness("wall = 1\n");
+        let many = strictness("wall = 500000\nprocesses = 2\n");
+        assert!(is_stricter(many, few));
+        assert!(!is_stricter(few, many));
+        assert!(!is_stricter(few, few));
     }
 
     /// Two merges over the same pair of branches (a criss-cross) leave two
     /// merge-base heads holding different baselines. Commit ids are random, so
     /// the tight copy is put on each side in turn: one of the two orders has the
     /// loose head sorting first.
-    fn criss_cross_resolves_to_the_tight_head(tight_on_a: bool) {
+    fn resolved_criss_cross(a: &str, b: &str) -> Option<String> {
         let tmp = TempDir::new().expect("tempdir");
         let dir = tmp.path();
         run_cmd(dir, "jj", &["git", "init", "--colocate"]);
         fs::create_dir_all(dir.join("tests")).expect("mkdir tests");
         fs::write(dir.join("tests/perf.toml"), "wall = 50\n").expect("write root");
         run_cmd(dir, "jj", &["commit", "-m", "root"]);
-        let (a, b) = if tight_on_a {
-            ("wall = 10\n", "wall = 90\n")
-        } else {
-            ("wall = 90\n", "wall = 10\n")
-        };
         run_cmd(dir, "jj", &["new", "@-", "-m", "A"]);
         fs::write(dir.join("tests/perf.toml"), a).expect("write a");
         run_cmd(dir, "jj", &["bookmark", "create", "branch-a", "-r", "@"]);
@@ -1282,18 +1362,31 @@ mod tests {
         run_cmd(dir, "jj", &["bookmark", "create", "main", "-r", "@"]);
         run_cmd(dir, "jj", &["new", "branch-a", "branch-b", "-m", "feature merge"]);
         fs::write(dir.join("tests/perf.toml"), "wall = 50\n").expect("resolve feature");
-        let resolved = committed_baseline_file_in(
+        committed_baseline_file_in(
             dir,
             Some("0000000000000000000000000000000000000000"),
             Some("refs/heads/feature"),
             "tests/perf.toml",
-        );
-        assert_eq!(resolved.as_deref(), Some("wall = 10\n"), "tight_on_a = {tight_on_a}");
+        )
     }
 
     #[test]
     fn jj_criss_cross_picks_the_strictest_head_whichever_id_sorts_first() {
-        criss_cross_resolves_to_the_tight_head(true);
-        criss_cross_resolves_to_the_tight_head(false);
+        assert_eq!(
+            resolved_criss_cross("wall = 10\n", "wall = 90\n").as_deref(),
+            Some("wall = 10\n")
+        );
+        assert_eq!(
+            resolved_criss_cross("wall = 90\n", "wall = 10\n").as_deref(),
+            Some("wall = 10\n")
+        );
+    }
+
+    #[test]
+    fn jj_criss_cross_prefers_more_budget_entries_over_a_smaller_sum() {
+        let many = "wall = 500000\nprocesses = 2\n";
+        let few = "wall = 1\n";
+        assert_eq!(resolved_criss_cross(many, few).as_deref(), Some(many));
+        assert_eq!(resolved_criss_cross(few, many).as_deref(), Some(many));
     }
 }
