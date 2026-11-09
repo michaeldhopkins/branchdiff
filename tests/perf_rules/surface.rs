@@ -240,16 +240,36 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
     }
     commits.sort_unstable();
     commits.dedup();
-    let mut best: Option<(BTreeMap<String, Ceilings>, String)> = None;
+    let mut texts = Vec::new();
     for commit_id in commits {
         if let Some(text) = jj_file_at_commit(root, repo, commit_id, rel_path) {
-            let tightness = operation_ceilings(&text);
-            if best.as_ref().is_none_or(|(known, _)| is_stricter(&tightness, known)) {
-                best = Some((tightness, text));
-            }
+            texts.push(text);
         }
     }
-    Some(best.map(|(_, text)| text))
+    if texts.is_empty() {
+        return Some(None);
+    }
+    Some(Some(choose_jj_baseline(texts)))
+}
+
+/// Pick the baseline text from criss-cross heads, already ordered by commit id.
+/// A head with no operations is skipped when another head has any, so a comment
+/// or a blank file cannot hide a real manifest. Among the rest, a head that is
+/// lower on every shared ceiling and higher on none wins as a whole file.
+fn choose_jj_baseline(texts: Vec<String>) -> String {
+    let annotated: Vec<(BTreeMap<String, Ceilings>, String)> =
+        texts.into_iter().map(|text| (operation_ceilings(&text), text)).collect();
+    let any_ops = annotated.iter().any(|(ceilings, _)| !ceilings.is_empty());
+    let mut best: Option<(BTreeMap<String, Ceilings>, String)> = None;
+    for (tightness, text) in annotated {
+        if any_ops && tightness.is_empty() {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(known, _)| is_stricter(&tightness, known)) {
+            best = Some((tightness, text));
+        }
+    }
+    best.expect("a resolved file list has a baseline candidate").1
 }
 
 /// Ceilings of one operation. A criss-cross history holds several copies, and
@@ -1510,6 +1530,16 @@ derivation = "hash # stays"
     /// the tight copy is put on each side in turn: one of the two orders has the
     /// loose head sorting first.
     fn resolved_criss_cross(a: &str, b: &str) -> Result<Option<String>, String> {
+        draw_criss_cross(a, b).baseline
+    }
+
+    struct DrawnCrissCross {
+        baseline: Result<Option<String>, String>,
+        first_commit: String,
+        second_commit: String,
+    }
+
+    fn draw_criss_cross(a: &str, b: &str) -> DrawnCrissCross {
         let tmp = TempDir::new().expect("tempdir");
         let dir = tmp.path();
         run_cmd(dir, "jj", &["git", "init", "--colocate"]);
@@ -1520,9 +1550,11 @@ derivation = "hash # stays"
         run_cmd(dir, "jj", &["new", "@-", "-m", "A"]);
         fs::write(dir.join("tests/perf.toml"), a).expect("write a");
         run_cmd(dir, "jj", &["bookmark", "create", "branch-a", "-r", "@"]);
+        let first_commit = jj_commit_id(dir, "branch-a");
         run_cmd(dir, "jj", &["new", "description(substring:\"root\")", "-m", "B"]);
         fs::write(dir.join("tests/perf.toml"), b).expect("write b");
         run_cmd(dir, "jj", &["bookmark", "create", "branch-b", "-r", "@"]);
+        let second_commit = jj_commit_id(dir, "branch-b");
         run_cmd(dir, "jj", &["new", "branch-a", "branch-b", "-m", "main merge"]);
         fs::write(dir.join("tests/perf.toml"), budget_op("command:root", 1, 50, 50))
             .expect("resolve main");
@@ -1530,12 +1562,41 @@ derivation = "hash # stays"
         run_cmd(dir, "jj", &["new", "branch-a", "branch-b", "-m", "feature merge"]);
         fs::write(dir.join("tests/perf.toml"), budget_op("command:root", 1, 50, 50))
             .expect("resolve feature");
-        committed_baseline_file_in(
+        let baseline = committed_baseline_file_in(
             dir,
             Some("0000000000000000000000000000000000000000"),
             Some("refs/heads/feature"),
             "tests/perf.toml",
-        )
+        );
+        DrawnCrissCross { baseline, first_commit, second_commit }
+    }
+
+    #[test]
+    fn a_comment_only_manifest_loses_to_a_manifest_with_operations() {
+        let real = budget_op("command:print", 1, 10, 10);
+        let placeholder = "# placeholder\n".to_string();
+        let blank = String::new();
+        assert_eq!(choose_jj_baseline(vec![placeholder.clone(), real.clone()]), real);
+        assert_eq!(choose_jj_baseline(vec![blank, real.clone()]), real);
+        assert_eq!(choose_jj_baseline(vec![real.clone(), placeholder]), real);
+        assert_eq!(choose_jj_baseline(vec!["# only\n".to_string()]), "# only\n");
+    }
+
+    #[test]
+    fn jj_criss_cross_skips_a_comment_only_head_when_the_other_has_operations() {
+        let real = budget_op("command:print", 1, 10, 10);
+        let placeholder = "# placeholder\n";
+        let mut saw_placeholder_sort_first = false;
+        for _ in 0..16 {
+            let drawn = draw_criss_cross(placeholder, &real);
+            if drawn.first_commit > drawn.second_commit {
+                continue;
+            }
+            saw_placeholder_sort_first = true;
+            assert_eq!(drawn.baseline.expect("baseline").as_deref(), Some(real.as_str()));
+            break;
+        }
+        assert!(saw_placeholder_sort_first, "commit ids never put the comment-only head first");
     }
 
     #[test]

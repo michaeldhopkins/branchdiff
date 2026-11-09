@@ -103,6 +103,36 @@ fn a_complete_manifest_passes() {
 }
 
 #[test]
+fn an_empty_baseline_manifest_fails_when_the_live_manifest_has_operations() {
+    let loose = HAPPY.replace("processes = 2", "processes = 999999");
+    for baseline in ["", "# placeholder\n", "\n\n# comment only\n"] {
+        let errors = run(Case {
+            manifest: &loose,
+            surface: &["command:print"],
+            tests: &["tests/counts.rs::counts"],
+            baseline: Some(baseline),
+            benches: &[("bench-a", 40_000)],
+        });
+        assert_eq!(
+            errors,
+            vec!["baseline manifest has no operations"],
+            "{baseline:?} must not let processes = 999999 through"
+        );
+    }
+    let both_empty = run(Case {
+        manifest: "",
+        surface: &[],
+        tests: &[],
+        baseline: Some("# placeholder\n"),
+        benches: &[],
+    });
+    assert!(
+        !both_empty.iter().any(|error| error.contains("no operations")),
+        "an empty live manifest has nothing to protect: {both_empty:?}"
+    );
+}
+
+#[test]
 fn a_surface_operation_without_an_entry_fails() {
     let errors = run(Case {
         manifest: HAPPY,

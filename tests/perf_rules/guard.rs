@@ -76,6 +76,8 @@ pub fn allowed_target_us(class: &str) -> Result<u64, String> {
 }
 
 /// Every problem in the manifest. Empty means the budgets hold.
+/// A baseline that parses to zero operations fails when the live manifest has any:
+/// a comment or a blank file would otherwise leave every live ceiling unchecked.
 pub fn check(input: &Input<'_>) -> Vec<String> {
     let ops = match parse_operations(input.manifest) {
         Ok(ops) => ops,
@@ -89,7 +91,12 @@ pub fn check(input: &Input<'_>) -> Vec<String> {
     check_benches(&ops, input.benches, &mut errors);
     if let Some(baseline) = input.baseline {
         match parse_operations(baseline) {
-            Ok(previous) => looseness(&ops, &previous, input.benches, &mut errors),
+            Ok(previous) => {
+                if previous.is_empty() && !ops.is_empty() {
+                    errors.push("baseline manifest has no operations".to_string());
+                }
+                looseness(&ops, &previous, input.benches, &mut errors);
+            }
             Err(parse_errors) => {
                 errors.push(format!("baseline manifest: {}", parse_errors.join("; ")));
             }
