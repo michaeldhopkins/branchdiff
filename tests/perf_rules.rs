@@ -34,15 +34,17 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
     let bench_text =
         fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
     let benches = guard::must_recorded_benches(&bench_text);
-    let baseline = surface::committed_baseline();
-    let baseline_bench_text = surface::committed_baseline_benches();
-    let mut errors = guard::check(&guard::Input {
+    let mut errors = Vec::new();
+    let baseline = surface::recorded_baseline(surface::committed_baseline(), &mut errors);
+    let baseline_bench_text =
+        surface::recorded_baseline(surface::committed_baseline_benches(), &mut errors);
+    errors.extend(guard::check(&guard::Input {
         manifest: &manifest,
         surface: &surface,
         tests: &tests,
         baseline: baseline.as_deref(),
         benches: &benches,
-    });
+    }));
     guard::check_baseline_medians(&bench_text, baseline_bench_text.as_deref(), &mut errors);
     assert!(
         errors.is_empty(),
@@ -206,6 +208,45 @@ fn keystrokes_with_their_own_bench_are_bound_to_it() {
     ] {
         let op = ops.iter().find(|op| op.id == id).unwrap_or_else(|| panic!("{id} is budgeted"));
         assert!(!op.owed, "{id} must be measured");
-        assert_eq!(op.benches, vec![bench.to_string()], "{id} must be bound to its own bench");
+        assert!(op.benches.iter().any(|name| name == bench), "{id} must name {bench}");
+        assert!(
+            !op.alternatives.iter().any(|name| name == bench),
+            "{id} must not list {bench} as an alternative"
+        );
+    }
+}
+
+/// Page, file, go-to, and view-mode motions invalidate inline spans. The span
+/// bench is a later stage of the same draw, added to the motion bench.
+#[test]
+fn navigation_floors_include_the_span_stage() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = fs::read_to_string(root.join("tests/perf.toml")).expect("read tests/perf.toml");
+    let ops = guard::parse_operations(&manifest).expect("manifest parses");
+    let bench_text =
+        fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
+    let benches = guard::must_recorded_benches(&bench_text);
+    let span = "inline_spans/ensure_visible_1200_candidates";
+    let span_us = benches[span];
+    for (id, motion) in [
+        ("key:scroll-up", "navigation/scroll_down_10"),
+        ("key:scroll-down", "navigation/scroll_down_10"),
+        ("key:page-up", "navigation/page_down"),
+        ("key:page-down", "navigation/page_down"),
+        ("key:go-to-top", "navigation/go_to_top"),
+        ("key:go-to-bottom", "navigation/go_to_bottom"),
+        ("key:next-file", "navigation/next_file"),
+        ("key:prev-file", "navigation/next_file"),
+        ("key:cycle-view-mode", "view_mode/cycle_view_mode"),
+    ] {
+        let op = ops.iter().find(|op| op.id == id).unwrap_or_else(|| panic!("{id} is budgeted"));
+        assert_eq!(op.floor, "sum", "{id}");
+        assert!(op.benches.iter().any(|name| name == motion), "{id} must name {motion}");
+        assert!(op.benches.iter().any(|name| name == span), "{id} must name {span}");
+        assert!(
+            !op.alternatives.iter().any(|name| name == motion || name == span),
+            "{id} must count {motion} and {span}"
+        );
+        assert_eq!(op.wall_floor_us, benches[motion] + span_us, "{id}");
     }
 }

@@ -213,6 +213,75 @@ fn a_looser_floor_or_target_fails_and_a_tighter_one_passes() {
 }
 
 #[test]
+fn a_formula_matched_stage_sum_may_rise_and_a_hand_raise_fails() {
+    let before = r#"
+[[op]]
+id = "key:scroll-down"
+class = "keystroke"
+fixture = "n"
+test = "tests/counts.rs::counts"
+processes = 0
+benches = ["scroll", "span"]
+floor = "max"
+alternatives = ["span"]
+floor_reason = "The span bench was listed as an alternative of the scroll bench."
+wall_floor_us = 98
+target_us = 98
+derivation = "Ceiling of the scroll bench."
+"#;
+    let after = r#"
+[[op]]
+id = "key:scroll-down"
+class = "keystroke"
+fixture = "n"
+test = "tests/counts.rs::counts"
+processes = 0
+benches = ["scroll", "span"]
+floor = "sum"
+floor_reason = "Scroll runs, then the span pass."
+wall_floor_us = 178
+target_us = 178
+derivation = "Scroll bench plus the span bench."
+"#;
+    let benches = [("scroll", 98_u64), ("span", 80)];
+    let errors = run(Case {
+        manifest: after,
+        surface: &["key:scroll-down"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(before),
+        benches: &benches,
+    });
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let raised = after
+        .replace("wall_floor_us = 178", "wall_floor_us = 200")
+        .replace("target_us = 178", "target_us = 200");
+    let errors = run(Case {
+        manifest: &raised,
+        surface: &["key:scroll-down"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(before),
+        benches: &benches,
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("wall_floor_us") && error.contains("looser")),
+        "{errors:?}"
+    );
+    let target_jump = after.replace("target_us = 178", "target_us = 300");
+    let errors = run(Case {
+        manifest: &target_jump,
+        surface: &["key:scroll-down"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(before),
+        benches: &benches,
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("target_us") && error.contains("looser")),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn a_target_over_its_class_cap_always_fails() {
     let cases = [
         ("command", 50_001_u64),
@@ -943,16 +1012,18 @@ fn alternatives_replace_a_stage_and_cannot_grow_against_a_measured_baseline() {
     );
 
     let two = HAPPY.replace("benches = [\"bench-a\"]", "benches = [\"bench-a\", \"bench-b\"]");
-    let baseline = two.clone();
     let live = format!("{two}alternatives = [\"bench-b\"]\n");
     let errors = run(Case {
         manifest: &live,
         surface: &["command:print"],
         tests: &["tests/counts.rs::counts"],
-        baseline: Some(&baseline),
+        baseline: Some(&two),
         benches: &[("bench-a", 40_000), ("bench-b", 30_000)],
     });
-    assert!(errors.iter().any(|error| error.contains("adds alternative `bench-b`")), "{errors:?}");
+    assert!(
+        errors.is_empty(),
+        "a bench the baseline already measured can be named as an alternative when the floor stays the formula: {errors:?}"
+    );
     let errors = run(Case {
         manifest: &live,
         surface: &["command:print"],
@@ -961,6 +1032,28 @@ fn alternatives_replace_a_stage_and_cannot_grow_against_a_measured_baseline() {
         benches: &[("bench-a", 40_000), ("bench-b", 30_000)],
     });
     assert!(errors.is_empty(), "{errors:?}");
+
+    let summed = two
+        .replace("floor = \"max\"", "floor = \"sum\"")
+        .replace("wall_floor_us = 40000", "wall_floor_us = 70000")
+        .replace("target_us = 40000", "target_us = 70000");
+    let hidden = format!(
+        "{}alternatives = [\"bench-b\"]\n",
+        summed
+            .replace("wall_floor_us = 70000", "wall_floor_us = 40000")
+            .replace("target_us = 70000", "target_us = 40000")
+    );
+    let errors = run(Case {
+        manifest: &hidden,
+        surface: &["command:print"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: Some(&summed),
+        benches: &[("bench-a", 40_000), ("bench-b", 30_000)],
+    });
+    assert!(
+        errors.iter().any(|error| error.contains("adds alternative `bench-b`")),
+        "hiding a stage that shrinks the floor must fail: {errors:?}"
+    );
 }
 
 #[test]
@@ -1001,7 +1094,9 @@ derivation = "Measured."
     });
     assert!(errors.is_empty(), "{errors:?}");
 
-    let measured = paid.replace("alternatives = [\"op/1k\"]\n", "");
+    let measured = paid
+        .replace("benches = [\"op/1k\", \"op/10k\"]\n", "benches = [\"op/10k\"]\n")
+        .replace("alternatives = [\"op/1k\"]\n", "");
     let errors = run(Case {
         manifest: paid,
         surface: &["command:print"],
@@ -1009,7 +1104,10 @@ derivation = "Measured."
         baseline: Some(&measured),
         benches: &[("op/1k", 10_000), ("op/10k", 40_000)],
     });
-    assert!(errors.iter().any(|error| error.contains("adds alternative `op/1k`")), "{errors:?}");
+    assert!(
+        errors.iter().any(|error| error.contains("adds alternative `op/1k`")),
+        "a measured baseline that did not name the bench must still reject the alternative: {errors:?}"
+    );
 }
 
 #[test]
@@ -1079,7 +1177,7 @@ derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
         "{errors:?}"
     );
 
-    let hidden = run(Case {
+    let smaller_than_one = run(Case {
         manifest: summed,
         surface: &["command:files"],
         tests: &["tests/counts.rs::counts"],
@@ -1087,12 +1185,11 @@ derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
         benches: &[("bench-a", 30_000), ("bench-b", 10_000), ("bench-c", 20_000)],
     });
     assert!(
-        hidden.iter().any(|error| error.contains("bench-c") && error.contains("larger fixture")),
-        "{hidden:?}"
+        smaller_than_one.is_empty(),
+        "a fixture smaller than one stage replaces that stage: {smaller_than_one:?}"
     );
 
-    // Equal to the smallest stage is still not a smaller fixture.
-    let tied = run(Case {
+    let tied_to_smallest = run(Case {
         manifest: summed,
         surface: &["command:files"],
         tests: &["tests/counts.rs::counts"],
@@ -1100,7 +1197,21 @@ derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
         benches: &[("bench-a", 30_000), ("bench-b", 10_000), ("bench-c", 10_000)],
     });
     assert!(
-        tied.iter().any(|error| error.contains("bench-c") && error.contains("not smaller")),
-        "{tied:?}"
+        tied_to_smallest.is_empty(),
+        "equal to the smallest stage and smaller than another is still an alternative: {tied_to_smallest:?}"
+    );
+
+    let covers_every_stage = run(Case {
+        manifest: summed,
+        surface: &["command:files"],
+        tests: &["tests/counts.rs::counts"],
+        baseline: None,
+        benches: &[("bench-a", 30_000), ("bench-b", 10_000), ("bench-c", 30_000)],
+    });
+    assert!(
+        covers_every_stage
+            .iter()
+            .any(|error| error.contains("bench-c") && error.contains("not smaller")),
+        "{covers_every_stage:?}"
     );
 }

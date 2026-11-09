@@ -292,12 +292,12 @@ class = "keystroke"
 fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
-benches = ["navigation/next_file"]
-floor = "max"
-floor_reason = "Single benchmark (navigation/next_file) measures the file-jump reducer and frame preparation."
-wall_floor_us = 4
-target_us = 4
-derivation = "Ceiling of navigation/next_file (3513 ns on 2026-10-18) is 4 us, under the 8 ms cap."
+benches = ["navigation/next_file", "inline_spans/ensure_visible_1200_candidates"]
+floor = "sum"
+floor_reason = "next_file marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
+wall_floor_us = 84
+target_us = 84
+derivation = "navigation/next_file (3513 ns, 4 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 84 us, under the 8 ms cap."
 
 [[op]]
 id = "key:prev-file"
@@ -305,12 +305,12 @@ class = "keystroke"
 fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
-benches = ["navigation/next_file"]
-floor = "max"
-floor_reason = "Single benchmark (navigation/next_file) covers the symmetric file-jump reducer and frame preparation."
-wall_floor_us = 4
-target_us = 4
-derivation = "Same bench as next-file; the ceiling of navigation/next_file (3513 ns on 2026-10-18) is 4 us, under the 8 ms cap."
+benches = ["navigation/next_file", "inline_spans/ensure_visible_1200_candidates"]
+floor = "sum"
+floor_reason = "prev_file marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
+wall_floor_us = 84
+target_us = 84
+derivation = "Same stages as next-file: navigation/next_file (3513 ns, 4 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 84 us, under the 8 ms cap."
 
 [[op]]
 id = "key:page-up"
@@ -318,12 +318,12 @@ class = "keystroke"
 fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
-benches = ["navigation/page_down"]
-floor = "max"
-floor_reason = "Single benchmark (navigation/page_down) covers the symmetric viewport page-scroll reducer and frame preparation."
-wall_floor_us = 97
-target_us = 97
-derivation = "Same bench as page-down; the ceiling of navigation/page_down (96007 ns on 2026-10-18) is 97 us, under the 8 ms cap."
+benches = ["navigation/page_down", "inline_spans/ensure_visible_1200_candidates"]
+floor = "sum"
+floor_reason = "page_up calls scroll_up, which marks inline spans dirty, and ensure_inline_spans_for_visible runs after it, before draw. navigation/page_down is the bench for that scroll."
+wall_floor_us = 177
+target_us = 177
+derivation = "Same stages as page-down: navigation/page_down (96007 ns, 97 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 177 us, under the 8 ms cap."
 
 [[op]]
 id = "key:page-down"
@@ -331,12 +331,12 @@ class = "keystroke"
 fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
-benches = ["navigation/page_down"]
-floor = "max"
-floor_reason = "Single benchmark (navigation/page_down) measures the viewport page-scroll reducer and frame preparation."
-wall_floor_us = 97
-target_us = 97
-derivation = "Ceiling of navigation/page_down (96007 ns on 2026-10-18) is 97 us, under the 8 ms cap."
+benches = ["navigation/page_down", "inline_spans/ensure_visible_1200_candidates"]
+floor = "sum"
+floor_reason = "page_down calls scroll_down, which marks inline spans dirty, and ensure_inline_spans_for_visible runs after it, before draw."
+wall_floor_us = 177
+target_us = 177
+derivation = "navigation/page_down (96007 ns, 97 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 177 us, under the 8 ms cap."
 
 [[op]]
 id = "key:go-to-top"
@@ -344,12 +344,12 @@ class = "keystroke"
 fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
-benches = ["navigation/go_to_top"]
-floor = "max"
-floor_reason = "Single benchmark (navigation/go_to_top) measures the jump to the top, which resets scroll and invalidates the view."
-wall_floor_us = 1
-target_us = 1
-derivation = "The ceiling of navigation/go_to_top (2 ns, 1.72 ns measured on 2026-11-04) is 1 us, under the 8 ms cap."
+benches = ["navigation/go_to_top", "inline_spans/ensure_visible_1200_candidates"]
+floor = "sum"
+floor_reason = "go_to_top marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
+wall_floor_us = 81
+target_us = 81
+derivation = "navigation/go_to_top (2 ns, 1 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 81 us, under the 8 ms cap."
 
 [[op]]
 id = "key:go-to-bottom"
@@ -357,12 +357,12 @@ class = "keystroke"
 fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
-benches = ["navigation/go_to_bottom"]
-floor = "max"
-floor_reason = "Single benchmark (navigation/go_to_bottom) measures jumping to the end of the diff and building the frame."
-wall_floor_us = 49
-target_us = 49
-derivation = "Ceiling of navigation/go_to_bottom (48649 ns on 2026-10-18) is 49 us, under the 8 ms cap."
+benches = ["navigation/go_to_bottom", "inline_spans/ensure_visible_1200_candidates"]
+floor = "sum"
+floor_reason = "go_to_bottom marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
+wall_floor_us = 129
+target_us = 129
+derivation = "navigation/go_to_bottom (48649 ns, 49 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 129 us, under the 8 ms cap."
 
 [[op]]
 id = "key:toggle-all-reviewed"
@@ -392,13 +392,13 @@ class = "keystroke"
 fixture = "30 files, 300 lines each (10k lines); scale of navigation and frame_context 10k_lines, baselines 2026-10-18"
 test = "tests/perf_rules/counts.rs::keystrokes_reduce_and_render_without_spawning"
 processes = 0
-benches = ["view_mode/cycle_view_mode", "context_mode/build_context_lines/1k_lines", "context_mode/build_context_lines/10k_lines", "frame_context/context/1k_lines", "frame_context/commit_only/1k_lines", "frame_context/context/10k_lines", "frame_context/commit_only/10k_lines"]
-floor = "max"
+benches = ["view_mode/cycle_view_mode", "context_mode/build_context_lines/1k_lines", "context_mode/build_context_lines/10k_lines", "frame_context/context/1k_lines", "frame_context/commit_only/1k_lines", "frame_context/context/10k_lines", "frame_context/commit_only/10k_lines", "inline_spans/ensure_visible_1200_candidates"]
+floor = "sum"
 alternatives = ["context_mode/build_context_lines/1k_lines", "context_mode/build_context_lines/10k_lines", "frame_context/context/1k_lines", "frame_context/commit_only/1k_lines", "frame_context/context/10k_lines", "frame_context/commit_only/10k_lines"]
-floor_reason = "Lists alternative view modes and fixture sizes (1k vs 10k lines) bounded by the full view_mode/cycle_view_mode benchmark."
-wall_floor_us = 391
-target_us = 391
-derivation = "Ceiling of view_mode/cycle_view_mode (390056 ns on 2026-10-18) is 391 us, under the 8 ms cap."
+floor_reason = "context_mode and frame_context fixtures replace work inside cycle_view_mode. ensure_inline_spans_for_visible runs after the mode change."
+wall_floor_us = 471
+target_us = 471
+derivation = "view_mode/cycle_view_mode (390056 ns, 391 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 471 us, under the 8 ms cap. The context and frame fixtures replace the cycle bench and are not added."
 
 [[op]]
 id = "key:copy-path"

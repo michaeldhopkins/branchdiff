@@ -16,7 +16,7 @@ A floor sums every stage that runs in sequence. `alternatives` are only other fi
 - `floor = "max"` is one stage. Every other bench is an alternative. No percentage drops a bench.
 - An alternative cannot tie the largest bench. Equal stages are summed.
 - Duplicate alternative names are rejected, and every alternative must be one of the op's benches.
-- On a sum, an alternative must be strictly smaller than every stage that runs. A larger fixture belongs in the sum.
+- On a sum, an alternative must be strictly smaller than at least one stage that runs. A fixture at least as large as every stage belongs in the sum.
 - Paying off an owed operation may introduce alternatives. A measured operation may not add one.
 
 The checks are `check_stage_floor` in `tests/perf_rules/guard.rs`.

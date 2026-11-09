@@ -1,9 +1,10 @@
 //! Fail a performance manifest that drifts from the surface, its tests, its
 //! named benches, or the budgets already committed.
 //!
-//! Counts and wall floors only tighten. A target may not rise, may not pass
-//! its class cap, may not exceed its wall floor, and has to carry a one-line
-//! derivation.
+//! Counts only tighten. A wall floor may rise only when both the old and new
+//! values equal the bench-derived floor. A target may rise only with that
+//! wall, and only by as much as the wall rose. A target may not pass its class
+//! cap, may not exceed its wall floor, and has to carry a one-line derivation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -88,7 +89,7 @@ pub fn check(input: &Input<'_>) -> Vec<String> {
     check_benches(&ops, input.benches, &mut errors);
     if let Some(baseline) = input.baseline {
         match parse_operations(baseline) {
-            Ok(previous) => looseness(&ops, &previous, &mut errors),
+            Ok(previous) => looseness(&ops, &previous, input.benches, &mut errors),
             Err(parse_errors) => {
                 errors.push(format!("baseline manifest: {}", parse_errors.join("; ")));
             }
@@ -698,9 +699,9 @@ fn expected_floor(op: &Op, benches: &BTreeMap<String, u64>) -> u64 {
     }
 }
 
-/// A floor sums every stage that runs in sequence. `alternatives` are only
-/// stages that replace each other: another fixture of a stage already counted,
-/// never the bench that sets the floor, and never a second stage that also runs.
+/// A floor sums every stage that runs in sequence. An alternative is another
+/// fixture of a stage already counted: it has to be smaller than one of those
+/// stages, and it cannot be the bench that sets a max floor.
 fn check_stage_floor(op: &Op, benches: &BTreeMap<String, u64>, errors: &mut Vec<String>) {
     if !matches!(op.floor.as_str(), "sum" | "max") {
         if !op.alternatives.is_empty() {
@@ -774,18 +775,29 @@ fn check_stage_floor(op: &Op, benches: &BTreeMap<String, u64>, errors: &mut Vec<
         errors.push(format!("operation `{}` floor = \"sum\" lists only alternatives", op.id));
         return;
     }
-    let smallest = stage_values.iter().copied().min().expect("at least one stage");
     for (name, value) in &values {
-        if is_alternative(op, name) && *value >= smallest {
+        if is_alternative(op, name) && stage_values.iter().all(|stage| *value >= *stage) {
             errors.push(format!(
-                "operation `{}` alternative `{name}` ({value} us) is not smaller than every stage that runs (smallest {smallest} us); a larger fixture belongs in the sum",
+                "operation `{}` alternative `{name}` ({value} us) is not smaller than any stage that runs; a larger fixture belongs in the sum",
                 op.id
             ));
         }
     }
 }
 
-fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
+fn accounted(op: &Op, benches: &BTreeMap<String, u64>) -> bool {
+    matches!(op.floor.as_str(), "sum" | "max")
+        && !op.benches.is_empty()
+        && op.benches.iter().all(|bench| benches.contains_key(bench))
+        && op.wall_floor_us == expected_floor(op, benches)
+}
+
+fn looseness(
+    ops: &[Op],
+    previous: &[Op],
+    benches: &BTreeMap<String, u64>,
+    errors: &mut Vec<String>,
+) {
     let prior: BTreeMap<&str, &Op> = previous.iter().map(|op| (op.id.as_str(), op)).collect();
     for op in ops {
         let Some(before) = prior.get(op.id.as_str()) else {
@@ -801,8 +813,18 @@ fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
             continue;
         };
         looser(&op.id, "processes", op.processes, before.processes, errors);
-        looser(&op.id, "wall_floor_us", op.wall_floor_us, before.wall_floor_us, errors);
-        looser(&op.id, "target_us", op.target_us, before.target_us, errors);
+        let formula = accounted(op, benches) && accounted(before, benches);
+        let wall_rose = op.wall_floor_us > before.wall_floor_us;
+        if wall_rose && !formula {
+            looser(&op.id, "wall_floor_us", op.wall_floor_us, before.wall_floor_us, errors);
+        }
+        if op.target_us > before.target_us {
+            let wall_delta = op.wall_floor_us.saturating_sub(before.wall_floor_us);
+            let target_delta = op.target_us - before.target_us;
+            if !(formula && wall_rose && target_delta <= wall_delta) {
+                looser(&op.id, "target_us", op.target_us, before.target_us, errors);
+            }
+        }
         if !before.owed && op.owed {
             errors.push(format!("operation `{}` is owed but was measured in the baseline", op.id));
         }
@@ -816,7 +838,13 @@ fn looseness(ops: &[Op], previous: &[Op], errors: &mut Vec<String>) {
         // time the measured entry may name the fixtures that replace each other.
         if !before.owed {
             for alternative in &op.alternatives {
-                if !before.alternatives.contains(alternative) {
+                if before.alternatives.contains(alternative) {
+                    continue;
+                }
+                let kept = before.benches.iter().any(|bench| bench == alternative)
+                    && formula
+                    && expected_floor(op, benches) >= expected_floor(before, benches);
+                if !kept {
                     errors.push(format!(
                         "operation `{}` adds alternative `{alternative}` not in the baseline",
                         op.id

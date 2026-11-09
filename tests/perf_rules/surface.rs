@@ -1,7 +1,7 @@
 //! This program's user-facing operations: the clap tree, the TUI key map,
 //! and the live page's per-frame script and routes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -41,16 +41,32 @@ pub(super) fn operations() -> BTreeSet<String> {
 }
 
 /// The manifest committed at `PERF_BASELINE_REV` (when set in CI) or on
-/// `main@origin` / `main`, if that revision has one.
-pub(super) fn committed_baseline() -> Option<String> {
+/// `main@origin` / `main`. `Ok(None)` is an all-zero revision whose parent
+/// has no file yet. A resolved revision with no file, and no later candidate
+/// that has one, is an error: the perf check must not treat that as no baseline.
+pub(super) fn committed_baseline() -> Result<Option<String>, String> {
     committed_baseline_file("tests/perf.toml")
 }
 
-pub(super) fn committed_baseline_benches() -> Option<String> {
+pub(super) fn committed_baseline_benches() -> Result<Option<String>, String> {
     committed_baseline_file("benches/baselines.toml")
 }
 
-fn committed_baseline_file(rel_path: &str) -> Option<String> {
+/// Record a baseline-resolution error and keep checking the rest of the manifest.
+pub(super) fn recorded_baseline(
+    result: Result<Option<String>, String>,
+    errors: &mut Vec<String>,
+) -> Option<String> {
+    match result {
+        Ok(text) => text,
+        Err(message) => {
+            errors.push(message);
+            None
+        }
+    }
+}
+
+fn committed_baseline_file(rel_path: &str) -> Result<Option<String>, String> {
     let root = std::env::var_os("BRANCHDIFF_TEST_BASELINE_REPO")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
@@ -60,7 +76,10 @@ fn committed_baseline_file(rel_path: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-pub(super) fn committed_baseline_in(root: &Path, rev_override: Option<&str>) -> Option<String> {
+pub(super) fn committed_baseline_in(
+    root: &Path,
+    rev_override: Option<&str>,
+) -> Result<Option<String>, String> {
     committed_baseline_file_in(root, rev_override, None, "tests/perf.toml")
 }
 
@@ -69,7 +88,7 @@ pub(super) fn committed_baseline_file_in(
     rev_override: Option<&str>,
     github_ref: Option<&str>,
     rel_path: &str,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     let rev_override = rev_override.map(str::trim).filter(|rev| !rev.is_empty());
     let github_ref = github_ref.map(str::trim).filter(|gref| !gref.is_empty());
     if root.join(".jj").exists() {
@@ -83,58 +102,123 @@ fn is_all_zero_sha(rev: &str) -> bool {
     !rev.is_empty() && rev.bytes().all(|b| b == b'0')
 }
 
+const JJ_FORK_REVSETS: &[&str] =
+    &["heads(::@ & ::main@origin)", "heads(::@ & ::main)", "main@origin", "main"];
+
+fn missing_baseline(rel_path: &str, rev: &str) -> String {
+    format!("baseline file `{rel_path}` is missing at `{rev}`")
+}
+
+enum BaselineFind {
+    Text(String),
+    Missing(String),
+    Absent,
+}
+
+fn commit_baseline_jj(root: &Path, repo: &str, rev: &str, rel_path: &str) -> BaselineFind {
+    match read_jj_file_at(root, repo, rev, rel_path) {
+        Some(Some(text)) => BaselineFind::Text(text),
+        Some(None) => BaselineFind::Missing(rev.to_string()),
+        None => BaselineFind::Absent,
+    }
+}
+
+fn search_jj(root: &Path, repo: &str, revsets: &[&str], rel_path: &str) -> BaselineFind {
+    let mut missing = None;
+    for revset in revsets {
+        match commit_baseline_jj(root, repo, revset, rel_path) {
+            BaselineFind::Text(text) => return BaselineFind::Text(text),
+            BaselineFind::Missing(rev) => {
+                missing.get_or_insert(rev);
+            }
+            BaselineFind::Absent => {}
+        }
+    }
+    match missing {
+        Some(rev) => BaselineFind::Missing(rev),
+        None => BaselineFind::Absent,
+    }
+}
+
+fn baseline_from_find(
+    found: BaselineFind,
+    rel_path: &str,
+    absent: &str,
+) -> Result<Option<String>, String> {
+    match found {
+        BaselineFind::Text(text) => Ok(Some(text)),
+        BaselineFind::Missing(rev) => Err(missing_baseline(rel_path, &rev)),
+        BaselineFind::Absent => panic!("{absent}"),
+    }
+}
+
+fn finish_override(
+    found: BaselineFind,
+    rev: &str,
+    rel_path: &str,
+    parent_has_file: impl FnOnce() -> bool,
+    read_at: impl FnOnce(&str) -> Option<Option<String>>,
+    unresolved: impl FnOnce() -> String,
+) -> Result<Option<String>, String> {
+    match found {
+        BaselineFind::Text(text) => return Ok(Some(text)),
+        BaselineFind::Missing(at) if !is_all_zero_sha(rev) => {
+            return Err(missing_baseline(rel_path, &at));
+        }
+        BaselineFind::Missing(_) | BaselineFind::Absent => {}
+    }
+    if is_all_zero_sha(rev) {
+        assert!(
+            !parent_has_file(),
+            "PERF_BASELINE_REV is all-zero ({rev}) but {rel_path} already exists in the parent revision"
+        );
+        return Ok(None);
+    }
+    match read_at(rev) {
+        Some(Some(text)) => Ok(Some(text)),
+        Some(None) => Err(missing_baseline(rel_path, rev)),
+        None => panic!("{}", unresolved()),
+    }
+}
+
 fn committed_baseline_jj(
     root: &Path,
     rev_override: Option<&str>,
     github_ref: Option<&str>,
     rel_path: &str,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     let repo = root.to_str().expect("repo path");
     let on_main = is_on_main_jj(root, repo, github_ref);
     if let Some(rev) = rev_override {
-        if !on_main {
+        let found = if on_main {
+            BaselineFind::Absent
+        } else {
             let is_pr = github_ref.is_some_and(|gref| gref.starts_with("refs/pull/"));
-            if is_pr
-                && !is_all_zero_sha(rev)
-                && let Some(found) = read_jj_file_at(root, repo, rev, rel_path)
-            {
-                return found;
-            }
-            for revset in
-                ["heads(::@ & ::main@origin)", "heads(::@ & ::main)", "main@origin", "main"]
-            {
-                if let Some(found) = read_jj_file_at(root, repo, revset, rel_path) {
-                    return found;
+            if is_pr && !is_all_zero_sha(rev) {
+                match commit_baseline_jj(root, repo, rev, rel_path) {
+                    BaselineFind::Text(text) => return Ok(Some(text)),
+                    BaselineFind::Missing(_) => return Err(missing_baseline(rel_path, rev)),
+                    BaselineFind::Absent => {}
                 }
             }
-        }
-        if is_all_zero_sha(rev) {
-            let exists_in_parent =
-                read_jj_file_at(root, repo, "heads(::@ & ~empty())-", rel_path).flatten().is_some();
-            assert!(
-                !exists_in_parent,
-                "PERF_BASELINE_REV is all-zero ({rev}) but {rel_path} already exists in the parent revision of {}",
-                root.display()
-            );
-            return None;
-        }
-        return read_jj_file_at(root, repo, rev, rel_path).unwrap_or_else(|| {
-            panic!("PERF_BASELINE_REV `{rev}` did not resolve in jj repository {}", root.display())
-        });
+            search_jj(root, repo, JJ_FORK_REVSETS, rel_path)
+        };
+        let root_label = root.display().to_string();
+        return finish_override(
+            found,
+            rev,
+            rel_path,
+            || read_jj_file_at(root, repo, "heads(::@ & ~empty())-", rel_path).flatten().is_some(),
+            |pinned| read_jj_file_at(root, repo, pinned, rel_path),
+            || format!("PERF_BASELINE_REV `{rev}` did not resolve in jj repository {root_label}"),
+        );
     }
-    if !on_main {
-        for revset in ["heads(::@ & ::main@origin)", "heads(::@ & ::main)"] {
-            if let Some(found) = read_jj_file_at(root, repo, revset, rel_path) {
-                return found;
-            }
-        }
-    }
-    for rev in ["main@origin", "main"] {
-        if let Some(found) = read_jj_file_at(root, repo, rev, rel_path) {
-            return found;
-        }
-    }
-    panic!("neither main@origin nor main resolved in jj repository {}", root.display());
+    let revsets: &[&str] = if on_main { &["main@origin", "main"] } else { JJ_FORK_REVSETS };
+    baseline_from_find(
+        search_jj(root, repo, revsets, rel_path),
+        rel_path,
+        &format!("neither main@origin nor main resolved in jj repository {}", root.display()),
+    )
 }
 
 fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option<Option<String>> {
@@ -156,11 +240,11 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
     }
     commits.sort_unstable();
     commits.dedup();
-    let mut best: Option<(Strictness, String)> = None;
+    let mut best: Option<(BTreeMap<String, Ceilings>, String)> = None;
     for commit_id in commits {
         if let Some(text) = jj_file_at_commit(root, repo, commit_id, rel_path) {
-            let tightness = strictness(&text);
-            if best.as_ref().is_none_or(|(known, _)| is_stricter(tightness, *known)) {
+            let tightness = operation_ceilings(&text);
+            if best.as_ref().is_none_or(|(known, _)| is_stricter(&tightness, known)) {
                 best = Some((tightness, text));
             }
         }
@@ -168,57 +252,57 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
     Some(best.map(|(_, text)| text))
 }
 
-/// How tight a baseline file is. More integer assignments means more of the
-/// budget still exists; among equal counts, the smaller sum is tighter. A
-/// criss-cross history holds several copies, and the tightest is the one a
-/// change must not loosen. Ties keep the lowest commit id.
+/// Ceilings of one operation. A criss-cross history holds several copies, and
+/// the copy a change must not loosen is the one with the lower shared ceilings.
+/// An id missing on either side is not tighter. Ties keep the lowest commit id.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct Strictness {
-    entries: u64,
-    sum: u64,
+struct Ceilings {
+    processes: u64,
+    wall_floor_us: u64,
+    target_us: u64,
 }
 
-fn is_stricter(candidate: Strictness, current: Strictness) -> bool {
-    candidate.entries > current.entries
-        || (candidate.entries == current.entries && candidate.sum < current.sum)
+fn operation_ceilings(text: &str) -> BTreeMap<String, Ceilings> {
+    let Ok(ops) = super::guard::parse_operations(text) else {
+        return BTreeMap::new();
+    };
+    ops.into_iter()
+        .map(|op| {
+            (
+                op.id,
+                Ceilings {
+                    processes: op.processes,
+                    wall_floor_us: op.wall_floor_us,
+                    target_us: op.target_us,
+                },
+            )
+        })
+        .collect()
 }
 
-fn strictness(text: &str) -> Strictness {
-    let mut entries = 0u64;
-    let mut sum = 0u64;
-    for line in text.lines() {
-        let code = strip_unquoted_comment(line);
-        let Some((_, rhs)) = code.split_once('=') else {
+fn is_stricter(
+    candidate: &BTreeMap<String, Ceilings>,
+    current: &BTreeMap<String, Ceilings>,
+) -> bool {
+    let mut tighter = false;
+    for (id, cand) in candidate {
+        let Some(known) = current.get(id) else {
             continue;
         };
-        if let Ok(value) = rhs.trim().parse::<u64>() {
-            entries = entries.saturating_add(1);
-            sum = sum.saturating_add(value);
+        if cand.processes > known.processes
+            || cand.wall_floor_us > known.wall_floor_us
+            || cand.target_us > known.target_us
+        {
+            return false;
+        }
+        if cand.processes < known.processes
+            || cand.wall_floor_us < known.wall_floor_us
+            || cand.target_us < known.target_us
+        {
+            tighter = true;
         }
     }
-    Strictness { entries, sum }
-}
-
-/// Drop an unquoted `#` comment. A `#` inside a quoted string stays.
-fn strip_unquoted_comment(line: &str) -> &str {
-    let mut in_string = false;
-    let mut escaped = false;
-    for (idx, ch) in line.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-        } else if ch == '"' {
-            in_string = true;
-        } else if ch == '#' {
-            return &line[..idx];
-        }
-    }
-    line
+    tighter
 }
 
 /// On main when CI names `main`, or, with `GITHUB_REF` unset, when the
@@ -302,61 +386,81 @@ fn git_merge_base(repo: &str, left: &str, right: &str) -> String {
     String::from_utf8(out.stdout).expect("merge-base utf-8").trim().to_string()
 }
 
+fn origin_main_exists(repo: &str) -> bool {
+    Command::new("git")
+        .args(["-C", repo, "rev-parse", "--verify", "--quiet", "origin/main^{commit}"])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn search_git(repo: &str, root: &Path, on_main: bool, rel_path: &str) -> BaselineFind {
+    let mut missing = None;
+    if !on_main && origin_main_exists(repo) {
+        let mb = git_merge_base(repo, "HEAD", "origin/main");
+        match read_git_file_at(repo, &mb, rel_path) {
+            Some(Some(text)) => return BaselineFind::Text(text),
+            Some(None) => missing = Some(mb),
+            None => panic!(
+                "merge-base `{mb}` with origin/main did not resolve in git repository {}",
+                root.display()
+            ),
+        }
+    }
+    for rev in ["origin/main", "main"] {
+        match read_git_file_at(repo, rev, rel_path) {
+            Some(Some(text)) => return BaselineFind::Text(text),
+            Some(None) => {
+                missing.get_or_insert_with(|| rev.to_string());
+            }
+            None => {}
+        }
+    }
+    match missing {
+        Some(rev) => BaselineFind::Missing(rev),
+        None => BaselineFind::Absent,
+    }
+}
+
 fn committed_baseline_git(
     root: &Path,
     rev_override: Option<&str>,
     github_ref: Option<&str>,
     rel_path: &str,
-) -> Option<String> {
+) -> Result<Option<String>, String> {
     let repo = root.to_str().expect("repo path");
     let on_main = is_on_main_git(repo, github_ref);
     if let Some(rev) = rev_override {
-        if !on_main {
+        let found = if on_main {
+            BaselineFind::Absent
+        } else {
             let is_pr = github_ref.is_some_and(|gref| gref.starts_with("refs/pull/"));
-            if is_pr
-                && !is_all_zero_sha(rev)
-                && let Some(found) = read_git_file_at(repo, rev, rel_path)
-            {
-                return found;
+            if is_pr && !is_all_zero_sha(rev) {
+                match read_git_file_at(repo, rev, rel_path) {
+                    Some(Some(text)) => return Ok(Some(text)),
+                    Some(None) => return Err(missing_baseline(rel_path, rev)),
+                    None => {}
+                }
             }
-            let mb = git_merge_base(repo, "HEAD", "origin/main");
-            return read_git_file_at(repo, &mb, rel_path).unwrap_or_else(|| {
-                panic!(
-                    "merge-base `{mb}` with origin/main did not resolve in git repository {}",
-                    root.display()
-                )
-            });
-        }
-        if is_all_zero_sha(rev) {
-            let exists_in_parent = read_git_file_at(repo, "HEAD~1", rel_path).flatten().is_some();
-            assert!(
-                !exists_in_parent,
-                "PERF_BASELINE_REV is all-zero ({rev}) but {rel_path} already exists in HEAD~1 of {}",
-                root.display()
-            );
-            return None;
-        }
-        return read_git_file_at(repo, rev, rel_path).unwrap_or_else(|| {
-            panic!("PERF_BASELINE_REV `{rev}` did not resolve in git repository {}", root.display())
-        });
+            if !origin_main_exists(repo) {
+                let _ = git_merge_base(repo, "HEAD", "origin/main");
+            }
+            search_git(repo, root, false, rel_path)
+        };
+        let root_label = root.display().to_string();
+        return finish_override(
+            found,
+            rev,
+            rel_path,
+            || read_git_file_at(repo, "HEAD~1", rel_path).flatten().is_some(),
+            |pinned| read_git_file_at(repo, pinned, rel_path),
+            || format!("PERF_BASELINE_REV `{rev}` did not resolve in git repository {root_label}"),
+        );
     }
-    if !on_main
-        && Command::new("git")
-            .args(["-C", repo, "rev-parse", "--verify", "--quiet", "origin/main^{commit}"])
-            .status()
-            .is_ok_and(|s| s.success())
-    {
-        let mb = git_merge_base(repo, "HEAD", "origin/main");
-        if let Some(found) = read_git_file_at(repo, &mb, rel_path) {
-            return found;
-        }
-    }
-    for rev in ["origin/main", "main"] {
-        if let Some(found) = read_git_file_at(repo, rev, rel_path) {
-            return found;
-        }
-    }
-    panic!("neither origin/main nor main resolved in git repository {}", root.display());
+    baseline_from_find(
+        search_git(repo, root, on_main, rel_path),
+        rel_path,
+        &format!("neither origin/main nor main resolved in git repository {}", root.display()),
+    )
 }
 
 fn read_git_file_at(repo: &str, rev: &str, rel_path: &str) -> Option<Option<String>> {
@@ -884,6 +988,7 @@ mod tests {
                 let bench_text = fs::read_to_string(root.join("benches/baselines.toml"))
                     .expect("read baselines");
                 let benches = super::super::guard::must_recorded_benches(&bench_text);
+                let baseline = baseline.expect("baseline");
                 let errors = super::super::guard::check(&super::super::guard::Input {
                     manifest: &manifest,
                     surface: &surface,
@@ -894,7 +999,7 @@ mod tests {
                 assert!(errors.is_empty(), "manifest looser than baseline:\n{}", errors.join("\n"));
             }
             "new_zero" => {
-                assert_eq!(baseline, None, "all-zero SHA on a new manifest must return None");
+                assert_eq!(baseline, Ok(None), "all-zero SHA on a new manifest must return None");
             }
             _ => unreachable!("unknown mode {mode}"),
         }
@@ -988,7 +1093,7 @@ mod tests {
         fs::write(tmp.path().join("tests/perf.toml"), "# first\n").expect("write perf.toml");
         run_cmd(tmp.path(), "jj", &["commit", "-m", "add perf"]);
         let zero = "0000000000000000000000000000000000000000";
-        assert_eq!(committed_baseline_in(tmp.path(), Some(zero)), None);
+        assert_eq!(committed_baseline_in(tmp.path(), Some(zero)), Ok(None));
 
         fs::write(tmp.path().join("tests/perf.toml"), "# second\n").expect("write second");
         run_cmd(tmp.path(), "jj", &["commit", "-m", "update perf"]);
@@ -996,20 +1101,28 @@ mod tests {
     }
 
     #[test]
-    fn committed_baseline_returns_none_when_revision_resolves_and_lacks_file_and_reads_git_checkout()
-     {
+    fn committed_baseline_fails_when_a_resolved_revision_lacks_the_file_and_reads_git_checkout() {
         let tmp = TempDir::new().expect("tempdir");
         run_cmd(tmp.path(), "git", &["init", "-q", "-b", "main"]);
         fs::write(tmp.path().join("README.md"), "hello\n").expect("write readme");
         run_cmd(tmp.path(), "git", &["add", "."]);
         run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "init"]);
-        assert_eq!(committed_baseline_in(tmp.path(), None), None);
+        let missing = committed_baseline_in(tmp.path(), None);
+        let mut errors = Vec::new();
+        assert!(recorded_baseline(missing, &mut errors).is_none());
+        assert!(
+            errors.iter().any(|err| err.contains("missing") && err.contains("tests/perf.toml")),
+            "{errors:?}"
+        );
 
         fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
         fs::write(tmp.path().join("tests/perf.toml"), "# baseline\n").expect("write perf.toml");
         run_cmd(tmp.path(), "git", &["add", "."]);
         run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "add perf"]);
-        assert_eq!(committed_baseline_in(tmp.path(), None).as_deref(), Some("# baseline\n"));
+        assert_eq!(
+            committed_baseline_in(tmp.path(), None).expect("baseline").as_deref(),
+            Some("# baseline\n")
+        );
     }
 
     #[test]
@@ -1047,6 +1160,7 @@ mod tests {
                 Some("refs/heads/feature"),
                 "tests/perf.toml"
             )
+            .expect("baseline")
             .as_deref(),
             Some("# origin-main-baseline\n"),
             "new-branch push must resolve baseline via merge-base with origin/main"
@@ -1060,6 +1174,7 @@ mod tests {
                 Some("refs/heads/feature"),
                 "tests/perf.toml"
             )
+            .expect("baseline")
             .as_deref(),
             Some("# origin-main-baseline\n"),
             "force-push with unreachable before SHA must resolve baseline via merge-base with origin/main"
@@ -1073,6 +1188,7 @@ mod tests {
                 Some("refs/heads/feature"),
                 "tests/perf.toml"
             )
+            .expect("baseline")
             .as_deref(),
             Some("# origin-main-baseline\n"),
             "feature branch push must baseline against merge-base with origin/main"
@@ -1086,6 +1202,7 @@ mod tests {
                 Some("refs/pull/1/merge"),
                 "tests/perf.toml"
             )
+            .expect("baseline")
             .as_deref(),
             Some("# feature-commit-1\n"),
             "PR with reachable base.sha must use that revision"
@@ -1097,6 +1214,7 @@ mod tests {
                 Some("refs/pull/1/merge"),
                 "tests/perf.toml"
             )
+            .expect("baseline")
             .as_deref(),
             Some("# origin-main-baseline\n"),
             "PR with unreachable base.sha must fall back to merge-base with origin/main"
@@ -1153,7 +1271,7 @@ mod tests {
             Some("refs/heads/feature"),
             "tests/perf.toml",
         );
-        assert_eq!(resolved.as_deref(), Some("# criss-cross-base\n"));
+        assert_eq!(resolved.expect("baseline").as_deref(), Some("# criss-cross-base\n"));
     }
 
     #[test]
@@ -1255,16 +1373,16 @@ mod tests {
             Some("refs/heads/feature"),
             "tests/perf.toml",
         );
-        assert_eq!(resolved.as_deref(), Some("# fork\n"), "not main's tip");
+        assert_eq!(resolved.expect("baseline").as_deref(), Some("# fork\n"), "not main's tip");
         let on_main = committed_baseline_file_in(
             tmp.path(),
             None,
             Some("refs/heads/main"),
             "tests/perf.toml",
         );
-        assert_eq!(on_main.as_deref(), Some("# main-tip\n"));
+        assert_eq!(on_main.expect("baseline").as_deref(), Some("# main-tip\n"));
         assert_eq!(
-            committed_baseline_in(tmp.path(), None).as_deref(),
+            committed_baseline_in(tmp.path(), None).expect("baseline").as_deref(),
             Some("# fork\n"),
             "GITHUB_REF unset and @ off main baselines at the fork, not main's tip"
         );
@@ -1280,7 +1398,7 @@ mod tests {
             .expect("write moved main");
         run_cmd(tmp.path(), "jj", &["bookmark", "set", "main", "-r", "@"]);
         assert_eq!(
-            committed_baseline_in(tmp.path(), None).as_deref(),
+            committed_baseline_in(tmp.path(), None).expect("baseline").as_deref(),
             Some("# main-tip\n"),
             "moving local main bookmark must still baseline against main@origin"
         );
@@ -1296,7 +1414,11 @@ mod tests {
             Some("refs/pull/7/merge"),
             "tests/perf.toml",
         );
-        assert_eq!(pull.as_deref(), Some("# feature\n"), "a PR uses its base.sha");
+        assert_eq!(
+            pull.expect("baseline").as_deref(),
+            Some("# feature\n"),
+            "a PR uses its base.sha"
+        );
         let zero = "0000000000000000000000000000000000000000";
         let new_pull = committed_baseline_file_in(
             tmp.path(),
@@ -1304,52 +1426,96 @@ mod tests {
             Some("refs/pull/7/merge"),
             "tests/perf.toml",
         );
-        assert_eq!(new_pull.as_deref(), Some("# fork\n"), "an all-zero base is not a revision");
+        assert_eq!(
+            new_pull.expect("baseline").as_deref(),
+            Some("# fork\n"),
+            "an all-zero base is not a revision"
+        );
         let push = committed_baseline_file_in(
             tmp.path(),
             Some(&feature),
             Some("refs/heads/feature"),
             "tests/perf.toml",
         );
-        assert_eq!(push.as_deref(), Some("# fork\n"), "a push is not a PR");
+        assert_eq!(push.expect("baseline").as_deref(), Some("# fork\n"), "a push is not a PR");
+    }
+
+    fn budget_op(id: &str, processes: u64, wall: u64, target: u64) -> String {
+        format!(
+            r#"
+[[op]]
+id = "{id}"
+class = "command"
+fixture = "one file"
+test = "tests/counts.rs::counts"
+processes = {processes}
+wall_floor_us = {wall}
+target_us = {target}
+derivation = "Pinned."
+"#
+        )
     }
 
     #[test]
-    fn strictness_counts_entries_and_ignores_unquoted_comments() {
-        assert_eq!(
-            strictness("a = 3\nb = \"x\"\n# c = 9\nd = 4\n"),
-            Strictness { entries: 2, sum: 7 }
-        );
-        assert_eq!(strictness("# nothing\n"), Strictness { entries: 0, sum: 0 });
-        assert_eq!(
-            strictness("a = 18446744073709551615\nb = 5\n"),
-            Strictness { entries: 2, sum: u64::MAX }
-        );
-        let commented = strictness("wall_floor_us = 500000 # comment\n");
-        assert_eq!(commented, strictness("wall_floor_us = 500000\n"));
-        assert_eq!(commented, Strictness { entries: 1, sum: 500_000 });
-        // A `#` inside a quoted value is not a comment, and the value is not an integer.
-        assert_eq!(
-            strictness("floor_reason = \"hash # stays\"\nwall_floor_us = 3 # 100\n"),
-            Strictness { entries: 1, sum: 3 }
-        );
-        let few = strictness("wall = 1\n");
-        let many = strictness("wall = 500000\nprocesses = 2\n");
-        assert!(is_stricter(many, few));
-        assert!(!is_stricter(few, many));
-        assert!(!is_stricter(few, few));
+    fn strictness_compares_shared_ceilings_and_ignores_unquoted_comments() {
+        let plain = budget_op("command:print", 1, 500_000, 500_000);
+        let commented = format!("{plain}# wall_floor_us = 1\n");
+        assert_eq!(operation_ceilings(&plain), operation_ceilings(&commented));
+        assert!(operation_ceilings("wall = 10\n").is_empty());
+        assert!(operation_ceilings("# nothing\n").is_empty());
+        let quoted = r#"
+[[op]]
+id = "command:print"
+class = "command"
+fixture = "one file"
+test = "tests/counts.rs::counts"
+processes = 1
+wall_floor_us = 3
+target_us = 3
+derivation = "hash # stays"
+"#;
+        assert_eq!(operation_ceilings(quoted)["command:print"].wall_floor_us, 3);
+
+        let low_wall = operation_ceilings(&budget_op("command:print", 1, 1, 1));
+        let high_wall_and_extra = operation_ceilings(&format!(
+            "{}{}",
+            budget_op("command:print", 1, 500_000, 500_000),
+            budget_op("command:extra", 2, 1, 1)
+        ));
+        assert!(is_stricter(&low_wall, &high_wall_and_extra));
+        assert!(!is_stricter(&high_wall_and_extra, &low_wall));
+
+        let same = operation_ceilings(&budget_op("command:print", 1, 10, 10));
+        let same_plus_extra = operation_ceilings(&format!(
+            "{}{}",
+            budget_op("command:print", 1, 10, 10),
+            budget_op("command:extra", 1, 1, 1)
+        ));
+        assert!(!is_stricter(&same_plus_extra, &same));
+        assert!(!is_stricter(&same, &same_plus_extra));
+
+        let missing = operation_ceilings(&budget_op("command:other", 1, 1, 1));
+        assert!(!is_stricter(&missing, &low_wall));
+        assert!(!is_stricter(&low_wall, &missing));
+
+        let low_processes = operation_ceilings(&budget_op("command:print", 1, 500_000, 1));
+        let low_wall_high_processes = operation_ceilings(&budget_op("command:print", 9, 1, 1));
+        assert!(!is_stricter(&low_processes, &low_wall_high_processes));
+        assert!(!is_stricter(&low_wall_high_processes, &low_processes));
+        assert!(!is_stricter(&low_wall, &low_wall));
     }
 
     /// Two merges over the same pair of branches (a criss-cross) leave two
     /// merge-base heads holding different baselines. Commit ids are random, so
     /// the tight copy is put on each side in turn: one of the two orders has the
     /// loose head sorting first.
-    fn resolved_criss_cross(a: &str, b: &str) -> Option<String> {
+    fn resolved_criss_cross(a: &str, b: &str) -> Result<Option<String>, String> {
         let tmp = TempDir::new().expect("tempdir");
         let dir = tmp.path();
         run_cmd(dir, "jj", &["git", "init", "--colocate"]);
         fs::create_dir_all(dir.join("tests")).expect("mkdir tests");
-        fs::write(dir.join("tests/perf.toml"), "wall = 50\n").expect("write root");
+        fs::write(dir.join("tests/perf.toml"), budget_op("command:root", 1, 50, 50))
+            .expect("write root");
         run_cmd(dir, "jj", &["commit", "-m", "root"]);
         run_cmd(dir, "jj", &["new", "@-", "-m", "A"]);
         fs::write(dir.join("tests/perf.toml"), a).expect("write a");
@@ -1358,10 +1524,12 @@ mod tests {
         fs::write(dir.join("tests/perf.toml"), b).expect("write b");
         run_cmd(dir, "jj", &["bookmark", "create", "branch-b", "-r", "@"]);
         run_cmd(dir, "jj", &["new", "branch-a", "branch-b", "-m", "main merge"]);
-        fs::write(dir.join("tests/perf.toml"), "wall = 50\n").expect("resolve main");
+        fs::write(dir.join("tests/perf.toml"), budget_op("command:root", 1, 50, 50))
+            .expect("resolve main");
         run_cmd(dir, "jj", &["bookmark", "create", "main", "-r", "@"]);
         run_cmd(dir, "jj", &["new", "branch-a", "branch-b", "-m", "feature merge"]);
-        fs::write(dir.join("tests/perf.toml"), "wall = 50\n").expect("resolve feature");
+        fs::write(dir.join("tests/perf.toml"), budget_op("command:root", 1, 50, 50))
+            .expect("resolve feature");
         committed_baseline_file_in(
             dir,
             Some("0000000000000000000000000000000000000000"),
@@ -1372,21 +1540,107 @@ mod tests {
 
     #[test]
     fn jj_criss_cross_picks_the_strictest_head_whichever_id_sorts_first() {
+        let tight = budget_op("command:print", 1, 10, 10);
+        let loose = budget_op("command:print", 1, 90, 90);
         assert_eq!(
-            resolved_criss_cross("wall = 10\n", "wall = 90\n").as_deref(),
-            Some("wall = 10\n")
+            resolved_criss_cross(&tight, &loose).expect("baseline").as_deref(),
+            Some(tight.as_str())
         );
         assert_eq!(
-            resolved_criss_cross("wall = 90\n", "wall = 10\n").as_deref(),
-            Some("wall = 10\n")
+            resolved_criss_cross(&loose, &tight).expect("baseline").as_deref(),
+            Some(tight.as_str())
         );
     }
 
     #[test]
-    fn jj_criss_cross_prefers_more_budget_entries_over_a_smaller_sum() {
-        let many = "wall = 500000\nprocesses = 2\n";
-        let few = "wall = 1\n";
-        assert_eq!(resolved_criss_cross(many, few).as_deref(), Some(many));
-        assert_eq!(resolved_criss_cross(few, many).as_deref(), Some(many));
+    fn jj_criss_cross_prefers_a_lower_shared_ceiling_over_more_entries() {
+        let few = budget_op("command:print", 1, 1, 1);
+        let many = format!(
+            "{}{}",
+            budget_op("command:print", 1, 500_000, 500_000),
+            budget_op("command:extra", 2, 1, 1)
+        );
+        assert_eq!(
+            resolved_criss_cross(&many, &few).expect("baseline").as_deref(),
+            Some(few.as_str())
+        );
+        assert_eq!(
+            resolved_criss_cross(&few, &many).expect("baseline").as_deref(),
+            Some(few.as_str())
+        );
+    }
+
+    #[test]
+    fn a_missing_baseline_file_fails_the_check_and_a_later_revision_is_still_read() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_cmd(tmp.path(), "jj", &["git", "init", "--colocate"]);
+        fs::write(tmp.path().join("README.md"), "hello\n").expect("write readme");
+        run_cmd(tmp.path(), "jj", &["commit", "-m", "origin"]);
+        run_cmd(tmp.path(), "jj", &["bookmark", "create", "main", "-r", "@-"]);
+        let remote = TempDir::new().expect("remote");
+        run_cmd(remote.path(), "git", &["init", "-q", "--bare"]);
+        let url = remote.path().to_str().expect("remote path");
+        run_cmd(tmp.path(), "jj", &["git", "remote", "add", "origin", url]);
+        run_cmd(tmp.path(), "jj", &["git", "push", "--bookmark", "main"]);
+        run_cmd(tmp.path(), "jj", &["new", "main", "-m", "local main"]);
+        fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
+        fs::write(tmp.path().join("tests/perf.toml"), "# from-main\n").expect("write perf");
+        run_cmd(tmp.path(), "jj", &["bookmark", "set", "main", "-r", "@"]);
+
+        let on_main = committed_baseline_file_in(
+            tmp.path(),
+            None,
+            Some("refs/heads/main"),
+            "tests/perf.toml",
+        );
+        assert_eq!(on_main.expect("baseline").as_deref(), Some("# from-main\n"));
+
+        run_cmd(tmp.path(), "jj", &["new", "-m", "work"]);
+        assert_eq!(
+            committed_baseline_in(tmp.path(), None).expect("baseline").as_deref(),
+            Some("# from-main\n")
+        );
+
+        let empty = TempDir::new().expect("tempdir");
+        run_cmd(empty.path(), "jj", &["git", "init", "--colocate"]);
+        fs::write(empty.path().join("README.md"), "x\n").expect("write readme");
+        run_cmd(empty.path(), "jj", &["commit", "-m", "no manifest"]);
+        run_cmd(empty.path(), "jj", &["bookmark", "create", "main", "-r", "@-"]);
+        let mut errors = Vec::new();
+        assert!(
+            recorded_baseline(committed_baseline_in(empty.path(), None), &mut errors).is_none()
+        );
+        assert!(
+            errors.iter().any(|err| err.contains("missing") && err.contains("tests/perf.toml")),
+            "{errors:?}"
+        );
+
+        let git_repo = TempDir::new().expect("tempdir");
+        run_cmd(git_repo.path(), "git", &["init", "-q", "-b", "main"]);
+        fs::write(git_repo.path().join("README.md"), "hello\n").expect("write readme");
+        run_cmd(git_repo.path(), "git", &["add", "."]);
+        run_cmd(git_repo.path(), "git", &["commit", "-q", "-m", "init"]);
+        let root_sha = git_head(git_repo.path());
+        run_cmd(git_repo.path(), "git", &["checkout", "-q", "-b", "feature"]);
+        run_cmd(git_repo.path(), "git", &["checkout", "-q", "main"]);
+        fs::create_dir_all(git_repo.path().join("tests")).expect("mkdir tests");
+        fs::write(git_repo.path().join("tests/perf.toml"), "# on-main\n").expect("write perf");
+        run_cmd(git_repo.path(), "git", &["add", "."]);
+        run_cmd(git_repo.path(), "git", &["commit", "-q", "-m", "add perf"]);
+        let main_sha = git_head(git_repo.path());
+        run_cmd(git_repo.path(), "git", &["update-ref", "refs/remotes/origin/main", &main_sha]);
+        run_cmd(git_repo.path(), "git", &["checkout", "-q", "feature"]);
+        assert_eq!(
+            committed_baseline_in(git_repo.path(), None).expect("baseline").as_deref(),
+            Some("# on-main\n")
+        );
+        let pinned = committed_baseline_file_in(
+            git_repo.path(),
+            Some(&root_sha),
+            Some("refs/pull/1/merge"),
+            "tests/perf.toml",
+        );
+        let err = pinned.expect_err("a resolved revision without the file");
+        assert!(err.contains("missing") && err.contains(&root_sha), "{err}");
     }
 }
