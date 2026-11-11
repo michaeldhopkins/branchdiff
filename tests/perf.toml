@@ -268,9 +268,9 @@ benches = ["navigation/scroll_down_10", "update/handle_scroll_input", "frame_con
 floor = "sum"
 alternatives = ["update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines"]
 floor_reason = "scroll marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw. frame_context sizes and handle_scroll_input replace the scroll bench."
-wall_floor_us = 178
-target_us = 178
-derivation = "Same stages as scroll-down: navigation/scroll_down_10 (97505 ns, 98 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 178 us, under the 8 ms cap."
+wall_floor_us = 148
+target_us = 148
+derivation = "Same stages as scroll-down: navigation/scroll_down_10 (97505 ns, 98 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 148 us, under the 8 ms cap."
 
 [[op]]
 id = "key:scroll-down"
@@ -282,9 +282,9 @@ benches = ["navigation/scroll_down_10", "update/handle_scroll_input", "frame_con
 floor = "sum"
 alternatives = ["update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines"]
 floor_reason = "scroll_down marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw. frame_context sizes and handle_scroll_input replace the scroll bench."
-wall_floor_us = 178
-target_us = 178
-derivation = "navigation/scroll_down_10 (97505 ns, 98 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 178 us, under the 8 ms cap."
+wall_floor_us = 148
+target_us = 148
+derivation = "navigation/scroll_down_10 (97505 ns, 98 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 148 us, under the 8 ms cap."
 
 [[op]]
 id = "key:next-file"
@@ -295,9 +295,9 @@ processes = 0
 benches = ["navigation/next_file", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "next_file marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
-wall_floor_us = 84
-target_us = 84
-derivation = "navigation/next_file (3513 ns, 4 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 84 us, under the 8 ms cap."
+wall_floor_us = 54
+target_us = 54
+derivation = "navigation/next_file (3513 ns, 4 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 54 us, under the 8 ms cap."
 
 [[op]]
 id = "key:prev-file"
@@ -308,9 +308,9 @@ processes = 0
 benches = ["navigation/next_file", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "prev_file marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
-wall_floor_us = 84
-target_us = 84
-derivation = "Same stages as next-file: navigation/next_file (3513 ns, 4 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 84 us, under the 8 ms cap."
+wall_floor_us = 54
+target_us = 54
+derivation = "Same stages as next-file: navigation/next_file (3513 ns, 4 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 54 us, under the 8 ms cap."
 
 [[op]]
 id = "key:page-up"
@@ -321,9 +321,9 @@ processes = 0
 benches = ["navigation/page_down", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "page_up calls scroll_up, which marks inline spans dirty, and ensure_inline_spans_for_visible runs after it, before draw. navigation/page_down is the bench for that scroll."
-wall_floor_us = 177
-target_us = 177
-derivation = "Same stages as page-down: navigation/page_down (96007 ns, 97 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 177 us, under the 8 ms cap."
+wall_floor_us = 147
+target_us = 147
+derivation = "Same stages as page-down: navigation/page_down (96007 ns, 97 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 147 us, under the 8 ms cap."
 
 [[op]]
 id = "key:page-down"
@@ -334,9 +334,9 @@ processes = 0
 benches = ["navigation/page_down", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "page_down calls scroll_down, which marks inline spans dirty, and ensure_inline_spans_for_visible runs after it, before draw."
-wall_floor_us = 177
-target_us = 177
-derivation = "navigation/page_down (96007 ns, 97 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 177 us, under the 8 ms cap."
+wall_floor_us = 147
+target_us = 147
+derivation = "navigation/page_down (96007 ns, 97 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 147 us, under the 8 ms cap."
 
 [[op]]
 id = "key:go-to-top"
@@ -347,9 +347,9 @@ processes = 0
 benches = ["navigation/go_to_top", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "go_to_top marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
-wall_floor_us = 81
-target_us = 81
-derivation = "navigation/go_to_top (2 ns, 1 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 81 us, under the 8 ms cap."
+wall_floor_us = 51
+target_us = 51
+derivation = "navigation/go_to_top (2 ns, 1 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 51 us, under the 8 ms cap."
 
 [[op]]
 id = "key:go-to-bottom"
@@ -360,9 +360,9 @@ processes = 0
 benches = ["navigation/go_to_bottom", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "go_to_bottom marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
-wall_floor_us = 129
-target_us = 129
-derivation = "navigation/go_to_bottom (48649 ns, 49 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 129 us, under the 8 ms cap."
+wall_floor_us = 99
+target_us = 99
+derivation = "navigation/go_to_bottom (48649 ns, 49 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 99 us, under the 8 ms cap."
 
 [[op]]
 id = "key:toggle-all-reviewed"
@@ -396,9 +396,9 @@ benches = ["view_mode/cycle_view_mode", "context_mode/build_context_lines/1k_lin
 floor = "sum"
 alternatives = ["context_mode/build_context_lines/1k_lines", "context_mode/build_context_lines/10k_lines", "frame_context/context/1k_lines", "frame_context/commit_only/1k_lines", "frame_context/context/10k_lines", "frame_context/commit_only/10k_lines"]
 floor_reason = "context_mode and frame_context fixtures replace work inside cycle_view_mode. ensure_inline_spans_for_visible runs after the mode change."
-wall_floor_us = 471
-target_us = 471
-derivation = "view_mode/cycle_view_mode (390056 ns, 391 us) then inline_spans/ensure_visible_1200_candidates (79887 ns, 80 us) is 471 us, under the 8 ms cap. The context and frame fixtures replace the cycle bench and are not added."
+wall_floor_us = 441
+target_us = 441
+derivation = "view_mode/cycle_view_mode (390056 ns, 391 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 441 us, under the 8 ms cap. The context and frame fixtures replace the cycle bench and are not added."
 
 [[op]]
 id = "key:copy-path"

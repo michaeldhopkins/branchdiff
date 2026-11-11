@@ -1,4 +1,4 @@
-use similar::{ChangeTag, TextDiff};
+use similar::{ChangeTag, DiffOp, TextDiff};
 
 use super::LineSource;
 
@@ -52,7 +52,50 @@ pub fn compute_inline_diff_merged(
         _ => LineSource::DeletedBase,
     };
 
+    // ASCII lines are one byte per char. Diffing the bytes skips the `&str`
+    // token `TextDiff::from_chars` builds for every character, and uses the
+    // same Myers-plus-compact script, so the highlights stay put.
+    if old_line.is_ascii() && new_line.is_ascii() {
+        let ops = similar::capture_diff_slices(
+            similar::Algorithm::Myers,
+            old_line.as_bytes(),
+            new_line.as_bytes(),
+        );
+        return assemble(edits_from_ops(old_line, new_line, &ops), deletion_source, change_source);
+    }
     let diff = TextDiff::from_chars(old_line, new_line);
+    let edits: Vec<(ChangeTag, &str)> =
+        diff.iter_all_changes().map(|change| (change.tag(), change.value())).collect();
+    assemble(edits, deletion_source, change_source)
+}
+
+fn edits_from_ops<'a>(old: &'a str, new: &'a str, ops: &[DiffOp]) -> Vec<(ChangeTag, &'a str)> {
+    let mut edits = Vec::with_capacity(ops.len());
+    for op in ops {
+        match *op {
+            DiffOp::Equal { old_index, len, .. } => {
+                edits.push((ChangeTag::Equal, &old[old_index..old_index + len]));
+            }
+            DiffOp::Delete { old_index, old_len, .. } => {
+                edits.push((ChangeTag::Delete, &old[old_index..old_index + old_len]));
+            }
+            DiffOp::Insert { new_index, new_len, .. } => {
+                edits.push((ChangeTag::Insert, &new[new_index..new_index + new_len]));
+            }
+            DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                edits.push((ChangeTag::Delete, &old[old_index..old_index + old_len]));
+                edits.push((ChangeTag::Insert, &new[new_index..new_index + new_len]));
+            }
+        }
+    }
+    edits
+}
+
+fn assemble(
+    edits: Vec<(ChangeTag, &str)>,
+    deletion_source: LineSource,
+    change_source: LineSource,
+) -> InlineDiffResult {
     let mut spans = Vec::new();
     let mut max_unchanged_segment = 0usize;
     let mut num_unchanged_segments = 0usize;
@@ -102,9 +145,8 @@ pub fn compute_inline_diff_merged(
         spans.push(InlineSpan { text: std::mem::take(pending), source: Some(source), is_deletion });
     };
 
-    for change in diff.iter_all_changes() {
-        let text = change.value();
-        match change.tag() {
+    for (tag, text) in edits {
+        match tag {
             ChangeTag::Equal => {
                 if !pending_deleted.is_empty() || !pending_inserted.is_empty() {
                     flush_unchanged(
@@ -483,5 +525,60 @@ mod tests {
         // But shared: "let ", " = ", "(", ", ", ");"
         let unchanged_count = result.spans.iter().filter(|s| s.source.is_none()).count();
         assert!(unchanged_count >= 2, "Should have multiple unchanged segments");
+    }
+
+    /// The ASCII path must keep the character-diff highlights. A different edit
+    /// script changes which characters are marked and whether the line stays inline.
+    #[test]
+    fn ascii_path_matches_char_diff_spans() {
+        let pairs = [
+            ("", ""),
+            ("same line", "same line"),
+            ("abc", "xyz"),
+            ("end", "let"),
+            ("old", "new"),
+            ("hello world", "hello earth"),
+            ("old content", "new content"),
+            ("do_thing(data)", "do_thing(data, params)"),
+            ("hello world", "hello beautiful world"),
+            ("test_a", "test_b"),
+            ("let x = 1;", "let  x  =  1;"),
+            ("commercial_renewal.name", "bond.name"),
+            ("let x = foo(a, b);", "let y = bar(c, d);"),
+            ("for i in (x..y).rev() {", "// the range span note"),
+            ("            }", "            .map(|x| x)"),
+            (
+                "    let old_var_0 = different_content_0;",
+                "    let variable_0 = some_content_here_0;",
+            ),
+            (
+                "abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789",
+                "abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            ),
+        ];
+        for (old, new) in pairs {
+            let live = compute_inline_diff_merged(old, new, LineSource::Committed);
+            let expect = char_diff_spans(old, new, LineSource::Committed);
+            assert_eq!(live.is_meaningful, expect.is_meaningful, "{old:?} -> {new:?}");
+            assert_eq!(live.spans, expect.spans, "{old:?} -> {new:?}");
+        }
+    }
+
+    /// The pre-ASCII assembler, still on `TextDiff::from_chars`, used as the oracle.
+    fn char_diff_spans(
+        old_line: &str,
+        new_line: &str,
+        change_source: LineSource,
+    ) -> InlineDiffResult {
+        let deletion_source = match change_source {
+            LineSource::Committed => LineSource::DeletedBase,
+            LineSource::Staged => LineSource::DeletedCommitted,
+            LineSource::Unstaged => LineSource::DeletedStaged,
+            _ => LineSource::DeletedBase,
+        };
+        let diff = TextDiff::from_chars(old_line, new_line);
+        let edits: Vec<(ChangeTag, &str)> =
+            diff.iter_all_changes().map(|change| (change.tag(), change.value())).collect();
+        assemble(edits, deletion_source, change_source)
     }
 }

@@ -47,9 +47,11 @@ ref_median_ns = 36959
 
 [[bench]]
 id = "inline_spans/ensure_visible_1200_candidates"
-max_blocks = 466
-max_bytes = 223728
-ref_median_ns = 79887
+# Re-measured 2026-11-11 after diffing ASCII lines as bytes: 391 blocks,
+# 197079 bytes, median about 45 us. The time pin keeps headroom over that median.
+max_blocks = 391
+max_bytes = 197079
+ref_median_ns = 50000
 
 [[bench]]
 id = "navigation/scroll_down_10"
