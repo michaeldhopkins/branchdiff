@@ -486,6 +486,9 @@ fn jj_file_at_commit(root: &Path, repo: &str, commit_id: &str, rel_path: &str) -
     Some(String::from_utf8(shown.stdout).expect("baseline is utf-8"))
 }
 
+/// On main when CI names `main`, when `HEAD` is the `main` branch, or when a
+/// detached `HEAD` is `main`'s commit. Any other detached commit baselines at
+/// the merge base, the same as a feature branch.
 fn is_on_main_git(repo: &str, github_ref: Option<&str>) -> bool {
     if let Some(gref) = github_ref {
         return gref == "refs/heads/main" || gref == "main";
@@ -498,7 +501,24 @@ fn is_on_main_git(repo: &str, github_ref: Option<&str>) -> bool {
         let branch = String::from_utf8_lossy(&out.stdout);
         return branch.trim() == "main";
     }
-    true
+    match (git_commit(repo, "HEAD"), git_commit(repo, "main")) {
+        (Some(head), Some(main)) => head == main,
+        _ => false,
+    }
+}
+
+fn git_commit(repo: &str, rev: &str) -> Option<String> {
+    let spec = format!("{rev}^{{commit}}");
+    let out = Command::new("git")
+        .args(["-C", repo, "rev-parse", "--verify", "--quiet", &spec])
+        .output()
+        .unwrap_or_else(|err| panic!("git rev-parse failed to start: {err}"));
+    if !out.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(out.stdout).expect("rev-parse utf-8");
+    let sha = sha.trim();
+    if sha.is_empty() { None } else { Some(sha.to_string()) }
 }
 
 fn git_merge_base(repo: &str, left: &str, right: &str) -> String {
@@ -1250,6 +1270,66 @@ mod tests {
         assert_eq!(
             committed_baseline_in(tmp.path(), None).expect("baseline").as_deref(),
             Some("# baseline\n")
+        );
+    }
+
+    #[test]
+    fn a_detached_head_off_main_baselines_at_the_merge_base_not_at_main_tip() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_cmd(tmp.path(), "git", &["init", "-q", "-b", "main"]);
+        fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
+        fs::write(tmp.path().join("tests/perf.toml"), "# tight\n").expect("write tight");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "tight"]);
+        let tight = git_head(tmp.path());
+
+        // The feature commit changes the file, so HEAD, the merge base, and
+        // main's tip are three different texts. Only the merge base is `# tight`.
+        run_cmd(tmp.path(), "git", &["checkout", "-q", "-b", "feature"]);
+        fs::write(tmp.path().join("tests/perf.toml"), "# feature\n").expect("write feature");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "feature"]);
+        let feature = git_head(tmp.path());
+
+        run_cmd(tmp.path(), "git", &["checkout", "-q", "main"]);
+        fs::write(tmp.path().join("tests/perf.toml"), "# loose\n").expect("write loose");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "loose"]);
+        let loose = git_head(tmp.path());
+        run_cmd(tmp.path(), "git", &["update-ref", "refs/remotes/origin/main", &loose]);
+        assert_ne!(tight, loose);
+        assert_ne!(feature, loose);
+
+        run_cmd(tmp.path(), "git", &["checkout", "-q", "--detach", &feature]);
+        let symbolic = Command::new("git")
+            .args(["symbolic-ref", "--short", "-q", "HEAD"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git symbolic-ref");
+        assert!(!symbolic.status.success(), "the checkout must be detached");
+        assert_eq!(
+            committed_baseline_in(tmp.path(), None).expect("baseline").as_deref(),
+            Some("# tight\n"),
+            "a detached feature commit baselines at the merge base, not main's tip"
+        );
+        assert_eq!(
+            committed_baseline_file_in(
+                tmp.path(),
+                None,
+                Some("refs/heads/main"),
+                "tests/perf.toml",
+            )
+            .expect("baseline")
+            .as_deref(),
+            Some("# loose\n"),
+            "GITHUB_REF names main even when HEAD is detached on a feature commit"
+        );
+
+        run_cmd(tmp.path(), "git", &["checkout", "-q", "--detach", &loose]);
+        assert_eq!(
+            committed_baseline_in(tmp.path(), None).expect("baseline").as_deref(),
+            Some("# loose\n"),
+            "detached at main's own commit still baselines at main's tip"
         );
     }
 
