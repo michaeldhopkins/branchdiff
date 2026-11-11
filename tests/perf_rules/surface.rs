@@ -41,9 +41,10 @@ pub(super) fn operations() -> BTreeSet<String> {
 }
 
 /// The manifest committed at `PERF_BASELINE_REV` (when set in CI) or on
-/// `main@origin` / `main`. `Ok(None)` is an all-zero revision whose parent
-/// has no file yet. A resolved revision with no file, and no later candidate
-/// that has one, is an error: the perf check must not treat that as no baseline.
+/// `main@origin` / `main`. `Ok(None)` is a first landing: an all-zero revision
+/// whose parent has no file, or a resolved revision whose history never had
+/// the file. A revision that had the file and lost it is an error. An empty
+/// or comment-only file that is present is not this case; the guard rejects it.
 pub(super) fn committed_baseline() -> Result<Option<String>, String> {
     committed_baseline_file("tests/perf.toml")
 }
@@ -140,14 +141,52 @@ fn search_jj(root: &Path, repo: &str, revsets: &[&str], rel_path: &str) -> Basel
     }
 }
 
+/// A missing file is a first landing when no ancestor ever changed the path,
+/// and a deletion when one did.
+fn file_was_removed(rel_path: &str, rev: &str, touched: bool) -> Result<Option<String>, String> {
+    if touched { Err(missing_baseline(rel_path, rev)) } else { Ok(None) }
+}
+
+fn history_touches_jj(root: &Path, repo: &str, rev: &str, rel_path: &str) -> bool {
+    let revset = format!("ancestors({rev}) & files(\"{rel_path}\")");
+    let out = Command::new("jj")
+        .current_dir(root)
+        .args([
+            "--ignore-working-copy", "--repository", repo, "log", "--no-graph", "-r", &revset,
+            "-T", "commit_id",
+        ])
+        .output()
+        .unwrap_or_else(|err| panic!("jj log failed to start: {err}"));
+    assert!(
+        out.status.success(),
+        "jj log `{revset}` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+}
+
+fn history_touches_git(repo: &str, rev: &str, rel_path: &str) -> bool {
+    let out = Command::new("git")
+        .args(["-C", repo, "rev-list", "-n", "1", rev, "--", rel_path])
+        .output()
+        .unwrap_or_else(|err| panic!("git rev-list failed to start: {err}"));
+    assert!(
+        out.status.success(),
+        "git rev-list {rev} -- {rel_path} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+}
+
 fn baseline_from_find(
     found: BaselineFind,
     rel_path: &str,
     absent: &str,
+    touched: impl FnOnce(&str) -> bool,
 ) -> Result<Option<String>, String> {
     match found {
         BaselineFind::Text(text) => Ok(Some(text)),
-        BaselineFind::Missing(rev) => Err(missing_baseline(rel_path, &rev)),
+        BaselineFind::Missing(rev) => file_was_removed(rel_path, &rev, touched(&rev)),
         BaselineFind::Absent => panic!("{absent}"),
     }
 }
@@ -159,11 +198,12 @@ fn finish_override(
     parent_has_file: impl FnOnce() -> bool,
     read_at: impl FnOnce(&str) -> Option<Option<String>>,
     unresolved: impl FnOnce() -> String,
+    touched: impl Fn(&str) -> bool,
 ) -> Result<Option<String>, String> {
     match found {
         BaselineFind::Text(text) => return Ok(Some(text)),
         BaselineFind::Missing(at) if !is_all_zero_sha(rev) => {
-            return Err(missing_baseline(rel_path, &at));
+            return file_was_removed(rel_path, &at, touched(&at));
         }
         BaselineFind::Missing(_) | BaselineFind::Absent => {}
     }
@@ -176,7 +216,7 @@ fn finish_override(
     }
     match read_at(rev) {
         Some(Some(text)) => Ok(Some(text)),
-        Some(None) => Err(missing_baseline(rel_path, rev)),
+        Some(None) => file_was_removed(rel_path, rev, touched(rev)),
         None => panic!("{}", unresolved()),
     }
 }
@@ -197,7 +237,13 @@ fn committed_baseline_jj(
             if is_pr && !is_all_zero_sha(rev) {
                 match commit_baseline_jj(root, repo, rev, rel_path) {
                     BaselineFind::Text(text) => return Ok(Some(text)),
-                    BaselineFind::Missing(_) => return Err(missing_baseline(rel_path, rev)),
+                    BaselineFind::Missing(_) => {
+                        return file_was_removed(
+                            rel_path,
+                            rev,
+                            history_touches_jj(root, repo, rev, rel_path),
+                        );
+                    }
                     BaselineFind::Absent => {}
                 }
             }
@@ -211,6 +257,7 @@ fn committed_baseline_jj(
             || read_jj_file_at(root, repo, "heads(::@ & ~empty())-", rel_path).flatten().is_some(),
             |pinned| read_jj_file_at(root, repo, pinned, rel_path),
             || format!("PERF_BASELINE_REV `{rev}` did not resolve in jj repository {root_label}"),
+            |pinned| history_touches_jj(root, repo, pinned, rel_path),
         );
     }
     let revsets: &[&str] = if on_main { &["main@origin", "main"] } else { JJ_FORK_REVSETS };
@@ -218,6 +265,7 @@ fn committed_baseline_jj(
         search_jj(root, repo, revsets, rel_path),
         rel_path,
         &format!("neither main@origin nor main resolved in jj repository {}", root.display()),
+        |pinned| history_touches_jj(root, repo, pinned, rel_path),
     )
 }
 
@@ -643,7 +691,13 @@ fn committed_baseline_git(
             if is_pr && !is_all_zero_sha(rev) {
                 match read_git_file_at(repo, rev, rel_path) {
                     Some(Some(text)) => return Ok(Some(text)),
-                    Some(None) => return Err(missing_baseline(rel_path, rev)),
+                    Some(None) => {
+                        return file_was_removed(
+                            rel_path,
+                            rev,
+                            history_touches_git(repo, rev, rel_path),
+                        );
+                    }
                     None => {}
                 }
             }
@@ -660,12 +714,14 @@ fn committed_baseline_git(
             || read_git_file_at(repo, "HEAD~1", rel_path).flatten().is_some(),
             |pinned| read_git_file_at(repo, pinned, rel_path),
             || format!("PERF_BASELINE_REV `{rev}` did not resolve in git repository {root_label}"),
+            |pinned| history_touches_git(repo, pinned, rel_path),
         );
     }
     baseline_from_find(
         search_git(repo, root, on_main, rel_path),
         rel_path,
         &format!("neither origin/main nor main resolved in git repository {}", root.display()),
+        |pinned| history_touches_git(repo, pinned, rel_path),
     )
 }
 
@@ -1313,12 +1369,25 @@ mod tests {
         fs::write(tmp.path().join("README.md"), "hello\n").expect("write readme");
         run_cmd(tmp.path(), "git", &["add", "."]);
         run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "init"]);
-        let missing = committed_baseline_in(tmp.path(), None);
+        assert_eq!(
+            committed_baseline_in(tmp.path(), None),
+            Ok(None),
+            "a revision that predates the manifest bootstraps"
+        );
+
+        fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
+        fs::write(tmp.path().join("tests/perf.toml"), "# added\n").expect("write perf.toml");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "add perf"]);
+        fs::remove_file(tmp.path().join("tests/perf.toml")).expect("delete perf.toml");
+        run_cmd(tmp.path(), "git", &["add", "."]);
+        run_cmd(tmp.path(), "git", &["commit", "-q", "-m", "delete perf"]);
+        let deleted = committed_baseline_in(tmp.path(), None);
         let mut errors = Vec::new();
-        assert!(recorded_baseline(missing, &mut errors).is_none());
+        assert!(recorded_baseline(deleted, &mut errors).is_none());
         assert!(
             errors.iter().any(|err| err.contains("missing") && err.contains("tests/perf.toml")),
-            "{errors:?}"
+            "deleting the manifest must still fail: {errors:?}"
         );
 
         fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
@@ -2062,6 +2131,59 @@ derivation = "Ceiling of the motion bench."
     }
 
     #[test]
+    fn a_jj_parent_that_predates_the_manifest_bootstraps_and_a_deletion_does_not() {
+        let tmp = TempDir::new().expect("tempdir");
+        run_cmd(tmp.path(), "jj", &["git", "init", "--colocate"]);
+        fs::write(tmp.path().join("README.md"), "x\n").expect("write readme");
+        run_cmd(tmp.path(), "jj", &["commit", "-m", "no manifest"]);
+        run_cmd(tmp.path(), "jj", &["bookmark", "create", "main", "-r", "@-"]);
+        let predating = jj_commit_id(tmp.path(), "description(exact:\"no manifest\\n\")");
+        assert_eq!(
+            committed_baseline_file_in(
+                tmp.path(),
+                Some(&predating),
+                Some("refs/pull/1/merge"),
+                "tests/perf.toml",
+            ),
+            Ok(None),
+            "a jj PR base that predates the manifest bootstraps"
+        );
+        assert_eq!(
+            committed_baseline_file_in(
+                tmp.path(),
+                Some(&predating),
+                Some("refs/heads/main"),
+                "tests/perf.toml",
+            ),
+            Ok(None),
+            "a jj push-to-main parent that predates the manifest bootstraps"
+        );
+
+        fs::create_dir_all(tmp.path().join("tests")).expect("mkdir tests");
+        fs::write(tmp.path().join("tests/perf.toml"), "# added\n").expect("write perf");
+        run_cmd(tmp.path(), "jj", &["commit", "-m", "add perf"]);
+        fs::remove_file(tmp.path().join("tests/perf.toml")).expect("delete perf");
+        run_cmd(tmp.path(), "jj", &["commit", "-m", "delete perf"]);
+        let deleted_id = jj_commit_id(tmp.path(), "description(exact:\"delete perf\\n\")");
+        let deleted_pr = committed_baseline_file_in(
+            tmp.path(),
+            Some(&deleted_id),
+            Some("refs/pull/2/merge"),
+            "tests/perf.toml",
+        );
+        let pr_err = deleted_pr.expect_err("a jj base that deleted the manifest");
+        assert!(pr_err.contains("missing") && pr_err.contains(&deleted_id), "{pr_err}");
+        let deleted_push = committed_baseline_file_in(
+            tmp.path(),
+            Some(&deleted_id),
+            Some("refs/heads/main"),
+            "tests/perf.toml",
+        );
+        let push_err = deleted_push.expect_err("a jj push parent that deleted the manifest");
+        assert!(push_err.contains("missing") && push_err.contains(&deleted_id), "{push_err}");
+    }
+
+    #[test]
     fn a_missing_baseline_file_fails_the_check_and_a_later_revision_is_still_read() {
         let tmp = TempDir::new().expect("tempdir");
         run_cmd(tmp.path(), "jj", &["git", "init", "--colocate"]);
@@ -2097,13 +2219,24 @@ derivation = "Ceiling of the motion bench."
         fs::write(empty.path().join("README.md"), "x\n").expect("write readme");
         run_cmd(empty.path(), "jj", &["commit", "-m", "no manifest"]);
         run_cmd(empty.path(), "jj", &["bookmark", "create", "main", "-r", "@-"]);
+        assert_eq!(
+            committed_baseline_in(empty.path(), None),
+            Ok(None),
+            "jj main that never had the manifest bootstraps"
+        );
+        fs::create_dir_all(empty.path().join("tests")).expect("mkdir tests");
+        fs::write(empty.path().join("tests/perf.toml"), "# added\n").expect("write perf");
+        run_cmd(empty.path(), "jj", &["commit", "-m", "add perf"]);
+        fs::remove_file(empty.path().join("tests/perf.toml")).expect("delete perf");
+        run_cmd(empty.path(), "jj", &["commit", "-m", "delete perf"]);
+        run_cmd(empty.path(), "jj", &["bookmark", "set", "main", "-r", "@-"]);
         let mut errors = Vec::new();
         assert!(
             recorded_baseline(committed_baseline_in(empty.path(), None), &mut errors).is_none()
         );
         assert!(
             errors.iter().any(|err| err.contains("missing") && err.contains("tests/perf.toml")),
-            "{errors:?}"
+            "deleting the manifest on jj main must still fail: {errors:?}"
         );
 
         let git_repo = TempDir::new().expect("tempdir");
@@ -2131,7 +2264,28 @@ derivation = "Ceiling of the motion bench."
             Some("refs/pull/1/merge"),
             "tests/perf.toml",
         );
-        let err = pinned.expect_err("a resolved revision without the file");
-        assert!(err.contains("missing") && err.contains(&root_sha), "{err}");
+        assert_eq!(pinned, Ok(None), "a PR base that predates the manifest bootstraps");
+
+        let pushed = committed_baseline_file_in(
+            git_repo.path(),
+            Some(&root_sha),
+            Some("refs/heads/main"),
+            "tests/perf.toml",
+        );
+        assert_eq!(pushed, Ok(None), "a push-to-main parent that predates the manifest bootstraps");
+
+        run_cmd(git_repo.path(), "git", &["checkout", "-q", "main"]);
+        fs::remove_file(git_repo.path().join("tests/perf.toml")).expect("delete perf");
+        run_cmd(git_repo.path(), "git", &["add", "."]);
+        run_cmd(git_repo.path(), "git", &["commit", "-q", "-m", "delete perf"]);
+        let deleted_sha = git_head(git_repo.path());
+        let deleted = committed_baseline_file_in(
+            git_repo.path(),
+            Some(&deleted_sha),
+            Some("refs/pull/2/merge"),
+            "tests/perf.toml",
+        );
+        let err = deleted.expect_err("a base that deleted the manifest");
+        assert!(err.contains("missing") && err.contains(&deleted_sha), "{err}");
     }
 }
