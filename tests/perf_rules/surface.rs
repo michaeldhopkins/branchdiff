@@ -254,27 +254,52 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
 
 /// Pick the baseline text from criss-cross heads, already ordered by commit id.
 /// A head with no operations is skipped when another head has any, so a comment
-/// or a blank file cannot hide a real manifest. Among the rest, a head that is
-/// lower on every shared ceiling and higher on none wins as a whole file.
+/// or a blank file cannot hide a real manifest. A head that is lower on every
+/// shared ceiling and higher on none wins as a whole file. Otherwise each
+/// operation keeps the minimum `processes`, `wall_floor_us`, and `target_us`
+/// across the heads that define it. When that merge matches the earliest
+/// strictest head, that head's original text is kept.
 fn choose_jj_baseline(texts: Vec<String>) -> String {
     let annotated: Vec<(BTreeMap<String, Ceilings>, String)> =
         texts.into_iter().map(|text| (operation_ceilings(&text), text)).collect();
     let any_ops = annotated.iter().any(|(ceilings, _)| !ceilings.is_empty());
-    let mut best: Option<(BTreeMap<String, Ceilings>, String)> = None;
-    for (tightness, text) in annotated {
-        if any_ops && tightness.is_empty() {
-            continue;
-        }
-        if best.as_ref().is_none_or(|(known, _)| is_stricter(&tightness, known)) {
-            best = Some((tightness, text));
-        }
+    let candidates: Vec<(BTreeMap<String, Ceilings>, String)> =
+        annotated.into_iter().filter(|(ceilings, _)| !(any_ops && ceilings.is_empty())).collect();
+    assert!(!candidates.is_empty(), "a resolved file list has a baseline candidate");
+    let best = strictest_index(&candidates);
+    if dominates(best, &candidates) {
+        return candidates[best].1.clone();
     }
-    best.expect("a resolved file list has a baseline candidate").1
+    let merged = render_merged(&candidates);
+    if operation_ceilings(&merged) == candidates[best].0 {
+        return candidates[best].1.clone();
+    }
+    merged
 }
 
-/// Ceilings of one operation. A criss-cross history holds several copies, and
-/// the copy a change must not loosen is the one with the lower shared ceilings.
-/// An id missing on either side is not tighter. Ties keep the lowest commit id.
+fn strictest_index(candidates: &[(BTreeMap<String, Ceilings>, String)]) -> usize {
+    let mut best = 0;
+    for index in 1..candidates.len() {
+        if is_stricter(&candidates[index].0, &candidates[best].0) {
+            best = index;
+        }
+    }
+    best
+}
+
+/// True when `best` is lower on a shared ceiling than every other head and
+/// higher on none. A single head qualifies. A head that only adds ids does
+/// not: the merge keeps those ids, then the original text when the ceilings match.
+fn dominates(best: usize, candidates: &[(BTreeMap<String, Ceilings>, String)]) -> bool {
+    candidates
+        .iter()
+        .enumerate()
+        .all(|(index, (ceilings, _))| index == best || is_stricter(&candidates[best].0, ceilings))
+}
+
+/// Ceilings of one operation. `is_stricter` compares shared ids only: an id
+/// missing on either side is not tighter, and any higher shared ceiling
+/// rejects the candidate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Ceilings {
     processes: u64,
@@ -323,6 +348,89 @@ fn is_stricter(
         }
     }
     tighter
+}
+
+fn render_merged(candidates: &[(BTreeMap<String, Ceilings>, String)]) -> String {
+    let parsed: Vec<Vec<super::guard::Op>> = candidates
+        .iter()
+        .map(|(_, text)| super::guard::parse_operations(text).unwrap_or_default())
+        .collect();
+    let mut ids = Vec::new();
+    let mut seen = BTreeSet::new();
+    for ops in &parsed {
+        for op in ops {
+            if seen.insert(op.id.clone()) {
+                ids.push(op.id.clone());
+            }
+        }
+    }
+    let mut out = String::new();
+    for id in ids {
+        let copies: Vec<&super::guard::Op> =
+            parsed.iter().filter_map(|ops| ops.iter().find(|op| op.id == id)).collect();
+        let Some(first) = copies.first().copied() else {
+            continue;
+        };
+        let processes = copies.iter().map(|op| op.processes).min().expect("at least one copy");
+        let wall = copies.iter().map(|op| op.wall_floor_us).min().expect("at least one copy");
+        let target = copies.iter().map(|op| op.target_us).min().expect("at least one copy");
+        out.push_str(&render_op(first, processes, wall, target));
+    }
+    out
+}
+
+fn render_op(op: &super::guard::Op, processes: u64, wall: u64, target: u64) -> String {
+    let mut lines = vec![
+        "[[op]]".to_string(),
+        format!("id = \"{}\"", toml_basic(&op.id)),
+        format!("class = \"{}\"", toml_basic(&op.class)),
+        format!("fixture = \"{}\"", toml_basic(&op.fixture)),
+        format!("test = \"{}\"", toml_basic(&op.test)),
+        format!("processes = {processes}"),
+    ];
+    if op.owed {
+        lines.push("owed = true".to_string());
+    }
+    push_text(&mut lines, "floor", &op.floor);
+    push_text(&mut lines, "floor_reason", &op.floor_reason);
+    lines.push(format!("wall_floor_us = {wall}"));
+    lines.push(format!("target_us = {target}"));
+    lines.push(format!("derivation = \"{}\"", toml_basic(&op.derivation)));
+    push_text(&mut lines, "proposal", &op.proposal);
+    push_text(&mut lines, "removed", &op.removed);
+    if !op.benches.is_empty() {
+        lines.push(format!("benches = [{}]", toml_list(&op.benches)));
+    }
+    if !op.alternatives.is_empty() {
+        lines.push(format!("alternatives = [{}]", toml_list(&op.alternatives)));
+    }
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn push_text(lines: &mut Vec<String>, key: &str, value: &str) {
+    if !value.is_empty() {
+        lines.push(format!("{key} = \"{}\"", toml_basic(value)));
+    }
+}
+
+fn toml_list(items: &[String]) -> String {
+    items.iter().map(|item| format!("\"{}\"", toml_basic(item))).collect::<Vec<_>>().join(", ")
+}
+
+fn toml_basic(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// On main when CI names `main`, or, with `GITHUB_REF` unset, when the
@@ -1582,6 +1690,100 @@ derivation = "hash # stays"
         assert_eq!(choose_jj_baseline(vec!["# only\n".to_string()]), "# only\n");
     }
 
+    fn parsed_op(text: &str, id: &str) -> crate::guard::Op {
+        let ops = crate::guard::parse_operations(text)
+            .unwrap_or_else(|errors| panic!("{}", errors.join("; ")));
+        ops.into_iter().find(|op| op.id == id).unwrap_or_else(|| panic!("missing `{id}` in {text}"))
+    }
+
+    #[test]
+    fn a_criss_cross_trade_off_keeps_the_minimum_of_each_ceiling() {
+        let low_processes = budget_op("command:print", 1, 100, 100);
+        let low_wall = budget_op("command:print", 9, 50, 40);
+        for (left, right) in [(&low_processes, &low_wall), (&low_wall, &low_processes)] {
+            let merged = choose_jj_baseline(vec![left.clone(), right.clone()]);
+            let op = parsed_op(&merged, "command:print");
+            assert_eq!(op.processes, 1, "{merged}");
+            assert_eq!(op.wall_floor_us, 50, "{merged}");
+            assert_eq!(op.target_us, 40, "{merged}");
+        }
+    }
+
+    #[test]
+    fn a_criss_cross_trade_off_keeps_an_operation_that_only_one_head_has() {
+        let low_processes = budget_op("command:print", 1, 100, 100);
+        let low_wall = format!(
+            "{}{}",
+            budget_op("command:print", 9, 50, 40),
+            budget_op("command:extra", 4, 8, 8)
+        );
+        for (left, right) in [(&low_processes, &low_wall), (&low_wall, &low_processes)] {
+            let merged = choose_jj_baseline(vec![left.clone(), right.clone()]);
+            let print = parsed_op(&merged, "command:print");
+            assert_eq!((print.processes, print.wall_floor_us, print.target_us), (1, 50, 40));
+            let extra = parsed_op(&merged, "command:extra");
+            assert_eq!((extra.processes, extra.wall_floor_us, extra.target_us), (4, 8, 8));
+        }
+    }
+
+    #[test]
+    fn equal_shared_ceilings_keep_an_operation_only_one_head_has() {
+        let shared = budget_op("command:print", 1, 10, 10);
+        let with_extra = format!("{}{}", shared, budget_op("command:extra", 4, 8, 8));
+        for (left, right) in [(&shared, &with_extra), (&with_extra, &shared)] {
+            let merged = choose_jj_baseline(vec![left.clone(), right.clone()]);
+            let print = parsed_op(&merged, "command:print");
+            assert_eq!((print.processes, print.wall_floor_us, print.target_us), (1, 10, 10));
+            let extra = parsed_op(&merged, "command:extra");
+            assert_eq!((extra.processes, extra.wall_floor_us, extra.target_us), (4, 8, 8));
+        }
+    }
+
+    #[test]
+    fn a_lower_shared_ceiling_keeps_that_file_whole() {
+        let few = budget_op("command:print", 1, 1, 1);
+        let many = format!(
+            "{}{}",
+            budget_op("command:print", 1, 500_000, 500_000),
+            budget_op("command:extra", 2, 1, 1)
+        );
+        assert_eq!(choose_jj_baseline(vec![few.clone(), many.clone()]), few);
+        assert_eq!(choose_jj_baseline(vec![many, few.clone()]), few);
+    }
+
+    #[test]
+    fn equal_ceilings_keep_the_earlier_heads_text() {
+        let earlier = format!("{}# from-a\n", budget_op("command:print", 1, 10, 10));
+        let later = format!("{}# from-b\n", budget_op("command:print", 1, 10, 10));
+        assert_eq!(choose_jj_baseline(vec![earlier.clone(), later.clone()]), earlier);
+        assert_eq!(choose_jj_baseline(vec![later.clone(), earlier]), later);
+    }
+
+    #[test]
+    fn a_merged_baseline_keeps_escaped_text_from_the_first_head() {
+        let quoted = r#"
+[[op]]
+id = "command:print"
+class = "command"
+fixture = "one file"
+test = "tests/counts.rs::counts"
+processes = 1
+wall_floor_us = 100
+target_us = 100
+derivation = "say \"hi\"\twide\\path"
+"#;
+        let other = budget_op("command:print", 9, 50, 40);
+        let merged = choose_jj_baseline(vec![quoted.to_string(), other.clone()]);
+        let op = parsed_op(&merged, "command:print");
+        assert_eq!(op.derivation, "say \"hi\"\twide\\path");
+        assert_eq!((op.processes, op.wall_floor_us, op.target_us), (1, 50, 40));
+
+        let other_first = choose_jj_baseline(vec![other, quoted.to_string()]);
+        let op = parsed_op(&other_first, "command:print");
+        assert_eq!(op.derivation, "Pinned.");
+        assert_eq!((op.processes, op.wall_floor_us, op.target_us), (1, 50, 40));
+    }
+
     #[test]
     fn jj_criss_cross_skips_a_comment_only_head_when_the_other_has_operations() {
         let real = budget_op("command:print", 1, 10, 10);
@@ -1629,6 +1831,36 @@ derivation = "hash # stays"
             resolved_criss_cross(&few, &many).expect("baseline").as_deref(),
             Some(few.as_str())
         );
+    }
+
+    #[test]
+    fn jj_criss_cross_trade_off_keeps_the_minimum_of_each_ceiling() {
+        let low_processes = budget_op("command:print", 1, 100, 100);
+        let low_wall = budget_op("command:print", 9, 50, 40);
+        for (left, right) in [(&low_processes, &low_wall), (&low_wall, &low_processes)] {
+            let text = resolved_criss_cross(left, right).expect("baseline").expect("text");
+            let op = parsed_op(&text, "command:print");
+            assert_eq!(op.processes, 1, "{text}");
+            assert_eq!(op.wall_floor_us, 50, "{text}");
+            assert_eq!(op.target_us, 40, "{text}");
+            let live = budget_op("command:print", 1, 100, 100);
+            let surface = BTreeSet::from(["command:print".to_string()]);
+            let tests = BTreeSet::from(["tests/counts.rs::counts".to_string()]);
+            let benches = BTreeMap::new();
+            let errors = crate::guard::check(&crate::guard::Input {
+                manifest: &live,
+                surface: &surface,
+                tests: &tests,
+                baseline: Some(&text),
+                benches: &benches,
+            });
+            assert!(
+                errors.iter().any(|error| {
+                    error.contains("wall_floor_us 100") && error.contains("baseline 50")
+                }),
+                "a live wall of 100 must fail against the merged ceiling: {errors:?}"
+            );
+        }
     }
 
     #[test]
