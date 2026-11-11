@@ -136,7 +136,9 @@ pub fn must_recorded_benches(text: &str) -> BTreeMap<String, u64> {
 /// Fail when `benches/baselines.toml` fails validation or when any
 /// `ref_median_ns`, `max_blocks`, `max_bytes`, or `max_bytes_x86_64` rises
 /// above or disappears without `removed = "<reason>"` from the baseline
-/// revision's copy.
+/// revision's copy. A baseline that parses to zero records fails when the
+/// live file has any: an empty or comment-only file would otherwise let
+/// every pin rise.
 pub fn check_baseline_medians(
     live_text: &str,
     baseline_text: Option<&str>,
@@ -165,6 +167,12 @@ pub fn check_baseline_medians(
             return;
         }
     };
+    if prior_records.is_empty() && !live_records.is_empty() {
+        errors.push("baseline benches/baselines.toml has no records".to_string());
+        errors.sort();
+        errors.dedup();
+        return;
+    }
     let live_by_id: BTreeMap<&str, &baselines::BenchRecord> =
         live_records.iter().map(|r| (r.id.as_str(), r)).collect();
     for before in prior_records.iter().filter(|r| r.removed.is_none()) {

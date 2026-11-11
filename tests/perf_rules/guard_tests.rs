@@ -691,6 +691,40 @@ fn baseline_medians_ratchet_rejects_raised_or_missing_benches_and_allows_documen
 }
 
 #[test]
+fn an_empty_baselines_file_fails_when_the_live_file_has_records() {
+    let live = "[[bench]]\nid = \"navigation/next_file\"\nref_median_ns = 999999\n";
+    for baseline in ["", "# comment\n", "\n\n# comment only\n", "bench = []\n"] {
+        let mut errors = Vec::new();
+        check_baseline_medians(live, Some(baseline), &mut errors);
+        assert_eq!(
+            errors,
+            vec!["baseline benches/baselines.toml has no records"],
+            "{baseline:?} must not let ref_median_ns = 999999 through"
+        );
+    }
+
+    let mut absent = Vec::new();
+    check_baseline_medians(live, None, &mut absent);
+    assert!(
+        absent.is_empty(),
+        "a missing baselines file is the caller's error, not an empty parse: {absent:?}"
+    );
+
+    let mut both_empty = Vec::new();
+    check_baseline_medians("", Some("# comment\n"), &mut both_empty);
+    assert!(both_empty.is_empty(), "an empty live file has no pins to protect: {both_empty:?}");
+
+    let prior = "[[bench]]\nid = \"navigation/next_file\"\nref_median_ns = 10\n";
+    let mut raised = Vec::new();
+    check_baseline_medians(live, Some(prior), &mut raised);
+    assert_eq!(
+        raised,
+        vec!["bench `navigation/next_file` ref_median_ns 999999 is looser than the baseline 10",],
+        "a real prior record still ratchets: {raised:?}"
+    );
+}
+
+#[test]
 fn changing_floor_from_sum_to_max_or_dropping_a_bench_from_baseline_fails() {
     let baseline_sum = HAPPY.replace("floor = \"max\"", "floor = \"sum\"");
     let sum_to_max_errors = run(Case {
