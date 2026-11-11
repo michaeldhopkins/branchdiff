@@ -257,8 +257,11 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
 /// or a blank file cannot hide a real manifest. A head that is lower on every
 /// shared ceiling and higher on none wins as a whole file. Otherwise each
 /// operation keeps the minimum `processes`, `wall_floor_us`, and `target_us`
-/// across the heads that define it. When that merge matches the earliest
-/// strictest head, that head's original text is kept.
+/// across the heads that define it. When a head lists `stage_floors`, those
+/// merge pointwise and the wall is the sum of the minimums; a head that cannot
+/// be split contributes its wall as a bound, and a lower total does not win
+/// the file whole. When that merge matches the earliest strictest head, that
+/// head's original text is kept.
 fn choose_jj_baseline(texts: Vec<String>) -> String {
     let annotated: Vec<(BTreeMap<String, Ceilings>, String)> =
         texts.into_iter().map(|text| (operation_ceilings(&text), text)).collect();
@@ -267,14 +270,24 @@ fn choose_jj_baseline(texts: Vec<String>) -> String {
         annotated.into_iter().filter(|(ceilings, _)| !(any_ops && ceilings.is_empty())).collect();
     assert!(!candidates.is_empty(), "a resolved file list has a baseline candidate");
     let best = strictest_index(&candidates);
-    if dominates(best, &candidates) {
+    let staged = any_stage_floors(&candidates);
+    if !staged && dominates(best, &candidates) {
         return candidates[best].1.clone();
     }
     let merged = render_merged(&candidates);
-    if operation_ceilings(&merged) == candidates[best].0 {
+    if !staged && operation_ceilings(&merged) == candidates[best].0 {
         return candidates[best].1.clone();
     }
     merged
+}
+
+fn any_stage_floors(candidates: &[(BTreeMap<String, Ceilings>, String)]) -> bool {
+    candidates.iter().any(|(_, text)| {
+        super::guard::parse_operations(text)
+            .unwrap_or_default()
+            .iter()
+            .any(|op| !op.stage_floors.is_empty())
+    })
 }
 
 fn strictest_index(candidates: &[(BTreeMap<String, Ceilings>, String)]) -> usize {
@@ -372,14 +385,55 @@ fn render_merged(candidates: &[(BTreeMap<String, Ceilings>, String)]) -> String 
             continue;
         };
         let processes = copies.iter().map(|op| op.processes).min().expect("at least one copy");
-        let wall = copies.iter().map(|op| op.wall_floor_us).min().expect("at least one copy");
         let target = copies.iter().map(|op| op.target_us).min().expect("at least one copy");
-        out.push_str(&render_op(first, processes, wall, target));
+        let explicit = copies.iter().any(|op| !op.stage_floors.is_empty());
+        if !explicit {
+            let wall = copies.iter().map(|op| op.wall_floor_us).min().expect("at least one copy");
+            out.push_str(&render_op(first, processes, wall, target, None));
+            continue;
+        }
+        let (stage_floors, wall) = merged_stage_floors(&copies);
+        out.push_str(&render_op(first, processes, wall, target, Some(&stage_floors)));
     }
     out
 }
 
-fn render_op(op: &super::guard::Op, processes: u64, wall: u64, target: u64) -> String {
+/// Pointwise minimum of the stages each copy can name. A copy that cannot be
+/// split does not invent stages; its wall is an upper bound on the sum.
+fn merged_stage_floors(copies: &[&super::guard::Op]) -> (Vec<String>, u64) {
+    let mut order = Vec::new();
+    let mut mins: BTreeMap<String, u64> = BTreeMap::new();
+    let mut bounds = Vec::new();
+    for op in copies {
+        match super::guard::running_stage_floors(op) {
+            Some(stages) => {
+                for (name, us) in stages {
+                    if let Some(existing) = mins.get_mut(&name) {
+                        *existing = (*existing).min(us);
+                    } else {
+                        order.push(name.clone());
+                        mins.insert(name, us);
+                    }
+                }
+            }
+            None => bounds.push(op.wall_floor_us),
+        }
+    }
+    let mut wall: u64 = mins.values().sum();
+    if let Some(bound) = bounds.iter().copied().min() {
+        wall = wall.min(bound);
+    }
+    let stage_floors = order.into_iter().map(|name| format!("{name}={}", mins[&name])).collect();
+    (stage_floors, wall)
+}
+
+fn render_op(
+    op: &super::guard::Op,
+    processes: u64,
+    wall: u64,
+    target: u64,
+    stage_floors: Option<&[String]>,
+) -> String {
     let mut lines = vec![
         "[[op]]".to_string(),
         format!("id = \"{}\"", toml_basic(&op.id)),
@@ -393,6 +447,10 @@ fn render_op(op: &super::guard::Op, processes: u64, wall: u64, target: u64) -> S
     }
     push_text(&mut lines, "floor", &op.floor);
     push_text(&mut lines, "floor_reason", &op.floor_reason);
+    let floors = stage_floors.unwrap_or(op.stage_floors.as_slice());
+    if !floors.is_empty() {
+        lines.push(format!("stage_floors = [{}]", toml_list(floors)));
+    }
     lines.push(format!("wall_floor_us = {wall}"));
     lines.push(format!("target_us = {target}"));
     lines.push(format!("derivation = \"{}\"", toml_basic(&op.derivation)));
@@ -1911,6 +1969,66 @@ derivation = "say \"hi\"\twide\\path"
             resolved_criss_cross(&few, &many).expect("baseline").as_deref(),
             Some(few.as_str())
         );
+    }
+
+    fn stage_budget(motion: u64, span: u64, target: u64) -> String {
+        format!(
+            r#"
+[[op]]
+id = "key:next-file"
+class = "keystroke"
+fixture = "n"
+test = "tests/counts.rs::counts"
+processes = 0
+benches = ["motion", "span"]
+floor = "sum"
+floor_reason = "The motion runs, then the span pass."
+stage_floors = ["motion={motion}", "span={span}"]
+wall_floor_us = {}
+target_us = {target}
+derivation = "Motion plus the span stage."
+"#,
+            motion + span
+        )
+    }
+
+    /// Stage floors merge pointwise. A lower total on one head must not hide a
+    /// tighter stage on the other, and the merged wall is the sum of the mins.
+    #[test]
+    fn jj_criss_cross_stage_floors_take_the_pointwise_minimum() {
+        let low_motion = stage_budget(4, 80, 84);
+        let low_span = stage_budget(10, 50, 60);
+        for (left, right) in [(&low_motion, &low_span), (&low_span, &low_motion)] {
+            let text = resolved_criss_cross(left, right).expect("baseline").expect("text");
+            let op = parsed_op(&text, "key:next-file");
+            assert_eq!(
+                op.stage_floors,
+                vec!["motion=4".to_string(), "span=50".to_string()],
+                "{text}"
+            );
+            assert_eq!(op.wall_floor_us, 54, "{text}");
+            assert_eq!(op.target_us, 60, "{text}");
+        }
+
+        let legacy = r#"
+[[op]]
+id = "key:next-file"
+class = "keystroke"
+fixture = "n"
+test = "tests/counts.rs::counts"
+processes = 0
+benches = ["motion"]
+floor = "max"
+floor_reason = "The motion bench on its own."
+wall_floor_us = 4
+target_us = 4
+derivation = "Ceiling of the motion bench."
+"#;
+        let with_span = stage_budget(4, 50, 54);
+        let text = resolved_criss_cross(legacy, &with_span).expect("baseline").expect("text");
+        let op = parsed_op(&text, "key:next-file");
+        assert_eq!(op.stage_floors, vec!["motion=4".to_string(), "span=50".to_string()], "{text}");
+        assert_eq!(op.wall_floor_us, 54, "{text}");
     }
 
     #[test]

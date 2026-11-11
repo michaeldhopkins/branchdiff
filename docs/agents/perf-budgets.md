@@ -4,7 +4,7 @@
 
 ## What may only tighten
 
-Process-count floors (`processes`), allocation pins (`max_blocks`, `max_bytes`, `max_bytes_x86_64` in `benches/baselines.toml`), wall floors (`wall_floor_us`, equal to the ceiling of the `ref_median_ns` of its `benches`, or `owed = true` while unbenched) and targets (`target_us`) may only tighten against the baseline revision (`PERF_BASELINE_REV` in CI, `main@origin` or `main` locally). When a change reduces spawns, allocations or bench medians, tighten the matching entries so the guard locks in the win. An entry whose `wall_floor_us` exceeds its class cap carries a one-paragraph `proposal` naming where the time goes and the batched structure that removes it.
+Process-count floors (`processes`), allocation pins (`max_blocks`, `max_bytes`, `max_bytes_x86_64` in `benches/baselines.toml`) and stage floors may only tighten against the baseline revision (`PERF_BASELINE_REV` in CI, `main@origin` or `main` locally). A stage floor is one bench that runs. An operation with two or more running stages lists `stage_floors` (`name=us`, the bench ceiling) once per stage. `wall_floor_us` is the sum of those floors, not a floor of its own: adding a stage adds its floor and the total rises by that much, while every stage that already ran stays at its old floor or tighter. A single running stage keeps that floor in `wall_floor_us` and does not repeat it. A target may rise only when a new stage raised the total, and only by as much as the total rose. When a change reduces spawns, allocations or bench medians, tighten the matching entries so the guard locks in the win. An entry whose `wall_floor_us` exceeds its class cap carries a one-paragraph `proposal` naming where the time goes and the batched structure that removes it.
 
 A keystroke that has its own bench must bind it: `keystrokes_with_their_own_bench_are_bound_to_it` (`tests/perf_rules.rs`) fails when a `[[bench]]` named `navigation/<key>` exists but the key's op does not list it in `benches`.
 
@@ -18,8 +18,9 @@ A floor sums every stage that runs in sequence. `alternatives` are only other fi
 - Duplicate alternative names are rejected, and every alternative must be one of the op's benches.
 - On a sum, an alternative must be strictly smaller than at least one stage that runs. A fixture at least as large as every stage belongs in the sum.
 - Paying off an owed operation may introduce alternatives. A measured operation may not add one.
+- Two or more running stages require `stage_floors`. Each entry is `bench=us` and `us` is that bench's ceiling. Alternatives are not stage floors. The numbers only tighten against the baseline stage of the same bench. A bench the baseline did not run is a new stage.
 
-The checks are `check_stage_floor` in `tests/perf_rules/guard.rs`.
+The checks are `check_stage_floor` and `require_stage_floors` in `tests/perf_rules/guard.rs`.
 
 ## Wall medians are checked in CI
 

@@ -11,7 +11,7 @@ mod guard;
 #[path = "perf_rules/surface.rs"]
 mod surface;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -248,5 +248,21 @@ fn navigation_floors_include_the_span_stage() {
             "{id} must count {motion} and {span}"
         );
         assert_eq!(op.wall_floor_us, benches[motion] + span_us, "{id}");
+        let floors: BTreeMap<_, _> = op
+            .stage_floors
+            .iter()
+            .map(|entry| {
+                let (name, us) =
+                    entry.split_once('=').unwrap_or_else(|| panic!("{id} stage floor {entry}"));
+                (name, us.parse::<u64>().unwrap_or_else(|_| panic!("{id} stage floor {entry}")))
+            })
+            .collect();
+        assert_eq!(
+            floors.get(motion).copied(),
+            Some(benches[motion]),
+            "{id} motion stage: {floors:?}"
+        );
+        assert_eq!(floors.get(span).copied(), Some(span_us), "{id} span stage: {floors:?}");
+        assert_eq!(floors.len(), 2, "{id} stages: {floors:?}");
     }
 }

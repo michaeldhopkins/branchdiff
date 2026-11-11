@@ -63,6 +63,7 @@ processes = 62
 benches = ["refresh/colocated/500f_25c", "refresh/files_head/500f_25c"]
 floor = "sum"
 floor_reason = "listing::render runs vcs.refresh() and then vcs.current_revision_id() sequentially in the same command."
+stage_floors = ["refresh/colocated/500f_25c=131542", "refresh/files_head/500f_25c=10499"]
 wall_floor_us = 142041
 target_us = 50000
 derivation = "One diff's names and line counts, not a rendered page; one batched jj log plus the listing fits in the 50 ms command budget. Floor is refresh/colocated/500f_25c (131542 us) plus refresh/files_head/500f_25c (10499 us)."
@@ -77,6 +78,7 @@ processes = 62
 benches = ["refresh/colocated/500f_25c", "refresh/files_json/500f_25c"]
 floor = "sum"
 floor_reason = "listing::render runs vcs.refresh() followed by vcs.current_revision_id() and JSON serialization sequentially."
+stage_floors = ["refresh/colocated/500f_25c=131542", "refresh/files_json/500f_25c=10655"]
 wall_floor_us = 142197
 target_us = 50000
 derivation = "The file list JSON-encoded, same jj work as --files; one batched jj log plus encoding fits in the 50 ms command budget. Floor is refresh/colocated/500f_25c (131542 us) plus refresh/files_json/500f_25c (10655 us)."
@@ -105,6 +107,7 @@ processes = 64
 benches = ["refresh/colocated/500f_25c", "refresh/detect_base/500f_25c"]
 floor = "sum"
 floor_reason = "--base runs vcs::detect_with_base (refresh/detect_base/500f_25c) followed sequentially by vcs.refresh() (refresh/colocated/500f_25c)."
+stage_floors = ["refresh/colocated/500f_25c=131542", "refresh/detect_base/500f_25c=28294"]
 wall_floor_us = 159836
 target_us = 50000
 derivation = "Resolving one named base rev plus the same diff; one batched jj log plus that lookup fits in the 50 ms command budget. Floor is refresh/colocated/500f_25c (131542 us) plus refresh/detect_base/500f_25c (28294 us)."
@@ -119,6 +122,7 @@ processes = 61
 benches = ["refresh/colocated/500f_25c", "refresh/comments_load/500f_25c"]
 floor = "sum"
 floor_reason = "One-shot --comments runs load_comparison_and_refresh followed sequentially by App::load_comments_from."
+stage_floors = ["refresh/colocated/500f_25c=131542", "refresh/comments_load/500f_25c=100"]
 wall_floor_us = 131642
 target_us = 50000
 derivation = "Reading and anchoring the JSONL review comments file is in-process over the same diff as --print; one batched jj log plus anchoring fits in the 50 ms command budget. Floor is refresh/colocated/500f_25c (131542 us) plus refresh/comments_load/500f_25c (100 us)."
@@ -184,6 +188,7 @@ benches = ["html/render/500_lines", "html/render/200_lines", "refresh/colocated/
 floor = "sum"
 alternatives = ["html/render/200_lines"]
 floor_reason = "load_comparison_and_refresh runs, then html::render of the 500-line page. html/render/200_lines is a smaller fixture of that same render and is not added."
+stage_floors = ["html/render/500_lines=5408", "refresh/colocated/500f_25c=131542"]
 wall_floor_us = 136950
 target_us = 50000
 derivation = "Main content is the diff; one batched jj log at 40 ms plus the render is the unavoidable work, and the target stays inside the 100 ms page cap. Floor is refresh/colocated/500f_25c (131542 us) plus html/render/500_lines (5408 us). html/render/200_lines (2820 us) is a smaller fixture of the same render and is not added. Measured as CLI output from --html."
@@ -198,6 +203,7 @@ processes = 61
 benches = ["html/render/50_lines", "refresh/colocated/500f_25c"]
 floor = "sum"
 floor_reason = "--html --static runs load_comparison_and_refresh (refresh/colocated/500f_25c) followed sequentially by html::render (html/render/50_lines)."
+stage_floors = ["html/render/50_lines=1198", "refresh/colocated/500f_25c=131542"]
 wall_floor_us = 132740
 target_us = 50000
 derivation = "The same diff as the live page without the poll script; one batched jj log at 40 ms plus markup stays under the 100 ms page cap. Floor is refresh/colocated/500f_25c (131542 us) plus html/render/50_lines (1198 us). Measured as CLI output from --html --static."
@@ -268,6 +274,7 @@ benches = ["navigation/scroll_down_10", "update/handle_scroll_input", "frame_con
 floor = "sum"
 alternatives = ["update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines"]
 floor_reason = "scroll marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw. frame_context sizes and handle_scroll_input replace the scroll bench."
+stage_floors = ["navigation/scroll_down_10=98", "inline_spans/ensure_visible_1200_candidates=50"]
 wall_floor_us = 148
 target_us = 148
 derivation = "Same stages as scroll-down: navigation/scroll_down_10 (97505 ns, 98 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 148 us, under the 8 ms cap."
@@ -282,6 +289,7 @@ benches = ["navigation/scroll_down_10", "update/handle_scroll_input", "frame_con
 floor = "sum"
 alternatives = ["update/handle_scroll_input", "frame_context/full/10k_lines", "frame_context/full/1k_lines"]
 floor_reason = "scroll_down marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw. frame_context sizes and handle_scroll_input replace the scroll bench."
+stage_floors = ["navigation/scroll_down_10=98", "inline_spans/ensure_visible_1200_candidates=50"]
 wall_floor_us = 148
 target_us = 148
 derivation = "navigation/scroll_down_10 (97505 ns, 98 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 148 us, under the 8 ms cap."
@@ -295,6 +303,7 @@ processes = 0
 benches = ["navigation/next_file", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "next_file marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
+stage_floors = ["navigation/next_file=4", "inline_spans/ensure_visible_1200_candidates=50"]
 wall_floor_us = 54
 target_us = 54
 derivation = "navigation/next_file (3513 ns, 4 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 54 us, under the 8 ms cap."
@@ -308,6 +317,7 @@ processes = 0
 benches = ["navigation/next_file", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "prev_file marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
+stage_floors = ["navigation/next_file=4", "inline_spans/ensure_visible_1200_candidates=50"]
 wall_floor_us = 54
 target_us = 54
 derivation = "Same stages as next-file: navigation/next_file (3513 ns, 4 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 54 us, under the 8 ms cap."
@@ -321,6 +331,7 @@ processes = 0
 benches = ["navigation/page_down", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "page_up calls scroll_up, which marks inline spans dirty, and ensure_inline_spans_for_visible runs after it, before draw. navigation/page_down is the bench for that scroll."
+stage_floors = ["navigation/page_down=97", "inline_spans/ensure_visible_1200_candidates=50"]
 wall_floor_us = 147
 target_us = 147
 derivation = "Same stages as page-down: navigation/page_down (96007 ns, 97 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 147 us, under the 8 ms cap."
@@ -334,6 +345,7 @@ processes = 0
 benches = ["navigation/page_down", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "page_down calls scroll_down, which marks inline spans dirty, and ensure_inline_spans_for_visible runs after it, before draw."
+stage_floors = ["navigation/page_down=97", "inline_spans/ensure_visible_1200_candidates=50"]
 wall_floor_us = 147
 target_us = 147
 derivation = "navigation/page_down (96007 ns, 97 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 147 us, under the 8 ms cap."
@@ -347,6 +359,7 @@ processes = 0
 benches = ["navigation/go_to_top", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "go_to_top marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
+stage_floors = ["navigation/go_to_top=1", "inline_spans/ensure_visible_1200_candidates=50"]
 wall_floor_us = 51
 target_us = 51
 derivation = "navigation/go_to_top (2 ns, 1 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 51 us, under the 8 ms cap."
@@ -360,6 +373,7 @@ processes = 0
 benches = ["navigation/go_to_bottom", "inline_spans/ensure_visible_1200_candidates"]
 floor = "sum"
 floor_reason = "go_to_bottom marks inline spans dirty and ensure_inline_spans_for_visible runs after it, before draw."
+stage_floors = ["navigation/go_to_bottom=49", "inline_spans/ensure_visible_1200_candidates=50"]
 wall_floor_us = 99
 target_us = 99
 derivation = "navigation/go_to_bottom (48649 ns, 49 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 99 us, under the 8 ms cap."
@@ -396,6 +410,7 @@ benches = ["view_mode/cycle_view_mode", "context_mode/build_context_lines/1k_lin
 floor = "sum"
 alternatives = ["context_mode/build_context_lines/1k_lines", "context_mode/build_context_lines/10k_lines", "frame_context/context/1k_lines", "frame_context/commit_only/1k_lines", "frame_context/context/10k_lines", "frame_context/commit_only/10k_lines"]
 floor_reason = "context_mode and frame_context fixtures replace work inside cycle_view_mode. ensure_inline_spans_for_visible runs after the mode change."
+stage_floors = ["view_mode/cycle_view_mode=391", "inline_spans/ensure_visible_1200_candidates=50"]
 wall_floor_us = 441
 target_us = 441
 derivation = "view_mode/cycle_view_mode (390056 ns, 391 us) then inline_spans/ensure_visible_1200_candidates (50000 ns, 50 us) is 441 us, under the 8 ms cap. The context and frame fixtures replace the cycle bench and are not added."

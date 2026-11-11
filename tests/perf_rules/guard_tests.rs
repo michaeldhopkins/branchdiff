@@ -242,8 +242,114 @@ fn a_looser_floor_or_target_fails_and_a_tighter_one_passes() {
     }
 }
 
+fn scroll_case<'a>(
+    manifest: &'a str,
+    baseline: Option<&'a str>,
+    benches: &'a [(&str, u64)],
+) -> Case<'a> {
+    Case {
+        manifest,
+        surface: &["key:scroll-down"],
+        tests: &["tests/counts.rs::counts"],
+        baseline,
+        benches,
+    }
+}
+
+/// A motion keeps the floor it had when it ran alone. A later stage is its own
+/// floor. The total is the sum of those floors, and a shared stage may not rise.
 #[test]
-fn a_formula_matched_stage_sum_may_rise_and_a_hand_raise_fails() {
+fn a_new_stage_keeps_the_old_floor_and_a_shared_stage_may_not_rise() {
+    let before = r#"
+[[op]]
+id = "key:scroll-down"
+class = "keystroke"
+fixture = "n"
+test = "tests/counts.rs::counts"
+processes = 0
+benches = ["scroll"]
+floor = "max"
+floor_reason = "The scroll bench measured the motion on its own."
+wall_floor_us = 4
+target_us = 4
+derivation = "Ceiling of the scroll bench."
+"#;
+    let summed_without_stages = r#"
+[[op]]
+id = "key:scroll-down"
+class = "keystroke"
+fixture = "n"
+test = "tests/counts.rs::counts"
+processes = 0
+benches = ["scroll", "span"]
+floor = "sum"
+floor_reason = "Scroll runs, then the span pass."
+wall_floor_us = 54
+target_us = 54
+derivation = "Scroll bench plus the span bench."
+"#;
+    let benches = [("scroll", 4_u64), ("span", 50)];
+    let errors = run(scroll_case(summed_without_stages, Some(before), &benches));
+    assert!(
+        errors.iter().any(|error| error.contains("stage_floors")),
+        "two running stages with no stage floors must fail: {errors:?}"
+    );
+
+    let after = r#"
+[[op]]
+id = "key:scroll-down"
+class = "keystroke"
+fixture = "n"
+test = "tests/counts.rs::counts"
+processes = 0
+benches = ["scroll", "span"]
+floor = "sum"
+floor_reason = "Scroll runs, then the span pass."
+stage_floors = ["scroll=4", "span=50"]
+wall_floor_us = 54
+target_us = 54
+derivation = "Scroll bench plus the span bench."
+"#;
+    let errors = run(scroll_case(after, Some(before), &benches));
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let raised_benches = [("scroll", 84_u64), ("span", 50)];
+    let raised_stage = after
+        .replace(
+            "stage_floors = [\"scroll=4\", \"span=50\"]",
+            "stage_floors = [\"scroll=84\", \"span=50\"]",
+        )
+        .replace("wall_floor_us = 54", "wall_floor_us = 134")
+        .replace("target_us = 54", "target_us = 134");
+    let errors = run(scroll_case(&raised_stage, Some(before), &raised_benches));
+    assert!(
+        errors.iter().any(|error| error.contains("stage floor")
+            && error.contains("scroll")
+            && error.contains("looser")),
+        "a shared stage raised from 4 to 84 must fail: {errors:?}"
+    );
+
+    let hand = after
+        .replace("wall_floor_us = 54", "wall_floor_us = 200")
+        .replace("target_us = 54", "target_us = 200");
+    let errors = run(scroll_case(&hand, Some(before), &benches));
+    assert!(
+        errors.iter().any(|error| error.contains("wall_floor_us") && error.contains("54")),
+        "a total above the sum of the stage floors must fail: {errors:?}"
+    );
+
+    let target_jump = after.replace("target_us = 54", "target_us = 300");
+    let errors = run(scroll_case(&target_jump, Some(before), &benches));
+    assert!(
+        errors.iter().any(|error| error.contains("target_us") && error.contains("looser")),
+        "{errors:?}"
+    );
+}
+
+/// A baseline that already summed its stages, with no `stage_floors` field,
+/// still ratchets each stage at that stage's bench ceiling.
+#[test]
+fn an_already_summed_baseline_splits_into_its_bench_ceilings() {
     let before = r#"
 [[op]]
 id = "key:scroll-down"
@@ -252,12 +358,11 @@ fixture = "n"
 test = "tests/counts.rs::counts"
 processes = 0
 benches = ["scroll", "span"]
-floor = "max"
-alternatives = ["span"]
-floor_reason = "The span bench was listed as an alternative of the scroll bench."
-wall_floor_us = 98
-target_us = 98
-derivation = "Ceiling of the scroll bench."
+floor = "sum"
+floor_reason = "Scroll runs, then the span pass."
+wall_floor_us = 54
+target_us = 54
+derivation = "Scroll bench plus the span bench."
 "#;
     let after = r#"
 [[op]]
@@ -269,45 +374,28 @@ processes = 0
 benches = ["scroll", "span"]
 floor = "sum"
 floor_reason = "Scroll runs, then the span pass."
-wall_floor_us = 178
-target_us = 178
+stage_floors = ["scroll=4", "span=50"]
+wall_floor_us = 54
+target_us = 54
 derivation = "Scroll bench plus the span bench."
 "#;
-    let benches = [("scroll", 98_u64), ("span", 80)];
-    let errors = run(Case {
-        manifest: after,
-        surface: &["key:scroll-down"],
-        tests: &["tests/counts.rs::counts"],
-        baseline: Some(before),
-        benches: &benches,
-    });
+    let benches = [("scroll", 4_u64), ("span", 50)];
+    let errors = run(scroll_case(after, Some(before), &benches));
     assert!(errors.is_empty(), "{errors:?}");
 
+    let explicit = after;
+    let raised_benches = [("scroll", 9_u64), ("span", 50)];
     let raised = after
-        .replace("wall_floor_us = 178", "wall_floor_us = 200")
-        .replace("target_us = 178", "target_us = 200");
-    let errors = run(Case {
-        manifest: &raised,
-        surface: &["key:scroll-down"],
-        tests: &["tests/counts.rs::counts"],
-        baseline: Some(before),
-        benches: &benches,
-    });
+        .replace(
+            "stage_floors = [\"scroll=4\", \"span=50\"]",
+            "stage_floors = [\"scroll=9\", \"span=50\"]",
+        )
+        .replace("wall_floor_us = 54", "wall_floor_us = 59")
+        .replace("target_us = 54", "target_us = 59");
+    let errors = run(scroll_case(&raised, Some(explicit), &raised_benches));
     assert!(
-        errors.iter().any(|error| error.contains("wall_floor_us") && error.contains("looser")),
-        "{errors:?}"
-    );
-    let target_jump = after.replace("target_us = 178", "target_us = 300");
-    let errors = run(Case {
-        manifest: &target_jump,
-        surface: &["key:scroll-down"],
-        tests: &["tests/counts.rs::counts"],
-        baseline: Some(before),
-        benches: &benches,
-    });
-    assert!(
-        errors.iter().any(|error| error.contains("target_us") && error.contains("looser")),
-        "{errors:?}"
+        errors.iter().any(|error| error.contains("stage floor") && error.contains("looser")),
+        "raising a recorded stage floor must fail: {errors:?}"
     );
 }
 
@@ -532,6 +620,7 @@ processes = 5
 benches = ["bench-a", "bench-b"]
 floor = "sum"
 floor_reason = "bench-a and bench-b run sequentially."
+stage_floors = ["bench-a=30000", "bench-b=10000"]
 wall_floor_us = 40000
 target_us = 40000
 derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
@@ -1215,6 +1304,7 @@ benches = ["bench-a", "bench-b", "bench-c"]
 floor = "sum"
 alternatives = ["bench-c"]
 floor_reason = "bench-a and bench-b run sequentially; bench-c replaces bench-b."
+stage_floors = ["bench-a=30000", "bench-b=10000"]
 wall_floor_us = 40000
 target_us = 40000
 derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."

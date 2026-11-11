@@ -1,10 +1,11 @@
 //! Fail a performance manifest that drifts from the surface, its tests, its
 //! named benches, or the budgets already committed.
 //!
-//! Counts only tighten. A wall floor may rise only when both the old and new
-//! values equal the bench-derived floor. A target may rise only with that
-//! wall, and only by as much as the wall rose. A target may not pass its class
-//! cap, may not exceed its wall floor, and has to carry a one-line derivation.
+//! Counts only tighten. Each stage floor only tightens. A new stage is a new
+//! floor, and the total is the sum of those floors, not a raised floor of its
+//! own. A target may rise only when a new stage raised the total, and only by
+//! as much as the total rose. A target may not pass its class cap, may not
+//! exceed its wall floor, and has to carry a one-line derivation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -53,6 +54,9 @@ pub struct Op {
     pub removed: String,
     pub benches: Vec<String>,
     pub alternatives: Vec<String>,
+    /// `name=us` for each stage that runs, when there is more than one.
+    /// A single running stage keeps its floor in `wall_floor_us`.
+    pub stage_floors: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -431,6 +435,7 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
     let removed = optional_one_line(&mut fields, "removed", &mut local);
     let benches = optional_list(&mut fields, "benches", &mut local);
     let alternatives = optional_list(&mut fields, "alternatives", &mut local);
+    let stage_floors = optional_list(&mut fields, "stage_floors", &mut local);
     let label = id.clone().unwrap_or_else(|| "?".to_string());
     for key in fields.keys() {
         local.push(format!("unknown key `{key}`"));
@@ -457,6 +462,7 @@ fn build_op(mut fields: BTreeMap<String, Value>, errors: &mut Vec<String>) -> Op
         removed: removed.unwrap_or_default(),
         benches: benches.unwrap_or_default(),
         alternatives: alternatives.unwrap_or_default(),
+        stage_floors: stage_floors.unwrap_or_default(),
     })
 }
 
@@ -684,6 +690,7 @@ fn check_benches(ops: &[Op], benches: &BTreeMap<String, u64>, errors: &mut Vec<S
             }
         }
         check_stage_floor(op, benches, errors);
+        require_stage_floors(op, benches, errors);
     }
     for bench in benches.keys() {
         if !named.contains(bench.as_str()) {
@@ -800,6 +807,146 @@ fn check_stage_floor(op: &Op, benches: &BTreeMap<String, u64>, errors: &mut Vec<
     }
 }
 
+/// `name=us`. The number is the stage's own ceiling, in microseconds.
+fn parse_stage_floor(entry: &str) -> Option<(&str, u64)> {
+    let (name, raw) = entry.rsplit_once('=')?;
+    if name.is_empty() || name.contains('=') {
+        return None;
+    }
+    let us: u64 = raw.parse().ok()?;
+    if us == 0 { None } else { Some((name, us)) }
+}
+
+/// Stages a criss-cross head can be split into. An explicit `stage_floors`
+/// list is used as written. One running stage uses `wall_floor_us`. Several
+/// running stages and no list cannot be split.
+pub fn running_stage_floors(op: &Op) -> Option<Vec<(String, u64)>> {
+    if !op.stage_floors.is_empty() {
+        let mut out = Vec::new();
+        for entry in &op.stage_floors {
+            let (name, us) = parse_stage_floor(entry)?;
+            out.push((name.to_string(), us));
+        }
+        return Some(out);
+    }
+    let running: Vec<&String> = stages(op).collect();
+    if running.len() == 1 && matches!(op.floor.as_str(), "sum" | "max") {
+        return Some(vec![(running[0].clone(), op.wall_floor_us)]);
+    }
+    None
+}
+
+/// Per-stage floors for a looseness comparison.
+///
+/// An explicit list is that op's stages. One running stage keeps the whole
+/// wall as its floor, which is how a motion measured on its own stays at that
+/// number after a later stage is added. Several running stages with no list
+/// split only when the wall is still the sum of the current bench ceilings.
+fn split_stages(op: &Op, benches: &BTreeMap<String, u64>) -> Option<BTreeMap<String, u64>> {
+    if !op.stage_floors.is_empty() {
+        let mut map = BTreeMap::new();
+        for entry in &op.stage_floors {
+            let (name, us) = parse_stage_floor(entry)?;
+            if map.insert(name.to_string(), us).is_some() {
+                return None;
+            }
+        }
+        return Some(map);
+    }
+    if !matches!(op.floor.as_str(), "sum" | "max") || op.benches.is_empty() {
+        return None;
+    }
+    if !op.benches.iter().all(|bench| benches.contains_key(bench)) {
+        return None;
+    }
+    // `floor = "max"` is one stage: the bench whose ceiling is the wall. Older
+    // manifests named the other benches without an `alternatives` list.
+    if op.floor == "max" {
+        let matched: Vec<&String> =
+            op.benches.iter().filter(|bench| benches[bench.as_str()] == op.wall_floor_us).collect();
+        if matched.len() == 1 {
+            return Some(BTreeMap::from([(matched[0].clone(), op.wall_floor_us)]));
+        }
+    }
+    let running: Vec<&String> = stages(op).collect();
+    if running.len() == 1 {
+        return Some(BTreeMap::from([(running[0].clone(), op.wall_floor_us)]));
+    }
+    if running.len() > 1 {
+        let sum: u64 = running.iter().map(|bench| benches[bench.as_str()]).sum();
+        if op.wall_floor_us == sum {
+            return Some(
+                running.into_iter().map(|bench| (bench.clone(), benches[bench.as_str()])).collect(),
+            );
+        }
+    }
+    None
+}
+
+/// Two or more stages that run need `stage_floors`, one entry each, equal to
+/// that bench's ceiling. The wall stays the sum. A single stage does not
+/// repeat its floor in the list.
+fn require_stage_floors(op: &Op, benches: &BTreeMap<String, u64>, errors: &mut Vec<String>) {
+    if !matches!(op.floor.as_str(), "sum" | "max") {
+        if !op.stage_floors.is_empty() {
+            errors.push(format!(
+                "operation `{}` lists stage_floors without floor = \"sum\" or \"max\"",
+                op.id
+            ));
+        }
+        return;
+    }
+    if op.benches.iter().any(|bench| !benches.contains_key(bench)) {
+        return;
+    }
+    let running: Vec<&str> = stages(op).map(|bench| bench.as_str()).collect();
+    if running.len() < 2 {
+        if !op.stage_floors.is_empty() {
+            errors.push(format!(
+                "operation `{}` lists stage_floors with fewer than two running stages",
+                op.id
+            ));
+        }
+        return;
+    }
+    if op.stage_floors.is_empty() {
+        errors.push(format!(
+            "operation `{}` has {} running stages and no stage_floors",
+            op.id,
+            running.len()
+        ));
+        return;
+    }
+    let mut seen = BTreeSet::new();
+    for entry in &op.stage_floors {
+        let Some((name, us)) = parse_stage_floor(entry) else {
+            errors.push(format!("operation `{}` stage floor `{entry}` must be name=us", op.id));
+            continue;
+        };
+        if !seen.insert(name) {
+            errors.push(format!("operation `{}` lists stage floor `{name}` more than once", op.id));
+            continue;
+        }
+        if !running.contains(&name) {
+            errors
+                .push(format!("operation `{}` stage floor `{name}` is not a running stage", op.id));
+            continue;
+        }
+        let ceiling = benches[name];
+        if us != ceiling {
+            errors.push(format!(
+                "operation `{}` stage floor `{name}` {us} does not match bench ceiling {ceiling}",
+                op.id
+            ));
+        }
+    }
+    for name in &running {
+        if !seen.contains(name) {
+            errors.push(format!("operation `{}` stage floor missing for `{name}`", op.id));
+        }
+    }
+}
+
 fn accounted(op: &Op, benches: &BTreeMap<String, u64>) -> bool {
     matches!(op.floor.as_str(), "sum" | "max")
         && !op.benches.is_empty()
@@ -828,18 +975,48 @@ fn looseness(
             continue;
         };
         looser(&op.id, "processes", op.processes, before.processes, errors);
-        let formula = accounted(op, benches) && accounted(before, benches);
-        let wall_rose = op.wall_floor_us > before.wall_floor_us;
-        if wall_rose && !formula {
-            looser(&op.id, "wall_floor_us", op.wall_floor_us, before.wall_floor_us, errors);
+        let live_stages = split_stages(op, benches);
+        let base_stages = split_stages(before, benches);
+        let mut shared_rose = false;
+        match (&live_stages, &base_stages) {
+            (Some(live), Some(base)) if live.len() == 1 && base.len() == 1 => {
+                // One stage on each side: the wall is that stage's floor.
+                if op.wall_floor_us > before.wall_floor_us {
+                    shared_rose = true;
+                }
+                looser(&op.id, "wall_floor_us", op.wall_floor_us, before.wall_floor_us, errors);
+            }
+            (Some(live), Some(base)) => {
+                for (name, base_us) in base {
+                    if let Some(live_us) = live.get(name)
+                        && *live_us > *base_us
+                    {
+                        shared_rose = true;
+                        errors.push(format!(
+                            "operation `{}` stage floor `{name}` {live_us} is looser than the baseline {base_us}",
+                            op.id
+                        ));
+                    }
+                }
+            }
+            _ => {
+                looser(&op.id, "wall_floor_us", op.wall_floor_us, before.wall_floor_us, errors);
+            }
         }
+        let wall_rose = op.wall_floor_us > before.wall_floor_us;
         if op.target_us > before.target_us {
             let wall_delta = op.wall_floor_us.saturating_sub(before.wall_floor_us);
             let target_delta = op.target_us - before.target_us;
-            if !(formula && wall_rose && target_delta <= wall_delta) {
+            let staged = live_stages.is_some()
+                && base_stages.is_some()
+                && !shared_rose
+                && wall_rose
+                && target_delta <= wall_delta;
+            if !staged {
                 looser(&op.id, "target_us", op.target_us, before.target_us, errors);
             }
         }
+        let both_accounted = accounted(op, benches) && accounted(before, benches);
         if !before.owed && op.owed {
             errors.push(format!("operation `{}` is owed but was measured in the baseline", op.id));
         }
@@ -857,7 +1034,7 @@ fn looseness(
                     continue;
                 }
                 let kept = before.benches.iter().any(|bench| bench == alternative)
-                    && formula
+                    && both_accounted
                     && expected_floor(op, benches) >= expected_floor(before, benches);
                 if !kept {
                     errors.push(format!(
