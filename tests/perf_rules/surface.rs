@@ -14,6 +14,8 @@ use crossterm::event::{
 
 use branchdiff::app::App;
 use branchdiff::diff::{DiffLine, LineSource};
+
+use super::guard::baselines::{self, BenchRecord};
 use branchdiff::file_events::VcsLockState;
 use branchdiff::input::{AppAction, handle_event};
 use branchdiff::message::{Message, Repaint, UpdateResult};
@@ -311,6 +313,9 @@ fn read_jj_file_at(root: &Path, repo: &str, rev: &str, rel_path: &str) -> Option
 /// the file whole. When that merge matches the earliest strictest head, that
 /// head's original text is kept.
 fn choose_jj_baseline(texts: Vec<String>) -> String {
+    if let Some(merged) = merged_bench_baseline(&texts) {
+        return merged;
+    }
     let annotated: Vec<(BTreeMap<String, Ceilings>, String)> =
         texts.into_iter().map(|text| (operation_ceilings(&text), text)).collect();
     let any_ops = annotated.iter().any(|(ceilings, _)| !ceilings.is_empty());
@@ -327,6 +332,91 @@ fn choose_jj_baseline(texts: Vec<String>) -> String {
         return candidates[best].1.clone();
     }
     merged
+}
+
+/// `benches/baselines.toml` heads. The file has no operations, so the manifest
+/// rules above cannot rank them, and the lowest commit id would otherwise win
+/// whole. Each pin keeps the minimum across the heads that record it, a record
+/// pinned on any head is not removed, and a head with no records is skipped
+/// when another has some. A head whose records already equal the merge keeps
+/// its own text. `None` unless every head parses as bench records and one has any.
+fn merged_bench_baseline(texts: &[String]) -> Option<String> {
+    let parsed: Vec<(Vec<BenchRecord>, &String)> = texts
+        .iter()
+        .filter_map(|text| baselines::parse(text).ok().map(|records| (records, text)))
+        .collect();
+    if parsed.len() != texts.len() || parsed.iter().all(|(records, _)| records.is_empty()) {
+        return None;
+    }
+    let heads: Vec<&(Vec<BenchRecord>, &String)> =
+        parsed.iter().filter(|(records, _)| !records.is_empty()).collect();
+    let mut order: Vec<String> = Vec::new();
+    let mut merged: BTreeMap<String, BenchRecord> = BTreeMap::new();
+    for (records, _) in &heads {
+        for record in records {
+            match merged.get_mut(&record.id) {
+                Some(existing) => merge_bench_record(existing, record),
+                None => {
+                    order.push(record.id.clone());
+                    merged.insert(record.id.clone(), record.clone());
+                }
+            }
+        }
+    }
+    for (records, text) in &heads {
+        let by_id: BTreeMap<&str, &BenchRecord> =
+            records.iter().map(|record| (record.id.as_str(), record)).collect();
+        let same = by_id.len() == merged.len()
+            && merged.iter().all(|(id, record)| by_id.get(id.as_str()) == Some(&record));
+        if same {
+            return Some((*text).clone());
+        }
+    }
+    Some(order.iter().map(|id| render_bench(&merged[id])).collect())
+}
+
+/// A pin on either head stands; both pinned keeps the lower. A record removed
+/// on one head and pinned on the other stays pinned.
+fn merge_bench_record(into: &mut BenchRecord, other: &BenchRecord) {
+    if other.removed.is_some() {
+        return;
+    }
+    if into.removed.is_some() {
+        *into = other.clone();
+        return;
+    }
+    into.max_blocks = min_pin(into.max_blocks, other.max_blocks);
+    into.max_bytes = min_pin(into.max_bytes, other.max_bytes);
+    into.max_bytes_x86_64 = min_pin(into.max_bytes_x86_64, other.max_bytes_x86_64);
+    into.ref_median_ns = min_pin(into.ref_median_ns, other.ref_median_ns);
+}
+
+fn min_pin(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(pin), None) | (None, Some(pin)) => Some(pin),
+        (None, None) => None,
+    }
+}
+
+fn render_bench(record: &BenchRecord) -> String {
+    let mut lines = vec!["[[bench]]".to_string(), format!("id = \"{}\"", toml_basic(&record.id))];
+    if let Some(reason) = &record.removed {
+        lines.push(format!("removed = \"{}\"", toml_basic(reason)));
+    }
+    for (key, value) in [
+        ("max_blocks", record.max_blocks),
+        ("max_bytes", record.max_bytes),
+        ("max_bytes_x86_64", record.max_bytes_x86_64),
+        ("ref_median_ns", record.ref_median_ns),
+    ] {
+        if let Some(value) = value {
+            lines.push(format!("{key} = {value}"));
+        }
+    }
+    lines.push(String::new());
+    lines.push(String::new());
+    lines.join("\n")
 }
 
 fn any_stage_floors(candidates: &[(BTreeMap<String, Ceilings>, String)]) -> bool {
@@ -1855,35 +1945,105 @@ derivation = "hash # stays"
     }
 
     fn draw_criss_cross(a: &str, b: &str) -> DrawnCrissCross {
+        let root = budget_op("command:root", 1, 50, 50);
+        draw_criss_cross_at("tests/perf.toml", &root, a, b)
+    }
+
+    /// Both merges resolve `rel_path` back to `root`, so the file differs only
+    /// on the two merge-base heads.
+    fn draw_criss_cross_at(rel_path: &str, root: &str, a: &str, b: &str) -> DrawnCrissCross {
         let tmp = TempDir::new().expect("tempdir");
         let dir = tmp.path();
+        let file = dir.join(rel_path);
         run_cmd(dir, "jj", &["git", "init", "--colocate"]);
-        fs::create_dir_all(dir.join("tests")).expect("mkdir tests");
-        fs::write(dir.join("tests/perf.toml"), budget_op("command:root", 1, 50, 50))
-            .expect("write root");
+        fs::create_dir_all(file.parent().expect("file has a parent")).expect("mkdir parent");
+        fs::write(&file, root).expect("write root");
         run_cmd(dir, "jj", &["commit", "-m", "root"]);
         run_cmd(dir, "jj", &["new", "@-", "-m", "A"]);
-        fs::write(dir.join("tests/perf.toml"), a).expect("write a");
+        fs::write(&file, a).expect("write a");
         run_cmd(dir, "jj", &["bookmark", "create", "branch-a", "-r", "@"]);
         let first_commit = jj_commit_id(dir, "branch-a");
         run_cmd(dir, "jj", &["new", "description(substring:\"root\")", "-m", "B"]);
-        fs::write(dir.join("tests/perf.toml"), b).expect("write b");
+        fs::write(&file, b).expect("write b");
         run_cmd(dir, "jj", &["bookmark", "create", "branch-b", "-r", "@"]);
         let second_commit = jj_commit_id(dir, "branch-b");
         run_cmd(dir, "jj", &["new", "branch-a", "branch-b", "-m", "main merge"]);
-        fs::write(dir.join("tests/perf.toml"), budget_op("command:root", 1, 50, 50))
-            .expect("resolve main");
+        fs::write(&file, root).expect("resolve main");
         run_cmd(dir, "jj", &["bookmark", "create", "main", "-r", "@"]);
         run_cmd(dir, "jj", &["new", "branch-a", "branch-b", "-m", "feature merge"]);
-        fs::write(dir.join("tests/perf.toml"), budget_op("command:root", 1, 50, 50))
-            .expect("resolve feature");
+        fs::write(&file, root).expect("resolve feature");
         let baseline = committed_baseline_file_in(
             dir,
             Some("0000000000000000000000000000000000000000"),
             Some("refs/heads/feature"),
-            "tests/perf.toml",
+            rel_path,
         );
         DrawnCrissCross { baseline, first_commit, second_commit }
+    }
+
+    const LOOSE_BENCHES: &str = "[[bench]]\nid = \"a\"\nmax_blocks = 10\nmax_bytes = 1000\nref_median_ns = 100\n\n[[bench]]\nid = \"b\"\nref_median_ns = 5\n\n[[bench]]\nid = \"c\"\nremoved = \"gone on this head\"\n";
+    const TIGHT_BENCHES: &str = "[[bench]]\nid = \"a\"\nmax_blocks = 20\nmax_bytes = 500\nref_median_ns = 50\n\n[[bench]]\nid = \"c\"\nref_median_ns = 7\n";
+
+    fn bench_records(text: &str) -> BTreeMap<String, crate::guard::baselines::BenchRecord> {
+        crate::guard::baselines::parse(text)
+            .unwrap_or_else(|errors| panic!("{}: {text}", errors.join("; ")))
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect()
+    }
+
+    fn assert_minimum_pins(text: &str) {
+        let records = bench_records(text);
+        let a = &records["a"];
+        assert_eq!(
+            (a.max_blocks, a.max_bytes, a.ref_median_ns),
+            (Some(10), Some(500), Some(50)),
+            "{text}"
+        );
+        assert_eq!(records["b"].ref_median_ns, Some(5), "{text}");
+        assert_eq!(records["c"].ref_median_ns, Some(7), "{text}");
+        assert!(records["c"].removed.is_none(), "a pinned head beats a removed one: {text}");
+        let mut errors = Vec::new();
+        crate::guard::check_baseline_medians(LOOSE_BENCHES, Some(text), &mut errors);
+        assert!(
+            errors.iter().any(|error| error.contains("`a`")
+                && error.contains("ref_median_ns")
+                && error.contains("looser")),
+            "the loose head's pin must fail against the merge: {errors:?}"
+        );
+    }
+
+    /// `benches/baselines.toml` has no operations, so the manifest's strictness
+    /// rules cannot rank its heads. Each pin keeps the minimum across the heads
+    /// that record it, whichever commit id sorts first.
+    #[test]
+    fn a_baselines_criss_cross_keeps_the_minimum_of_each_pin() {
+        for (left, right) in [(LOOSE_BENCHES, TIGHT_BENCHES), (TIGHT_BENCHES, LOOSE_BENCHES)] {
+            assert_minimum_pins(&choose_jj_baseline(vec![left.to_string(), right.to_string()]));
+        }
+        assert_eq!(choose_jj_baseline(vec![LOOSE_BENCHES.to_string()]), LOOSE_BENCHES);
+        assert_eq!(
+            choose_jj_baseline(vec![TIGHT_BENCHES.to_string(), TIGHT_BENCHES.to_string()]),
+            TIGHT_BENCHES
+        );
+        assert_eq!(
+            choose_jj_baseline(vec!["# only\n".to_string(), TIGHT_BENCHES.to_string()]),
+            TIGHT_BENCHES
+        );
+        assert_eq!(
+            choose_jj_baseline(vec![String::new(), TIGHT_BENCHES.to_string()]),
+            TIGHT_BENCHES
+        );
+    }
+
+    #[test]
+    fn jj_criss_cross_of_baselines_keeps_the_minimum_of_each_pin() {
+        let root = "[[bench]]\nid = \"a\"\nref_median_ns = 100\n";
+        for (left, right) in [(LOOSE_BENCHES, TIGHT_BENCHES), (TIGHT_BENCHES, LOOSE_BENCHES)] {
+            let drawn = draw_criss_cross_at("benches/baselines.toml", root, left, right);
+            let text = drawn.baseline.expect("baseline").expect("text");
+            assert_minimum_pins(&text);
+        }
     }
 
     #[test]

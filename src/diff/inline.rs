@@ -218,6 +218,8 @@ fn assemble(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     // === InlineSpan creation and properties ===
@@ -580,5 +582,94 @@ mod tests {
         let edits: Vec<(ChangeTag, &str)> =
             diff.iter_all_changes().map(|change| (change.tag(), change.value())).collect();
         assemble(edits, deletion_source, change_source)
+    }
+
+    /// A multi-byte character diffed as bytes would slice inside the character
+    /// and panic, so a line pair that is not ASCII proves it took the char path.
+    #[test]
+    fn non_ascii_lines_take_the_char_path() {
+        for (old, new) in [
+            ("é", "è"),
+            ("caf\u{e9} au lait", "caf\u{e8} au lait"),
+            ("日本語のテキスト", "日本語のテクスト"),
+            ("ascii only", "ascii only 😀"),
+            ("a\u{301}b", "ab"),
+            ("\u{feff}let x = 1;", "let x = 1;"),
+        ] {
+            for source in [LineSource::Committed, LineSource::Staged, LineSource::Unstaged] {
+                let live = compute_inline_diff_merged(old, new, source);
+                let expect = char_diff_spans(old, new, source);
+                assert_eq!(live.is_meaningful, expect.is_meaningful, "{old:?} -> {new:?}");
+                assert_eq!(live.spans, expect.spans, "{old:?} -> {new:?}");
+            }
+        }
+    }
+
+    /// Lines drawn from a small alphabet so repeats are common, with tabs and
+    /// runs of spaces, up to well past the 100-token cutoff where
+    /// `TextDiff::from_chars` switches to hashed tokens.
+    fn ascii_line() -> impl Strategy<Value = String> {
+        proptest::collection::vec(
+            prop_oneof![
+                4 => Just("a"),
+                4 => Just("b"),
+                2 => Just("c"),
+                2 => Just(" "),
+                1 => Just("\t"),
+                1 => Just("  "),
+                1 => Just("("),
+                1 => Just(")"),
+                1 => Just(","),
+                1 => Just("_"),
+                1 => Just("let "),
+                1 => Just("x = "),
+                1 => Just(";"),
+                1 => Just("0123456789"),
+            ],
+            0..=40,
+        )
+        .prop_map(|pieces| pieces.concat())
+    }
+
+    fn ascii_pair() -> impl Strategy<Value = (String, String)> {
+        prop_oneof![
+            (ascii_line(), ascii_line()),
+            // An edit of one line: the common case, and the one where Compact's
+            // slides matter.
+            ascii_line().prop_flat_map(|old| {
+                let len = old.len();
+                (
+                    Just(old),
+                    0..=len,
+                    0..=len,
+                    proptest::collection::vec(
+                        prop_oneof![Just("a"), Just("b"), Just(" "), Just("\t"), Just("zz")],
+                        0..=6,
+                    ),
+                )
+                    .prop_map(|(old, i, j, insert)| {
+                        let (start, end) = if i <= j { (i, j) } else { (j, i) };
+                        let new = format!("{}{}{}", &old[..start], insert.concat(), &old[end..]);
+                        (old, new)
+                    })
+            }),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+
+        /// The byte path must produce the spans `TextDiff::from_chars` did,
+        /// for every ASCII pair, including lines over 100 characters.
+        #[test]
+        fn ascii_byte_path_matches_char_diff_on_random_pairs((old, new) in ascii_pair()) {
+            prop_assert!(old.is_ascii() && new.is_ascii());
+            for source in [LineSource::Committed, LineSource::Staged, LineSource::Unstaged] {
+                let live = compute_inline_diff_merged(&old, &new, source);
+                let expect = char_diff_spans(&old, &new, source);
+                prop_assert_eq!(live.is_meaningful, expect.is_meaningful, "{:?} -> {:?}", old, new);
+                prop_assert_eq!(live.spans, expect.spans, "{:?} -> {:?}", old, new);
+            }
+        }
     }
 }
