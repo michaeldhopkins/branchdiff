@@ -401,7 +401,7 @@ pub fn html_highlight_classes_and_marker(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::{DiffInput, compute_four_way_diff};
+    use crate::diff::{DiffInput, InlineSpan, compute_four_way_diff};
     use proptest::prelude::*;
 
     #[test]
@@ -547,6 +547,241 @@ mod tests {
         let marks = HighlightMarks::from_files(&[diff], unseparated_len);
         assert_eq!(marks.total_highlighted_lines, 0);
         assert!(marks.line_indices.is_empty());
+    }
+
+    #[test]
+    fn is_active_when_labeled_or_when_marked_without_a_label() {
+        let labeled = FileHighlight {
+            label: Some("feature@origin..feature".into()),
+            ..FileHighlight::default()
+        };
+        assert!(labeled.is_active());
+        assert!(!labeled.is_highlighted());
+
+        let marked = FileHighlight { touched: true, ..FileHighlight::default() };
+        assert!(marked.label.is_none());
+        assert!(marked.is_active());
+    }
+
+    #[test]
+    fn remap_keeps_marks_on_a_highlighted_file_that_has_no_label() {
+        let hl = FileHighlight {
+            touched: true,
+            highlighted_lines: vec![1],
+            highlighted_hunk_lines: vec![1, 2],
+            ..FileHighlight::default()
+        };
+        let remapped = hl.remap_to_context(&[None, Some(1), Some(2)]);
+        assert!(remapped.label.is_none());
+        assert!(remapped.touched);
+        assert_eq!(remapped.highlighted_lines, vec![1]);
+        assert_eq!(remapped.highlighted_hunk_lines, vec![1, 2]);
+    }
+
+    #[test]
+    fn remap_keeps_a_label_when_the_file_has_no_marks() {
+        let hl = FileHighlight {
+            label: Some("feature@origin..feature".into()),
+            ..FileHighlight::default()
+        };
+        let remapped = hl.remap_to_context(&[Some(0)]);
+        assert_eq!(remapped.label.as_deref(), Some("feature@origin..feature"));
+        assert!(remapped.highlighted_lines.is_empty());
+    }
+
+    fn file_with(highlight: FileHighlight) -> (FileDiff, usize) {
+        let mut file = FileDiff::new(vec![
+            DiffLine::file_header("a.txt"),
+            DiffLine::new(LineSource::Committed, "x".into(), '+', Some(1)).with_file_path("a.txt"),
+        ]);
+        let total = file.lines.len() + 1;
+        file.highlight = highlight;
+        (file, total)
+    }
+
+    #[test]
+    fn from_files_keeps_the_label_when_nothing_is_highlighted() {
+        let (file, total) = file_with(FileHighlight {
+            label: Some("feature@origin..feature".into()),
+            ..FileHighlight::default()
+        });
+        let marks = HighlightMarks::from_files(&[file], total);
+        assert_eq!(marks.label.as_deref(), Some("feature@origin..feature"));
+        assert_eq!(marks.highlighted_file_count, 0);
+        assert_eq!(marks.total_highlighted_lines, 0);
+        assert_eq!(
+            marks.legend_text().as_deref(),
+            Some("★ highlighted (feature@origin..feature): 0 lines in 0 files (★ line, ┃ hunk)")
+        );
+    }
+
+    #[test]
+    fn from_files_keeps_marks_when_the_file_has_no_label() {
+        let (file, total) = file_with(FileHighlight {
+            touched: true,
+            highlighted_lines: vec![1],
+            highlighted_hunk_lines: vec![1],
+            ..FileHighlight::default()
+        });
+        let marks = HighlightMarks::from_files(&[file], total);
+        assert!(marks.label.is_none());
+        assert_eq!(marks.total_highlighted_lines, 1);
+        assert_eq!(marks.highlighted_file_count, 1);
+        assert!(marks.is_line_highlighted(1));
+        assert!(!marks.is_line_highlighted(0));
+    }
+
+    #[test]
+    fn a_global_line_outside_the_hunk_is_not_inside_it() {
+        let (file, total) = file_with(FileHighlight {
+            label: Some("c1".into()),
+            touched: true,
+            highlighted_lines: vec![1],
+            highlighted_hunk_lines: vec![1],
+        });
+        let marks = HighlightMarks::from_files(&[file], total);
+        assert!(marks.is_in_highlighted_hunk(1));
+        assert!(!marks.is_in_highlighted_hunk(0));
+    }
+
+    #[test]
+    fn a_touched_file_with_no_highlighted_lines_badges_without_a_count() {
+        let hl = FileHighlight {
+            label: Some("feature@origin..feature".into()),
+            touched: true,
+            ..FileHighlight::default()
+        };
+        assert_eq!(format_badge_text(&hl).as_deref(), Some("★ highlighted"));
+        assert_eq!(
+            format_badge_text(&FileHighlight {
+                highlighted_lines: vec![3, 4],
+                touched: true,
+                ..FileHighlight::default()
+            })
+            .as_deref(),
+            Some("★ 2 highlighted")
+        );
+    }
+
+    #[test]
+    fn a_span_that_changes_nothing_keeps_its_label_and_marks_no_lines() {
+        let same = "alpha\nbeta\n";
+        let diff = compute_four_way_diff(DiffInput {
+            path: "a.txt",
+            base: Some(same),
+            head: Some(same),
+            index: Some(same),
+            working: Some(same),
+            old_path: None,
+        });
+        let hl = compute_file_highlight(
+            &diff,
+            Some(same),
+            Some(same),
+            "feature@origin..feature",
+            &[HighlightPair { before: Some(same), after: Some(same) }],
+        );
+        assert_eq!(hl.label.as_deref(), Some("feature@origin..feature"));
+        assert!(hl.highlighted_lines.is_empty());
+        assert!(hl.highlighted_hunk_lines.is_empty());
+        assert!(!hl.touched);
+        assert!(hl.is_active());
+    }
+
+    #[test]
+    fn is_diff_change_line_rejects_context_and_accepts_old_content_or_spans() {
+        assert!(!is_diff_change_line(&DiffLine::file_header("a.txt")));
+        assert!(!is_diff_change_line(&DiffLine::elided(4)));
+        let context = DiffLine::new(LineSource::Base, "keep".into(), ' ', Some(1));
+        assert!(!is_diff_change_line(&context));
+
+        let added = DiffLine::new(LineSource::Committed, "added".into(), '+', Some(2));
+        assert!(is_diff_change_line(&added));
+
+        let mut old_only = DiffLine::new(LineSource::Base, "now".into(), ' ', Some(3));
+        old_only.old_content = Some("was".into());
+        assert!(is_diff_change_line(&old_only));
+
+        let mut spanned = DiffLine::new(LineSource::Base, "now".into(), ' ', Some(4));
+        spanned.inline_spans = vec![InlineSpan {
+            text: "now".into(),
+            source: Some(LineSource::Committed),
+            is_deletion: false,
+        }];
+        assert!(is_diff_change_line(&spanned));
+    }
+
+    #[test]
+    fn empty_blocks_expand_only_the_change_run_holding_a_highlighted_line() {
+        // 0 header, 1 elided, 2 context, 3 an earlier change, 4 context,
+        // 5 sibling, 6 old-content highlight, 7 sibling at end of file.
+        let mut marked = DiffLine::new(LineSource::Base, "marked".into(), ' ', Some(5));
+        marked.old_content = Some("was".into());
+        let lines = vec![
+            DiffLine::file_header("a.txt"),
+            DiffLine::elided(3),
+            DiffLine::new(LineSource::Base, "before".into(), ' ', Some(1)),
+            DiffLine::new(LineSource::Committed, "old-hunk".into(), '+', Some(2)),
+            DiffLine::new(LineSource::Base, "gap".into(), ' ', Some(3)),
+            DiffLine::new(LineSource::Committed, "sib-before".into(), '+', Some(4)),
+            marked,
+            DiffLine::new(LineSource::Committed, "sib-after".into(), '+', Some(6)),
+        ];
+        assert_eq!(compute_hunk_indices(&lines, &[], &[6]), vec![5, 6, 7]);
+    }
+
+    #[test]
+    fn whitespace_only_changes_have_no_blocks_and_still_share_a_hunk() {
+        // extract_blocks drops a run whose text is all whitespace, so
+        // compute_hunk_indices takes its empty-block fallback for this diff.
+        let base = "keep\n";
+        let mid = "keep\n \n";
+        let work = "keep\n \n  \n";
+        let diff = compute_four_way_diff(DiffInput {
+            path: "blank.txt",
+            base: Some(base),
+            head: Some(work),
+            index: Some(work),
+            working: Some(work),
+            old_path: None,
+        });
+        assert!(
+            diff.blocks.is_empty(),
+            "whitespace-only changes still produced blocks {:?}",
+            diff.blocks.iter().map(|b| b.range.clone()).collect::<Vec<_>>()
+        );
+        let hl = compute_file_highlight(
+            &diff,
+            Some(base),
+            Some(work),
+            "c2",
+            &[HighlightPair { before: Some(mid), after: Some(work) }],
+        );
+        let ws: Vec<usize> = diff
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.is_change() && line.content.trim().is_empty())
+            .map(|(idx, _)| idx)
+            .collect();
+        assert_eq!(
+            ws.len(),
+            2,
+            "lines {:?}",
+            diff.lines
+                .iter()
+                .map(|l| (l.source, l.content.as_str(), l.line_number))
+                .collect::<Vec<_>>()
+        );
+        let marked: Vec<usize> =
+            ws.iter().copied().filter(|&idx| hl.is_line_highlighted(idx)).collect();
+        assert_eq!(marked, vec![ws[1]], "hunk {:?}", hl.highlighted_hunk_lines);
+        for idx in ws {
+            assert!(hl.is_in_highlighted_hunk(idx), "hunk {:?}", hl.highlighted_hunk_lines);
+        }
+        let keep = diff.lines.iter().position(|line| line.content == "keep").expect("keep");
+        assert!(!hl.is_line_highlighted(keep));
+        assert!(!hl.is_in_highlighted_hunk(keep));
     }
 
     proptest! {
