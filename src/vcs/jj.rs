@@ -5167,4 +5167,100 @@ mod tests {
     jj_highlight_fixture_tests! {
         jj_highlight_log_0_45_1 => "0.45.1",
     }
+
+    #[test]
+    fn base_rev_of_a_head_without_trunk_is_that_heads_parent() {
+        if !jj_available() {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let out = Command::new("jj").args(["git", "init"]).current_dir(repo).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        std::fs::write(repo.join("added.txt"), "hello\n").unwrap();
+        let out =
+            Command::new("jj").args(["commit", "-m", "add"]).current_dir(repo).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let id = jj_out(
+            repo,
+            &[
+                "--ignore-working-copy", "log", "-r", "@-", "--no-graph", "-T",
+                "change_id.short(12)",
+            ],
+        );
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: Some(&id), highlight: None },
+        )
+        .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let refresh = vcs.refresh(&cancel).unwrap();
+        assert!(
+            refresh.files.iter().any(|f| {
+                f.lines.first().is_some_and(|l| l.file_path.as_deref() == Some("added.txt"))
+            }),
+            "the commit's file must be in the diff against its parent, files: {:?}",
+            refresh
+                .files
+                .iter()
+                .filter_map(|f| f.lines.first())
+                .map(|l| l.content.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(vcs.base_rev().as_ref(), format!("({id})-"));
+    }
+
+    #[test]
+    fn revision_ids_match_jj_change_ids() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        std::fs::write(repo.join("feature.txt"), "feature\n").unwrap();
+        let committed = Command::new("jj")
+            .args(["commit", "-m", "feature"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(committed.status.success(), "{}", String::from_utf8_lossy(&committed.stderr));
+        let marked = Command::new("jj")
+            .args(["bookmark", "set", "feature", "-r", "@-"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(marked.status.success(), "{}", String::from_utf8_lossy(&marked.stderr));
+        let moved = Command::new("jj").args(["new", "main"]).current_dir(repo).output().unwrap();
+        assert!(moved.status.success(), "{}", String::from_utf8_lossy(&moved.stderr));
+
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: Some("feature"), highlight: None },
+        )
+        .unwrap();
+        let base = vcs.base_identifier().unwrap();
+        let current = vcs.current_revision_id().unwrap();
+        let expected_base = jj_out(
+            repo,
+            &[
+                "--ignore-working-copy",
+                "log",
+                "-r",
+                vcs.base_rev().as_ref(),
+                "--no-graph",
+                "-T",
+                "change_id.short(12)",
+            ],
+        );
+        let expected_current = jj_out(
+            repo,
+            &[
+                "--ignore-working-copy", "log", "-r", "feature", "--no-graph", "-T",
+                "change_id.short(12)",
+            ],
+        );
+        assert_eq!(base, expected_base);
+        assert_eq!(current, expected_current);
+        assert_ne!(base, current);
+    }
 }
