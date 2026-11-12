@@ -210,6 +210,7 @@ pub trait Vcs: Send + Sync {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
 
     #[test]
     fn detect_repo_dir_empty() {
@@ -268,5 +269,56 @@ mod tests {
         assert!(vcs.fingerprint_inputs().is_err());
         let cancel = Arc::new(AtomicBool::new(false));
         assert!(vcs.try_recover(crate::update::RecoveryAction::JjUpdateStale, &cancel).is_err());
+    }
+
+    fn jj_present() -> bool {
+        std::process::Command::new("jj").arg("--version").output().is_ok_and(|o| o.status.success())
+    }
+
+    fn jj(repo: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        assert!(
+            out.status.success(),
+            "jj {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// `detect_with_base` must put `base` on `VcsOptions`. Deleting that field
+    /// leaves the inferred trunk, whose change id is not develop's.
+    #[test]
+    fn detect_with_base_uses_the_revset_it_was_given() {
+        if !jj_present() {
+            return;
+        }
+        let remote = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(remote.path())
+            .output()
+            .unwrap();
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo = repo_dir.path();
+        jj(repo, &["git", "init"]);
+        std::fs::write(repo.join("base.txt"), "trunk content\n").unwrap();
+        jj(repo, &["commit", "-m", "base"]);
+        jj(repo, &["bookmark", "set", "main", "-r", "@-"]);
+        jj(repo, &["git", "remote", "add", "origin", &remote.path().to_string_lossy()]);
+        jj(repo, &["git", "push", "--bookmark", "main"]);
+        std::fs::write(repo.join("dev.txt"), "dev\n").unwrap();
+        jj(repo, &["commit", "-m", "develop work"]);
+        jj(repo, &["bookmark", "set", "develop", "-r", "@-"]);
+        jj(repo, &["git", "push", "--bookmark", "develop"]);
+
+        let develop =
+            jj(repo, &["log", "-r", "develop@origin", "--no-graph", "-T", "change_id.short(12)"]);
+        let trunk = jj(repo, &["log", "-r", "trunk()", "--no-graph", "-T", "change_id.short(12)"]);
+        assert_ne!(develop, trunk);
+
+        let explicit = detect_with_base(repo, Some("develop@origin")).unwrap();
+        let inferred = detect(repo).unwrap();
+        assert_eq!(explicit.base_identifier().unwrap(), develop);
+        assert_eq!(inferred.base_identifier().unwrap(), trunk);
     }
 }
