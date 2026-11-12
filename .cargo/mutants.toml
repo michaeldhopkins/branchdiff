@@ -80,4 +80,12 @@ exclude_re = [
     # selecting words by name keeps working if the default is ever changed
     # (pattern redundant-guard). The "words" and "signs" inputs are tested.
     '^src/comments/label\.rs:\d+:\d+: delete match arm Some\("words"\) in style_from_env$',
+    # `{` and `}` are different bytes, so find() cannot return one index for both.
+    # `close <= open` adds only that impossible tie. `close < open` stays: a `}`
+    # before `{` is `None` (pattern unreachable). See tests/mutants_triage.toml.
+    '^src/vcs/jj/parse\.rs:.*replace < with <= in parse_rename$',
+    # The bookmark template always emits one NUL and splitn(2) then has length 2,
+    # so `len < 2` and `len > 2` are both false. A bookmark with no `@` still
+    # carries the NUL (pattern unreachable). See tests/mutants_triage.toml.
+    '^src/vcs/jj/bookmark\.rs:.*replace < with > in resolve_bookmark_boundary_for$',
 ]

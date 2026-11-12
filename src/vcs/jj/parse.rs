@@ -232,3 +232,40 @@ pub(super) fn coalesce_highlight_entries(
     }
     raw_spans
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_rename_is_none_when_the_brace_closes_first() {
+        assert!(parse_rename("a}b{c").is_none());
+        let ok = parse_rename("sub/{old => new}/f.js").unwrap();
+        assert_eq!(ok.path, "sub/new/f.js");
+        assert_eq!(ok.old_path.as_deref(), Some("sub/old/f.js"));
+    }
+
+    /// `{` and `}` are different bytes, so `find` cannot return one index for
+    /// both. `close <= open` therefore agrees with `close < open` on every
+    /// string. The walk is the finite check; the byte inequality is the proof.
+    #[test]
+    fn opening_and_closing_braces_never_share_an_index() {
+        assert_ne!(b'{', b'}');
+        let mut buf = String::new();
+        brace_strings(4, &['a', '{', '}', 'x'], &mut buf);
+    }
+
+    fn brace_strings(remaining: usize, alphabet: &[char], buf: &mut String) {
+        if let (Some(open), Some(close)) = (buf.find('{'), buf.find('}')) {
+            assert_ne!(open, close, "{buf:?}");
+        }
+        if remaining == 0 {
+            return;
+        }
+        for ch in alphabet {
+            buf.push(*ch);
+            brace_strings(remaining - 1, alphabet, buf);
+            buf.pop();
+        }
+    }
+}
