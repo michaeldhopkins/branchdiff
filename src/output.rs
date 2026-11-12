@@ -363,4 +363,50 @@ mod tests {
         let result = apply_view_mode(&lines, &crate::app::ViewMode::Full);
         assert_eq!(result.len(), 3);
     }
+
+    /// `label.is_none() && !is_highlighted()` drops the highlight. A touched file
+    /// with no label is highlighted, so both `&&` → `||` and deleting `!` take
+    /// the drop arm and replace the highlight with the default.
+    #[test]
+    fn prepare_keeps_highlight_on_a_touched_unlabelled_file() {
+        let mut file = FileDiff::new(vec![
+            DiffLine::file_header("a.txt"),
+            DiffLine::new(LineSource::Committed, "added".into(), '+', Some(1)),
+        ]);
+        file.highlight = FileHighlight {
+            label: None,
+            touched: true,
+            highlighted_lines: vec![1],
+            highlighted_hunk_lines: vec![1],
+        };
+        let mut app = TestAppBuilder::new().with_files(vec![file]).build();
+        let data = prepare(&mut app);
+        assert_eq!(data.files.len(), 1);
+        assert!(data.files[0].highlight.label.is_none());
+        assert!(data.files[0].highlight.touched);
+        assert_eq!(data.files[0].highlight.highlighted_lines, vec![1]);
+        assert_eq!(data.files[0].highlight.highlighted_hunk_lines, vec![1]);
+    }
+
+    /// A label with nothing highlighted stays. `&&` → `||` drops it, because
+    /// `label.is_none()` is false while `!is_highlighted()` is true.
+    #[test]
+    fn prepare_keeps_a_label_when_the_file_is_not_highlighted() {
+        let mut file = FileDiff::new(vec![
+            DiffLine::file_header("a.txt"),
+            DiffLine::new(LineSource::Committed, "added".into(), '+', Some(1)),
+        ]);
+        file.highlight = FileHighlight {
+            label: Some("origin/feat..feat".into()),
+            touched: false,
+            highlighted_lines: Vec::new(),
+            highlighted_hunk_lines: Vec::new(),
+        };
+        let mut app = TestAppBuilder::new().with_files(vec![file]).build();
+        let data = prepare(&mut app);
+        assert_eq!(data.files.len(), 1);
+        assert_eq!(data.files[0].highlight.label.as_deref(), Some("origin/feat..feat"));
+        assert!(!data.files[0].highlight.touched);
+        assert!(data.files[0].highlight.highlighted_lines.is_empty());
+    }
 }
