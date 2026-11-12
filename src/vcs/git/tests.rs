@@ -240,6 +240,26 @@ fn git_cmd(dir: &Path, args: &[&str]) {
     );
 }
 
+fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git").args(args).current_dir(dir).output().expect("git");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// Drop the commit's tree object so `git diff <sha> <sha>` cannot run.
+fn remove_commit_tree(repo: &Path, commit: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let tree = git_stdout(repo, &["rev-parse", &format!("{commit}^{{tree}}")]);
+    let object = repo.join(".git/objects").join(&tree[..2]).join(&tree[2..]);
+    fs::set_permissions(&object, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::remove_file(&object).unwrap();
+}
+
 fn create_test_repo() -> tempfile::TempDir {
     create_test_repo_with_content("initial\n")
 }
@@ -2199,4 +2219,275 @@ fn test_highlight_ancestry_separates_not_an_ancestor_from_git_failure() {
         highlight_range::is_ancestor(repo, "not-a-ref", "main").is_err(),
         "an unknown object is a git failure, not 'not an ancestor'"
     );
+}
+
+/// `git show` of a missing ref exits non-zero and becomes `Ok(None)`. A git
+/// that cannot start (the working directory is gone, so the process fails
+/// before exec) is a different error and must stay an `Err`.
+#[test]
+fn test_show_at_ref_reports_a_git_that_cannot_start() {
+    let missing = std::env::temp_dir()
+        .join(format!("branchdiff-missing-git-dir-{}-show", std::process::id()));
+    let _ = fs::remove_dir_all(&missing);
+    assert!(!missing.exists());
+
+    let text = commands::get_file_at_ref(&missing, "file.txt", "HEAD");
+    assert!(text.is_err(), "get_file_at_ref must surface a git that cannot start, got {text:?}");
+    let text_err = format!("{:#}", text.unwrap_err());
+    assert!(
+        text_err.contains("failed to spawn"),
+        "spawn failure must not be reported as a missing file, got {text_err}"
+    );
+
+    let bytes = commands::get_file_bytes_at_ref(&missing, "file.txt", "HEAD");
+    assert!(
+        bytes.is_err(),
+        "get_file_bytes_at_ref must surface a git that cannot start, got {bytes:?}"
+    );
+    let bytes_err = format!("{:#}", bytes.unwrap_err());
+    assert!(
+        bytes_err.contains("failed to spawn"),
+        "spawn failure must not be reported as a missing file, got {bytes_err}"
+    );
+}
+
+/// `git diff --numstat -- <path>` (worktree against the index), not the
+/// committed range. An unstaged binary edit is the input that reports `-\t-`.
+#[test]
+fn test_is_binary_file_sees_an_unstaged_binary_edit() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    fs::write(repo.join("data.bin"), b"text\n").unwrap();
+    git_cmd(repo, &["add", "data.bin"]);
+    git_cmd(repo, &["commit", "-m", "add data"]);
+    fs::write(repo.join("data.bin"), [0u8, 1, 2, 255]).unwrap();
+
+    assert!(is_binary_file(repo, "data.bin"), "an unstaged binary edit is binary");
+    assert!(!is_binary_file(repo, "file.txt"), "an unchanged text file is not binary");
+}
+
+/// `--head` reads binaries from `git diff --numstat <base> <head>`, and a
+/// binary file in the highlight range is stamped touched with no line marks.
+#[test]
+fn test_head_binary_is_listed_and_stamped_touched() {
+    use std::collections::HashSet;
+
+    let temp = create_test_repo();
+    let repo = temp.path();
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("data.bin"), [0u8, 1, 2, 255]).unwrap();
+    fs::write(repo.join("note.txt"), "hello\n").unwrap();
+    git_cmd(repo, &["add", "."]);
+    git_cmd(repo, &["commit", "-m", "add binary and note"]);
+    git_cmd(repo, &["checkout", "main"]);
+
+    let merge_base =
+        commands::get_merge_base_preferring_origin_for(repo, "main", "feature").unwrap();
+    let binaries = get_binary_files_between(repo, &merge_base, "feature");
+    assert_eq!(binaries, HashSet::from(["data.bin".to_string()]));
+    assert!(
+        is_binary_file_between(repo, "data.bin", &merge_base, "feature"),
+        "data.bin between the merge base and feature is binary"
+    );
+    assert!(!is_binary_file_between(repo, "note.txt", &merge_base, "feature"));
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("feature"),
+            highlight: Some("main..feature"),
+        },
+    )
+    .unwrap();
+    assert!(
+        vcs.single_file_diff("data.bin").is_none(),
+        "a binary file under --head has no text diff"
+    );
+
+    let refresh =
+        vcs.refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).unwrap();
+    let binary = refresh
+        .files
+        .iter()
+        .find(|f| f.lines.first().and_then(|l| l.file_path.as_deref()) == Some("data.bin"))
+        .expect("data.bin is in the --head refresh");
+    assert_eq!(binary.lines[1].content, "[binary file]");
+    assert_eq!(binary.highlight.label.as_deref(), Some("main..feature"));
+    assert!(
+        binary.highlight.touched,
+        "a binary file in the highlight range is touched even with no line marks"
+    );
+    assert_eq!(binary.highlight.line_count(), 0);
+}
+
+/// A file changed against the base but not inside the highlight range still
+/// carries the label. `single_file_diff` reads `unhighlighted` directly.
+#[test]
+fn test_file_outside_highlight_range_keeps_label() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("early.txt"), "early\n").unwrap();
+    git_cmd(repo, &["add", "early.txt"]);
+    git_cmd(repo, &["commit", "-m", "early"]);
+    git_cmd(repo, &["branch", "pushed"]);
+    fs::write(repo.join("late.txt"), "late\n").unwrap();
+    git_cmd(repo, &["add", "late.txt"]);
+    git_cmd(repo, &["commit", "-m", "late"]);
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("feature"),
+            highlight: Some("pushed..feature"),
+        },
+    )
+    .unwrap();
+    let early = vcs.single_file_diff("early.txt").expect("early.txt differs from main");
+    assert_eq!(early.highlight.label.as_deref(), Some("pushed..feature"));
+    assert_eq!(early.highlight.line_count(), 0);
+    assert!(!early.highlight.touched);
+
+    let late = vcs.single_file_diff("late.txt").expect("late.txt differs from main");
+    assert_eq!(late.highlight.line_count(), 1);
+    assert_eq!(late.highlight.label.as_deref(), Some("pushed..feature"));
+}
+
+/// Single-rev `--highlight` is outside the window when the rev is not an
+/// ancestor of `--head`, and when it is already an ancestor of the merge base.
+/// Both resolve to `(sha, sha)` rather than the rev's parents.
+#[test]
+fn test_highlight_rev_outside_window_resolves_to_itself() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    fs::write(repo.join("file.txt"), "base\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "base"]);
+    git_cmd(repo, &["branch", "base_tip"]);
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "feature\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "feature"]);
+    git_cmd(repo, &["checkout", "-b", "side", "main"]);
+    fs::write(repo.join("side.txt"), "side\n").unwrap();
+    git_cmd(repo, &["add", "side.txt"]);
+    git_cmd(repo, &["commit", "-m", "side"]);
+    git_cmd(repo, &["checkout", "feature"]);
+
+    let merge_base =
+        commands::get_merge_base_preferring_origin_for(repo, "main", "feature").unwrap();
+    let resolved = |spec: &str| {
+        let parsed = highlight::resolve_highlight_spec(repo, spec).unwrap();
+        parsed.resolve_for_head(repo, &merge_base, Some("feature")).unwrap().unwrap()
+    };
+
+    let (from, to) = resolved("side");
+    assert_eq!(from, vec![to], "a rev that is not an ancestor of --head is outside the window");
+    let (from, to) = resolved("base_tip");
+    assert_eq!(
+        from,
+        vec![to],
+        "a commit already contained in the merge base is outside the window"
+    );
+}
+
+/// A root commit has no parents, so the highlight range is `(sha, sha)`.
+/// Removing its tree makes `git diff <sha> <sha>` fail. The empty-range guard
+/// must return before that diff, on both the refresh batch and the single-file path.
+#[test]
+fn test_root_highlight_does_not_diff_commit_against_itself() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    let root = git_stdout(repo, &["rev-parse", "HEAD"]);
+    git_cmd(repo, &["tag", "root_commit"]);
+    fs::write(repo.join("file.txt"), "later\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "later"]);
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "feature\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "feature"]);
+    remove_commit_tree(repo, &root);
+
+    let spec = highlight::resolve_highlight_spec(repo, "root_commit").unwrap();
+    let merge_base =
+        commands::get_merge_base_preferring_origin_for(repo, "main", "feature").unwrap();
+    let marked = highlight::compute_single_file_highlight(
+        repo,
+        &spec,
+        &merge_base,
+        Some("feature"),
+        &crate::diff::FileDiff::new(Vec::new()),
+        ("file.txt", None),
+        (None, None),
+    );
+    assert!(
+        marked.is_ok(),
+        "a root commit is an empty highlight range, got {}",
+        marked.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default()
+    );
+    assert_eq!(marked.unwrap().label.as_deref(), Some("root_commit"));
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("feature"),
+            highlight: Some("root_commit"),
+        },
+    )
+    .unwrap();
+    let refresh = vcs.refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    assert!(
+        refresh.is_ok(),
+        "refresh must not diff a root commit against itself, got {}",
+        refresh.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default()
+    );
+    let file = &refresh.unwrap().files[0];
+    assert_eq!(file.highlight.label.as_deref(), Some("root_commit"));
+    assert_eq!(file.highlight.line_count(), 0);
+    assert!(!file.highlight.touched);
+}
+
+/// Ids are the real git object names, including when `--head` is not the
+/// checked-out branch.
+#[test]
+fn test_git_revision_ids_match_rev_parse() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "changed\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "change"]);
+    git_cmd(repo, &["checkout", "main"]);
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: Some("feature"), highlight: None },
+    )
+    .unwrap();
+
+    let merge_base = git_stdout(repo, &["merge-base", "main", "feature"]);
+    assert_eq!(vcs.base_identifier().unwrap(), merge_base);
+    let feature_short = git_stdout(repo, &["rev-parse", "--short", "refs/heads/feature"]);
+    assert_eq!(vcs.current_revision_id().unwrap(), feature_short);
+    assert_ne!(feature_short, git_stdout(repo, &["rev-parse", "--short", "HEAD"]));
+}
+
+/// Local and `origin/<name>` at the same commit are not ambiguous. The label
+/// stays the bare name; `(local)` is only for two refs that disagree.
+#[test]
+fn test_same_commit_on_local_and_origin_omits_local_suffix() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    git_cmd(repo, &["checkout", "-b", "develop"]);
+    let sha = git_stdout(repo, &["rev-parse", "HEAD"]);
+    git_cmd(repo, &["update-ref", "refs/remotes/origin/develop", &sha]);
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "work\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "work"]);
+
+    let (resolved, label) = resolve_explicit_ref(repo, "--base", "develop").unwrap();
+    assert_eq!(resolved, "refs/heads/develop");
+    assert_eq!(label, "develop", "equal local and origin refs must not say (local)");
+
+    let vcs = GitVcs::with_base(repo.to_path_buf(), Some("develop")).unwrap();
+    assert_eq!(vcs.comparison_context().unwrap().from_label, "develop");
 }

@@ -656,6 +656,195 @@ mod tests {
         ]
     }
 
+    struct HandSpan {
+        text: &'static str,
+        source: Option<LineSource>,
+        deletion: bool,
+    }
+
+    struct HandCase {
+        old: &'static str,
+        new: &'static str,
+        meaningful: bool,
+        spans: Vec<HandSpan>,
+    }
+
+    fn hand(text: &'static str, source: Option<LineSource>, deletion: bool) -> HandSpan {
+        HandSpan { text, source, deletion }
+    }
+
+    fn span(text: &str, source: Option<LineSource>, is_deletion: bool) -> InlineSpan {
+        InlineSpan { text: text.to_string(), source, is_deletion }
+    }
+
+    fn ascii_hand_cases() -> Vec<HandCase> {
+        let deleted = Some(LineSource::DeletedBase);
+        let committed = Some(LineSource::Committed);
+        vec![
+            HandCase { old: "", new: "", meaningful: false, spans: vec![] },
+            HandCase { old: "a", new: "a", meaningful: false, spans: vec![hand("a", None, false)] },
+            HandCase {
+                old: "a",
+                new: "",
+                meaningful: false,
+                spans: vec![hand("a", deleted, true)],
+            },
+            HandCase {
+                old: "",
+                new: "b",
+                meaningful: false,
+                spans: vec![hand("b", committed, false)],
+            },
+            HandCase {
+                old: "a",
+                new: "b",
+                meaningful: false,
+                spans: vec![hand("a", deleted, true), hand("b", committed, false)],
+            },
+            HandCase {
+                old: "ab",
+                new: "ac",
+                meaningful: false,
+                spans: vec![
+                    hand("a", None, false),
+                    hand("b", deleted, true),
+                    hand("c", committed, false),
+                ],
+            },
+            HandCase {
+                old: "hello",
+                new: "hello!",
+                meaningful: true,
+                spans: vec![hand("hello", None, false), hand("!", committed, false)],
+            },
+            HandCase {
+                old: "hello!",
+                new: "hello",
+                meaningful: true,
+                spans: vec![hand("hello", None, false), hand("!", deleted, true)],
+            },
+            HandCase {
+                old: "helloX",
+                new: "helloY",
+                meaningful: true,
+                spans: vec![
+                    hand("hello", None, false),
+                    hand("X", deleted, true),
+                    hand("Y", committed, false),
+                ],
+            },
+            HandCase {
+                old: "hello-a-b-c-world",
+                new: "hello-X-Y-Z-world",
+                meaningful: true,
+                spans: vec![
+                    hand("hello-", None, false),
+                    hand("a", deleted, true),
+                    hand("X", committed, false),
+                    hand("-", None, false),
+                    hand("b", deleted, true),
+                    hand("Y", committed, false),
+                    hand("-", None, false),
+                    hand("c", deleted, true),
+                    hand("Z", committed, false),
+                    hand("-world", None, false),
+                ],
+            },
+        ]
+    }
+
+    /// Every arm of `edits_from_ops`, the empty and single-byte inputs, and the
+    /// two bounds in `assemble` (`>= 5` unchanged characters, `<= 4` segments).
+    /// The expected spans are the edit script, not the char-path oracle. The
+    /// oracle is checked as well, so a byte path that drifts from it fails too.
+    #[test]
+    fn byte_path_spans_match_hand_computed_edits() {
+        let cases = ascii_hand_cases();
+        for case in &cases {
+            let live = compute_inline_diff_merged(case.old, case.new, LineSource::Committed);
+            let spans: Vec<InlineSpan> =
+                case.spans.iter().map(|s| span(s.text, s.source, s.deletion)).collect();
+            assert_eq!(live.is_meaningful, case.meaningful, "{:?} -> {:?}", case.old, case.new);
+            assert_eq!(live.spans, spans, "{:?} -> {:?}", case.old, case.new);
+            let oracle = char_diff_spans(case.old, case.new, LineSource::Committed);
+            assert_eq!(
+                live.spans, oracle.spans,
+                "byte path vs chars {:?} -> {:?}",
+                case.old, case.new
+            );
+            assert_eq!(
+                live.is_meaningful, oracle.is_meaningful,
+                "{:?} -> {:?}",
+                case.old, case.new
+            );
+        }
+
+        let staged = compute_inline_diff_merged("hello", "hello!", LineSource::Staged);
+        assert!(staged.is_meaningful);
+        assert_eq!(
+            staged.spans,
+            vec![span("hello", None, false), span("!", Some(LineSource::Staged), false)]
+        );
+        let unstaged = compute_inline_diff_merged("a", "", LineSource::Unstaged);
+        assert_eq!(unstaged.spans, vec![span("a", Some(LineSource::DeletedStaged), true)]);
+    }
+
+    /// Non-ASCII stays on the char path. `é` and `è` share the UTF-8 lead byte
+    /// `0xC3`, so the byte path would slice inside the character.
+    #[test]
+    fn non_ascii_spans_match_hand_computed_characters() {
+        let deleted = Some(LineSource::DeletedBase);
+        let committed = Some(LineSource::Committed);
+        let live = compute_inline_diff_merged("é", "è", LineSource::Committed);
+        assert!(!live.is_meaningful);
+        assert_eq!(live.spans, vec![span("é", deleted, true), span("è", committed, false)]);
+        assert_eq!(live.spans, char_diff_spans("é", "è", LineSource::Committed).spans);
+
+        let cafe = compute_inline_diff_merged("café", "cafe", LineSource::Committed);
+        assert!(!cafe.is_meaningful);
+        assert_eq!(
+            cafe.spans,
+            vec![span("caf", None, false), span("é", deleted, true), span("e", committed, false),]
+        );
+
+        assert_eq!(
+            compute_inline_diff_merged("", "é", LineSource::Staged).spans,
+            vec![span("é", Some(LineSource::Staged), false)]
+        );
+        assert_eq!(
+            compute_inline_diff_merged("é", "", LineSource::Committed).spans,
+            vec![span("é", deleted, true)]
+        );
+        assert_eq!(
+            compute_inline_diff_merged("a", "é", LineSource::Unstaged).spans,
+            vec![
+                span("a", Some(LineSource::DeletedStaged), true),
+                span("é", Some(LineSource::Unstaged), false),
+            ]
+        );
+    }
+
+    /// One side ASCII, so `&&` stays on the char path and `||` takes the byte
+    /// path. Myers keeps the first `a` of `aaa` against `baé` as characters,
+    /// and the last `a` as bytes.
+    #[test]
+    fn mixed_line_keeps_the_char_alignment() {
+        let deleted = Some(LineSource::DeletedBase);
+        let committed = Some(LineSource::Committed);
+        let live = compute_inline_diff_merged("aaa", "baé", LineSource::Committed);
+        assert!(!live.is_meaningful);
+        assert_eq!(
+            live.spans,
+            vec![
+                span("b", committed, false),
+                span("a", None, false),
+                span("aa", deleted, true),
+                span("é", committed, false),
+            ]
+        );
+        assert_eq!(live.spans, char_diff_spans("aaa", "baé", LineSource::Committed).spans);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(2000))]
 

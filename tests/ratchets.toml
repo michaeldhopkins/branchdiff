@@ -3,6 +3,10 @@
 # Lint suppressions (#[allow]/#[expect]) across src/ and tests/; the count may only fall.
 suppressions = 9
 
+# exclude_re / skip_calls in .cargo/mutants.toml with no tests/mutants_triage.toml
+# entry. A new exclusion is triaged in the same change. The count only falls.
+untriaged_exclude_re = 14
+
 [rust_pinned]
 "src/app/mod.rs" = 621
 "src/app/selection.rs" = 772

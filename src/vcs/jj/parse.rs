@@ -232,3 +232,114 @@ pub(super) fn coalesce_highlight_entries(
     }
     raw_spans
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str, parents: &[&str]) -> HighlightLogEntry {
+        HighlightLogEntry {
+            commit_id: id.to_string(),
+            is_working_copy: false,
+            parents: parents.iter().map(|p| (*p).to_string()).collect(),
+        }
+    }
+
+    /// `(from commit ids, to commit id)` with `read_from_disk` off, so every
+    /// target is a revision and the vec is what the fast path or the fold built.
+    fn spans(entries: &[HighlightLogEntry]) -> Vec<(Vec<String>, String)> {
+        coalesce_highlight_entries(entries, false)
+            .into_iter()
+            .map(|(from, to)| match to {
+                SpanTarget::Revision(id) => (from, id),
+                SpanTarget::WorkingCopy => (from, "@".to_string()),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn coalesce_one_external_parent_is_a_single_span() {
+        // Diamond: E ← A, E ← B, A+B ← M. One head, one external parent.
+        let got = spans(&[entry("M", &["A", "B"]), entry("B", &["E"]), entry("A", &["E"])]);
+        assert_eq!(got, vec![(vec!["E".to_string()], "M".to_string())]);
+    }
+
+    #[test]
+    fn coalesce_two_external_parents_stay_separate() {
+        // M merges A and B, which fork from different commits. Two external
+        // parents must not collapse onto M.
+        let got = spans(&[entry("M", &["A", "B"]), entry("B", &["E2"]), entry("A", &["E1"])]);
+        assert_eq!(
+            got,
+            vec![
+                (vec!["E1".to_string()], "A".to_string()),
+                (vec!["E2".to_string()], "B".to_string()),
+                (vec!["A".to_string(), "B".to_string()], "M".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn coalesce_folds_a_linear_child_into_its_head() {
+        // E ← A ← B ← C, and D ← A. B has one child, so B folds into C.
+        // A has two children, so it stays its own span, and so does D.
+        let got = spans(&[
+            entry("C", &["B"]),
+            entry("D", &["A"]),
+            entry("B", &["A"]),
+            entry("A", &["E"]),
+        ]);
+        assert_eq!(
+            got,
+            vec![
+                (vec!["E".to_string()], "A".to_string()),
+                (vec!["A".to_string()], "C".to_string()),
+                (vec!["A".to_string()], "D".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rename_rejects_a_brace_that_closes_first() {
+        assert!(parse_rename("a}b{c").is_none());
+    }
+
+    #[test]
+    fn parse_rename_joins_a_shared_prefix_and_suffix() {
+        let file = parse_rename("app/{old => new}/f.js").unwrap();
+        assert_eq!(file.path, "app/new/f.js");
+        assert_eq!(file.old_path.as_deref(), Some("app/old/f.js"));
+    }
+
+    #[test]
+    fn parse_rename_is_none_when_the_brace_closes_first() {
+        assert!(parse_rename("a}b{c").is_none());
+        let ok = parse_rename("sub/{old => new}/f.js").unwrap();
+        assert_eq!(ok.path, "sub/new/f.js");
+        assert_eq!(ok.old_path.as_deref(), Some("sub/old/f.js"));
+    }
+
+    /// `{` and `}` are different bytes, so `find` cannot return one index for
+    /// both. `close <= open` therefore agrees with `close < open` on every
+    /// string. The walk is the finite check; the byte inequality is the proof.
+    #[test]
+    fn opening_and_closing_braces_never_share_an_index() {
+        assert_ne!(b'{', b'}');
+        let mut buf = String::new();
+        brace_strings(4, &['a', '{', '}', 'x'], &mut buf);
+    }
+
+    fn brace_strings(remaining: usize, alphabet: &[char], buf: &mut String) {
+        if let (Some(open), Some(close)) = (buf.find('{'), buf.find('}')) {
+            assert_ne!(open, close, "{buf:?}");
+        }
+        if remaining == 0 {
+            return;
+        }
+        for ch in alphabet {
+            buf.push(*ch);
+            brace_strings(remaining - 1, alphabet, buf);
+            buf.pop();
+        }
+    }
+}

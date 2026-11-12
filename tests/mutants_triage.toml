@@ -1,0 +1,30 @@
+# Equivalent mutants. `pattern` is an id from
+# the mutation-pattern catalog (see CATALOG in tests/mutants_triage.rs).
+# `exclude` is the exact string of one `exclude_re` in .cargo/mutants.toml.
+
+[[equivalent]]
+pattern = "equal-arms"
+exclude = '^src/ui/search_overlay\.rs:\d+:\d+: replace < with <= in render_search_bar$'
+reason = """
+Both arms format `[current/N]` with the same usize when `visible_count == total`:
+the strict arm prints `visible_count` and the other prints `total`. Replacing `<`
+with `<=` therefore paints the same bar for every count, including the tie.
+`a_filtered_count_shows_visible_matches_not_the_total` kills `<` to `==` and
+`<` to `>` (3 visible of 8 paints `[1/3]`, not `[1/8]`). The comparison stays
+so those operators remain killable. Hand-applied on 2026-11-12, the eight tests
+in `search_overlay::tests` stayed green under `<=`.
+"""
+
+[[equivalent]]
+pattern = "unreachable"
+exclude = '^src/vcs/jj/parse\.rs:.*replace < with <= in parse_rename$'
+reason = """
+parse_rename returns early when close < open. '{' (0x7B) and '}' (0x7D) are different bytes, so str::find cannot report the same index for both, and close == open never happens. close <= open is the same predicate as close < open on every string. The < arm is live: parse_rename("a}b{c") is None, and replacing < with == then slices s[open + 1..close] with the start past the end. The equality added by <= is the case no string reaches.
+"""
+
+[[equivalent]]
+pattern = "unreachable"
+exclude = '^src/vcs/jj/bookmark\.rs:.*replace < with > in resolve_bookmark_boundary_for$'
+reason = """
+resolve_bookmark_boundary_for splits the template bookmarks.join(",") ++ NUL ++ change_id.short(12) with splitn(2, NUL). The template always emits one NUL. Measured on a local bookmark with no @ in its name: the bytes were 6c6f63616c6f6e6c79 00 726d6c77756b6d6f6e796f6b, which is localonly, a NUL, then the change id. splitn(2) returns at most 2, and a non-empty line that contains that NUL returns exactly 2. Empty stdout returns before the comparison. parts.len() is 2 whenever the comparison runs, so len < 2 and len > 2 are both false. test_boundary_ignores_non_origin_remote_bookmark already resolves the unpushed bookmark feature-2 and still passes with < replaced by >. A one-part line would return None under < and panic under >, but this template never produces one. The jj command is Cmd::new("jj") on the process PATH, so a stub binary would race the other jj tests in this process.
+"""

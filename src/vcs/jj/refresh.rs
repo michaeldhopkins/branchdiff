@@ -483,4 +483,57 @@ mod tests {
             bin_diff.lines
         );
     }
+
+    #[test]
+    fn linked_go_handler_and_test_are_paired() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        std::fs::write(repo.join("handler.go"), "package p\n").unwrap();
+        std::fs::write(repo.join("handler_test.go"), "package p\n").unwrap();
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let refresh = vcs.refresh(&cancel).unwrap();
+        assert_eq!(
+            refresh.file_links.get("handler.go").map(String::as_str),
+            Some("handler_test.go")
+        );
+        assert_eq!(
+            refresh.file_links.get("handler_test.go").map(String::as_str),
+            Some("handler.go")
+        );
+        assert!(!refresh.file_links.contains_key("xyzzy"));
+        assert!(!refresh.file_links.contains_key(""));
+    }
+
+    #[test]
+    fn head_at_sign_ignores_unsnapshotted_edits() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        std::fs::write(repo.join("file.txt"), "snapshotted\n").unwrap();
+        jj(repo, &["describe", "-m", "snap"]);
+        // After this write, no jj command: it would snapshot the dirty line into `@`.
+        std::fs::write(repo.join("file.txt"), "snapshotted\ndirty-line\n").unwrap();
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: Some("@"), highlight: None },
+        )
+        .unwrap();
+        let single = vcs.single_file_diff("file.txt").expect("file.txt");
+        assert!(
+            single.lines.iter().any(|l| l.content == "snapshotted"),
+            "{:?}",
+            single.lines.iter().map(|l| l.content.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            !single.lines.iter().any(|l| l.content.contains("dirty")),
+            "unsnapshotted bytes must stay out of --head @: {:?}",
+            single.lines.iter().map(|l| l.content.as_str()).collect::<Vec<_>>()
+        );
+    }
 }

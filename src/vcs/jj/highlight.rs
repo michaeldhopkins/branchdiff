@@ -414,3 +414,299 @@ impl JjHighlightPlan {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use super::super::JjVcs;
+    use super::super::parse::ChangedFile;
+    use super::super::tests::{jj_available, setup_repo_with_remote};
+    use super::*;
+    use crate::diff::{DiffLine, FileDiff, LineSource};
+    use crate::vcs::Vcs;
+
+    fn jj(repo: &Path, args: &[&str]) {
+        let output = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        assert!(
+            output.status.success(),
+            "jj {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn jj_text(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        assert!(
+            output.status.success(),
+            "jj {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn addition(content: &str, line_number: usize) -> DiffLine {
+        DiffLine::new(LineSource::Staged, content.to_string(), '+', Some(line_number))
+    }
+
+    fn empty_plan(label: &str, spans: Vec<JjHighlightSpan>, changed: &[&str]) -> JjHighlightPlan {
+        JjHighlightPlan {
+            label: label.to_string(),
+            spans,
+            changed_paths: changed.iter().map(|p| (*p).to_string()).collect(),
+            rev_contents: HashMap::new(),
+            spawn_count: 0,
+        }
+    }
+
+    #[test]
+    fn working_copy_fallback_is_only_for_the_working_copy() {
+        let working = JjHighlightSpan {
+            from_revs: Vec::new(),
+            to_target: SpanTarget::WorkingCopy,
+            changed_files: HashMap::new(),
+            post_renames: HashMap::new(),
+        };
+        assert_eq!(
+            working.paths_for_file("new.txt", Some("old.txt")),
+            Some(("old.txt", "new.txt"))
+        );
+        let revision =
+            JjHighlightSpan { to_target: SpanTarget::Revision("abc".to_string()), ..working };
+        assert_eq!(revision.paths_for_file("new.txt", Some("old.txt")), None);
+    }
+
+    #[test]
+    fn root_commit_id_is_forty_zeros_and_empty_is_not() {
+        assert!(!is_root_commit_id(""), "an empty id is not the root commit");
+        let root = "0".repeat(40);
+        assert!(is_root_commit_id(&root), "jj's root commit id is forty zeros, got {root}");
+        assert!(!is_root_commit_id("0001"));
+    }
+
+    #[test]
+    fn renamed_file_is_highlighted_when_only_its_old_path_is_in_the_set() {
+        let mut rev_contents = HashMap::new();
+        rev_contents.insert(
+            "REV".to_string(),
+            HashMap::from([("old.txt".to_string(), "added-line\n".to_string())]),
+        );
+        let mut plan = empty_plan(
+            "hl",
+            vec![JjHighlightSpan {
+                from_revs: Vec::new(),
+                to_target: SpanTarget::Revision("REV".to_string()),
+                changed_files: HashMap::from([("old.txt".to_string(), None)]),
+                post_renames: HashMap::new(),
+            }],
+            &["old.txt"],
+        );
+        plan.rev_contents = rev_contents;
+        let file = FileDiff::new(vec![addition("added-line", 1)]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let hl = plan.compute_for_file(
+            Path::new("."),
+            &file,
+            "new.txt",
+            Some("old.txt"),
+            None,
+            Some("added-line\n"),
+            &cancel,
+        );
+        assert_eq!(hl.line_count(), 1, "the added line of a renamed file must be marked");
+        assert!(hl.touched);
+    }
+
+    #[test]
+    fn file_outside_the_highlight_set_keeps_the_label() {
+        let plan = empty_plan("feature@origin..feature", Vec::new(), &[]);
+        let file = FileDiff::new(Vec::new());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let hl = plan.compute_for_file(
+            Path::new("."),
+            &file,
+            "untouched.txt",
+            None,
+            None,
+            None,
+            &cancel,
+        );
+        assert_eq!(hl.label.as_deref(), Some("feature@origin..feature"));
+        assert_eq!(hl.line_count(), 0);
+        assert!(!hl.touched);
+    }
+
+    #[test]
+    fn working_copy_rename_reads_the_old_path_from_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("old.txt"), "keep\n").unwrap();
+        let plan = empty_plan(
+            "hl",
+            vec![JjHighlightSpan {
+                from_revs: Vec::new(),
+                to_target: SpanTarget::WorkingCopy,
+                changed_files: HashMap::from([("old.txt".to_string(), None)]),
+                post_renames: HashMap::from([("new.txt".to_string(), "old.txt".to_string())]),
+            }],
+            &["new.txt"],
+        );
+        let file = FileDiff::new(vec![addition("keep", 1), addition("extra", 2)]);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let hl = plan.compute_for_file(
+            dir.path(),
+            &file,
+            "new.txt",
+            None,
+            None,
+            Some("keep\nextra\n"),
+            &cancel,
+        );
+        let marked: Vec<&str> =
+            hl.highlighted_lines.iter().map(|&idx| file.lines[idx].content.as_str()).collect();
+        assert_eq!(marked, vec!["keep"]);
+    }
+
+    #[test]
+    fn batch_file_show_skips_empty_paths_and_the_root() {
+        if !jj_available() {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        jj(temp.path(), &["git", "init"]);
+        let vcs = JjVcs::new(temp.path().to_path_buf()).unwrap();
+        let spawns = AtomicUsize::new(0);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let empty = batch_jj_file_contents(&vcs, "not-a-root", &[], &spawns, &cancel);
+        assert_eq!(spawns.load(Ordering::Relaxed), 0, "an empty path list must not call jj");
+        assert!(empty.unwrap().is_empty());
+        let root = "0".repeat(40);
+        let rooted =
+            batch_jj_file_contents(&vcs, &root, &["file.txt".to_string()], &spawns, &cancel);
+        assert_eq!(spawns.load(Ordering::Relaxed), 0, "the root commit must not call jj");
+        assert!(rooted.unwrap().is_empty());
+    }
+
+    #[test]
+    fn working_copy_span_lists_only_files_git_sees_since_the_parent() {
+        if !jj_available() {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        jj(repo, &["git", "init"]);
+        assert!(repo.join(".git").is_dir(), "jj git init must leave a colocated .git directory");
+        std::fs::write(repo.join("earlier.txt"), "earlier\n").unwrap();
+        jj(repo, &["commit", "-m", "earlier"]);
+        let parent = jj_text(repo, &["log", "-r", "@-", "--no-graph", "-T", "commit_id"]);
+        assert!(!is_root_commit_id(&parent), "{parent}");
+        // Unsnapshotted. A later jj command would record it and hide the git path.
+        std::fs::write(repo.join("later.txt"), "later\n").unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let branch = vec![
+            ChangedFile { path: "earlier.txt".to_string(), old_path: None },
+            ChangedFile { path: "later.txt".to_string(), old_path: None },
+        ];
+        let spawns = AtomicUsize::new(0);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let map = span_changed_files(
+            &vcs,
+            &[parent],
+            &SpanTarget::WorkingCopy,
+            &branch,
+            &spawns,
+            &cancel,
+        )
+        .unwrap();
+        assert!(map.contains_key("later.txt"), "{map:?}");
+        assert!(
+            !map.contains_key("earlier.txt"),
+            "the git path must not include the parent commit's file: {map:?}"
+        );
+    }
+
+    #[test]
+    fn unsnapshotted_rename_is_a_post_rename_on_a_revision_span() {
+        if !jj_available() {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        jj(repo, &["git", "init"]);
+        assert!(repo.join(".git").is_dir(), "jj git init must leave a colocated .git directory");
+        std::fs::write(repo.join("a.txt"), "same line\nsecond\n").unwrap();
+        jj(repo, &["commit", "-m", "add a"]);
+        let commit = jj_text(repo, &["log", "-r", "@-", "--no-graph", "-T", "commit_id"]);
+        std::fs::rename(repo.join("a.txt"), repo.join("renamed.txt")).unwrap();
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let spawns = AtomicUsize::new(0);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let map =
+            span_post_renames(&vcs, &SpanTarget::Revision(commit), "@", true, &spawns, &cancel)
+                .unwrap();
+        assert_eq!(map.get("renamed.txt").map(String::as_str), Some("a.txt"), "{map:?}");
+    }
+
+    #[test]
+    fn binary_file_under_head_carries_the_highlight_label() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        std::fs::write(repo.join("data.bin"), b"\0not-an-image").unwrap();
+        jj(repo, &["commit", "-m", "binary"]);
+        jj(repo, &["bookmark", "set", "feature", "-r", "@-"]);
+        jj(repo, &["new", "main"]);
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions {
+                base: None,
+                head: Some("feature"),
+                highlight: Some("feature"),
+            },
+        )
+        .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let refresh = vcs.refresh(&cancel).unwrap();
+        let bin = refresh
+            .files
+            .iter()
+            .find(|f| f.lines.first().is_some_and(|l| l.file_path.as_deref() == Some("data.bin")))
+            .expect("data.bin");
+        assert!(bin.lines.iter().any(|l| l.content == "[binary file]"), "{:?}", bin.lines);
+        assert_eq!(bin.highlight.label.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn first_commit_above_the_root_is_highlighted() {
+        if !jj_available() {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        jj(repo, &["git", "init"]);
+        std::fs::write(repo.join("first.txt"), "from-root\n").unwrap();
+        jj(repo, &["commit", "-m", "first"]);
+        let vcs = JjVcs::with_options(
+            repo.to_path_buf(),
+            crate::vcs::VcsOptions { base: None, head: Some("@-"), highlight: Some("@-") },
+        )
+        .unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let refresh = vcs.refresh(&cancel).unwrap();
+        let file = refresh
+            .files
+            .iter()
+            .find(|f| f.lines.first().is_some_and(|l| l.file_path.as_deref() == Some("first.txt")))
+            .expect("first.txt");
+        let idx = file.lines.iter().position(|l| l.content == "from-root").expect("from-root");
+        assert!(file.highlight.is_line_highlighted(idx), "{:?}", file.highlight);
+        assert_eq!(file.highlight.label.as_deref(), Some("@-"));
+    }
+}

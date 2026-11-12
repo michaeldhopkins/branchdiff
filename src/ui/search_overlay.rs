@@ -209,3 +209,112 @@ pub(super) fn render_search_bar(frame: &mut Frame, search: &SearchState, area: R
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(vec![line]), area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::search::{SearchMatch, SearchState};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use ratatui::style::{Color, Style};
+    use ratatui::text::Span;
+
+    fn state(query: &str, match_count: usize, visible: usize, active: bool) -> SearchState {
+        SearchState {
+            query: query.to_string(),
+            input_active: active,
+            matches: (0..match_count)
+                .map(|line_idx| SearchMatch { line_idx, char_start: 0, char_len: 1 })
+                .collect(),
+            current: 0,
+            visible_count: visible,
+            visible_position: 0,
+        }
+    }
+
+    /// The painted row, including trailing spaces, so a counter that is not
+    /// flush with the right edge fails an exact comparison.
+    fn paint(search: &SearchState, width: u16) -> String {
+        let backend = TestBackend::new(width, 1);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_search_bar(frame, search, Rect::new(0, 0, width, 1)))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        (0..width).map(|x| buf[(x, 0)].symbol()).collect()
+    }
+
+    #[test]
+    fn overlay_keeps_the_tail_when_the_match_ends_inside_the_span() {
+        let spans = vec![Span::styled("abcdefghij", Style::default().fg(Color::Red))];
+        let out = overlay_range(spans, 2, 5, Color::Yellow);
+        let text: String = out.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "abcdefghij");
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].content.as_ref(), "ab");
+        assert_eq!(out[0].style.bg, None);
+        assert_eq!(out[0].style.fg, Some(Color::Red));
+        assert_eq!(out[1].content.as_ref(), "cde");
+        assert_eq!(out[1].style.bg, Some(Color::Yellow));
+        assert_eq!(out[2].content.as_ref(), "fghij");
+        assert_eq!(out[2].style.bg, None);
+        assert_eq!(out[2].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn an_empty_search_shows_the_prompt_and_a_cursor() {
+        let row = paint(&state("", 0, 0, true), 12);
+        assert_eq!(row, "/█          ");
+        assert!(!row.contains("no matches"));
+    }
+
+    #[test]
+    fn a_query_with_no_matches_names_that_and_the_cursor_tracks_input() {
+        let inactive = paint(&state("zz", 0, 0, false), 30);
+        assert_eq!(inactive, "/zz               [no matches]");
+        assert!(!inactive.contains('█'));
+
+        let active = paint(&state("zz", 0, 0, true), 30);
+        assert_eq!(active, "/zz█              [no matches]");
+    }
+
+    #[test]
+    fn matches_with_an_empty_query_show_the_count() {
+        let row = paint(&state("", 1, 1, false), 20);
+        assert_eq!(row, "/              [1/1]");
+        assert!(!row.contains("no matches"));
+    }
+
+    #[test]
+    fn a_filtered_count_shows_visible_matches_not_the_total() {
+        // 3 visible of 8. The counter is five columns and sits on the right edge.
+        let row = paint(&state("ab", 8, 3, false), 24);
+        assert_eq!(row, "/ab                [1/3]");
+        assert!(!row.contains("[1/8]"));
+    }
+
+    #[test]
+    fn an_unfiltered_count_shows_the_same_number_for_both_arms() {
+        // visible_count == total, so either arm prints "[1/3]".
+        let row = paint(&state("ab", 3, 3, false), 24);
+        assert_eq!(row, "/ab                [1/3]");
+    }
+
+    #[test]
+    fn a_query_that_exactly_fits_is_shown_whole() {
+        // Width 20, counter "[1/1]" (5) leaves 13 columns for the query
+        // (width - counter - 2). Thirteen characters must not gain an ellipsis.
+        let row = paint(&state("abcdefghijklm", 1, 1, false), 20);
+        assert_eq!(row, "/abcdefghijklm [1/1]");
+        assert!(!row.contains('…'));
+    }
+
+    #[test]
+    fn a_long_query_keeps_its_tail_and_the_counter_on_the_right() {
+        // Available columns are 13. Skip is (20 - 13 + 1) = 8, so the bar
+        // shows the ellipsis plus "ijklmnopqrst", then one space, then "[1/1]".
+        let row = paint(&state("abcdefghijklmnopqrst", 1, 1, false), 20);
+        assert_eq!(row, "/…ijklmnopqrst [1/1]");
+    }
+}

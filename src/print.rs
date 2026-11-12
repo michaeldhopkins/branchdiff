@@ -458,4 +458,53 @@ mod tests {
         assert_eq!(rows[4], "       💬 new line 3", "{out}");
         assert_eq!(rows[5], "       │  note on highlighted", "{out}");
     }
+
+    /// `print_width() == 0` is the only input where `>` and `>=` disagree.
+    /// Highlight is on, so the mutant sets `line_num_width` to 1 and the
+    /// comment indent becomes two spaces. The real arm stays at 0.
+    #[test]
+    fn highlight_with_no_line_numbers_keeps_comment_indent_at_zero() {
+        use branchdiff::comments::{CommentSide, ReviewComment, anchor_comments};
+        use branchdiff::highlight::FileHighlight;
+
+        let lines = vec![
+            DiffLine::file_header("a.rs"),
+            DiffLine::new(LineSource::Committed, "added".into(), '+', None).with_file_path("a.rs"),
+        ];
+        let comments = anchor_comments(
+            &lines,
+            &[ReviewComment {
+                path: "a.rs".into(),
+                start_line: None,
+                end_line: None,
+                side: CommentSide::New,
+                body: "gutter stays zero".into(),
+                author: None,
+                suggestion: None,
+                outdated: false,
+            }],
+        );
+        let file = OutputFile {
+            path: "a.rs".into(),
+            lines,
+            additions: 1,
+            deletions: 0,
+            collapsed: false,
+            comments,
+            highlight: FileHighlight {
+                label: Some("origin/feat..feat".into()),
+                touched: false,
+                highlighted_lines: Vec::new(),
+                highlighted_hunk_lines: Vec::new(),
+            },
+        };
+        let gutter = Gutter::measure(&file.lines, None);
+        assert_eq!(gutter.print_width(), 0);
+        let mut buf = Vec::new();
+        print_file(&mut buf, &file, gutter).unwrap();
+        let out = strip_ansi(&String::from_utf8(buf).unwrap());
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows[1], "  💬 file-level", "{out}");
+        assert_eq!(rows[2], "  │  gutter stays zero", "{out}");
+    }
 }

@@ -128,3 +128,53 @@ pub(super) fn pick_trunk_remote(raw: &str) -> Option<String> {
         .map(|preferred| (*preferred).to_string())
         .or_else(|| remotes.first().map(|r| (*r).to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use vcs_runner::run_jj;
+
+    use super::*;
+
+    fn jj_present() -> bool {
+        Command::new("jj").arg("--version").output().is_ok_and(|o| o.status.success())
+    }
+
+    /// The detail is jj's stderr with one leading `Error:` removed. The
+    /// expected text is the literal jj printed, not a call back into
+    /// `jj_error_detail`, so a body that returns `"xyzzy"` or `""` fails.
+    #[test]
+    fn jj_error_detail_is_jj_stderr_without_the_error_prefix() {
+        if !jj_present() {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        let init =
+            Command::new("jj").args(["git", "init"]).current_dir(repo.path()).output().unwrap();
+        assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
+
+        let unknown = run_jj(
+            repo.path(),
+            &["--ignore-working-copy", "log", "-r", "no_such_symbol_xyz", "--no-graph", "-T", "x"],
+        )
+        .unwrap_err();
+        assert_eq!(
+            unknown.stderr().map(str::trim),
+            Some("Error: Revision `no_such_symbol_xyz` doesn't exist")
+        );
+        assert_eq!(jj_error_detail(&unknown), "Revision `no_such_symbol_xyz` doesn't exist");
+
+        let syntax = run_jj(
+            repo.path(),
+            &["--ignore-working-copy", "log", "-r", "feature..(", "--no-graph", "-T", "x"],
+        )
+        .unwrap_err();
+        let raw = syntax.stderr().unwrap().trim();
+        assert!(raw.starts_with("Error: Failed to parse revset: Syntax error"), "{raw}");
+        let stripped = raw.strip_prefix("Error:").unwrap().trim_start();
+        assert_eq!(jj_error_detail(&syntax), stripped);
+        assert!(stripped.starts_with("Failed to parse revset: Syntax error"), "{stripped}");
+        assert!(!jj_error_detail(&syntax).contains("xyzzy"));
+    }
+}
