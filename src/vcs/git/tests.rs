@@ -2200,3 +2200,103 @@ fn test_highlight_ancestry_separates_not_an_ancestor_from_git_failure() {
         "an unknown object is a git failure, not 'not an ancestor'"
     );
 }
+
+/// `git show` of a missing ref exits non-zero and becomes `Ok(None)`. A git
+/// that cannot start (the working directory is gone, so the process fails
+/// before exec) is a different error and must stay an `Err`.
+#[test]
+fn test_show_at_ref_reports_a_git_that_cannot_start() {
+    let missing = std::env::temp_dir()
+        .join(format!("branchdiff-missing-git-dir-{}-show", std::process::id()));
+    let _ = fs::remove_dir_all(&missing);
+    assert!(!missing.exists());
+
+    let text = commands::get_file_at_ref(&missing, "file.txt", "HEAD");
+    assert!(text.is_err(), "get_file_at_ref must surface a git that cannot start, got {text:?}");
+    let text_err = format!("{:#}", text.unwrap_err());
+    assert!(
+        text_err.contains("failed to spawn"),
+        "spawn failure must not be reported as a missing file, got {text_err}"
+    );
+
+    let bytes = commands::get_file_bytes_at_ref(&missing, "file.txt", "HEAD");
+    assert!(
+        bytes.is_err(),
+        "get_file_bytes_at_ref must surface a git that cannot start, got {bytes:?}"
+    );
+    let bytes_err = format!("{:#}", bytes.unwrap_err());
+    assert!(
+        bytes_err.contains("failed to spawn"),
+        "spawn failure must not be reported as a missing file, got {bytes_err}"
+    );
+}
+
+/// `git diff --numstat -- <path>` (worktree against the index), not the
+/// committed range. An unstaged binary edit is the input that reports `-\t-`.
+#[test]
+fn test_is_binary_file_sees_an_unstaged_binary_edit() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    fs::write(repo.join("data.bin"), b"text\n").unwrap();
+    git_cmd(repo, &["add", "data.bin"]);
+    git_cmd(repo, &["commit", "-m", "add data"]);
+    fs::write(repo.join("data.bin"), [0u8, 1, 2, 255]).unwrap();
+
+    assert!(is_binary_file(repo, "data.bin"), "an unstaged binary edit is binary");
+    assert!(!is_binary_file(repo, "file.txt"), "an unchanged text file is not binary");
+}
+
+/// `--head` reads binaries from `git diff --numstat <base> <head>`, and a
+/// binary file in the highlight range is stamped touched with no line marks.
+#[test]
+fn test_head_binary_is_listed_and_stamped_touched() {
+    use std::collections::HashSet;
+
+    let temp = create_test_repo();
+    let repo = temp.path();
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("data.bin"), [0u8, 1, 2, 255]).unwrap();
+    fs::write(repo.join("note.txt"), "hello\n").unwrap();
+    git_cmd(repo, &["add", "."]);
+    git_cmd(repo, &["commit", "-m", "add binary and note"]);
+    git_cmd(repo, &["checkout", "main"]);
+
+    let merge_base =
+        commands::get_merge_base_preferring_origin_for(repo, "main", "feature").unwrap();
+    let binaries = get_binary_files_between(repo, &merge_base, "feature");
+    assert_eq!(binaries, HashSet::from(["data.bin".to_string()]));
+    assert!(
+        is_binary_file_between(repo, "data.bin", &merge_base, "feature"),
+        "data.bin between the merge base and feature is binary"
+    );
+    assert!(!is_binary_file_between(repo, "note.txt", &merge_base, "feature"));
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("feature"),
+            highlight: Some("main..feature"),
+        },
+    )
+    .unwrap();
+    assert!(
+        vcs.single_file_diff("data.bin").is_none(),
+        "a binary file under --head has no text diff"
+    );
+
+    let refresh =
+        vcs.refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).unwrap();
+    let binary = refresh
+        .files
+        .iter()
+        .find(|f| f.lines.first().and_then(|l| l.file_path.as_deref()) == Some("data.bin"))
+        .expect("data.bin is in the --head refresh");
+    assert_eq!(binary.lines[1].content, "[binary file]");
+    assert_eq!(binary.highlight.label.as_deref(), Some("main..feature"));
+    assert!(
+        binary.highlight.touched,
+        "a binary file in the highlight range is touched even with no line marks"
+    );
+    assert_eq!(binary.highlight.line_count(), 0);
+}
