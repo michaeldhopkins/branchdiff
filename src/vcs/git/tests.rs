@@ -2446,3 +2446,48 @@ fn test_root_highlight_does_not_diff_commit_against_itself() {
     assert_eq!(file.highlight.line_count(), 0);
     assert!(!file.highlight.touched);
 }
+
+/// Ids are the real git object names, including when `--head` is not the
+/// checked-out branch.
+#[test]
+fn test_git_revision_ids_match_rev_parse() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "changed\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "change"]);
+    git_cmd(repo, &["checkout", "main"]);
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions { base: None, head: Some("feature"), highlight: None },
+    )
+    .unwrap();
+
+    let merge_base = git_stdout(repo, &["merge-base", "main", "feature"]);
+    assert_eq!(vcs.base_identifier().unwrap(), merge_base);
+    let feature_short = git_stdout(repo, &["rev-parse", "--short", "refs/heads/feature"]);
+    assert_eq!(vcs.current_revision_id().unwrap(), feature_short);
+    assert_ne!(feature_short, git_stdout(repo, &["rev-parse", "--short", "HEAD"]));
+}
+
+/// Local and `origin/<name>` at the same commit are not ambiguous. The label
+/// stays the bare name; `(local)` is only for two refs that disagree.
+#[test]
+fn test_same_commit_on_local_and_origin_omits_local_suffix() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    git_cmd(repo, &["checkout", "-b", "develop"]);
+    let sha = git_stdout(repo, &["rev-parse", "HEAD"]);
+    git_cmd(repo, &["update-ref", "refs/remotes/origin/develop", &sha]);
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "work\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "work"]);
+
+    let (resolved, label) = resolve_explicit_ref(repo, "--base", "develop").unwrap();
+    assert_eq!(resolved, "refs/heads/develop");
+    assert_eq!(label, "develop", "equal local and origin refs must not say (local)");
+
+    let vcs = GitVcs::with_base(repo.to_path_buf(), Some("develop")).unwrap();
+    assert_eq!(vcs.comparison_context().unwrap().from_label, "develop");
+}
