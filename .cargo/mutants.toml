@@ -80,4 +80,10 @@ exclude_re = [
     # selecting words by name keeps working if the default is ever changed
     # (pattern redundant-guard). The "words" and "signs" inputs are tested.
     '^src/comments/label\.rs:\d+:\d+: delete match arm Some\("words"\) in style_from_env$',
+    # Equivalent at the tie: both arms of `visible_count < total` format the same
+    # usize when the counts are equal, so `<` to `<=` paints the same bar.
+    # `<` to `==` and `<` to `>` are killed by
+    # a_filtered_count_shows_visible_matches_not_the_total. The comparison stays
+    # so those operators remain killable (pattern equal-arms).
+    '^src/ui/search_overlay\.rs:\d+:\d+: replace < with <= in render_search_bar$',
 ]

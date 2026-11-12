@@ -1,0 +1,21 @@
+# Equivalent MISSED mutants. Each names a pattern id from
+# the mutation-pattern catalog (see CATALOG in tests/mutants_triage.rs).
+# cargo-mutants honours the matching exclude_re in .cargo/mutants.toml.
+
+[[equivalent]]
+pattern = "equal-arms"
+file = "src/ui/search_overlay.rs"
+where = "render_search_bar, `visible_count < total`"
+mutants = [
+  "src/ui/search_overlay.rs:179:33: replace < with <= in render_search_bar",
+]
+exclude_re = '^src/ui/search_overlay\.rs:\d+:\d+: replace < with <= in render_search_bar$'
+reason = """
+Both arms format `[current/N]` with the same usize when `visible_count == total`:
+the strict arm prints `visible_count` and the other prints `total`. Replacing `<`
+with `<=` therefore paints the same bar for every count, including the tie.
+`a_filtered_count_shows_visible_matches_not_the_total` kills `<` to `==` and
+`<` to `>` (3 visible of 8 paints `[1/3]`, not `[1/8]`). The comparison stays
+so those operators remain killable. Hand-applied on 2026-11-12, the eight tests
+in `search_overlay::tests` stayed green under `<=`.
+"""
