@@ -240,6 +240,26 @@ fn git_cmd(dir: &Path, args: &[&str]) {
     );
 }
 
+fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git").args(args).current_dir(dir).output().expect("git");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// Drop the commit's tree object so `git diff <sha> <sha>` cannot run.
+fn remove_commit_tree(repo: &Path, commit: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let tree = git_stdout(repo, &["rev-parse", &format!("{commit}^{{tree}}")]);
+    let object = repo.join(".git/objects").join(&tree[..2]).join(&tree[2..]);
+    fs::set_permissions(&object, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::remove_file(&object).unwrap();
+}
+
 fn create_test_repo() -> tempfile::TempDir {
     create_test_repo_with_content("initial\n")
 }
@@ -2299,4 +2319,130 @@ fn test_head_binary_is_listed_and_stamped_touched() {
         "a binary file in the highlight range is touched even with no line marks"
     );
     assert_eq!(binary.highlight.line_count(), 0);
+}
+
+/// A file changed against the base but not inside the highlight range still
+/// carries the label. `single_file_diff` reads `unhighlighted` directly.
+#[test]
+fn test_file_outside_highlight_range_keeps_label() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("early.txt"), "early\n").unwrap();
+    git_cmd(repo, &["add", "early.txt"]);
+    git_cmd(repo, &["commit", "-m", "early"]);
+    git_cmd(repo, &["branch", "pushed"]);
+    fs::write(repo.join("late.txt"), "late\n").unwrap();
+    git_cmd(repo, &["add", "late.txt"]);
+    git_cmd(repo, &["commit", "-m", "late"]);
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("feature"),
+            highlight: Some("pushed..feature"),
+        },
+    )
+    .unwrap();
+    let early = vcs.single_file_diff("early.txt").expect("early.txt differs from main");
+    assert_eq!(early.highlight.label.as_deref(), Some("pushed..feature"));
+    assert_eq!(early.highlight.line_count(), 0);
+    assert!(!early.highlight.touched);
+
+    let late = vcs.single_file_diff("late.txt").expect("late.txt differs from main");
+    assert_eq!(late.highlight.line_count(), 1);
+    assert_eq!(late.highlight.label.as_deref(), Some("pushed..feature"));
+}
+
+/// Single-rev `--highlight` is outside the window when the rev is not an
+/// ancestor of `--head`, and when it is already an ancestor of the merge base.
+/// Both resolve to `(sha, sha)` rather than the rev's parents.
+#[test]
+fn test_highlight_rev_outside_window_resolves_to_itself() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    fs::write(repo.join("file.txt"), "base\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "base"]);
+    git_cmd(repo, &["branch", "base_tip"]);
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "feature\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "feature"]);
+    git_cmd(repo, &["checkout", "-b", "side", "main"]);
+    fs::write(repo.join("side.txt"), "side\n").unwrap();
+    git_cmd(repo, &["add", "side.txt"]);
+    git_cmd(repo, &["commit", "-m", "side"]);
+    git_cmd(repo, &["checkout", "feature"]);
+
+    let merge_base =
+        commands::get_merge_base_preferring_origin_for(repo, "main", "feature").unwrap();
+    let resolved = |spec: &str| {
+        let parsed = highlight::resolve_highlight_spec(repo, spec).unwrap();
+        parsed.resolve_for_head(repo, &merge_base, Some("feature")).unwrap().unwrap()
+    };
+
+    let (from, to) = resolved("side");
+    assert_eq!(from, vec![to], "a rev that is not an ancestor of --head is outside the window");
+    let (from, to) = resolved("base_tip");
+    assert_eq!(
+        from,
+        vec![to],
+        "a commit already contained in the merge base is outside the window"
+    );
+}
+
+/// A root commit has no parents, so the highlight range is `(sha, sha)`.
+/// Removing its tree makes `git diff <sha> <sha>` fail. The empty-range guard
+/// must return before that diff, on both the refresh batch and the single-file path.
+#[test]
+fn test_root_highlight_does_not_diff_commit_against_itself() {
+    let temp = create_test_repo();
+    let repo = temp.path();
+    let root = git_stdout(repo, &["rev-parse", "HEAD"]);
+    git_cmd(repo, &["tag", "root_commit"]);
+    fs::write(repo.join("file.txt"), "later\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "later"]);
+    git_cmd(repo, &["checkout", "-b", "feature"]);
+    fs::write(repo.join("file.txt"), "feature\n").unwrap();
+    git_cmd(repo, &["commit", "-am", "feature"]);
+    remove_commit_tree(repo, &root);
+
+    let spec = highlight::resolve_highlight_spec(repo, "root_commit").unwrap();
+    let merge_base =
+        commands::get_merge_base_preferring_origin_for(repo, "main", "feature").unwrap();
+    let marked = highlight::compute_single_file_highlight(
+        repo,
+        &spec,
+        &merge_base,
+        Some("feature"),
+        &crate::diff::FileDiff::new(Vec::new()),
+        ("file.txt", None),
+        (None, None),
+    );
+    assert!(
+        marked.is_ok(),
+        "a root commit is an empty highlight range, got {}",
+        marked.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default()
+    );
+    assert_eq!(marked.unwrap().label.as_deref(), Some("root_commit"));
+
+    let vcs = GitVcs::with_options(
+        repo.to_path_buf(),
+        crate::vcs::VcsOptions {
+            base: None,
+            head: Some("feature"),
+            highlight: Some("root_commit"),
+        },
+    )
+    .unwrap();
+    let refresh = vcs.refresh(&std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    assert!(
+        refresh.is_ok(),
+        "refresh must not diff a root commit against itself, got {}",
+        refresh.as_ref().err().map(|e| format!("{e:#}")).unwrap_or_default()
+    );
+    let file = &refresh.unwrap().files[0];
+    assert_eq!(file.highlight.label.as_deref(), Some("root_commit"));
+    assert_eq!(file.highlight.line_count(), 0);
+    assert!(!file.highlight.touched);
 }
