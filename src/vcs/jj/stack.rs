@@ -386,3 +386,96 @@ pub(super) fn resolve_fork_and_tips(
 pub(super) fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
     handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use super::*;
+
+    fn jj_present() -> bool {
+        Command::new("jj").arg("--version").output().is_ok_and(|o| o.status.success())
+    }
+
+    fn jj(repo: &Path, args: &[&str]) -> String {
+        let out = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        assert!(
+            out.status.success(),
+            "jj {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// Trunk pushed, then a second commit on `main` so trunk moves past the
+    /// branch point. Returns `(repo, remote, base commit id, base commit_id.short(12))`.
+    fn diverged_repo() -> (tempfile::TempDir, tempfile::TempDir, String, String) {
+        let remote = tempfile::tempdir().unwrap();
+        Command::new("git").args(["init", "--bare"]).current_dir(remote.path()).output().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        jj(repo.path(), &["git", "init"]);
+        std::fs::write(repo.path().join("base.txt"), "trunk content\n").unwrap();
+        jj(repo.path(), &["commit", "-m", "base"]);
+        jj(repo.path(), &["bookmark", "set", "main", "-r", "@-"]);
+        jj(repo.path(), &["git", "remote", "add", "origin", &remote.path().to_string_lossy()]);
+        jj(repo.path(), &["git", "push", "--bookmark", "main"]);
+        let base_commit = jj(repo.path(), &["log", "-r", "@-", "--no-graph", "-T", "commit_id"]);
+        let base_short = jj(
+            repo.path(),
+            &["log", "-r", &base_commit, "--no-graph", "-T", "commit_id.short(12)"],
+        );
+        std::fs::write(repo.path().join("ahead.txt"), "ahead\n").unwrap();
+        jj(repo.path(), &["commit", "-m", "trunk ahead"]);
+        jj(repo.path(), &["bookmark", "set", "main", "-r", "@-"]);
+        jj(repo.path(), &["git", "push", "--bookmark", "main"]);
+        (repo, remote, base_commit, base_short)
+    }
+
+    /// Feature line forked from the recorded base, with `@` on the first
+    /// feature commit and one child above it. Returns the child's change id.
+    fn stack_above(repo: &Path, base_commit: &str) -> String {
+        jj(repo, &["new", base_commit]);
+        std::fs::write(repo.join("feature.txt"), "one\n").unwrap();
+        jj(repo, &["commit", "-m", "feature one"]);
+        std::fs::write(repo.join("feature.txt"), "one\ntip\n").unwrap();
+        jj(repo, &["commit", "-m", "feature tip"]);
+        let tip = jj(repo, &["log", "-r", "@-", "--no-graph", "-T", "change_id.short(12)"]);
+        jj(repo, &["edit", "@--"]);
+        tip
+    }
+
+    #[test]
+    fn diverged_stack_reports_the_fork_commit_and_the_tip() {
+        if !jj_present() {
+            return;
+        }
+        let (repo_dir, _remote, base_commit, base_short) = diverged_repo();
+        let repo = repo_dir.path();
+        let tip_change = stack_above(repo, &base_commit);
+        let trunk_short =
+            jj(repo, &["log", "-r", "trunk()", "--no-graph", "-T", "commit_id.short(12)"]);
+        assert_ne!(base_short, trunk_short);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        assert_eq!(
+            resolve_fork_point_for(repo, "trunk()", "@", &cancel).as_deref(),
+            Some(base_short.as_str())
+        );
+
+        let (fork, tip, orphaned) = resolve_fork_and_tips(repo, "trunk()", None, &cancel);
+        assert_eq!(fork.as_deref(), Some(base_short.as_str()));
+        let tip = tip.expect("the child of @ is the stack tip");
+        assert_eq!(tip.change_id, tip_change);
+        assert_eq!(tip.head_count, 1);
+        assert!(orphaned.is_none());
+
+        let (fork_at_head, no_tip, no_orphan) =
+            resolve_fork_and_tips(repo, "trunk()", Some("@"), &cancel);
+        assert_eq!(fork_at_head.as_deref(), Some(base_short.as_str()));
+        assert!(no_tip.is_none());
+        assert!(no_orphan.is_none());
+    }
+}
