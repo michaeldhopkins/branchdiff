@@ -1,4 +1,4 @@
-// @template-sha256: 741af729a92ded92efc9e245cfbfb18afd7900f905b27c99fb93d697f6e5296b
+// @template-sha256: 07c32bf99d52d176ba17a6b6da0c7b12f2570c8df8eed4461e82e6f5b2fb740f
 //! Performance-budget guard. Copy this file unchanged.
 //!
 //! The adopter provides three things and does not edit this file:
@@ -16,6 +16,11 @@
 //! on the module. Baseline lookup reads
 //! `PERF_BASELINE_REV`, `GITHUB_REF`, and `PERF_BASELINE_REPO` (tests; the
 //! default root is the crate manifest directory).
+//!
+//! Needs edition 2024 (it uses `let` chains). The manifest's CI policy keys
+//! are not ratcheted against the baseline, so an adopter that wants the policy
+//! to tighten only passes constants from its thin test and asserts the
+//! manifest sets neither key.
 //!
 //! Counts only tighten. Each stage floor only tightens. A new stage is a new
 //! floor, and the total is the sum of those floors, not a raised floor of its
@@ -2695,7 +2700,7 @@ fn an_entry_that_names_a_missing_or_bare_test_fails() {
 #[test]
 #[should_panic(expected = "read_dir")]
 fn collect_test_names_panics_when_read_dir_fails() {
-    let missing = Path::new("/nonexistent/branchdiff-perf-rules-missing-dir");
+    let missing = Path::new("/nonexistent/perf-rules-missing-dir");
     let mut out = BTreeSet::new();
     collect_test_names(missing, &mut out);
 }

@@ -32,14 +32,14 @@ const CI_PINNED_BENCHES: [&str; 4] = [
 /// 4.35x, and a 100x pin fails.
 const CI_PIN_MAX_RATIO: u64 = 6;
 
+/// The policy is this crate's constants only. Keys in the manifest would
+/// loosen it with no ratchet watching, so they are ignored here and a test
+/// asserts the committed manifest sets none.
 fn ci_policy(manifest: &str) -> (Vec<String>, u64) {
-    match guard::ci_policy_from_manifest(manifest) {
-        Ok(Some(policy)) => (policy.pinned_benches, policy.max_ratio),
-        Ok(None) => {
-            (CI_PINNED_BENCHES.iter().map(|id| (*id).to_string()).collect(), CI_PIN_MAX_RATIO)
-        }
-        Err(message) => panic!("tests/perf.toml: {message}"),
+    if let Err(message) = guard::ci_policy_from_manifest(manifest) {
+        panic!("tests/perf.toml: {message}");
     }
+    (CI_PINNED_BENCHES.iter().map(|id| (*id).to_string()).collect(), CI_PIN_MAX_RATIO)
 }
 
 fn check_live_bench_pins(
@@ -357,4 +357,15 @@ fn the_std_baselines_reader_matches_serde_on_the_committed_file() {
         assert_eq!(left.ci_median_ns, right.ci_median_ns);
         assert_eq!(left.removed, right.removed);
     }
+}
+
+#[test]
+fn a_manifest_cannot_loosen_the_ci_pin_policy() {
+    let manifest =
+        "ci_pin_max_ratio = 1000\nci_pinned_benches = [\"anything\"]\n\n[[op]]\nid = \"x\"\n";
+    let (benches, ratio) = ci_policy(manifest);
+    assert_eq!(ratio, CI_PIN_MAX_RATIO);
+    assert_eq!(benches, CI_PINNED_BENCHES);
+    let real = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/perf.toml")).unwrap();
+    assert_eq!(guard::ci_policy_from_manifest(&real), Ok(None));
 }
