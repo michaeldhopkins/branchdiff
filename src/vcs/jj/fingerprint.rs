@@ -127,3 +127,62 @@ pub(super) fn op_head_key(
     let wc = if read_from_disk { working_copy_digest(repo_path, branch_changed_files) } else { 0 };
     Some(format!("{}:{effective_from}:{effective_to}:{read_from_disk}:{wc:016x}", heads.join(",")))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::super::JjVcs;
+    use super::super::parse::ChangedFile;
+    use super::super::tests::{jj_available, setup_repo_with_remote};
+    use super::*;
+    use crate::vcs::Vcs;
+
+    fn jj(repo: &std::path::Path, args: &[&str]) {
+        let output = Command::new("jj").args(args).current_dir(repo).output().unwrap();
+        assert!(
+            output.status.success(),
+            "jj {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn working_copy_digest_matches_fnv1a() {
+        // Independent of `working_copy_digest`: FNV-1a over
+        // path, old path, the presence byte, then the file bytes,
+        // each feed ending in a mix with 0xff. Offset 0xcbf29ce484222325,
+        // prime 0x100000001b3. The three `^` mutants hash to
+        // 0xb604c8a959880106, 0x000071000000c003 and 0x4a14f17277e80d4d.
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"hi\n").unwrap();
+        let files =
+            [ChangedFile { path: "a.txt".to_string(), old_path: Some("prev.txt".to_string()) }];
+        assert_eq!(working_copy_digest(dir.path(), &files), 0xabc0_75c2_afb7_9e6d);
+    }
+
+    #[test]
+    fn tip_above_the_working_copy_adds_its_files() {
+        if !jj_available() {
+            return;
+        }
+        let (temp, _remote) = setup_repo_with_remote();
+        let repo = temp.path();
+        std::fs::write(repo.join("c1.txt"), "c1\n").unwrap();
+        jj(repo, &["commit", "-m", "c1"]);
+        std::fs::write(repo.join("c2.txt"), "c2\n").unwrap();
+        jj(repo, &["commit", "-m", "c2"]);
+        std::fs::write(repo.join("tip_only.txt"), "tip\n").unwrap();
+        jj(repo, &["commit", "-m", "c3"]);
+        // `@` is the empty working copy above c3, so `@---` is c1.
+        // `tip_only.txt` exists only in c3, above that checkout.
+        jj(repo, &["edit", "@---"]);
+
+        let vcs = JjVcs::new(repo.to_path_buf()).unwrap();
+        let changed = vcs.fingerprint_inputs().unwrap().changed;
+        assert!(
+            changed.iter().any(|p| p == "tip_only.txt"),
+            "the stack tip's file must be in the fingerprint inputs, got {changed:?}"
+        );
+    }
+}
