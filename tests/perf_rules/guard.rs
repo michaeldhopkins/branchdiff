@@ -189,6 +189,7 @@ pub fn check_baseline_medians(
             continue;
         }
         check_pin_field(bench, "ref_median_ns", live.ref_median_ns, before.ref_median_ns, errors);
+        check_pin_field(bench, "ci_median_ns", live.ci_median_ns, before.ci_median_ns, errors);
         check_pin_field(bench, "max_blocks", live.max_blocks, before.max_blocks, errors);
         check_pin_field(bench, "max_bytes", live.max_bytes, before.max_bytes, errors);
         check_pin_field(

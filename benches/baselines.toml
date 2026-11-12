@@ -7,6 +7,10 @@
 # 2026-10-18 on the reference machine. The printed Criterion "time:" line is the
 # slope when outliers pull it away from the median; the pin is the median.
 # tests/wall_medians.rs compares measured medians to these pins in CI, relative to the runner speed.
+# ci_median_ns, where a bench has one, is the pin CI judges it on (PERF_WALL_PINS=ci): the
+# lowest Criterion estimate seen on the CI runners, which are x86_64 and spawn processes slower than this
+# Mac. It may only go down, like every pin. ref_median_ns stays the Mac figure the perf.toml
+# floors derive from and what a local run is judged on.
 # The refresh group has no allocation pin: it shells out to jj.
 
 [[bench]]
@@ -124,6 +128,7 @@ max_blocks = 16693
 max_bytes = 3718400
 max_bytes_x86_64 = 3732740
 ref_median_ns = 1197400
+ci_median_ns = 1711100
 
 [[bench]]
 id = "html/render/200_lines"
@@ -131,6 +136,7 @@ max_blocks = 75745
 max_bytes = 16931915
 max_bytes_x86_64 = 16953065
 ref_median_ns = 2819700
+ci_median_ns = 7572600
 
 [[bench]]
 id = "html/render/500_lines"
@@ -138,6 +144,7 @@ max_blocks = 166937
 max_bytes = 37255910
 max_bytes_x86_64 = 37287108
 ref_median_ns = 5407800
+ci_median_ns = 16661000
 
 [[bench]]
 id = "refresh/colocated/50f_10c"
@@ -176,6 +183,7 @@ ref_median_ns = 99470
 [[bench]]
 id = "refresh/head/500f_25c"
 ref_median_ns = 1598385980
+ci_median_ns = 6955900000
 
 [[bench]]
 id = "refresh/highlight/500f_25c"

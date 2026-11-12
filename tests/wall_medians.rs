@@ -209,20 +209,41 @@ fn measured_wall_medians_hold_the_pins() {
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let text = fs::read_to_string(root.join("benches/baselines.toml")).expect("read baselines");
-    let pins = recorded_pins(&text);
+    let pins = recorded_pins(&text, pin_source());
     let measured = measured_medians(&criterion_dir(&root));
     let errors = violations(&pins, &measured);
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
-/// `ref_median_ns` per bench id, leaving out records marked `removed`.
-fn recorded_pins(text: &str) -> BTreeMap<String, u64> {
+/// Which pins the measuring machine is judged against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PinSource {
+    /// `ref_median_ns`, measured on the reference Mac.
+    Reference,
+    /// `ci_median_ns` where a bench has one, else `ref_median_ns`. CI's runners
+    /// are another architecture and spawn processes at another speed, so some
+    /// benches never come near a Mac pin there.
+    Ci,
+}
+
+fn pin_source() -> PinSource {
+    match std::env::var("PERF_WALL_PINS").as_deref() {
+        Ok("ci") => PinSource::Ci,
+        _ => PinSource::Reference,
+    }
+}
+
+/// The pin per bench id, leaving out records marked `removed`.
+fn recorded_pins(text: &str, source: PinSource) -> BTreeMap<String, u64> {
     let records = baselines::parse(text)
         .unwrap_or_else(|errs| panic!("invalid baselines.toml:\n{}", errs.join("\n")));
     records
         .into_iter()
         .filter(|record| record.removed.is_none())
-        .filter_map(|record| record.ref_median_ns.map(|ns| (record.id, ns)))
+        .filter_map(|record| {
+            let ci = if source == PinSource::Ci { record.ci_median_ns } else { None };
+            ci.or(record.ref_median_ns).map(|ns| (record.id, ns))
+        })
         .collect()
 }
 
@@ -233,6 +254,7 @@ fn ci_runs_the_wall_bench_and_its_comparison_as_blocking_steps() {
     assert!(ci.contains("--bench performance"), "no wall bench step");
     assert!(ci.contains("PERF_WALL_CHECK: \"1\""), "no wall comparison step");
     assert!(ci.contains("--test wall_medians"), "no wall comparison step");
+    assert!(ci.contains("PERF_WALL_PINS: \"ci\""), "the wall comparison must use the CI pins");
     assert!(!ci.contains("continue-on-error"), "no CI step may be advisory");
 }
 
@@ -243,10 +265,11 @@ fn pins_are_read_from_baselines_and_removed_records_are_left_out() {
         "[[bench]]\nid = \"gone\"\nremoved = \"why\"\n\n",
         "[[bench]]\nid = \"alloc/only\"\nmax_blocks = 1\nmax_bytes = 8\n",
     );
-    assert_eq!(recorded_pins(text), pins(&[("a/b", 5)]));
+    assert_eq!(recorded_pins(text, PinSource::Reference), pins(&[("a/b", 5)]));
     let real =
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/benches/baselines.toml")).unwrap();
-    assert!(recorded_pins(&real).len() >= MIN_BENCHES);
+    assert!(recorded_pins(&real, PinSource::Reference).len() >= MIN_BENCHES);
+    assert!(recorded_pins(&real, PinSource::Ci).len() >= MIN_BENCHES);
 }
 
 #[test]
@@ -270,4 +293,26 @@ fn baselines_reader_rejects_unknown_fields_duplicates_and_malformed_records() {
     ] {
         assert!(baselines::parse(bad).is_err(), "expected error for:\n{bad}");
     }
+}
+
+#[test]
+fn a_bench_with_a_ci_pin_is_judged_on_it_and_one_without_falls_back() {
+    let text = concat!(
+        "[[bench]]\nid = \"with/ci\"\nref_median_ns = 100\nci_median_ns = 400\n\n",
+        "[[bench]]\nid = \"without/ci\"\nref_median_ns = 100\n",
+    );
+    assert_eq!(recorded_pins(text, PinSource::Ci), pins(&[("with/ci", 400), ("without/ci", 100)]));
+    assert_eq!(
+        recorded_pins(text, PinSource::Reference),
+        pins(&[("with/ci", 100), ("without/ci", 100)])
+    );
+}
+
+#[test]
+fn a_ci_pin_passes_a_slow_runner_bench_that_the_mac_pin_fails() {
+    let (mut pin, mut got) = uniform(1.0);
+    got.insert("b4".to_string(), 3_500.0);
+    assert!(violations(&pin, &got).iter().any(|error| error.contains("`b4`")));
+    pin.insert("b4".to_string(), 3_500);
+    assert!(violations(&pin, &got).is_empty());
 }

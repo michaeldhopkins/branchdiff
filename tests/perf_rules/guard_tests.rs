@@ -1369,3 +1369,32 @@ derivation = "Floor is bench-a (30000 us) plus bench-b (10000 us)."
         "{covers_every_stage:?}"
     );
 }
+
+#[test]
+fn a_ci_median_pin_ratchets_down_only_and_cannot_be_dropped() {
+    let base =
+        "[[bench]]\nid = \"html/render/50_lines\"\nref_median_ns = 1000\nci_median_ns = 4000\n";
+    let with_ci =
+        |ci: &str| format!("[[bench]]\nid = \"html/render/50_lines\"\nref_median_ns = 1000\n{ci}");
+    let check = |live: &str| {
+        let mut errors = Vec::new();
+        check_baseline_medians(live, Some(base), &mut errors);
+        errors
+    };
+    assert_eq!(
+        check(&with_ci("ci_median_ns = 4001\n")),
+        vec!["bench `html/render/50_lines` ci_median_ns 4001 is looser than the baseline 4000"]
+    );
+    assert_eq!(
+        check(&with_ci("")),
+        vec!["bench `html/render/50_lines` dropped ci_median_ns from the baseline"]
+    );
+    assert!(check(&with_ci("ci_median_ns = 3000\n")).is_empty());
+    assert!(check(&with_ci("ci_median_ns = 4000\n")).is_empty());
+    let first_record = "[[bench]]\nid = \"html/render/50_lines\"\nref_median_ns = 1000\n";
+    let mut adopted = Vec::new();
+    check_baseline_medians(&with_ci("ci_median_ns = 4000\n"), Some(first_record), &mut adopted);
+    assert!(adopted.is_empty(), "a first ci pin has no earlier value to exceed: {adopted:?}");
+    let ci_alone = "[[bench]]\nid = \"x\"\nci_median_ns = 5\n";
+    assert!(recorded_benches(ci_alone).is_err());
+}

@@ -84,12 +84,13 @@ jobs:
       - name: cargo bench (wall clock)
         run: cargo bench --locked --bench performance -- --noplot
 
-      # Blocking: compares each bench to its ref_median_ns after dividing out the
-      # runner's overall speed (tests/wall_medians.rs), so a runner slower than
+      # Blocking: compares each bench to its pin (ci_median_ns, else ref_median_ns) after
+      # dividing out the runner's overall speed (tests/wall_medians.rs), so a runner slower than
       # the reference machine does not fail it but one regressed bench does.
       - name: wall medians against their pins
         env:
           PERF_WALL_CHECK: "1"
+          PERF_WALL_PINS: "ci"
         run: cargo test --locked --test wall_medians
 
       - uses: taiki-e/install-action@cargo-deny

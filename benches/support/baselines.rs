@@ -25,6 +25,7 @@ pub struct BenchRecord {
     pub max_bytes: Option<u64>,
     pub max_bytes_x86_64: Option<u64>,
     pub ref_median_ns: Option<u64>,
+    pub ci_median_ns: Option<u64>,
     pub removed: Option<String>,
 }
 
@@ -57,6 +58,12 @@ pub fn parse(text: &str) -> Result<Vec<BenchRecord>, Vec<String>> {
         }
         if record.ref_median_ns == Some(0) {
             errors.push(format!("bench `{id}` ref_median_ns must be > 0"));
+        }
+        if record.ci_median_ns == Some(0) {
+            errors.push(format!("bench `{id}` ci_median_ns must be > 0"));
+        }
+        if record.ci_median_ns.is_some() && record.ref_median_ns.is_none() {
+            errors.push(format!("bench `{id}` sets ci_median_ns without ref_median_ns"));
         }
         if record.max_blocks.is_some() != record.max_bytes.is_some() {
             errors.push(format!("bench `{id}` sets only one of max_blocks and max_bytes"));
