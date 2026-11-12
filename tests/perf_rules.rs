@@ -1,12 +1,13 @@
 //! Performance budgets.
 //!
-//! `guard` is the project-agnostic checker. A later copy can live with the
-//! shared templates. `surface` and `counts` are this program's adapter: the
+//! `guard` is the shared template at `tests/perf_rules/perf_budgets.rs`.
+//! `surface` and `counts` are this program's adapter: the
 //! command tree, the key map, the html page, and the process-count floors.
 
 #[path = "perf_rules/counts.rs"]
 mod counts;
-#[path = "perf_rules/guard.rs"]
+#[rustfmt::skip]
+#[path = "perf_rules/perf_budgets.rs"]
 mod guard;
 #[path = "perf_rules/surface.rs"]
 mod surface;
@@ -14,6 +15,46 @@ mod surface;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
+
+/// Benches that may carry a `ci_median_ns`. A CI pin is the lowest Criterion
+/// estimate seen on the CI runners, so an id is added only together with the CI
+/// run ids that measured it. Evidence for the current four is the header of
+/// `benches/baselines.toml`: html/render/50_lines, html/render/200_lines and
+/// html/render/500_lines from CI runs 43272055235, 41848995611, 41363441341,
+/// 40863237322 and 40129949646; refresh/head/500f_25c from run 43272055235.
+const CI_PINNED_BENCHES: [&str; 4] = [
+    "html/render/50_lines", "html/render/200_lines", "html/render/500_lines",
+    "refresh/head/500f_25c",
+];
+
+/// A `ci_median_ns` may be at most this many times its `ref_median_ns`.
+/// The committed ratios are 1.43, 2.69, 3.08 and 4.35. 6x leaves room above
+/// 4.35x, and a 100x pin fails.
+const CI_PIN_MAX_RATIO: u64 = 6;
+
+fn ci_policy(manifest: &str) -> (Vec<String>, u64) {
+    match guard::ci_policy_from_manifest(manifest) {
+        Ok(Some(policy)) => (policy.pinned_benches, policy.max_ratio),
+        Ok(None) => {
+            (CI_PINNED_BENCHES.iter().map(|id| (*id).to_string()).collect(), CI_PIN_MAX_RATIO)
+        }
+        Err(message) => panic!("tests/perf.toml: {message}"),
+    }
+}
+
+fn check_live_bench_pins(
+    manifest: &str,
+    live: &str,
+    baseline: Option<&str>,
+    errors: &mut Vec<String>,
+) {
+    let (owned, ratio) = ci_policy(manifest);
+    let pinned: Vec<&str> = owned.iter().map(String::as_str).collect();
+    guard::check_baseline_medians(live, baseline, &pinned, ratio, errors);
+}
+
+#[path = "../benches/support/baselines.rs"]
+mod serde_baselines;
 
 #[test]
 fn the_manifest_matches_the_surface_and_its_budgets() {
@@ -45,7 +86,7 @@ fn the_manifest_matches_the_surface_and_its_budgets() {
         baseline: baseline.as_deref(),
         benches: &benches,
     }));
-    guard::check_baseline_medians(&bench_text, baseline_bench_text.as_deref(), &mut errors);
+    check_live_bench_pins(&manifest, &bench_text, baseline_bench_text.as_deref(), &mut errors);
     assert!(
         errors.is_empty(),
         "{}\n\nsurface:\n{}",
@@ -162,7 +203,7 @@ fn raising_non_colocated_bench_median_or_deleting_files_bench_from_derivation_fa
         baseline: Some(&manifest),
         benches: &raised_benches,
     });
-    guard::check_baseline_medians(&raised_bench_text, Some(&bench_text), &mut raised_errors);
+    check_live_bench_pins(&manifest, &raised_bench_text, Some(&bench_text), &mut raised_errors);
     assert!(
         raised_errors
             .iter()
@@ -264,5 +305,56 @@ fn navigation_floors_include_the_span_stage() {
         );
         assert_eq!(floors.get(span).copied(), Some(span_us), "{id} span stage: {floors:?}");
         assert_eq!(floors.len(), 2, "{id} stages: {floors:?}");
+    }
+}
+
+#[test]
+fn the_ci_pinned_set_is_the_four_measured_benches_and_the_committed_pins_fit_the_cap() {
+    assert_eq!(
+        CI_PINNED_BENCHES,
+        [
+            "html/render/50_lines", "html/render/200_lines", "html/render/500_lines",
+            "refresh/head/500f_25c",
+        ]
+    );
+    assert_eq!(CI_PIN_MAX_RATIO, 6);
+    let real =
+        fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/benches/baselines.toml")).unwrap();
+    let pinned: Vec<String> = guard::baselines::parse(&real)
+        .unwrap()
+        .into_iter()
+        .filter(|record| record.ci_median_ns.is_some())
+        .map(|record| record.id)
+        .collect();
+    assert_eq!(
+        pinned, CI_PINNED_BENCHES,
+        "every allowlisted bench has its pin, and no other has one"
+    );
+    let mut errors = Vec::new();
+    guard::check_baseline_medians(
+        &real,
+        Some(&real),
+        &CI_PINNED_BENCHES,
+        CI_PIN_MAX_RATIO,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn the_std_baselines_reader_matches_serde_on_the_committed_file() {
+    let real =
+        fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/benches/baselines.toml")).unwrap();
+    let serde_records = serde_baselines::parse(&real).expect("serde parse");
+    let std_records = guard::baselines::parse(&real).expect("std parse");
+    assert_eq!(serde_records.len(), std_records.len());
+    for (left, right) in serde_records.iter().zip(&std_records) {
+        assert_eq!(left.id, right.id);
+        assert_eq!(left.max_blocks, right.max_blocks);
+        assert_eq!(left.max_bytes, right.max_bytes);
+        assert_eq!(left.max_bytes_x86_64, right.max_bytes_x86_64);
+        assert_eq!(left.ref_median_ns, right.ref_median_ns);
+        assert_eq!(left.ci_median_ns, right.ci_median_ns);
+        assert_eq!(left.removed, right.removed);
     }
 }

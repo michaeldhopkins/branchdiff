@@ -3,7 +3,8 @@
 //! Deserializes `[[bench]]` tables through `toml` and `serde` with
 //! `#[serde(deny_unknown_fields)]` so no unknown key, duplicate key, or
 //! malformed value can slip past any consumer (`tests/wall_medians.rs`,
-//! `tests/perf_rules/guard.rs`, `benches/alloc.rs`).
+//! `benches/alloc.rs`). The performance guard parses the same file in
+//! `tests/perf_rules/perf_budgets.rs`; a test checks the two readers agree.
 
 use std::collections::BTreeSet;
 
