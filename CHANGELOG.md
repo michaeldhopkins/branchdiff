@@ -5,17 +5,88 @@
 - Add --head <REV> to diff a revision without checking it out
 - Add --highlight <REVSET> to mark lines and hunks from a commit range
 
+### Bug Fixes
+
+- *(git)* Keep a file in the TUI when its highlight lookup fails
+- *(jj)* Retry highlight jj calls and never cache a plan built from a failed one
+- *(file-list)* Report touched files as highlighted in --files --json
+- *(highlight)* Fall back to no marks instead of asserting in release builds
+- *(git)* Propagate git failures from highlight range resolution and clamping
+- *(jj)* Keep --stat width-independent and make pin_headless_size_env pure
+- *(startup)* Keep a loaded refresh when only the comparison labels fail
+- *(perf)* Review 3 findings
+- *(perf)* Reject an empty baseline manifest
+- *(perf)* Reject an empty baseline benches file
+- *(perf)* Tighten criss-cross ceilings per field
+- *(perf)* Do not treat a detached git HEAD as main
+- *(perf)* Merge criss-crossed bench baselines by the minimum of each pin
+
+### Refactor
+
+- *(perf)* Split three over-long functions to satisfy too_many_lines
+- *(main)* Move the headless size pin into startup and restore main's comments
+
 ### Documentation
 
 - Document --head and --highlight and bump version to 0.79.0
 
+### Performance
+
+- *(startup)* Pin headless dimensions and detach controlling tty in process counts
+- *(startup)* Reuse comparison_and_refresh in benchmark and TUI startup
+- *(diff)* Diff ASCII inline spans as bytes
+
 ### Testing
 
 - *(syntax)* Prove reset_highlight_state clears open state
+- *(perf)* Budget every user-facing operation
+- *(perf)* Enforce strict class caps and cover comments and real TUI actions
+- *(perf)* Require architecture proposals and measure command floors
+- *(perf)* Qualify test names by path and harden baseline and dir checks
+- *(perf)* Share frame_guard scanner so #[cfg(test)] items and short timers are scanned
+- *(perf)* Isolate stub PATH to absolute binaries and count spawns on keystrokes
+- *(perf)* Run perf_rules in CI with pinned jj and document manifest in AGENTS.md
+- *(perf)* Tie floors to benches, mark owed placeholders, and count all spawns
+- *(perf)* Pass PERF_BASELINE_REV in CI and gate ci_alloc_job
+- *(perf)* Resolve non-main and unreachable baselines via origin/main merge-base
+- *(perf)* Require explicit floor mode and ratchet bench medians and owed set
+- *(perf)* Deduplicate ns median ratchet, require floor reasons, and test all ratchet branches
+- *(perf)* Compute baseline merge-base in Rust only and pick single jj revision
+- *(perf)* Accept removed benches in alloc parser and ratchet allocation pins
+- *(perf)* Bind key:go-to-top to navigation/go_to_bottom and sync AGENTS.md
+- *(perf)* Pick the strictest jj baseline head and cover the non-main and PR baseline paths
+- *(perf)* Require declared alternatives for a max floor and kill the guard survivors
+- *(perf)* Bench navigation/go_to_top on its own and bind key:go-to-top to it
+- *(perf)* Budget --head and --highlight with measured benches
+- *(perf)* Enforce one-line id and class fields and assert keystroke state effects
+- *(perf)* Share one baselines reader and sum sequential stages
+- *(perf)* Ratchet each stage floor on its own
+- *(perf)* Bootstrap a parent that predates the manifest
+- *(highlight)* Kill missed mutants in highlight.rs
+- *(ui)* Render the search bar and a mid-span overlay
+- *(jj-parse)* Kill missed coalesce and rename mutants
+- *(jj-highlight)* Kill missed highlight and root-commit mutants
+- *(jj-refresh)* Kill missed file-link and --head @ mutants
+- *(jj-fingerprint)* Kill missed digest and stack-tip mutants
+- *(jj-vcs)* Kill missed base-rev and revision-id mutants
+- *(git)* Catch spawn errors and --head binaries
+- *(git)* Cover highlight windows and empty ranges
+- *(git)* Pin revision ids and equal local/origin labels
+- *(output)* Keep a highlight prepare would drop
+- *(print)* Keep a zero gutter when highlight has no line numbers
+- *(jj)* Match jj stderr with the Error prefix removed
+- *(jj)* Report the fork commit and the tip of a diverged stack
+- *(vcs)* Honour the base revset passed to detect_with_base
+- *(diff)* Pin ASCII byte-path spans and the mixed-line alignment
+- *(jj)* Reject a rename whose brace closes first
+- Merge the mutant-kill tests for --head and --highlight
+- *(mutants)* Describe the pattern catalog without a local path
 
 ### Miscellaneous
 
 - *(lints)* Lower clippy complexity and length thresholds toward defaults
+- *(perf)* Block on measured wall medians relative to the runner's speed
+- *(release)* 0.79.0
 
 ## [0.78.1] - 2026-10-24
 
@@ -38,6 +109,7 @@
 ### Miscellaneous
 
 - *(release)* 0.78.1
+
 ## [0.78.0] - 2026-10-24
 
 ### Features
@@ -75,6 +147,7 @@
 - *(comments)* Kill surviving mutants in render, revdiff, extract, suggestion, label
 - *(comments)* Pin anchoring, path matching and comment reload decisions
 - *(diff)* Pin view-mode visibility, deletion numbering and gutter cells
+
 ## [0.77.5] - 2026-10-20
 
 ### Bug Fixes
@@ -108,6 +181,7 @@
 
 - Lint the browser-test code too, with clippy on all features
 - *(release)* 0.77.5
+
 ## [0.77.4] - 2026-10-20
 
 ### Bug Fixes
@@ -169,21 +243,25 @@
 - Add rustfmt.toml at the default width, matched to the code's compact style
 - Record in rustfmt.toml why its style was chosen and what the reformat still grows
 - *(release)* 0.77.4
+
 ## [0.77.3] - 2026-10-12
 
 ### Testing
 
 - *(diff_view)* Time the fastest frame in the long-line perf test, so a busy machine cannot fail it
+
 ## [0.77.2] - 2026-10-11
 
 ### Testing
 
 - *(file_list)* A line added beside context is modified; skip the mutation slice on dependency-only pushes
+
 ## [0.77.1] - 2026-10-11
 
 ### Testing
 
 - *(file_list)* Pin status_of's boundaries against the slice's missed mutants
+
 ## [0.77.0] - 2026-10-10
 
 ### Features
@@ -197,6 +275,7 @@
 ### Miscellaneous
 
 - Bump to 0.77.0
+
 ## [0.76.0] - 2026-10-10
 
 ### Features
@@ -206,11 +285,13 @@
 ### Testing
 
 - *(external)* Kill missed mutants in vcs_configured_editor
+
 ## [0.75.0] - 2026-10-10
 
 ### Features
 
 - Add --files [--json] and --fingerprint, which list and fingerprint the diff without rendering it
+
 ## [0.74.4] - 2026-10-10
 
 ### Bug Fixes
@@ -234,6 +315,7 @@
 - *(cliff)* Leave todo, notes and agents commits, and TODO.md-only commits, out of the release notes
 - *(cliff)* Skip bare reverts, scope lists and any case of the internal scopes
 - *(deps)* Adopt vcs-runner 0.19.0
+
 ## [0.74.3] - 2026-10-05
 
 ### Documentation
@@ -249,6 +331,7 @@
 
 - *(mutants)* Count a timeout as caught, not a failure
 - Move every action to its newest major, off the Node 20 runtime GitHub is removing, and the release's macOS builds from macos-14 (retired 2026-11-02) to macos-26
+
 ## [0.74.2] - 2026-09-27
 
 ### Refactor
@@ -262,6 +345,7 @@
 ### Miscellaneous
 
 - *(mutants)* Run in-diff and a rotating slice on each push to main
+
 ## [0.74.1] - 2026-09-26
 
 ### Bug Fixes
@@ -291,6 +375,7 @@
 
 - *(release)* Trigger the michaeldhopkins.com release index on publish
 - *(fuzz)* Replay the corpus per push and PR, burst each push to main
+
 ## [0.74.0] - 2026-08-04
 
 ### Performance
@@ -300,6 +385,7 @@
 ### Miscellaneous
 
 - *(repo)* Add mutation-testing setup and record its findings
+
 ## [0.73.4] - 2026-07-17
 
 ### Features
@@ -324,6 +410,7 @@
 ### Testing
 
 - Reproduce the stale-paint bug deterministically
+
 ## [0.71.0] - 2026-07-12
 
 ### Features
@@ -333,11 +420,13 @@
 ### Miscellaneous
 
 - *(ci)* Add cargo-deny supply-chain gate; patch advisory deps
+
 ## [0.70.2] - 2026-06-23
 
 ### Bug Fixes
 
 - *(jj)* Parse nested renames and don't adopt sibling workspaces
+
 ## [0.70.1] - 2026-06-23
 
 ### Bug Fixes
@@ -349,11 +438,13 @@
 ### Documentation
 
 - Document the jj-aware release flow and editor-test env gotchas in CLAUDE.md
+
 ## [0.69.0] - 2026-06-21
 
 ### Features
 
 - Open the whole repo in your editor with 'E'
+
 ## [0.68.0] - 2026-06-18
 
 ### Features
@@ -363,11 +454,13 @@
 ### Miscellaneous
 
 - Bump action-gh-release to v3; docs: qualified brew install
+
 ## [0.67.0] - 2026-06-15
 
 ### Features
 
 - Open the current file in your editor with 'e'
+
 ## [0.66.0] - 2026-06-06
 
 ### Features
@@ -377,41 +470,49 @@
 ### Performance
 
 - Cap highlighting and wrapping for huge single-line files
+
 ## [0.65.0] - 2026-05-19
 
 ### Features
 
 - Adopt vcs-runner 0.13 — cancel kills in-flight subprocesses
+
 ## [0.64.1] - 2026-05-19
 
 ### Bug Fixes
 
 - Wrap stale-recovery banner so the press-key hint stays visible
+
 ## [0.64.0] - 2026-05-19
 
 ### Features
 
 - Recover from jj stale working copy without restarting
+
 ## [0.63.14] - 2026-05-19
 
 ### Bug Fixes
 
 - Flash "Copied" indicator on text-selection auto-copy
+
 ## [0.63.13] - 2026-05-19
 
 ### Performance
 
 - Cache display width on DiffLine to fix scroll on huge single-line files
+
 ## [0.63.12] - 2026-05-19
 
 ### Bug Fixes
 
 - Count modified lines in +/- totals
+
 ## [0.63.11] - 2026-05-19
 
 ### Bug Fixes
 
 - Align search highlights when modified lines render with deletion text
+
 ## [0.63.10] - 2026-05-19
 
 ### Bug Fixes
@@ -422,6 +523,7 @@
 ### Miscellaneous
 
 - Require conventional commits in cliff.toml
+
 ## [0.63.8] - 2026-05-19
 
 ### Bug Fixes
@@ -431,16 +533,19 @@
 ### Miscellaneous
 
 - Satisfy new clippy 1.95 lints
+
 ## [0.63.6] - 2026-05-19
 
 ### Refactor
 
 - Adopt vcs-runner crate for git/jj subprocess execution
+
 ## [0.63.2] - 2026-05-19
 
 ### Bug Fixes
 
 - Selection highlighting and copy on wrapped lines and wide characters
+
 ## [0.63.1] - 2026-05-19
 
 ### Bug Fixes
@@ -450,26 +555,31 @@
 ### Documentation
 
 - Update README
+
 ## [0.63.0] - 2026-05-19
 
 ### Features
 
 - Mark files as reviewed with r/R keybindings
+
 ## [0.62.2] - 2026-05-19
 
 ### Bug Fixes
 
 - WCAG AA contrast for solarized HTML theme
+
 ## [0.62.1] - 2026-05-19
 
 ### Bug Fixes
 
 - Hunk boundary sliding for cleaner function-level diffs
+
 ## [0.62.0] - 2026-05-19
 
 ### Features
 
 - Move detection with block matching across files
+
 ## [0.61.1] - 2026-05-19
 
 ### Bug Fixes
@@ -479,11 +589,13 @@
 ### Miscellaneous
 
 - Regenerate Cargo.lock and changelog
+
 ## [0.61.0] - 2026-05-19
 
 ### Features
 
 - HTML output mode with shared rendering engine
+
 ## [0.60.1] - 2026-05-19
 
 ### Bug Fixes
@@ -493,16 +605,19 @@
 ### Miscellaneous
 
 - Regenerate changelog
+
 ## [0.60.0] - 2026-05-19
 
 ### Features
 
 - Upstream divergence awareness with fork-point/trunk-tip toggle
+
 ## [0.59.1] - 2026-05-19
 
 ### Bug Fixes
 
 - Gracefully fall back from CommitOnly/BookmarkOnly when revision context disappears
+
 ## [0.59.0] - 2026-05-19
 
 ### Features
@@ -512,6 +627,7 @@
 ### Miscellaneous
 
 - Regenerate changelog
+
 ## [0.58.0] - 2026-05-19
 
 ### Features
@@ -521,6 +637,7 @@
 ### Miscellaneous
 
 - Update GitHub Actions to Node 24 versions
+
 ## [0.57.0] - 2026-05-19
 
 ### Features
@@ -535,6 +652,7 @@
 
 - Update README
 - Update README
+
 ## [0.56.2] - 2026-05-19
 
 ### Bug Fixes
@@ -542,6 +660,7 @@
 - Rename [changes] view mode label to [changed lines only]
 - Show [all lines] label for Full view mode in status bar
 - Update Cargo.lock for v0.56.2
+
 ## [0.56.0] - 2026-05-19
 
 ### Features
@@ -551,18 +670,21 @@
 ### Bug Fixes
 
 - Hide files with no current-commit changes in CommitOnly view
+
 ## [0.55.2] - 2026-05-19
 
 ### Bug Fixes
 
 - Remove --keepParent from ditto to fix notarization ticket registration
 - Remove --keepParent from ditto to fix notarization ticket registration
+
 ## [0.55.1] - 2026-05-19
 
 ### Miscellaneous
 
 - Add formula and repo fields to tap dispatch payload
 - Add Apple code signing and notarization for macOS binaries
+
 ## [0.55.0] - 2026-05-19
 
 ### Features
@@ -572,16 +694,19 @@
 ### Bug Fixes
 
 - Correct artifact download paths in release workflow
+
 ## [0.54.4] - 2026-05-19
 
 ### Bug Fixes
 
 - Render inline deletion text in merged diff view
+
 ## [0.54.3] - 2026-05-19
 
 ### Bug Fixes
 
 - Publish to crates.io before downloading artifacts to avoid payload size issue
+
 ## [0.54.2] - 2026-05-19
 
 ### Features
@@ -733,6 +858,7 @@
 - Add MIT/Apache-2.0 dual license for crates.io publishing
 - Replace cargo-dist with simple version-driven CI/release workflows
 - Update Cargo.lock for v0.54.2
+
 ## [0.1.0] - 2026-05-19
 
 ### Features
