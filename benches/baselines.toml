@@ -17,6 +17,9 @@
 # html/render/200_lines 10.27, 14.53, 14.36, 7.57, 15.11 (pin 7.5726); html/render/500_lines 22.01,
 # 31.04, 31.42, 16.66, 32.72 (pin 16.661). refresh/head/500f_25c was added later and its pin, 6.96 s,
 # is its first CI measurement.
+# These pins are the lowest of several runs on a noisy runner, whose repeat runs of one bench differ by
+# up to 2x. The 2.00x tolerance sits on top of that, so a real slowdown is caught only from about 2x to
+# 4x. refresh/head's pin is one measurement; TODO.md says when it is replaced.
 # The refresh group has no allocation pin: it shells out to jj.
 
 [[bench]]

@@ -38,7 +38,7 @@ CI sets `PERF_WALL_PINS=ci`. A bench with a `ci_median_ns` in `benches/baselines
 - it is allowed only on the benches in `CI_PINNED_BENCHES` (html/render/50_lines, 200_lines, 500_lines and refresh/head/500f_25c). Adding an id means editing that list and the test that pins it, and recording the CI run ids that measured it in the comment beside the list and in the `baselines.toml` header;
 - it may be at most `CI_PIN_MAX_RATIO` (6) times its `ref_median_ns`. The current ratios run from 1.43x to 4.35x, so a pin of 100x, which would switch the CI check off, fails.
 
-The evidence for each pin is in the `baselines.toml` header.
+The CI pins are the lowest of several runs on a noisy runner, whose repeat runs of one bench differ by up to 2x (html/render/200_lines: 7.57 to 15.11 ms). With the 2.00x tolerance on top, a real slowdown is caught only from about 2x to 4x. The refresh/head/500f_25c pin is a single first measurement. The evidence for each pin is in the `baselines.toml` header.
 
 Fewer than 8 benches make the median a single bench rather than a machine speed, so the check refuses to run.
 
