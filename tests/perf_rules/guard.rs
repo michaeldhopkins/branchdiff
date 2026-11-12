@@ -157,6 +157,7 @@ pub fn check_baseline_medians(
             return;
         }
     };
+    check_ci_pins(&live_records, errors);
     let Some(baseline_text) = baseline_text else {
         errors.sort();
         errors.dedup();
@@ -198,6 +199,46 @@ pub fn check_baseline_medians(
     }
     errors.sort();
     errors.dedup();
+}
+
+/// Benches that may carry a `ci_median_ns`. A CI pin is the lowest Criterion
+/// estimate seen on the CI runners, so an id is added only together with the CI
+/// run ids that measured it, recorded in this comment, and the matching edit to
+/// the test that pins this list. Evidence for the current four:
+/// html/render/50_lines, html/render/200_lines and html/render/500_lines from CI
+/// runs 43272055235, 41848995611, 41363441341, 40863237322 and 40129949646
+/// (lowest of five; for 50_lines, in ms: 2.34, 3.83, 3.77, 1.71, 3.50);
+/// refresh/head/500f_25c from run 43272055235, its first measurement.
+pub const CI_PINNED_BENCHES: [&str; 4] = [
+    "html/render/50_lines", "html/render/200_lines", "html/render/500_lines",
+    "refresh/head/500f_25c",
+];
+
+/// A `ci_median_ns` may be at most this many times its `ref_median_ns`. The
+/// committed ratios are 1.43, 2.69, 3.08 and 4.35 (refresh/head, whose runner
+/// spawns jj processes slowly). 6x leaves room above 4.35x for a re-measured
+/// pin, and a 100x pin, which would switch the CI wall check off, fails.
+pub const CI_PIN_MAX_RATIO: u64 = 6;
+
+fn check_ci_pins(records: &[baselines::BenchRecord], errors: &mut Vec<String>) {
+    for record in records.iter().filter(|r| r.removed.is_none()) {
+        let Some(ci) = record.ci_median_ns else {
+            continue;
+        };
+        let bench = record.id.as_str();
+        if !CI_PINNED_BENCHES.contains(&bench) {
+            errors.push(format!(
+                "bench `{bench}` has a ci_median_ns but is not in CI_PINNED_BENCHES"
+            ));
+        }
+        if let Some(reference) = record.ref_median_ns
+            && ci > reference.saturating_mul(CI_PIN_MAX_RATIO)
+        {
+            errors.push(format!(
+                "bench `{bench}` ci_median_ns {ci} is over {CI_PIN_MAX_RATIO}x its ref_median_ns {reference}"
+            ));
+        }
+    }
 }
 
 fn check_pin_field(

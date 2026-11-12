@@ -1398,3 +1398,65 @@ fn a_ci_median_pin_ratchets_down_only_and_cannot_be_dropped() {
     let ci_alone = "[[bench]]\nid = \"x\"\nci_median_ns = 5\n";
     assert!(recorded_benches(ci_alone).is_err());
 }
+
+fn first_ci_pin(id: &str, ref_ns: u64, ci_ns: u64) -> Vec<String> {
+    let before = format!("[[bench]]\nid = \"{id}\"\nref_median_ns = {ref_ns}\n");
+    let live = format!("{before}ci_median_ns = {ci_ns}\n");
+    let mut errors = Vec::new();
+    check_baseline_medians(&live, Some(&before), &mut errors);
+    errors
+}
+
+#[test]
+fn a_first_ci_pin_needs_an_allowlisted_bench_within_the_cap() {
+    assert!(first_ci_pin("html/render/200_lines", 1000, 6000).is_empty());
+    assert_eq!(
+        first_ci_pin("html/render/200_lines", 1000, 6001),
+        vec!["bench `html/render/200_lines` ci_median_ns 6001 is over 6x its ref_median_ns 1000"]
+    );
+    assert_eq!(
+        first_ci_pin("html/render/200_lines", 1000, 100_000_000_000),
+        vec![
+            "bench `html/render/200_lines` ci_median_ns 100000000000 is over 6x its ref_median_ns 1000"
+        ]
+    );
+    assert_eq!(
+        first_ci_pin("refresh/other/500f_25c", 1000, 2000),
+        vec!["bench `refresh/other/500f_25c` has a ci_median_ns but is not in CI_PINNED_BENCHES"]
+    );
+}
+
+#[test]
+fn the_cap_and_allowlist_hold_without_a_baseline_revision() {
+    let live = "[[bench]]\nid = \"nope\"\nref_median_ns = 10\nci_median_ns = 1000\n";
+    let mut errors = Vec::new();
+    check_baseline_medians(live, None, &mut errors);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+}
+
+#[test]
+fn the_ci_pinned_set_is_the_four_measured_benches_and_the_committed_pins_fit_the_cap() {
+    assert_eq!(
+        CI_PINNED_BENCHES,
+        [
+            "html/render/50_lines", "html/render/200_lines", "html/render/500_lines",
+            "refresh/head/500f_25c"
+        ]
+    );
+    assert_eq!(CI_PIN_MAX_RATIO, 6);
+    let real =
+        fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/benches/baselines.toml")).unwrap();
+    let pinned: Vec<String> = baselines::parse(&real)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.ci_median_ns.is_some())
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(
+        pinned, CI_PINNED_BENCHES,
+        "every allowlisted bench has its pin, and no other has one"
+    );
+    let mut errors = Vec::new();
+    check_baseline_medians(&real, Some(&real), &mut errors);
+    assert!(errors.is_empty(), "{errors:?}");
+}
