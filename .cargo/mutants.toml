@@ -80,4 +80,9 @@ exclude_re = [
     # selecting words by name keeps working if the default is ever changed
     # (pattern redundant-guard). The "words" and "signs" inputs are tested.
     '^src/comments/label\.rs:\d+:\d+: delete match arm Some\("words"\) in style_from_env$',
+    # `{` and `}` are different bytes, so find('{') and find('}') never return
+    # the same index. `<` and `<=` then agree whenever both braces are present,
+    # and a missing brace returns before the compare. `<` to `==` is not
+    # equivalent: `a}b{c` panics on the slice. See tests/mutants_triage.toml.
+    '^src/vcs/jj/parse\.rs:\d+:\d+: replace < with <= in parse_rename$',
 ]

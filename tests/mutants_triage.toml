@@ -1,0 +1,12 @@
+# Triaged MISSED mutants. Each names a pattern id from
+# the mutation-pattern catalog (see CATALOG in tests/mutants_triage.rs).
+# cargo-mutants still needs the matching exclude_re in .cargo/mutants.toml.
+
+[[triage]]
+pattern = "equal-arms"
+file = "src/vcs/jj/parse.rs"
+where = "src/vcs/jj/parse.rs:77:14, `parse_rename`"
+mutants = [
+  "src/vcs/jj/parse.rs:77:14: replace < with <= in parse_rename",
+]
+reason = "`parse_rename` returns early when `find('}') < find('{')`. `{` is 0x7B and `}` is 0x7D, so the two finds cannot return the same index: whenever both succeed, `close == open` is impossible and `<` agrees with `<=`. A string missing either brace hits `?` and never reaches the compare. `parse_rename_rejects_a_brace_that_closes_first` covers `a}b{c` (close before open), which panics under `<` to `==` and still returns None under `<=`. `parse_rename_joins_a_shared_prefix_and_suffix` covers a real nested rename."
