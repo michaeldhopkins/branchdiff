@@ -98,3 +98,51 @@ pub fn draw_with_frame(frame: &mut Frame, app: &mut App, ctx: &FrameContext) {
         draw_help_modal(frame, size, app);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::app::SearchState;
+    use crate::test_support::TestAppBuilder;
+
+    const WIDTH: u16 = 80;
+    const HEIGHT: u16 = 20;
+
+    fn draw(app: &mut App) -> Vec<String> {
+        let ctx = FrameContext::new(app);
+        let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
+        terminal.draw(|f| draw_with_frame(f, app, &ctx)).unwrap();
+        let buf = terminal.backend().buffer();
+        (0..HEIGHT).map(|y| (0..WIDTH).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect()
+    }
+
+    #[test]
+    fn a_conflict_warning_alone_is_painted_in_a_banner_above_the_diff() {
+        let mut app = TestAppBuilder::new().build();
+        app.conflict_warning = Some("Conflict marker banner".to_string());
+        let rows = draw(&mut app);
+        assert!(rows[0].contains("Conflict marker banner"), "{rows:?}");
+    }
+
+    #[test]
+    fn an_error_alone_is_painted_in_a_banner_above_the_diff() {
+        let mut app = TestAppBuilder::new().build();
+        app.error = Some("Refresh failed banner".to_string());
+        let rows = draw(&mut app);
+        assert!(rows[0].contains("Refresh failed banner"), "{rows:?}");
+    }
+
+    #[test]
+    fn an_open_search_bar_takes_one_row_more_than_the_diff_frame_from_the_viewport() {
+        let mut closed = TestAppBuilder::new().build();
+        draw(&mut closed);
+        let mut open = TestAppBuilder::new().build();
+        open.search = Some(SearchState::new());
+        draw(&mut open);
+        assert_eq!(open.view.viewport_height + 1, closed.view.viewport_height);
+        let status = status_bar_height(&closed, &FrameContext::new(&closed), WIDTH);
+        assert_eq!(closed.view.viewport_height, (HEIGHT - status - 2) as usize);
+    }
+}
