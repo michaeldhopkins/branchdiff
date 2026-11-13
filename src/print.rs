@@ -166,13 +166,155 @@ mod tests {
 
     #[test]
     fn test_color_to_ansi_basic_colors() {
-        assert_eq!(color_to_ansi(Color::Red), Some("\x1b[31m"));
-        assert_eq!(color_to_ansi(Color::Green), Some("\x1b[32m"));
-        assert_eq!(color_to_ansi(Color::Yellow), Some("\x1b[33m"));
-        assert_eq!(color_to_ansi(Color::Cyan), Some("\x1b[36m"));
-        assert_eq!(color_to_ansi(Color::DarkGray), Some("\x1b[90m"));
-        assert_eq!(color_to_ansi(Color::White), Some("\x1b[97m"));
-        assert_eq!(color_to_ansi(Color::Magenta), Some("\x1b[35m"));
+        let named = [
+            (Color::Black, "\x1b[30m"),
+            (Color::Red, "\x1b[31m"),
+            (Color::Green, "\x1b[32m"),
+            (Color::Yellow, "\x1b[33m"),
+            (Color::Blue, "\x1b[34m"),
+            (Color::Magenta, "\x1b[35m"),
+            (Color::Cyan, "\x1b[36m"),
+            (Color::Gray, "\x1b[37m"),
+            (Color::DarkGray, "\x1b[90m"),
+            (Color::LightRed, "\x1b[91m"),
+            (Color::LightGreen, "\x1b[92m"),
+            (Color::LightYellow, "\x1b[93m"),
+            (Color::LightBlue, "\x1b[94m"),
+            (Color::LightMagenta, "\x1b[95m"),
+            (Color::LightCyan, "\x1b[96m"),
+            (Color::White, "\x1b[97m"),
+        ];
+        for (color, code) in named {
+            assert_eq!(color_to_ansi(color), Some(code), "{color:?}");
+        }
+    }
+
+    #[test]
+    fn test_color_to_ansi_unnamed_colors_have_no_code() {
+        assert_eq!(color_to_ansi(Color::Rgb(1, 2, 3)), None);
+        assert_eq!(color_to_ansi(Color::Indexed(5)), None);
+        assert_eq!(color_to_ansi(Color::Reset), None);
+    }
+
+    fn plain_file(lines: Vec<DiffLine>, highlight: bool) -> OutputFile {
+        use branchdiff::highlight::FileHighlight;
+        let highlight = if highlight {
+            FileHighlight {
+                label: Some("origin/feat..feat".into()),
+                touched: false,
+                highlighted_lines: Vec::new(),
+                highlighted_hunk_lines: Vec::new(),
+            }
+        } else {
+            Default::default()
+        };
+        OutputFile {
+            path: "a.rs".into(),
+            lines,
+            additions: 0,
+            deletions: 0,
+            collapsed: false,
+            comments: Default::default(),
+            highlight,
+        }
+    }
+
+    fn print_raw(file: &OutputFile) -> String {
+        let mut buf = Vec::new();
+        print_file(&mut buf, file, Gutter::measure(&file.lines, None)).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn print_rows(file: &OutputFile) -> Vec<String> {
+        strip_ansi(&print_raw(file)).lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn write_diff_status_line_sums_additions_and_deletions() {
+        let file = |path: &str| OutputFile {
+            path: path.into(),
+            ..plain_file(vec![DiffLine::file_header(path)], false)
+        };
+        let data = OutputData {
+            repo_name: "r".into(),
+            to_label: "feat".into(),
+            from_label: "main".into(),
+            files: vec![file("a.rs"), file("b.rs")],
+            total_additions: 2,
+            total_deletions: 1,
+        };
+        let mut buf = Vec::new();
+        write_diff(&mut buf, &data).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            text.lines().next().unwrap(),
+            "\x1b[36mr | feat vs main | 2 files | 3 lines\x1b[0m",
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn file_header_without_line_numbers_has_no_gutter_padding() {
+        let lines = vec![
+            DiffLine::file_header("a.rs"),
+            DiffLine::new(LineSource::Committed, "added".into(), '+', None),
+        ];
+        assert_eq!(print_rows(&plain_file(lines.clone(), false)), ["── a.rs ──", "+ added"]);
+        assert_eq!(print_rows(&plain_file(lines, true))[0], "── a.rs ──");
+    }
+
+    #[test]
+    fn file_header_with_line_numbers_is_padded_to_the_gutter() {
+        let lines = vec![
+            DiffLine::file_header("a.rs"),
+            DiffLine::new(LineSource::Committed, "added".into(), '+', Some(10)),
+        ];
+        assert_eq!(print_rows(&plain_file(lines.clone(), false)), ["   ── a.rs ──", "10 + added"]);
+        assert_eq!(print_rows(&plain_file(lines, true))[0], "    ── a.rs ──");
+    }
+
+    #[test]
+    fn elided_line_follows_the_gutter() {
+        let numbered = vec![
+            DiffLine::new(LineSource::Committed, "added".into(), '+', Some(10)),
+            DiffLine::elided(5),
+        ];
+        assert_eq!(
+            print_rows(&plain_file(numbered.clone(), false)),
+            ["10 + added", "   ┈┈ ⋮ 5 lines ⋮ ┈┈"]
+        );
+        assert_eq!(print_rows(&plain_file(numbered, true))[1], "    ┈┈ ⋮ 5 lines ⋮ ┈┈");
+
+        let bare = vec![
+            DiffLine::new(LineSource::Committed, "added".into(), '+', None),
+            DiffLine::elided(5),
+        ];
+        assert_eq!(print_rows(&plain_file(bare.clone(), false)), ["+ added", "┈┈ ⋮ 5 lines ⋮ ┈┈"]);
+        assert_eq!(print_rows(&plain_file(bare, true))[1], "┈┈ ⋮ 5 lines ⋮ ┈┈");
+    }
+
+    #[test]
+    fn lines_without_numbers_print_no_gutter() {
+        let lines = vec![DiffLine::new(LineSource::Committed, "added".into(), '+', None)];
+        assert_eq!(print_raw(&plain_file(lines, false)), "\x1b[36m+ added\x1b[0m\n");
+    }
+
+    #[test]
+    fn inline_spans_are_colored_by_their_own_source() {
+        use branchdiff::diff::InlineSpan;
+        let mut line = DiffLine::new(LineSource::Unstaged, "abcd".into(), '+', None);
+        line.inline_spans = vec![
+            InlineSpan { text: "ab".into(), source: None, is_deletion: false },
+            InlineSpan {
+                text: "cd".into(),
+                source: Some(LineSource::Committed),
+                is_deletion: false,
+            },
+        ];
+        assert_eq!(
+            print_raw(&plain_file(vec![line], false)),
+            "\x1b[33m+ \x1b[33mab\x1b[0m\x1b[36mcd\x1b[0m\n"
+        );
     }
 
     #[test]
