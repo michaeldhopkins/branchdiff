@@ -11,7 +11,7 @@
 # lowest Criterion estimate seen on the CI runners, which are x86_64 and spawn processes slower than this
 # Mac. It may only go down, like every pin. ref_median_ns stays the Mac figure the perf.toml
 # floors derive from and what a local run is judged on.
-# Only four benches have one (CI_PINNED_BENCHES in tests/perf_rules/guard.rs), and each is at most 6x
+# Only four benches have one (CI_PINNED_BENCHES in tests/perf_rules.rs), and each is at most 6x
 # its ref_median_ns. Evidence, CI runs 43272055235, 41848995611, 41363441341, 40863237322 and
 # 40129949646: html/render/50_lines time in ms 2.34, 3.83, 3.77, 1.71, 3.50 (pin 1.7111);
 # html/render/200_lines 10.27, 14.53, 14.36, 7.57, 15.11 (pin 7.5726); html/render/500_lines 22.01,
