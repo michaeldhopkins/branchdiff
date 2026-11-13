@@ -908,4 +908,74 @@ mod tests {
             "All 6 items (3 headers + 3 images) should be visible with 60-row viewport"
         );
     }
+
+    #[test]
+    fn test_line_returns_the_line_the_item_indexes() {
+        let lines = vec![base_line("zero"), base_line("one"), base_line("two")];
+        let app = TestAppBuilder::new().with_lines(lines).build();
+        let ctx = FrameContext::with_items(
+            vec![DisplayableItem::Line(2), DisplayableItem::Elided(4), DisplayableItem::Line(0)],
+            &app,
+        );
+        assert_eq!(ctx.line(&app, 0).content, "two");
+        assert_eq!(ctx.line(&app, 2).content, "zero");
+    }
+
+    #[test]
+    #[should_panic(expected = "non-Line item")]
+    fn test_line_panics_on_elided_item() {
+        let app = TestAppBuilder::new().with_lines(vec![base_line("a")]).build();
+        let ctx = FrameContext::with_items(vec![DisplayableItem::Elided(1)], &app);
+        let _ = ctx.line(&app, 0);
+    }
+
+    #[test]
+    fn test_original_index_maps_lines_and_skips_elided() {
+        let app = TestAppBuilder::new().with_lines(vec![base_line("a")]).build();
+        let ctx = FrameContext::with_items(
+            vec![DisplayableItem::Line(5), DisplayableItem::Elided(3), DisplayableItem::Line(0)],
+            &app,
+        );
+        assert_eq!(ctx.original_index(0), Some(5));
+        assert_eq!(ctx.original_index(1), None);
+        assert_eq!(ctx.original_index(2), Some(0));
+    }
+
+    #[test]
+    fn test_iter_items_yields_every_item_in_order() {
+        let app = TestAppBuilder::new().with_lines(vec![base_line("a")]).build();
+        let items = vec![
+            DisplayableItem::Line(0),
+            DisplayableItem::Elided(2),
+            DisplayableItem::Message("m"),
+        ];
+        let ctx = FrameContext::with_items(items.clone(), &app);
+        assert_eq!(ctx.iter_items().copied().collect::<Vec<_>>(), items);
+    }
+
+    #[test]
+    fn test_from_abs_row_clamps_to_the_last_row() {
+        let app = app_with_heights(&[1, 1, 1, 10], 4);
+        let ctx = FrameContext::new(&app);
+        assert_eq!(ctx.total_rows(&app), 13);
+        assert_eq!(ctx.from_abs_row(&app, 12), (3, 9));
+        assert_eq!(ctx.from_abs_row(&app, 13), (3, 9));
+        assert_eq!(ctx.from_abs_row(&app, 500), (3, 9));
+    }
+
+    #[test]
+    fn test_visible_range_always_includes_first_item_in_zero_height_viewport() {
+        let mut app = app_with_heights(&[1, 1, 1], 0);
+        app.view.scroll_offset = 1;
+        let ctx = FrameContext::new(&app);
+        assert_eq!(ctx.visible_range(&app), (1, 2));
+    }
+
+    #[test]
+    fn test_visible_range_sub_row_shrinks_only_the_first_item() {
+        let mut app = app_with_heights(&[10, 1, 1, 1], 4);
+        app.view.sub_row = 8;
+        let ctx = FrameContext::new(&app);
+        assert_eq!(ctx.visible_range(&app), (0, 3));
+    }
 }
