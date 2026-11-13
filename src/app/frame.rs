@@ -328,6 +328,20 @@ mod tests {
     }
 
     #[test]
+    fn test_displayable_item_elided_count_returns_exact_count() {
+        assert_eq!(DisplayableItem::Elided(0).elided_count(), Some(0));
+        assert_eq!(DisplayableItem::Elided(1).elided_count(), Some(1));
+        assert_eq!(DisplayableItem::Elided(7).elided_count(), Some(7));
+    }
+
+    #[test]
+    fn test_displayable_item_elided_count_none_for_other_variants() {
+        assert_eq!(DisplayableItem::Line(0).elided_count(), None);
+        assert_eq!(DisplayableItem::Line(7).elided_count(), None);
+        assert_eq!(DisplayableItem::Message("empty").elided_count(), None);
+    }
+
+    #[test]
     fn test_displayable_item_is_elided() {
         assert!(!DisplayableItem::Line(5).is_elided());
         assert!(DisplayableItem::Elided(10).is_elided());
