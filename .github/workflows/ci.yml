@@ -37,7 +37,7 @@ jobs:
       # @stable would float, and a later stable can move std's allocations.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.99.0
+          toolchain: 1.100.0
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2

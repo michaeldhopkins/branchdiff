@@ -2,5 +2,5 @@
 # nobody touched. Move to each new stable within 30 days, fixing what its lints find.
 # The fuzz workspace runs on nightly through `cargo +nightly`, which overrides this.
 [toolchain]
-channel = "1.99.0"
+channel = "1.100.0"
 components = ["clippy", "rustfmt"]

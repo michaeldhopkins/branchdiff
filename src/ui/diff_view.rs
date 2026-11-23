@@ -2071,10 +2071,10 @@ mod tests {
         assert!(output.row_map[0].is_file_header);
         assert_eq!(output.row_map[0].file_path.as_deref(), Some("test.rs"));
 
-        for i in 1..=3 {
-            assert!(!output.row_map[i].is_file_header);
-            assert_eq!(output.row_map[i].content, format!("line {}", i));
-            assert!(!output.row_map[i].is_continuation);
+        for (i, row) in output.row_map.iter().enumerate().skip(1) {
+            assert!(!row.is_file_header);
+            assert_eq!(row.content, format!("line {}", i));
+            assert!(!row.is_continuation);
         }
 
         assert!(output.line_num_width > 0);
@@ -2514,13 +2514,13 @@ mod tests {
         let buf = terminal.backend().buffer();
         let offset_y = app.view.content_offset.1 as u16;
 
-        for row_idx in first_content_row..=last_content_row {
+        for (row_idx, row) in output.row_map.iter().enumerate().skip(first_content_row) {
             let screen_y = offset_y + row_idx as u16;
             let has_selection_bg = (0..width).any(|x| buf[(x, screen_y)].bg == SELECTION_BG_COLOR);
             assert!(
                 has_selection_bg,
                 "row_map[{}] (screen_y={}, continuation={}) should have selection bg",
-                row_idx, screen_y, output.row_map[row_idx].is_continuation
+                row_idx, screen_y, row.is_continuation
             );
         }
     }
