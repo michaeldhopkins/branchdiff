@@ -404,6 +404,34 @@ mod tests {
     }
 
     #[test]
+    fn test_from_abs_row_past_end_clamps_to_last_row() {
+        // Heights [1, 1, 1, 10]: prefix [0, 1, 2, 3, 13], total 13, so the
+        // last row is abs 12 (item 3, sub 9). Inputs at or past the end must
+        // clamp onto that row, never overflow into an out-of-range item.
+        let app = app_with_heights(&[1, 1, 1, 10], 4);
+        let ctx = FrameContext::new(&app);
+        assert_eq!(ctx.total_rows(&app), 13);
+
+        for abs in [13, 14, 99] {
+            let (item, sub) = ctx.from_abs_row(&app, abs);
+            assert!(
+                item < ctx.item_count(),
+                "abs {abs}: item {item} is out of range ({} items)",
+                ctx.item_count()
+            );
+            assert_eq!(
+                ctx.to_abs_row(&app, item, sub),
+                12,
+                "abs {abs} must clamp to the last row"
+            );
+        }
+        assert_eq!(ctx.from_abs_row(&app, 99), (3, 9));
+
+        // The boundary row itself is unaffected: abs == total - 1.
+        assert_eq!(ctx.from_abs_row(&app, 12), (3, 9));
+    }
+
+    #[test]
     fn test_max_scroll_lands_mid_item() {
         let app = app_with_heights(&[1, 1, 1, 10], 4);
         let ctx = FrameContext::new(&app);
