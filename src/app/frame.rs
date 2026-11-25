@@ -419,11 +419,7 @@ mod tests {
                 "abs {abs}: item {item} is out of range ({} items)",
                 ctx.item_count()
             );
-            assert_eq!(
-                ctx.to_abs_row(&app, item, sub),
-                12,
-                "abs {abs} must clamp to the last row"
-            );
+            assert_eq!(ctx.to_abs_row(&app, item, sub), 12, "abs {abs} must clamp to the last row");
         }
         assert_eq!(ctx.from_abs_row(&app, 99), (3, 9));
 
