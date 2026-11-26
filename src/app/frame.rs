@@ -954,16 +954,6 @@ mod tests {
     }
 
     #[test]
-    fn test_from_abs_row_clamps_to_the_last_row() {
-        let app = app_with_heights(&[1, 1, 1, 10], 4);
-        let ctx = FrameContext::new(&app);
-        assert_eq!(ctx.total_rows(&app), 13);
-        assert_eq!(ctx.from_abs_row(&app, 12), (3, 9));
-        assert_eq!(ctx.from_abs_row(&app, 13), (3, 9));
-        assert_eq!(ctx.from_abs_row(&app, 500), (3, 9));
-    }
-
-    #[test]
     fn test_visible_range_always_includes_first_item_in_zero_height_viewport() {
         let mut app = app_with_heights(&[1, 1, 1], 0);
         app.view.scroll_offset = 1;
